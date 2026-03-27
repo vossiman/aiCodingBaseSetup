@@ -1,0 +1,9 @@
+# Secrets (stored at ~/.aicodingsetup/, but just in case)
+.secrets.env
+
+# Vendor repos (cloned by install script)
+vendor/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
