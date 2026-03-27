@@ -9,6 +9,8 @@ Paste the following into Claude Code or opencode to test that all MCPs, skills, 
 ```
 I just ran my AI coding setup installer and need to verify everything works. Run through each test below, one at a time, and report PASS/FAIL for each. If something fails, tell me what's wrong. For each test you must actually EXECUTE the action, not just check if the tool exists.
 
+**Note:** If you are running in opencode, tests 7-14 are Claude Code marketplace plugins. opencode does not have a plugin/marketplace system, so report those as SKIP (expected). The MCP and skill tests (1-6) should work in both tools.
+
 ### 1. MCP: Brave Search
 Search the web for "Anthropic Claude Code CLI" and return the top 3 results with titles and URLs.
 
@@ -28,28 +30,28 @@ Invoke the cloudflare-browser skill and use it to fetch https://example.com as m
 ### 6. Hook: bubblewrap (bw-deny-files)
 Verify the hook is installed by checking that ~/.claude/hooks/bw-deny-files.sh exists and is a symlink pointing into the bw-AICode vendor directory. Run: ls -la ~/.claude/hooks/bw-deny-files.sh
 
-### 7. Plugin: Superpowers
+### 7. Plugin: Superpowers (Claude Code only)
 Invoke the brainstorming skill (superpowers:brainstorming) and confirm it loads successfully. You don't need to complete the brainstorming flow — just confirm it activates and gives you instructions. List at least 5 other superpowers skills you can see.
 
-### 8. Plugin: Playwright (plugin)
+### 8. Plugin: Playwright plugin (Claude Code only)
 Use the playwright plugin to take a snapshot of the current browser state (browser_snapshot). This confirms the plugin is enabled and the MCP tools are callable.
 
-### 9. Plugin: Frontend Design
+### 9. Plugin: Frontend Design (Claude Code only)
 Invoke the frontend-design skill and confirm it loads with instructions. You don't need to build anything — just confirm activation.
 
-### 10. Plugin: Code Review
+### 10. Plugin: Code Review (Claude Code only)
 Invoke the code-review skill and confirm it loads. You don't need to run a full review.
 
-### 11. Plugin: Code Simplifier
+### 11. Plugin: Code Simplifier (Claude Code only)
 Invoke the simplify skill and confirm it loads with instructions.
 
-### 12. Plugin: Skill Creator
+### 12. Plugin: Skill Creator (Claude Code only)
 Invoke the skill-creator skill and confirm it loads.
 
-### 13. Plugin: Claude Code Setup
+### 13. Plugin: Claude Code Setup (Claude Code only)
 Invoke the claude-code-setup:claude-automation-recommender skill and confirm it loads.
 
-### 14. Plugin: Pyright LSP
+### 14. Plugin: Pyright LSP (Claude Code only)
 Confirm the pyright-lsp plugin is enabled by checking if LSP tools are available.
 
 ---
@@ -74,6 +76,7 @@ After all tests, print a summary table:
 | 14 | pyright-lsp | Plugin | PASS/FAIL/SKIP |
 
 Report the overall score: X/14 passed, Y skipped, Z failed.
+For opencode: 6/6 shared components passed is a perfect score (plugins are Claude Code only).
 
 Finally: can you see the custom powerline statusline at the bottom of the terminal? It should show model name, directory, git branch, context usage, and rate limits. Let me know what you see.
 ```
