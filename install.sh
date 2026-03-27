@@ -166,16 +166,16 @@ json_merge() {
 
   local merged
   merged="$(jq -s '
-    # Deep merge: source values override target, but objects merge recursively
-    # Arrays are concatenated and deduplicated
-    def deep_merge:
+    # Deep merge: source values override target, objects merge recursively
+    # "allow" arrays are unioned; all other arrays: source wins (preserves order)
+    def deep_merge(key):
       if length == 2 then
         .[0] as $a | .[1] as $b |
         if ($a | type) == "object" and ($b | type) == "object" then
           ($a | keys_unsorted) + ($b | keys_unsorted) | unique |
           map(. as $k |
             if ($a | has($k)) and ($b | has($k)) then
-              {($k): ([$a[$k], $b[$k]] | deep_merge)}
+              {($k): ([$a[$k], $b[$k]] | deep_merge($k))}
             elif ($b | has($k)) then
               {($k): $b[$k]}
             else
@@ -183,15 +183,16 @@ json_merge() {
             end
           ) | add // {}
         elif ($a | type) == "array" and ($b | type) == "array" then
-          ($a + $b) | unique
+          if key == "allow" then ($a + $b) | unique
+          else $b
+          end
         else
-          # For scalars: keep target value if source is empty/null, otherwise source wins
           if ($b == null or $b == "") then $a else $b end
         end
       else
         .[0]
       end;
-    [.[0], .[1]] | deep_merge
+    [.[0], .[1]] | deep_merge("")
   ' "$target" "$source")"
 
   echo "$merged" > "$target"
