@@ -39,7 +39,6 @@ On first run, you'll be prompted for API keys. Press Enter to skip any you don't
 | Skill | Purpose | Auth |
 |-------|---------|------|
 | cloudflare-browser | Fetch web content via Cloudflare Browser Rendering REST API (backup for firecrawl) | API token |
-| logfire-reader | Query application logs from Pydantic Logfire | API token (placeholder) |
 
 ### Hooks
 
@@ -61,8 +60,6 @@ Secrets are stored at `~/.aicodingsetup/.secrets.env` (outside the repo).
 | `BRAVE_API_KEY` | brave-search MCP |
 | `CLOUDFLARE_API_TOKEN` | cloudflare-browser skill |
 | `CLOUDFLARE_ACCOUNT_ID` | cloudflare-browser skill |
-| `LOGFIRE_TOKEN` | logfire-reader skill |
-
 - **Install:** prompts for all keys (Enter to skip)
 - **Update:** only prompts for new keys, never overwrites existing values
 - MCP keys are injected into MCP config blocks
@@ -125,9 +122,7 @@ aiCodingBaseSetup/
 │   │   └── opencode.json          # Base opencode config
 │   └── mcps.json                  # Shared MCP definitions
 ├── skills/
-│   ├── cloudflare-browser/
-│   │   └── SKILL.md
-│   └── logfire/
+│   └── cloudflare-browser/
 │       └── SKILL.md
 └── vendor/                        # External repos (gitignored)
     └── bw-AICode/

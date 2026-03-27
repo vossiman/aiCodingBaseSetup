@@ -16,7 +16,7 @@ SECRETS_FILE="$SECRETS_DIR/.secrets.env"
 # Managed component lists (used for unmanaged component detection)
 MANAGED_MCPS=("firecrawl" "brave-search" "context7" "playwright")
 MANAGED_HOOKS=("custom-statusline.js" "bw-deny-files.sh")
-MANAGED_SKILLS=("cloudflare-browser" "logfire")
+MANAGED_SKILLS=("cloudflare-browser")
 MANAGED_PLUGINS=(
   "superpowers@claude-plugins-official"
   "frontend-design@claude-plugins-official"
@@ -205,7 +205,6 @@ substitute_secrets() {
   content="${content//\{\{BRAVE_API_KEY\}\}/${BRAVE_API_KEY:-}}"
   content="${content//\{\{CLOUDFLARE_API_TOKEN\}\}/${CLOUDFLARE_API_TOKEN:-}}"
   content="${content//\{\{CLOUDFLARE_ACCOUNT_ID\}\}/${CLOUDFLARE_ACCOUNT_ID:-}}"
-  content="${content//\{\{LOGFIRE_TOKEN\}\}/${LOGFIRE_TOKEN:-}}"
   echo "$content"
 }
 
