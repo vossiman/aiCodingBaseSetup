@@ -108,15 +108,19 @@ load_or_prompt_secrets() {
     info "No secrets file found — will prompt for all keys"
   fi
 
-  # Prompt for missing keys
+  # Prompt for missing keys (keys with empty values are treated as "skipped", not missing)
   local prompted=false
   for key in "${required_keys[@]}"; do
-    if [[ -z "${secrets[$key]:-}" ]]; then
+    if [[ ! -v "secrets[$key]" ]]; then
       prompted=true
       read -rp "Enter $key [or press Enter to skip]: " value
       secrets["$key"]="${value:-}"
     else
-      ok "$key already set"
+      if [[ -n "${secrets[$key]}" ]]; then
+        ok "$key already set"
+      else
+        ok "$key skipped (empty)"
+      fi
     fi
   done
 
@@ -154,31 +158,40 @@ json_merge() {
     return
   fi
 
+  # Strategy: use jq recursive merge (.*) for objects, but handle arrays specially
+  # For hooks arrays: concatenate and deduplicate by command string
+  # For permissions.allow: union arrays
+  # For enabledPlugins: merge objects (union keys)
+  # For everything else: source wins for scalars, recursive merge for objects
+
   local merged
   merged="$(jq -s '
-    def deep_merge(a; b):
-      a as $a | b as $b |
-      if ($a | type) == "object" and ($b | type) == "object" then
-        ($a | keys_unsorted) + ($b | keys_unsorted) | unique |
-        reduce .[] as $key (
-          {};
-          . + { ($key):
-            if ($a | has($key)) and ($b | has($key)) then
-              if ($key == "allow") and (($a[$key] | type) == "array") then
-                (($a[$key]) + ($b[$key])) | unique
-              elif (($a[$key] | type) == "object") and (($b[$key] | type) == "object") then
-                deep_merge($a[$key]; $b[$key])
-              else
-                $b[$key]
-              end
-            elif ($b | has($key)) then $b[$key]
-            else $a[$key]
+    # Deep merge: source values override target, but objects merge recursively
+    # Arrays are concatenated and deduplicated
+    def deep_merge:
+      if length == 2 then
+        .[0] as $a | .[1] as $b |
+        if ($a | type) == "object" and ($b | type) == "object" then
+          ($a | keys_unsorted) + ($b | keys_unsorted) | unique |
+          map(. as $k |
+            if ($a | has($k)) and ($b | has($k)) then
+              {($k): ([$a[$k], $b[$k]] | deep_merge)}
+            elif ($b | has($k)) then
+              {($k): $b[$k]}
+            else
+              {($k): $a[$k]}
             end
-          }
-        )
-      else $b
+          ) | add // {}
+        elif ($a | type) == "array" and ($b | type) == "array" then
+          ($a + $b) | unique
+        else
+          # For scalars: keep target value if source is empty/null, otherwise source wins
+          if ($b == null or $b == "") then $a else $b end
+        end
+      else
+        .[0]
       end;
-    deep_merge(.[0]; .[1])
+    [.[0], .[1]] | deep_merge
   ' "$target" "$source")"
 
   echo "$merged" > "$target"
@@ -272,27 +285,42 @@ install_claude_mcps() {
 
   # firecrawl
   if [[ -n "${FIRECRAWL_API_KEY:-}" ]]; then
-    claude mcp add firecrawl -s user -e "FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}" -- firecrawl-mcp 2>/dev/null && \
-      ok "firecrawl MCP configured" || warn "firecrawl MCP may need manual setup"
+    if claude mcp add firecrawl -s user -e "FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}" -- firecrawl-mcp 2>/dev/null; then
+      ok "firecrawl MCP configured"
+    elif claude mcp get firecrawl &>/dev/null; then
+      ok "firecrawl MCP already configured"
+    else
+      warn "firecrawl MCP may need manual setup"
+    fi
   else
     warn "Skipping firecrawl MCP — no API key"
   fi
 
   # brave-search
   if [[ -n "${BRAVE_API_KEY:-}" ]]; then
-    claude mcp add brave-search -s user -e "BRAVE_API_KEY=${BRAVE_API_KEY}" -- brave-search-mcp-server 2>/dev/null && \
-      ok "brave-search MCP configured" || warn "brave-search MCP may need manual setup"
+    if claude mcp add brave-search -s user -e "BRAVE_API_KEY=${BRAVE_API_KEY}" -- brave-search-mcp-server 2>/dev/null; then
+      ok "brave-search MCP configured"
+    elif claude mcp get brave-search &>/dev/null; then
+      ok "brave-search MCP already configured"
+    else
+      warn "brave-search MCP may need manual setup"
+    fi
   else
     warn "Skipping brave-search MCP — no API key"
   fi
 
   # context7
-  claude mcp add context7 -s user -- docker run -i --rm context7-mcp 2>/dev/null && \
-    ok "context7 MCP configured" || warn "context7 MCP may need manual setup"
+  if claude mcp add context7 -s user -- docker run -i --rm context7-mcp 2>/dev/null; then
+    ok "context7 MCP configured"
+  elif claude mcp get context7 &>/dev/null; then
+    ok "context7 MCP already configured"
+  else
+    warn "context7 MCP may need manual setup"
+  fi
 
-  # playwright
-  claude mcp add playwright -s user -- npx @playwright/mcp@latest --browser chromium 2>/dev/null && \
-    ok "playwright MCP configured" || warn "playwright MCP may need manual setup"
+  # playwright — provided by the playwright plugin, not as a standalone MCP
+  # The plugin install (install_claude_plugins) handles this
+  ok "playwright MCP provided by playwright plugin"
 }
 
 # --- Claude Code settings.json ---
@@ -483,7 +511,7 @@ install_bubblewrap() {
 
   # Symlink the hook into Claude hooks dir
   mkdir -p "$CLAUDE_DIR/hooks"
-  local hook_src="$vendor_dir/bw-deny-files.sh"
+  local hook_src="$vendor_dir/hooks/bw-deny-files.sh"
   local hook_dest="$CLAUDE_DIR/hooks/bw-deny-files.sh"
 
   if [[ -f "$hook_src" ]]; then
