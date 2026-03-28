@@ -459,7 +459,6 @@ install_hooks() {
     warn "custom-statusline.js not found in repo"
   fi
 
-  # bw-deny-files.sh is handled by bubblewrap install (symlink)
 }
 
 # --- Custom skills ---
@@ -509,18 +508,13 @@ install_bubblewrap() {
       ok "bw-AICode cloned" || { err "Failed to clone bw-AICode"; return; }
   fi
 
-  # Symlink the hook into Claude hooks dir
-  mkdir -p "$CLAUDE_DIR/hooks"
-  local hook_src="$vendor_dir/hooks/bw-deny-files.sh"
-  local hook_dest="$CLAUDE_DIR/hooks/bw-deny-files.sh"
-
-  if [[ -f "$hook_src" ]]; then
-    # Remove existing file/symlink and create fresh symlink
-    rm -f "$hook_dest"
-    ln -s "$hook_src" "$hook_dest"
-    ok "bw-deny-files.sh symlinked"
+  # Run bw-AICode's own installer
+  if [[ -f "$vendor_dir/install.sh" ]]; then
+    info "Running bw-AICode installer..."
+    bash "$vendor_dir/install.sh" && \
+      ok "bw-AICode installed" || warn "bw-AICode installer had issues — check output above"
   else
-    warn "bw-deny-files.sh not found in cloned repo"
+    err "bw-AICode install.sh not found"
   fi
 }
 
