@@ -31,7 +31,7 @@ Invoke the brainstorming skill and confirm it loads successfully. You don't need
 - In opencode: the skill should be auto-discovered from ~/.claude/skills/ — check if brainstorming SKILL.md is available
 
 ### 7. Hook: bubblewrap (bw-deny-files)
-Verify the hook is installed by checking that ~/.claude/hooks/bw-deny-files.sh exists and is a symlink pointing into the bw-AICode vendor directory. Run: ls -la ~/.claude/hooks/bw-deny-files.sh
+Verify the hook is installed by checking that ~/.claude/hooks/bw-deny-files.sh exists and is executable. Run: ls -la ~/.claude/hooks/bw-deny-files.sh
 
 ---
 
