@@ -26,6 +26,7 @@ MANAGED_PLUGINS=(
   "code-review@claude-plugins-official"
   "claude-code-setup@claude-plugins-official"
   "pyright-lsp@claude-plugins-official"
+  "context7@claude-plugins-official"
 )
 
 # Colors for output
@@ -309,14 +310,9 @@ install_claude_mcps() {
     warn "Skipping brave-search MCP — no API key"
   fi
 
-  # context7
-  if claude mcp add context7 -s user -- docker run -i --rm context7-mcp 2>/dev/null; then
-    ok "context7 MCP configured"
-  elif claude mcp get context7 &>/dev/null; then
-    ok "context7 MCP already configured"
-  else
-    warn "context7 MCP may need manual setup"
-  fi
+  # context7 — provided by the context7 plugin, not as a standalone MCP
+  # The plugin install (install_claude_plugins) handles this
+  ok "context7 MCP provided by context7 plugin"
 
   # playwright — provided by the playwright plugin, not as a standalone MCP
   # The plugin install (install_claude_plugins) handles this
