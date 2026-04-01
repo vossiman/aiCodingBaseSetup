@@ -275,6 +275,30 @@ report_unmanaged() {
   fi
 }
 
+# --- MCP npm packages ---
+# Install MCP server binaries that aren't run via npx
+install_mcp_packages() {
+  header "MCP npm packages"
+
+  if ! command -v npm &>/dev/null; then
+    warn "npm not found — skipping MCP package installation"
+    return
+  fi
+
+  local packages=("firecrawl-mcp" "@brave/brave-search-mcp-server")
+  for pkg in "${packages[@]}"; do
+    if npm list -g "$pkg" &>/dev/null; then
+      ok "$pkg already installed"
+    else
+      if npm install -g "$pkg" 2>/dev/null; then
+        ok "$pkg installed"
+      else
+        warn "Failed to install $pkg — install manually with: npm install -g $pkg"
+      fi
+    fi
+  done
+}
+
 # --- Claude Code MCPs ---
 install_claude_mcps() {
   header "Claude Code MCPs"
@@ -531,16 +555,10 @@ install_infra_audit() {
 check_playwright() {
   header "Playwright"
 
-  if npx playwright --version &>/dev/null 2>&1; then
-    ok "Playwright CLI available"
-    if [[ -d "$HOME/.cache/ms-playwright" ]] || [[ -d "$HOME/Library/Caches/ms-playwright" ]]; then
-      ok "Playwright browsers appear to be installed"
-    else
-      warn "Playwright browsers may not be installed"
-      info "Run: npx playwright install"
-    fi
+  if [[ -d "$HOME/.cache/ms-playwright" ]] || [[ -d "$HOME/Library/Caches/ms-playwright" ]]; then
+    ok "Playwright browsers installed"
   else
-    warn "Playwright not found"
+    warn "Playwright browsers not found"
     info "Run: npx playwright install"
   fi
 }
@@ -550,6 +568,7 @@ main() {
   header "AI Coding Base Setup"
   load_or_prompt_secrets
   report_unmanaged
+  install_mcp_packages
   install_claude_mcps
   install_claude_settings
   install_claude_plugins
