@@ -99,39 +99,6 @@ process.stdin.on('end', () => {
       }).toString().trim();
     } catch (e) { /* not a git repo */ }
 
-    // --- GSD task (conditional) ---
-    let gsdTask = '';
-    const homeDir = os.homedir();
-    const claudeDir = process.env.CLAUDE_CONFIG_DIR || path.join(homeDir, '.claude');
-    const todosDir = path.join(claudeDir, 'todos');
-    if (session && fs.existsSync(todosDir)) {
-      try {
-        const files = fs.readdirSync(todosDir)
-          .filter(f => f.startsWith(session) && f.includes('-agent-') && f.endsWith('.json'))
-          .map(f => ({ name: f, mtime: fs.statSync(path.join(todosDir, f)).mtime }))
-          .sort((a, b) => b.mtime - a.mtime);
-        if (files.length > 0) {
-          try {
-            const todos = JSON.parse(fs.readFileSync(path.join(todosDir, files[0].name), 'utf8'));
-            const inProgress = todos.find(t => t.status === 'in_progress');
-            if (inProgress) gsdTask = inProgress.activeForm || '';
-          } catch (e) {}
-        }
-      } catch (e) {}
-    }
-
-    // --- GSD update notice (conditional) ---
-    let gsdUpdateAvailable = false;
-    let gsdStaleHooks = false;
-    const cacheFile = path.join(claudeDir, 'cache', 'gsd-update-check.json');
-    if (fs.existsSync(cacheFile)) {
-      try {
-        const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
-        if (cache.update_available) gsdUpdateAvailable = true;
-        if (cache.stale_hooks && cache.stale_hooks.length > 0) gsdStaleHooks = true;
-      } catch (e) {}
-    }
-
     // === LINE 1: Identity & navigation ===
     const line1 = [];
 
@@ -155,20 +122,6 @@ process.stdin.on('end', () => {
     // Agent (purple, conditional)
     if (agentName) {
       line1.push({ bg: COLORS.purple, fg: COLORS.white, text: `\u26a1${agentName}` });
-    }
-
-    // GSD update notice (conditional)
-    if (gsdUpdateAvailable) {
-      line1.push({ bg: COLORS.pink, fg: COLORS.white, text: '\u2b06 /gsd:update' });
-    } else if (gsdStaleHooks) {
-      line1.push({ bg: COLORS.red, fg: COLORS.white, text: '\u26a0 stale hooks' });
-    }
-
-    // GSD task (conditional)
-    if (gsdTask) {
-      const maxLen = 30;
-      const taskText = gsdTask.length > maxLen ? gsdTask.substring(0, maxLen - 1) + '\u2026' : gsdTask;
-      line1.push({ bg: COLORS.purple, fg: COLORS.white, text: taskText });
     }
 
     // Version (indigo)

@@ -2,26 +2,8 @@
   "$schema": "https://opencode.ai/config.json",
   "model": "anthropic/claude-opus-4-6",
   "mcp": {},
-  "agent": {
-    "gsd-executor": { "mode": "subagent" },
-    "gsd-planner": { "mode": "subagent" },
-    "gsd-verifier": { "mode": "subagent" },
-    "gsd-plan-checker": { "mode": "subagent" },
-    "gsd-debugger": { "mode": "subagent" },
-    "gsd-phase-researcher": { "mode": "subagent" },
-    "gsd-project-researcher": { "mode": "subagent" },
-    "gsd-research-synthesizer": { "mode": "subagent" },
-    "gsd-roadmapper": { "mode": "subagent" },
-    "gsd-codebase-mapper": { "mode": "subagent" },
-    "gsd-integration-checker": { "mode": "subagent" }
-  },
+  "agent": {},
   "permission": {
-    "*": "allow",
-    "read": {
-      "~/.config/opencode/get-shit-done/*": "allow"
-    },
-    "external_directory": {
-      "~/.config/opencode/get-shit-done/*": "allow"
-    }
+    "*": "allow"
   }
 }

@@ -42,14 +42,12 @@ On first run, you'll be prompted for API keys. Press Enter to skip any you don't
 
 ### Hooks
 
-- **custom-statusline.js** — Powerline-style status bar with context window, rate limits, git branch, GSD task
+- **custom-statusline.js** — Powerline-style status bar with context window, rate limits, git branch
 - **bw-deny-files.sh** — Blocks AI access to sensitive files (from [bw-AICode](https://github.com/vossiman/bw-AICode))
 
 ### External Tools (detected, not installed)
 
 - **infra-audit** — Python project infrastructure auditor ([python-infra-audit-cc](https://github.com/vossiman/python-infra-audit-cc))
-- **GSD** — Get Shit Done workflow (installed separately)
-
 ## Secrets
 
 Secrets are stored at `~/.aicodingsetup/.secrets.env` (outside the repo).
@@ -98,7 +96,7 @@ install.sh
   4. Configure Claude Code MCPs (claude mcp add)
   5. Merge Claude Code settings.json (deep merge, preserve existing)
   6. Install Claude Code marketplace plugins
-  7. Merge opencode config (opencode.json with MCPs + GSD agents)
+  7. Merge opencode config (opencode.json with MCPs)
   8. Copy hooks and statusline
   9. Deploy custom skills (with secret substitution)
  10. Clone/update bubblewrap, symlink hook

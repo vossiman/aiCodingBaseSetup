@@ -247,8 +247,7 @@ report_unmanaged() {
       for m in "${MANAGED_HOOKS[@]}"; do
         [[ "$hook_name" == "$m" ]] && managed=true && break
       done
-      # Also skip GSD and infra hooks (managed by their own installers)
-      [[ "$hook_name" == gsd-* ]] && managed=true
+      # Also skip infra hooks (managed by their own installer)
       [[ "$hook_name" == infra-* ]] && managed=true
       if [[ "$managed" == "false" ]]; then
         info "Found hook '$hook_name' not managed by this installer — leaving untouched"
