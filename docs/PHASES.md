@@ -87,6 +87,124 @@ Flipping to `status: done` is the trigger; `/housekeep` does the move.
 | `/housekeep` moves a `status: done` doc to sibling `archive/` | **pending user** |
 | SessionStart banner appears on session restart in scaffolded project | **pending user** |
 
+### Runbook — how to complete the "pending user" checks
+
+Five steps. All reversible. Stop at any point; each step is independently useful.
+
+**Step 1 — install Phase 1 onto your live machine.**
+
+```bash
+cd ~/local_dev/aiCodingBaseSetup
+./install.sh
+```
+
+Idempotent. Will re-prompt only for any missing secret keys, re-merge
+`~/.claude/settings.json` (adds `SessionStart`, preserves `PreToolUse` and
+everything else), copy `check-archived-docs.sh` into `~/.claude/hooks/`, copy
+the two slash commands into `~/.claude/commands/`, and mirror the templates
+into `~/.aicodingsetup/templates/project/`.
+
+Quick post-install sanity check:
+
+```bash
+ls ~/.claude/commands/scaffold-project.md ~/.claude/commands/housekeep.md
+ls -l ~/.claude/hooks/check-archived-docs.sh          # expect executable
+ls ~/.aicodingsetup/templates/project/CLAUDE.md.tpl
+jq '.hooks | keys' ~/.claude/settings.json            # expect ["PreToolUse","SessionStart"]
+```
+
+**Step 2 — scaffold into a throwaway directory.**
+
+```bash
+mkdir -p /tmp/scaffold-test && cd /tmp/scaffold-test
+claude
+```
+
+Inside the Claude session, type `/scaffold-project`. Answer the two questions
+(name, purpose). When it finishes, from another terminal (or after `/exit`):
+
+```bash
+find /tmp/scaffold-test -maxdepth 4 -not -path '*/\.git*' | sort
+```
+
+Expect: `CLAUDE.md`, `README.md`, `TODO.md`, `.claude/settings.json`, and
+`docs/{specs,plans,notes}/{active,archive}/.gitkeep`. Also:
+
+```bash
+cd /tmp/scaffold-test && git status      # expect initialized repo
+```
+
+**Step 3 — verify `/housekeep` archives a `status: done` doc.**
+
+Still in `/tmp/scaffold-test`:
+
+```bash
+cat > docs/specs/active/fake-spec.md <<'EOF'
+---
+title: fake
+status: done
+created: 2026-04-20
+---
+body
+EOF
+```
+
+Start Claude (`claude`) and run `/housekeep`. After it finishes:
+
+```bash
+ls docs/specs/active/   # fake-spec.md should be gone
+ls docs/specs/archive/  # fake-spec.md should be here
+```
+
+**Step 4 — verify the SessionStart banner appears.**
+
+Put a `status: done` doc back into `docs/specs/active/` (or any other
+`active/`):
+
+```bash
+cat > docs/plans/active/another.md <<'EOF'
+---
+status: done
+---
+EOF
+```
+
+Exit the Claude session if running (`/exit`), then start a **fresh** one:
+
+```bash
+claude
+```
+
+On startup you should see a line like:
+
+> 📦 1 doc ready to archive — run /housekeep to sweep.
+
+(If hooks don't surface via SessionStart for any reason, the mechanism itself
+can still be checked with
+`CLAUDE_PROJECT_DIR=/tmp/scaffold-test bash ~/.claude/hooks/check-archived-docs.sh`
+— same banner on stdout.)
+
+**Step 5 — confirm fail-open.**
+
+Temporarily break the hook and confirm Claude still starts cleanly:
+
+```bash
+cp ~/.claude/hooks/check-archived-docs.sh /tmp/check-archived-docs.bak
+sed -i '2i this-is-not-a-real-command $$$' ~/.claude/hooks/check-archived-docs.sh
+claude   # should start normally, no banner, no errors blocking you
+/exit
+mv /tmp/check-archived-docs.bak ~/.claude/hooks/check-archived-docs.sh
+```
+
+**Cleanup.**
+
+```bash
+rm -rf /tmp/scaffold-test
+```
+
+When all five steps pass, flip the "pending user" rows above to ✓ and commit
+the update.
+
 ---
 
 ## Phase 2 — Process enforcement & wider reach  **[NOT STARTED]**
