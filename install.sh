@@ -15,7 +15,8 @@ SECRETS_FILE="$SECRETS_DIR/.secrets.env"
 
 # Managed component lists (used for unmanaged component detection)
 MANAGED_MCPS=("firecrawl" "brave-search" "context7" "playwright")
-MANAGED_HOOKS=("custom-statusline.js" "bw-deny-files.sh")
+MANAGED_HOOKS=("custom-statusline.js" "bw-deny-files.sh" "check-archived-docs.sh")
+MANAGED_COMMANDS=("scaffold-project.md" "housekeep.md")
 MANAGED_SKILLS=("cloudflare-browser")
 MANAGED_PLUGINS=(
   "superpowers@claude-plugins-official"
@@ -255,6 +256,22 @@ report_unmanaged() {
     done
   fi
 
+  # Check commands (slash commands in ~/.claude/commands)
+  if [[ -d "$CLAUDE_DIR/commands" ]]; then
+    for cmd_file in "$CLAUDE_DIR/commands"/*.md; do
+      [[ ! -f "$cmd_file" ]] && continue
+      local cmd_name
+      cmd_name="$(basename "$cmd_file")"
+      local managed=false
+      for m in "${MANAGED_COMMANDS[@]}"; do
+        [[ "$cmd_name" == "$m" ]] && managed=true && break
+      done
+      if [[ "$managed" == "false" ]]; then
+        info "Found command '$cmd_name' not managed by this installer — leaving untouched"
+      fi
+    done
+  fi
+
   # Check skills
   if [[ -d "$CLAUDE_DIR/skills" ]]; then
     for skill_dir in "$CLAUDE_DIR/skills"/*/; do
@@ -478,6 +495,64 @@ install_hooks() {
     warn "custom-statusline.js not found in repo"
   fi
 
+  # SessionStart hook — archive reminder
+  local session_hook_src="$SCRIPT_DIR/hooks/check-archived-docs.sh"
+  if [[ -f "$session_hook_src" ]]; then
+    cp "$session_hook_src" "$CLAUDE_DIR/hooks/check-archived-docs.sh"
+    chmod +x "$CLAUDE_DIR/hooks/check-archived-docs.sh"
+    ok "check-archived-docs.sh installed"
+  else
+    warn "check-archived-docs.sh not found in repo"
+  fi
+}
+
+# --- Slash commands ---
+install_commands() {
+  header "Slash Commands"
+
+  mkdir -p "$CLAUDE_DIR/commands"
+
+  local src_dir="$SCRIPT_DIR/commands"
+  if [[ ! -d "$src_dir" ]]; then
+    warn "No commands/ directory in repo — skipping"
+    return
+  fi
+
+  for cmd in "${MANAGED_COMMANDS[@]}"; do
+    local src="$src_dir/$cmd"
+    if [[ -f "$src" ]]; then
+      cp "$src" "$CLAUDE_DIR/commands/$cmd"
+      ok "$cmd installed"
+    else
+      warn "$cmd not found in repo"
+    fi
+  done
+}
+
+# --- Project templates ---
+install_templates() {
+  header "Project Templates"
+
+  local src_dir="$SCRIPT_DIR/templates/project"
+  local dest_dir="$SECRETS_DIR/templates/project"
+
+  if [[ ! -d "$src_dir" ]]; then
+    warn "No templates/project directory in repo — skipping"
+    return
+  fi
+
+  mkdir -p "$dest_dir"
+
+  # Copy the whole tree; preserves .gitkeep and subdirectories. Repo is source of truth.
+  # Use rsync if available for idempotent mirroring, fall back to cp -r.
+  if command -v rsync &>/dev/null; then
+    rsync -a --delete "$src_dir/" "$dest_dir/"
+  else
+    rm -rf "$dest_dir"
+    mkdir -p "$dest_dir"
+    cp -r "$src_dir/." "$dest_dir/"
+  fi
+  ok "templates/project mirrored to $dest_dir"
 }
 
 # --- Custom skills ---
@@ -573,6 +648,8 @@ main() {
   install_claude_plugins
   install_opencode_config
   install_hooks
+  install_commands
+  install_templates
   install_skills
   install_bubblewrap
   install_infra_audit

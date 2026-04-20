@@ -44,6 +44,16 @@ On first run, you'll be prompted for API keys. Press Enter to skip any you don't
 
 - **custom-statusline.js** — Powerline-style status bar with context window, rate limits, git branch
 - **bw-deny-files.sh** — Blocks AI access to sensitive files (from [bw-AICode](https://github.com/vossiman/bw-AICode))
+- **check-archived-docs.sh** — SessionStart hook. Emits a one-line banner when a scaffolded project has docs with `status: done` in any `docs/*/active/` folder. Fail-open.
+
+### Slash commands
+
+- **/scaffold-project** — Drops the canonical project layout (`CLAUDE.md`, `TODO.md`, `docs/{specs,plans,notes}/{active,archive}/`, project `.claude/settings.json`) into the current directory. Interactive: asks for name and one-line purpose. Refuses to clobber existing files.
+- **/housekeep** — Sweeps `docs/*/active/` for docs with `status: done` frontmatter and moves them into the sibling `archive/`. Also prunes `[x]` items older than 14 days from `TODO.md`.
+
+### Project templates
+
+Installed to `~/.aicodingsetup/templates/project/`. Used by `/scaffold-project` to materialize a new project. The repo is the source of truth — re-running `install.sh` mirrors the latest templates over.
 
 ### External Tools (detected, not installed)
 
@@ -97,11 +107,13 @@ install.sh
   5. Merge Claude Code settings.json (deep merge, preserve existing)
   6. Install Claude Code marketplace plugins
   7. Merge opencode config (opencode.json with MCPs)
-  8. Copy hooks and statusline
-  9. Deploy custom skills (with secret substitution)
- 10. Clone/update bubblewrap, symlink hook
- 11. Detect infra-audit
- 12. Check Playwright installation
+  8. Copy hooks and statusline (including SessionStart archive-reminder)
+  9. Install slash commands (/scaffold-project, /housekeep)
+ 10. Mirror project templates to ~/.aicodingsetup/templates/project/
+ 11. Deploy custom skills (with secret substitution)
+ 12. Clone/update bubblewrap, symlink hook
+ 13. Detect infra-audit
+ 14. Check Playwright installation
 ```
 
 ## Repo Structure
@@ -119,6 +131,22 @@ aiCodingBaseSetup/
 │   ├── opencode/
 │   │   └── opencode.json          # Base opencode config
 │   └── mcps.json                  # Shared MCP definitions
+├── commands/                      # Slash commands deployed to ~/.claude/commands
+│   ├── scaffold-project.md
+│   └── housekeep.md
+├── hooks/                         # Hooks deployed to ~/.claude/hooks
+│   └── check-archived-docs.sh
+├── templates/
+│   └── project/                   # Mirrored to ~/.aicodingsetup/templates/project
+│       ├── CLAUDE.md.tpl
+│       ├── README.md.tpl
+│       ├── TODO.md.tpl
+│       ├── dot-claude/
+│       │   └── settings.json.tpl
+│       └── docs/
+│           ├── specs/{active,archive}/.gitkeep
+│           ├── plans/{active,archive}/.gitkeep
+│           └── notes/{active,archive}/.gitkeep
 ├── skills/
 │   └── cloudflare-browser/
 │       └── SKILL.md
