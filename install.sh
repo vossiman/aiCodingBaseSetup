@@ -73,7 +73,9 @@ apt_install() {
     err "apt-get not available — cannot auto-install: $*"
     return 1
   fi
-  $SUDO apt-get update -qq
+  # Tolerate a non-zero update exit — third-party repos (yarn, etc.) often fail
+  # on stale GPG keys but the rest of the lists still refresh fine.
+  $SUDO apt-get update -qq || warn "apt-get update had issues — continuing"
   DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y --no-install-recommends "$@"
 }
 
@@ -168,7 +170,10 @@ auto_install_prereqs() {
   header "Auto-installing prerequisites"
   command -v git    &>/dev/null || { info "Installing git";    apt_install git; }
   command -v jq     &>/dev/null || { info "Installing jq";     apt_install jq; }
+  command -v tmux   &>/dev/null || { info "Installing tmux";   apt_install tmux; }
   command -v bwrap  &>/dev/null || { info "Installing bubblewrap"; apt_install bubblewrap; }
+  # Modern terminal terminfos so tmux works for kitty/alacritty/wezterm users.
+  infocmp -1 xterm-kitty &>/dev/null || { info "Installing kitty-terminfo"; apt_install kitty-terminfo; }
   command -v claude &>/dev/null || { info "Installing Claude Code CLI"; npm_install_global @anthropic-ai/claude-code; }
   ensure_opencode
   ensure_go
