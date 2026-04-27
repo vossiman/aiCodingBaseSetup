@@ -145,6 +145,14 @@ ensure_go() {
   fi
 }
 
+ensure_uv() {
+  command -v uv &>/dev/null && return 0
+  command -v curl &>/dev/null || { warn "curl not available — skipping uv install"; return 0; }
+  info "Installing uv (Python package manager)"
+  curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 | tail -3 || { warn "uv install failed"; return 0; }
+  [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
+}
+
 ensure_playwright_browsers() {
   command -v npx &>/dev/null || return 0
   local cache_dir="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
@@ -163,6 +171,7 @@ auto_install_prereqs() {
   command -v claude &>/dev/null || { info "Installing Claude Code CLI"; npm_install_global @anthropic-ai/claude-code; }
   ensure_opencode
   ensure_go
+  ensure_uv
   ensure_locales
   ensure_playwright_browsers
 }
