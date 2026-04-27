@@ -155,6 +155,45 @@ ensure_uv() {
   [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
 }
 
+ensure_tmux() {
+  # Need tmux 3.3+ for our tmux.conf (allow-passthrough, display-popup).
+  # Universal:2 is focal-based and apt only ships 3.0a, so we build from source.
+  local minver="3.3"
+  if command -v tmux &>/dev/null; then
+    local current
+    current="$(tmux -V 2>/dev/null | awk '{print $2}' | sed 's/[a-z]//g')"
+    if awk "BEGIN{exit !(${current:-0} >= ${minver})}" 2>/dev/null; then
+      ok "tmux $current already installed"
+      return 0
+    fi
+    info "tmux ${current:-?} is older than $minver — building newer from source"
+  else
+    info "tmux not installed — building from source"
+  fi
+
+  command -v curl &>/dev/null || { warn "curl not available — skipping tmux build"; return 0; }
+  apt_install build-essential libevent-dev libncurses-dev pkg-config bison || {
+    warn "Could not install tmux build deps — falling back to apt's tmux"
+    apt_install tmux || true
+    return 0
+  }
+
+  local tmux_version="3.5a"
+  local build_dir="/tmp/tmux-build-$$"
+  rm -rf "$build_dir" && mkdir -p "$build_dir"
+  (
+    cd "$build_dir"
+    curl -fsSL "https://github.com/tmux/tmux/releases/download/${tmux_version}/tmux-${tmux_version}.tar.gz" \
+      | tar xz --strip-components=1
+    ./configure --prefix=/usr/local >/dev/null
+    make -j"$(nproc)" >/dev/null
+    $SUDO make install >/dev/null
+  ) || { warn "tmux build failed — falling back to apt's tmux"; apt_install tmux || true; rm -rf "$build_dir"; return 0; }
+  rm -rf "$build_dir"
+  hash -r
+  ok "tmux ${tmux_version} built and installed to /usr/local/bin/tmux"
+}
+
 ensure_playwright_browsers() {
   command -v npx &>/dev/null || return 0
   local cache_dir="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
@@ -170,8 +209,8 @@ auto_install_prereqs() {
   header "Auto-installing prerequisites"
   command -v git    &>/dev/null || { info "Installing git";    apt_install git; }
   command -v jq     &>/dev/null || { info "Installing jq";     apt_install jq; }
-  command -v tmux   &>/dev/null || { info "Installing tmux";   apt_install tmux; }
   command -v bwrap  &>/dev/null || { info "Installing bubblewrap"; apt_install bubblewrap; }
+  ensure_tmux
   # Modern terminal terminfos so tmux works for kitty/alacritty/wezterm users.
   infocmp -1 xterm-kitty &>/dev/null || { info "Installing kitty-terminfo"; apt_install kitty-terminfo; }
   command -v claude &>/dev/null || { info "Installing Claude Code CLI"; npm_install_global @anthropic-ai/claude-code; }
