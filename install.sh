@@ -117,6 +117,27 @@ npm_install_global() {
   npm install -g "$@" 2>/dev/null || $SUDO npm install -g "$@"
 }
 
+# Install Claude Code via the official native installer (binary at
+# ~/.local/bin/claude). If a legacy npm install is detected, migrate it
+# in-place via `claude install`.
+ensure_claude_code() {
+  if [[ -x "$HOME/.local/bin/claude" ]]; then
+    ok "claude already installed at ~/.local/bin/claude"
+    return 0
+  fi
+
+  if command -v claude &>/dev/null; then
+    info "Migrating claude from npm to native installer"
+    claude install 2>&1 | tail -3 || warn "claude install (migration) failed — try manually"
+    return 0
+  fi
+
+  command -v curl &>/dev/null || { warn "curl not available — can't install Claude Code"; return 1; }
+  info "Installing Claude Code via native installer"
+  curl -fsSL https://claude.ai/install.sh | bash 2>&1 | tail -3 || warn "Claude Code install failed"
+  [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
+}
+
 ensure_locales() {
   command -v locale-gen &>/dev/null || apt_install locales || return 0
   local need_gen=false
@@ -231,7 +252,7 @@ auto_install_prereqs() {
     info "Installing kitty-terminfo"
     apt_install kitty-terminfo
   fi
-  command -v claude &>/dev/null || { info "Installing Claude Code CLI"; npm_install_global @anthropic-ai/claude-code; }
+  ensure_claude_code
   ensure_opencode
   ensure_go
   ensure_uv
