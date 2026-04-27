@@ -625,6 +625,30 @@ install_opencode_config() {
   ok "opencode config merged at $target_config"
 }
 
+# --- tmux config ---
+# Container-only: deploys configs/tmux/tmux.conf to ~/.tmux.conf so every
+# DevPod workspace ships with a consistent tmux setup (right prefix, OSC 52
+# clipboard, etc.). Skipped on hosts since they have their own ~/.tmux.conf.
+install_tmux_config() {
+  header "tmux config"
+
+  if [[ "$ENV_TYPE" != "container" ]]; then
+    info "Skipping tmux config install (host uses its own ~/.tmux.conf)"
+    return
+  fi
+
+  local src="$SCRIPT_DIR/configs/tmux/tmux.conf"
+  local dest="$HOME/.tmux.conf"
+
+  if [[ ! -f "$src" ]]; then
+    warn "configs/tmux/tmux.conf not found in repo"
+    return
+  fi
+
+  cp "$src" "$dest"
+  ok "tmux config installed to $dest"
+}
+
 # --- Hooks and statusline ---
 install_hooks() {
   header "Hooks & Statusline"
@@ -735,6 +759,7 @@ main() {
   install_claude_settings
   install_claude_plugins
   install_opencode_config
+  install_tmux_config
   install_hooks
   install_skills
   install_bubblewrap
