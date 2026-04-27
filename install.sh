@@ -469,6 +469,20 @@ install_claude_mcps() {
   ok "playwright MCP provided by playwright plugin"
 }
 
+# --- Claude onboarding state ---
+# Without these flags ~/.claude.json, the CLI treats every session as a fresh
+# install and prompts for login even when ~/.claude/.credentials.json holds
+# valid OAuth tokens (the case in containers that mount creds from the host).
+ensure_claude_onboarding_state() {
+  header "Claude onboarding state"
+  local f="$HOME/.claude.json"
+  [[ -f "$f" ]] || echo '{}' > "$f"
+  local tmp
+  tmp="$(mktemp)"
+  jq '. + {hasCompletedOnboarding: true, installMethod: "native"}' "$f" > "$tmp" && mv "$tmp" "$f"
+  ok "hasCompletedOnboarding=true, installMethod=native"
+}
+
 # --- Claude Code settings.json ---
 install_claude_settings() {
   header "Claude Code settings.json"
@@ -696,6 +710,7 @@ main() {
   report_unmanaged
   install_mcp_packages
   install_claude_mcps
+  ensure_claude_onboarding_state
   install_claude_settings
   install_claude_plugins
   install_opencode_config
