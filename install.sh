@@ -168,6 +168,7 @@ auto_install_prereqs() {
   header "Auto-installing prerequisites"
   command -v git    &>/dev/null || { info "Installing git";    apt_install git; }
   command -v jq     &>/dev/null || { info "Installing jq";     apt_install jq; }
+  command -v bwrap  &>/dev/null || { info "Installing bubblewrap"; apt_install bubblewrap; }
   command -v claude &>/dev/null || { info "Installing Claude Code CLI"; npm_install_global @anthropic-ai/claude-code; }
   ensure_opencode
   ensure_go
