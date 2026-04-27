@@ -1,6 +1,6 @@
 # AI Coding Base Setup
 
-Cross-platform installer/updater for Claude Code and opencode configurations. Syncs MCPs, skills, hooks, plugins, and statusline across Mint Linux, WSL, and Windows.
+Cross-platform installer/updater for Claude Code and opencode configurations. Syncs MCPs, skills, hooks, plugins, and statusline across Mint Linux, WSL, Windows, and devcontainers (DevPod / Codespaces / Dev Containers).
 
 ## Quick Start
 
@@ -86,22 +86,56 @@ It's idempotent:
 
 > **Note:** Windows support is a stub. MCPs, plugins, hooks, and skills work. Settings merge and opencode config are deferred until Windows config paths are verified.
 
+## Devcontainers (DevPod / Codespaces / VS Code Dev Containers)
+
+When run inside a container, `install.sh` detects the environment automatically and:
+
+- Auto-installs prerequisites it needs (`git`, `jq`, `claude` CLI, `locales` + `de_AT.UTF-8`/`en_US.UTF-8`) via apt/npm. No manual prep.
+- Skips interactive prompts for missing API keys (assumes secrets are bind-mounted from the host or absent).
+
+Detection triggers on any of: `/.dockerenv`, `/run/.containerenv`, `REMOTE_CONTAINERS`, `DEVCONTAINER`, or `CODESPACES` env vars.
+
+To force the same behaviour on a host (e.g. CI), set:
+
+```bash
+AICODINGSETUP_AUTO_INSTALL=1 AICODINGSETUP_NONINTERACTIVE=1 ./install.sh
+```
+
+### Minimal `.devcontainer/devcontainer.json` snippet
+
+Drop into any project repo to get a fully-configured Claude Code workspace:
+
+```json
+{
+  "image": "mcr.microsoft.com/devcontainers/universal:2",
+  "remoteUser": "vscode",
+  "mounts": [
+    "source=/home/vossi/devpod/aicodingsetup,target=/home/vscode/.aicodingsetup,type=bind",
+    "source=/home/vossi/devpod/claude-creds/.credentials.json,target=/home/vscode/.claude/.credentials.json,type=bind"
+  ],
+  "postCreateCommand": "git clone https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh"
+}
+```
+
+The two bind mounts (host paths assume vossisrv as the DevPod backend) carry your existing secrets file and Claude Code login state into every workspace, so each container comes up signed in and pre-configured.
+
 ## How It Works
 
 ```
 install.sh
-  1. Detect environment (Linux / WSL)
-  2. Load or prompt for secrets (~/.aicodingsetup/.secrets.env)
-  3. Report unmanaged components (leave untouched)
-  4. Configure Claude Code MCPs (claude mcp add)
-  5. Merge Claude Code settings.json (deep merge, preserve existing)
-  6. Install Claude Code marketplace plugins
-  7. Merge opencode config (opencode.json with MCPs)
-  8. Copy hooks and statusline
-  9. Deploy custom skills (with secret substitution)
- 10. Clone/update bubblewrap, symlink hook
- 11. Detect infra-audit
- 12. Check Playwright installation
+  1. Detect environment (Linux / WSL / container)
+  2. Auto-install prereqs in container mode (git, jq, claude CLI, locales)
+  3. Load or prompt for secrets (~/.aicodingsetup/.secrets.env — non-interactive in containers)
+  4. Report unmanaged components (leave untouched)
+  5. Configure Claude Code MCPs (claude mcp add)
+  6. Merge Claude Code settings.json (deep merge, preserve existing)
+  7. Install Claude Code marketplace plugins
+  8. Merge opencode config (opencode.json with MCPs)
+  9. Copy hooks and statusline
+ 10. Deploy custom skills (with secret substitution)
+ 11. Clone/update bubblewrap, symlink hook
+ 12. Detect infra-audit
+ 13. Check Playwright installation
 ```
 
 ## Repo Structure

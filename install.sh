@@ -44,6 +44,12 @@ header(){ echo -e "\n${GREEN}=== $* ===${NC}"; }
 
 # --- Environment Detection ---
 detect_environment() {
+  if [[ -f /.dockerenv ]] || [[ -f /run/.containerenv ]] \
+     || [[ -n "${REMOTE_CONTAINERS:-}" ]] || [[ -n "${DEVCONTAINER:-}" ]] \
+     || [[ -n "${CODESPACES:-}" ]]; then
+    echo "container"
+    return
+  fi
   local kernel
   kernel="$(uname -r 2>/dev/null || echo "")"
   if [[ "$kernel" == *microsoft* || "$kernel" == *Microsoft* ]]; then
@@ -56,8 +62,58 @@ detect_environment() {
 ENV_TYPE="$(detect_environment)"
 info "Detected environment: $ENV_TYPE"
 
+# --- Install helpers (used by auto-install in container mode) ---
+SUDO=""
+if [[ "$(id -u)" -ne 0 ]] && command -v sudo &>/dev/null; then
+  SUDO="sudo"
+fi
+
+apt_install() {
+  if ! command -v apt-get &>/dev/null; then
+    err "apt-get not available — cannot auto-install: $*"
+    return 1
+  fi
+  $SUDO apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y --no-install-recommends "$@"
+}
+
+npm_install_global() {
+  if ! command -v npm &>/dev/null; then
+    apt_install nodejs npm || return 1
+  fi
+  $SUDO npm install -g "$@"
+}
+
+ensure_locales() {
+  command -v locale-gen &>/dev/null || apt_install locales || return 0
+  local need_gen=false
+  for loc in "de_AT.UTF-8" "en_US.UTF-8"; do
+    local short="${loc%.UTF-8}.utf8"
+    if ! locale -a 2>/dev/null | grep -qi "^${short}$"; then
+      $SUDO sed -i "s/^# *${loc}/${loc}/" /etc/locale.gen 2>/dev/null || true
+      need_gen=true
+    fi
+  done
+  if [[ "$need_gen" == "true" ]]; then
+    $SUDO locale-gen >/dev/null 2>&1 || warn "locale-gen failed — locale warnings may persist"
+  fi
+}
+
+auto_install_prereqs() {
+  header "Auto-installing prerequisites"
+  command -v git    &>/dev/null || { info "Installing git";    apt_install git; }
+  command -v jq     &>/dev/null || { info "Installing jq";     apt_install jq; }
+  command -v claude &>/dev/null || { info "Installing Claude Code CLI"; npm_install_global @anthropic-ai/claude-code; }
+  ensure_locales
+}
+
 # --- Prerequisite checks ---
 check_prerequisites() {
+  # Auto-install on container mode or explicit opt-in (AICODINGSETUP_AUTO_INSTALL=1)
+  if [[ "$ENV_TYPE" == "container" ]] || [[ "${AICODINGSETUP_AUTO_INSTALL:-}" == "1" ]]; then
+    auto_install_prereqs
+  fi
+
   local missing=()
   command -v git   &>/dev/null || missing+=("git")
   command -v jq    &>/dev/null || missing+=("jq")
@@ -109,13 +165,24 @@ load_or_prompt_secrets() {
     info "No secrets file found — will prompt for all keys"
   fi
 
+  # Decide whether we can prompt (no tty, container mode, or env opt-out → no)
+  local can_prompt=true
+  [[ ! -t 0 ]] && can_prompt=false
+  [[ "$ENV_TYPE" == "container" ]] && can_prompt=false
+  [[ "${AICODINGSETUP_NONINTERACTIVE:-}" == "1" ]] && can_prompt=false
+
   # Prompt for missing keys (keys with empty values are treated as "skipped", not missing)
   local prompted=false
   for key in "${required_keys[@]}"; do
     if [[ ! -v "secrets[$key]" ]]; then
-      prompted=true
-      read -rp "Enter $key [or press Enter to skip]: " value
-      secrets["$key"]="${value:-}"
+      if [[ "$can_prompt" == "true" ]]; then
+        prompted=true
+        read -rp "Enter $key [or press Enter to skip]: " value
+        secrets["$key"]="${value:-}"
+      else
+        info "$key not set (non-interactive — leaving empty)"
+        secrets["$key"]=""
+      fi
     else
       if [[ -n "${secrets[$key]}" ]]; then
         ok "$key already set"
