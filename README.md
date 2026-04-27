@@ -108,16 +108,26 @@ Drop into any project repo to get a fully-configured Claude Code workspace:
 ```json
 {
   "image": "mcr.microsoft.com/devcontainers/universal:2",
-  "remoteUser": "vscode",
+  "remoteUser": "codespace",
   "mounts": [
-    "source=/home/vossi/devpod/aicodingsetup,target=/home/vscode/.aicodingsetup,type=bind",
-    "source=/home/vossi/devpod/claude-creds/.credentials.json,target=/home/vscode/.claude/.credentials.json,type=bind"
+    "source=/home/vossi/devpod/aicodingsetup,target=/home/codespace/.aicodingsetup,type=bind",
+    "source=/home/vossi/devpod/claude,target=/home/codespace/.claude,type=bind"
   ],
   "postCreateCommand": "git clone https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh"
 }
 ```
 
-The two bind mounts (host paths assume vossisrv as the DevPod backend) carry your existing secrets file and Claude Code login state into every workspace, so each container comes up signed in and pre-configured.
+`remoteUser` must match the image's hardcoded user — `codespace` for `universal:2`, `vscode` for most others (`python`, `base`, etc.). Mismatch → mounts land at the wrong path and nothing works.
+
+The two bind mounts (host paths assume vossisrv as the DevPod backend) carry your existing secrets file and the entire Claude Code state directory into every workspace, so each container comes up signed in and pre-configured. Token refreshes inside the container write back to the mount, keeping vossisrv's copy current automatically.
+
+### Why both `.credentials.json` and `~/.claude.json` matter
+
+Claude Code reads OAuth tokens from `~/.claude/.credentials.json` *and* checks `~/.claude.json` (a file at home root, **not** inside `.claude/`) for `hasCompletedOnboarding: true`. Without that flag, the CLI treats every session as a fresh install and prompts for login even when valid tokens exist. `install.sh` writes that flag automatically when it sets up MCPs — without it, copying the credentials file alone is not sufficient to authenticate a container.
+
+### MCPs needing one-time interactive auth
+
+HTTP-based MCPs (logfire, claude.ai Google Drive, etc.) can't be set up by `install.sh` — they require a browser OAuth flow. Auth once in any DevPod workspace via `claude` → `/mcp` → select the MCP → follow the link. State persists in the bind-mounted `~/.claude/`, so every future workspace inherits it.
 
 ## How It Works
 
