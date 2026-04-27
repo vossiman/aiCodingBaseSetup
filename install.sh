@@ -158,7 +158,14 @@ ensure_opencode() {
   command -v curl &>/dev/null || { warn "curl not available — skipping opencode install"; return 0; }
   info "Installing opencode"
   curl -fsSL https://opencode.ai/install | bash 2>&1 | tail -5 || warn "opencode install failed"
-  [[ -d "$HOME/.opencode/bin" ]] && export PATH="$HOME/.opencode/bin:$PATH"
+  # The installer drops the binary in ~/.opencode/bin and only adds that to
+  # PATH via .bashrc. Symlink into ~/.local/bin so non-interactive shells
+  # (postStartCommand, etc.) see it without sourcing rc files.
+  if [[ -x "$HOME/.opencode/bin/opencode" ]]; then
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/opencode"
+    export PATH="$HOME/.local/bin:$PATH"
+  fi
 }
 
 ensure_go() {
