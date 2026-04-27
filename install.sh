@@ -7,6 +7,16 @@ set -euo pipefail
 # Supports: Linux, WSL (bash only — run install.ps1 on Windows)
 # ============================================================================
 
+# Strip universal:2's broken bash-function env exports (`nvs`, `nvsudo`, `nvm`)
+# so they don't cascade into subshells and spam syntax-error warnings on
+# every non-interactive shell spawn during this install.
+for _fn in nvs nvsudo nvm; do
+  unset -f "$_fn" 2>/dev/null || true
+  export -nf "$_fn" 2>/dev/null || true
+  unset "BASH_FUNC_${_fn}%%" 2>/dev/null || true
+done
+unset _fn
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_DIR="$HOME/.claude"
 OPENCODE_DIR="$HOME/.config/opencode"
@@ -77,7 +87,9 @@ apt_install() {
   # Tolerate a non-zero update exit — third-party repos that we don't manage
   # may still fail on stale GPG keys; we've cleaned the known offenders.
   $SUDO apt-get update -qq || warn "apt-get update had issues — continuing"
-  DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y --no-install-recommends "$@"
+  # Use `env` after sudo so DEBIAN_FRONTEND survives sudo's env_reset and
+  # debconf doesn't fall back to Dialog/Readline/Teletype frontends.
+  $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@"
 }
 
 # Universal:2 ships an apt source for dl.yarnpkg.com with a stale GPG key
@@ -259,6 +271,10 @@ auto_install_prereqs() {
     info "Installing kitty-terminfo"
     apt_install kitty-terminfo
   fi
+  # Make Node/npm available for install_mcp_packages and Playwright. With
+  # claude on the native installer we no longer call npm_install_global, so
+  # nothing else surfaces nvm-managed Node onto PATH.
+  ensure_node || warn "Node not available — npm-based MCPs and Playwright will be skipped"
   ensure_claude_code
   ensure_opencode
   ensure_go
