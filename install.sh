@@ -73,10 +73,23 @@ apt_install() {
     err "apt-get not available — cannot auto-install: $*"
     return 1
   fi
-  # Tolerate a non-zero update exit — third-party repos (yarn, etc.) often fail
-  # on stale GPG keys but the rest of the lists still refresh fine.
+  drop_broken_apt_sources
+  # Tolerate a non-zero update exit — third-party repos that we don't manage
+  # may still fail on stale GPG keys; we've cleaned the known offenders.
   $SUDO apt-get update -qq || warn "apt-get update had issues — continuing"
   DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y --no-install-recommends "$@"
+}
+
+# Universal:2 ships an apt source for dl.yarnpkg.com with a stale GPG key
+# (NO_PUBKEY 62D54FD4003F6525) that spams errors on every apt-get update.
+# We don't use yarn from apt; drop the source the first time we hit it.
+drop_broken_apt_sources() {
+  local list
+  list="$(grep -lrF 'dl.yarnpkg.com' /etc/apt/sources.list.d/ 2>/dev/null)" || true
+  if [[ -n "$list" ]]; then
+    info "Removing broken yarn apt source"
+    $SUDO rm -f $list
+  fi
 }
 
 ensure_node() {
@@ -185,9 +198,9 @@ ensure_tmux() {
     cd "$build_dir"
     curl -fsSL "https://github.com/tmux/tmux/releases/download/${tmux_version}/tmux-${tmux_version}.tar.gz" \
       | tar xz --strip-components=1
-    ./configure --prefix=/usr/local >/dev/null
-    make -j"$(nproc)" >/dev/null
-    $SUDO make install >/dev/null
+    ./configure --prefix=/usr/local &>/dev/null
+    make -j"$(nproc)" &>/dev/null
+    $SUDO make install &>/dev/null
   ) || { warn "tmux build failed — falling back to apt's tmux"; apt_install tmux || true; rm -rf "$build_dir"; return 0; }
   rm -rf "$build_dir"
   hash -r
@@ -212,7 +225,12 @@ auto_install_prereqs() {
   command -v bwrap  &>/dev/null || { info "Installing bubblewrap"; apt_install bubblewrap; }
   ensure_tmux
   # Modern terminal terminfos so tmux works for kitty/alacritty/wezterm users.
-  infocmp -1 xterm-kitty &>/dev/null || { info "Installing kitty-terminfo"; apt_install kitty-terminfo; }
+  # Check for the xterm-kitty terminfo file directly — `infocmp` returns
+  # inconsistent exit codes across distro versions.
+  if ! ls /usr/share/terminfo/x/xterm-kitty /etc/terminfo/x/xterm-kitty 2>/dev/null | grep -q .; then
+    info "Installing kitty-terminfo"
+    apt_install kitty-terminfo
+  fi
   command -v claude &>/dev/null || { info "Installing Claude Code CLI"; npm_install_global @anthropic-ai/claude-code; }
   ensure_opencode
   ensure_go
