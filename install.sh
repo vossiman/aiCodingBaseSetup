@@ -117,12 +117,54 @@ ensure_locales() {
   fi
 }
 
+ensure_opencode() {
+  command -v opencode &>/dev/null && return 0
+  command -v curl &>/dev/null || { warn "curl not available — skipping opencode install"; return 0; }
+  info "Installing opencode"
+  curl -fsSL https://opencode.ai/install | bash 2>&1 | tail -5 || warn "opencode install failed"
+  [[ -d "$HOME/.opencode/bin" ]] && export PATH="$HOME/.opencode/bin:$PATH"
+}
+
+ensure_go() {
+  command -v go &>/dev/null && return 0
+  command -v curl &>/dev/null || { warn "curl not available — skipping Go install"; return 0; }
+  local goversion="1.22.5"
+  local arch
+  case "$(uname -m)" in
+    x86_64)  arch="amd64" ;;
+    aarch64) arch="arm64" ;;
+    *)       warn "unsupported arch for Go install: $(uname -m)"; return 0 ;;
+  esac
+  info "Installing Go ${goversion}"
+  curl -fsSL "https://go.dev/dl/go${goversion}.linux-${arch}.tar.gz" | $SUDO tar -C /usr/local -xz \
+    || { warn "Go install failed"; return 0; }
+  export PATH="/usr/local/go/bin:$PATH"
+  # Persist for future shells in this user
+  if [[ -w "$HOME" ]]; then
+    grep -q '/usr/local/go/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="/usr/local/go/bin:$PATH"' >> "$HOME/.bashrc"
+  fi
+}
+
+ensure_playwright_browsers() {
+  command -v npx &>/dev/null || return 0
+  local cache_dir="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+  if [[ -d "$cache_dir" ]] && [[ -n "$(ls -A "$cache_dir" 2>/dev/null)" ]]; then
+    ok "Playwright browsers already installed"
+    return 0
+  fi
+  info "Installing Playwright browsers (chromium)"
+  npx -y playwright install chromium 2>&1 | tail -5 || warn "Playwright browser install failed"
+}
+
 auto_install_prereqs() {
   header "Auto-installing prerequisites"
   command -v git    &>/dev/null || { info "Installing git";    apt_install git; }
   command -v jq     &>/dev/null || { info "Installing jq";     apt_install jq; }
   command -v claude &>/dev/null || { info "Installing Claude Code CLI"; npm_install_global @anthropic-ai/claude-code; }
+  ensure_opencode
+  ensure_go
   ensure_locales
+  ensure_playwright_browsers
 }
 
 # --- Prerequisite checks ---
