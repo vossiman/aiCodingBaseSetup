@@ -77,11 +77,29 @@ apt_install() {
   DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y --no-install-recommends "$@"
 }
 
-npm_install_global() {
-  if ! command -v npm &>/dev/null; then
-    apt_install nodejs npm || return 1
+ensure_node() {
+  command -v npm &>/dev/null && return 0
+
+  # Try common Node installer hooks (nvm, nvs) — non-interactive shells skip rc files
+  [[ -f /usr/local/share/nvs/nvs.sh ]] && . /usr/local/share/nvs/nvs.sh >/dev/null 2>&1 && nvs use lts >/dev/null 2>&1 || true
+  [[ -f "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ]] && . "${NVM_DIR:-$HOME/.nvm}/nvm.sh" >/dev/null 2>&1 || true
+  command -v npm &>/dev/null && return 0
+
+  # Fall back to NodeSource (Node 20.x) — apt's npm is too old for modern packages
+  if command -v curl &>/dev/null && command -v apt-get &>/dev/null; then
+    info "Installing Node.js 20 via NodeSource"
+    curl -fsSL https://deb.nodesource.com/setup_20.x | $SUDO -E bash - >/dev/null
+    apt_install nodejs
+  else
+    err "No Node.js available and cannot bootstrap (need curl + apt-get)"
+    return 1
   fi
-  $SUDO npm install -g "$@"
+}
+
+npm_install_global() {
+  ensure_node || return 1
+  # Try unprivileged first (works with user-mode npm prefix); fall back to sudo
+  npm install -g "$@" 2>/dev/null || $SUDO npm install -g "$@"
 }
 
 ensure_locales() {
