@@ -7,15 +7,23 @@ set -euo pipefail
 # Supports: Linux, WSL (bash only — run install.ps1 on Windows)
 # ============================================================================
 
-# Strip universal:2's broken bash-function env exports (`nvs`, `nvsudo`, `nvm`)
-# so they don't cascade into subshells and spam syntax-error warnings on
-# every non-interactive shell spawn during this install.
-for _fn in nvs nvsudo nvm; do
-  unset -f "$_fn" 2>/dev/null || true
-  export -nf "$_fn" 2>/dev/null || true
-  unset "BASH_FUNC_${_fn}%%" 2>/dev/null || true
-done
-unset _fn
+# Microsoft's devcontainer universal images ship `/etc/profile` sourcing
+# `/usr/local/nvs/nvs.sh` (and `/etc/bash.bashrc` sourcing `nvm.sh`), which
+# `export -f` multi-line `nvs`/`nvsudo`/`nvm` bash functions. Some layer in
+# the devpod/docker-exec/su chain truncates multi-line BASH_FUNC env values
+# to one line — known issue, see VSCode #3928 and vscode-remote-release
+# #9457. Every child bash that inherits the truncated env then errors with
+# `syntax error: unexpected end of file` on import.
+#
+# Failed-import env vars can't be removed from inside bash:
+#   - `unset -f nvs` is a no-op because the function was never defined
+#   - `unset 'BASH_FUNC_nvs%%'` silently fails because `%%` is not a valid
+#     identifier, so bash refuses to unset it
+# Only `env -u` at the process boundary actually strips them. Self-reexec.
+if [[ "${_AICODINGSETUP_NVS_STRIPPED:-}" != 1 ]]; then
+  exec env -u 'BASH_FUNC_nvs%%' -u 'BASH_FUNC_nvsudo%%' -u 'BASH_FUNC_nvm%%' \
+    _AICODINGSETUP_NVS_STRIPPED=1 bash "$0" "$@"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_DIR="$HOME/.claude"
