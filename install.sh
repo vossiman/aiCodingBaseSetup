@@ -104,6 +104,27 @@ drop_broken_apt_sources() {
   fi
 }
 
+# Universal:2 and :6 source /usr/local/nvs/nvs.sh from /etc/profile, which
+# defines and `export -f`s multi-line nvs/nvsudo functions. Bash's env
+# serialization truncates the bodies, so every child shell forked by a
+# login shell errors with "syntax error: unexpected end of file" on import.
+# Patch /etc/profile to unset those functions and their env vars at the end,
+# so children inherit a clean env. Idempotent.
+ensure_login_shells_clean() {
+  local marker='# aiCodingBaseSetup: clear broken nvs/nvsudo exports'
+  if [[ -w /etc/profile ]] || [[ -n "$SUDO" ]]; then
+    if ! grep -qF "$marker" /etc/profile 2>/dev/null; then
+      info "Patching /etc/profile to clear broken nvs/nvsudo exports"
+      $SUDO tee -a /etc/profile >/dev/null <<EOF
+
+$marker
+unset -f nvs nvsudo 2>/dev/null
+unset 'BASH_FUNC_nvs%%' 'BASH_FUNC_nvsudo%%' 2>/dev/null
+EOF
+    fi
+  fi
+}
+
 ensure_node() {
   command -v npm &>/dev/null && return 0
 
@@ -260,6 +281,7 @@ ensure_playwright_browsers() {
 
 auto_install_prereqs() {
   header "Auto-installing prerequisites"
+  ensure_login_shells_clean
   command -v git    &>/dev/null || { info "Installing git";    apt_install git; }
   command -v jq     &>/dev/null || { info "Installing jq";     apt_install jq; }
   command -v bwrap  &>/dev/null || { info "Installing bubblewrap"; apt_install bubblewrap; }
