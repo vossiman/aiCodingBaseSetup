@@ -101,25 +101,23 @@ To force the same behaviour on a host (e.g. CI), set:
 AICODINGSETUP_AUTO_INSTALL=1 AICODINGSETUP_NONINTERACTIVE=1 ./install.sh
 ```
 
-### Minimal `.devcontainer/devcontainer.json` snippet
+### Drop-in `.devcontainer/devcontainer.json`
 
-Drop into any project repo to get a fully-configured Claude Code workspace:
+Canonical template lives next to this README at [`devcontainer.json`](./devcontainer.json). Copy it into your project's `.devcontainer/` directory:
 
-```json
-{
-  "image": "mcr.microsoft.com/devcontainers/universal:2",
-  "remoteUser": "codespace",
-  "mounts": [
-    "source=/home/vossi/devpod/aicodingsetup,target=/home/codespace/.aicodingsetup,type=bind",
-    "source=/home/vossi/devpod/claude,target=/home/codespace/.claude,type=bind"
-  ],
-  "postCreateCommand": "git clone https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh"
-}
+```bash
+mkdir -p .devcontainer
+curl -fsSL https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/devcontainer.json \
+  -o .devcontainer/devcontainer.json
 ```
 
-`remoteUser` must match the image's hardcoded user — `codespace` for `universal:2`, `vscode` for most others (`python`, `base`, etc.). Mismatch → mounts land at the wrong path and nothing works.
+`postCreateCommand` runs this repo's `install.sh` once on container creation; `postStartCommand` curls `update.sh` from this repo on every container start to keep `claude` and `opencode` binaries fresh.
 
-The two bind mounts (host paths assume vossisrv as the DevPod backend) carry your existing secrets file and the entire Claude Code state directory into every workspace, so each container comes up signed in and pre-configured. Token refreshes inside the container write back to the mount, keeping vossisrv's copy current automatically.
+`containerEnv` overrides three `BASH_FUNC_*%%` env vars that universal:6 leaks with truncated multi-line bodies — without it bash errors on every spawn (see [vscode#3928](https://github.com/Microsoft/vscode/issues/3928), [vscode-remote-release#9457](https://github.com/microsoft/vscode-remote-release/issues/9457)). `install.sh` and `update.sh` further re-exec themselves under `env -u` to belt-and-braces the same problem.
+
+`remoteUser` must match the image's hardcoded user — `codespace` for `universal:6`, `vscode` for most others (`python`, `base`, etc.). Mismatch → mounts land at the wrong path and nothing works.
+
+Add `"mounts": [...]` for project- or host-specific bind mounts (e.g. to share `~/.aicodingsetup/` and `~/.claude/` across containers from a backend like DevPod's host). The shipped template has no `mounts` so it stays portable.
 
 ### Why both `.credentials.json` and `~/.claude.json` matter
 
