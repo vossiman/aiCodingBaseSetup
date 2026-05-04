@@ -7,6 +7,24 @@ set -euo pipefail
 # Supports: Linux, WSL (bash only — run install.ps1 on Windows)
 # ============================================================================
 
+# Microsoft's devcontainer universal images ship `/etc/profile` sourcing
+# `/usr/local/nvs/nvs.sh` (and `/etc/bash.bashrc` sourcing `nvm.sh`), which
+# `export -f` multi-line `nvs`/`nvsudo`/`nvm` bash functions. Some layer in
+# the devpod/docker-exec/su chain truncates multi-line BASH_FUNC env values
+# to one line — known issue, see VSCode #3928 and vscode-remote-release
+# #9457. Every child bash that inherits the truncated env then errors with
+# `syntax error: unexpected end of file` on import.
+#
+# Failed-import env vars can't be removed from inside bash:
+#   - `unset -f nvs` is a no-op because the function was never defined
+#   - `unset 'BASH_FUNC_nvs%%'` silently fails because `%%` is not a valid
+#     identifier, so bash refuses to unset it
+# Only `env -u` at the process boundary actually strips them. Self-reexec.
+if [[ "${_AICODINGSETUP_NVS_STRIPPED:-}" != 1 ]]; then
+  exec env -u 'BASH_FUNC_nvs%%' -u 'BASH_FUNC_nvsudo%%' -u 'BASH_FUNC_nvm%%' \
+    _AICODINGSETUP_NVS_STRIPPED=1 bash "$0" "$@"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_DIR="$HOME/.claude"
 OPENCODE_DIR="$HOME/.config/opencode"
@@ -45,6 +63,12 @@ header(){ echo -e "\n${GREEN}=== $* ===${NC}"; }
 
 # --- Environment Detection ---
 detect_environment() {
+  if [[ -f /.dockerenv ]] || [[ -f /run/.containerenv ]] \
+     || [[ -n "${REMOTE_CONTAINERS:-}" ]] || [[ -n "${DEVCONTAINER:-}" ]] \
+     || [[ -n "${CODESPACES:-}" ]]; then
+    echo "container"
+    return
+  fi
   local kernel
   kernel="$(uname -r 2>/dev/null || echo "")"
   if [[ "$kernel" == *microsoft* || "$kernel" == *Microsoft* ]]; then
@@ -57,8 +81,246 @@ detect_environment() {
 ENV_TYPE="$(detect_environment)"
 info "Detected environment: $ENV_TYPE"
 
+# --- Install helpers (used by auto-install in container mode) ---
+SUDO=""
+if [[ "$(id -u)" -ne 0 ]] && command -v sudo &>/dev/null; then
+  SUDO="sudo"
+fi
+
+apt_install() {
+  if ! command -v apt-get &>/dev/null; then
+    err "apt-get not available — cannot auto-install: $*"
+    return 1
+  fi
+  drop_broken_apt_sources
+  # Tolerate a non-zero update exit — third-party repos that we don't manage
+  # may still fail on stale GPG keys; we've cleaned the known offenders.
+  $SUDO apt-get update -qq || warn "apt-get update had issues — continuing"
+  # Use `env` after sudo so DEBIAN_FRONTEND survives sudo's env_reset and
+  # debconf doesn't fall back to Dialog/Readline/Teletype frontends.
+  $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@"
+}
+
+# Universal:2 ships an apt source for dl.yarnpkg.com with a stale GPG key
+# (NO_PUBKEY 62D54FD4003F6525) that spams errors on every apt-get update.
+# We don't use yarn from apt; drop the source the first time we hit it.
+drop_broken_apt_sources() {
+  local list
+  list="$(grep -lrF 'dl.yarnpkg.com' /etc/apt/sources.list.d/ 2>/dev/null)" || true
+  if [[ -n "$list" ]]; then
+    info "Removing broken yarn apt source"
+    $SUDO rm -f $list
+  fi
+}
+
+# Universal:2 and :6 source /usr/local/nvs/nvs.sh from /etc/profile, which
+# defines and `export -f`s multi-line nvs/nvsudo functions. Bash's env
+# serialization truncates the bodies, so every child shell forked by a
+# login shell errors with "syntax error: unexpected end of file" on import.
+# Patch /etc/profile to unset those functions and their env vars at the end,
+# so children inherit a clean env. Idempotent.
+ensure_login_shells_clean() {
+  local marker='# aiCodingBaseSetup: clear broken nvs/nvsudo exports'
+  if [[ -w /etc/profile ]] || [[ -n "$SUDO" ]]; then
+    if ! grep -qF "$marker" /etc/profile 2>/dev/null; then
+      info "Patching /etc/profile to clear broken nvs/nvsudo exports"
+      $SUDO tee -a /etc/profile >/dev/null <<EOF
+
+$marker
+unset -f nvs nvsudo 2>/dev/null
+unset 'BASH_FUNC_nvs%%' 'BASH_FUNC_nvsudo%%' 2>/dev/null
+EOF
+    fi
+  fi
+}
+
+ensure_node() {
+  command -v npm &>/dev/null && return 0
+
+  # Try common Node installer hooks (nvm, nvs) — non-interactive shells skip rc files
+  [[ -f /usr/local/share/nvs/nvs.sh ]] && . /usr/local/share/nvs/nvs.sh >/dev/null 2>&1 && nvs use lts >/dev/null 2>&1 || true
+  [[ -f "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ]] && . "${NVM_DIR:-$HOME/.nvm}/nvm.sh" >/dev/null 2>&1 || true
+  command -v npm &>/dev/null && return 0
+
+  # Fall back to NodeSource (Node 20.x) — apt's npm is too old for modern packages
+  if command -v curl &>/dev/null && command -v apt-get &>/dev/null; then
+    info "Installing Node.js 20 via NodeSource"
+    curl -fsSL https://deb.nodesource.com/setup_20.x | $SUDO -E bash - >/dev/null
+    apt_install nodejs
+  else
+    err "No Node.js available and cannot bootstrap (need curl + apt-get)"
+    return 1
+  fi
+}
+
+npm_install_global() {
+  ensure_node || return 1
+  # Try unprivileged first (works with user-mode npm prefix); fall back to sudo
+  npm install -g "$@" 2>/dev/null || $SUDO npm install -g "$@"
+}
+
+# Install Claude Code via the official native installer (binary at
+# ~/.local/bin/claude). If a legacy npm install is detected, migrate it
+# in-place via `claude install`.
+ensure_claude_code() {
+  if [[ -x "$HOME/.local/bin/claude" ]]; then
+    ok "claude already installed at ~/.local/bin/claude"
+    return 0
+  fi
+
+  if command -v claude &>/dev/null; then
+    info "Migrating claude from npm to native installer"
+    claude install 2>&1 | tail -3 || warn "claude install (migration) failed — try manually"
+    return 0
+  fi
+
+  command -v curl &>/dev/null || { warn "curl not available — can't install Claude Code"; return 1; }
+  info "Installing Claude Code via native installer"
+  curl -fsSL https://claude.ai/install.sh | bash 2>&1 | tail -3 || warn "Claude Code install failed"
+  [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
+}
+
+ensure_locales() {
+  command -v locale-gen &>/dev/null || apt_install locales || return 0
+  local need_gen=false
+  for loc in "de_AT.UTF-8" "en_US.UTF-8"; do
+    local short="${loc%.UTF-8}.utf8"
+    if ! locale -a 2>/dev/null | grep -qi "^${short}$"; then
+      $SUDO sed -i "s/^# *${loc}/${loc}/" /etc/locale.gen 2>/dev/null || true
+      need_gen=true
+    fi
+  done
+  if [[ "$need_gen" == "true" ]]; then
+    $SUDO locale-gen >/dev/null 2>&1 || warn "locale-gen failed — locale warnings may persist"
+  fi
+}
+
+ensure_opencode() {
+  command -v opencode &>/dev/null && return 0
+  command -v curl &>/dev/null || { warn "curl not available — skipping opencode install"; return 0; }
+  info "Installing opencode"
+  curl -fsSL https://opencode.ai/install | bash 2>&1 | tail -5 || warn "opencode install failed"
+  # The installer drops the binary in ~/.opencode/bin and only adds that to
+  # PATH via .bashrc. Symlink into ~/.local/bin so non-interactive shells
+  # (postStartCommand, etc.) see it without sourcing rc files.
+  if [[ -x "$HOME/.opencode/bin/opencode" ]]; then
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/opencode"
+    export PATH="$HOME/.local/bin:$PATH"
+  fi
+}
+
+ensure_go() {
+  command -v go &>/dev/null && return 0
+  command -v curl &>/dev/null || { warn "curl not available — skipping Go install"; return 0; }
+  local goversion="1.22.5"
+  local arch
+  case "$(uname -m)" in
+    x86_64)  arch="amd64" ;;
+    aarch64) arch="arm64" ;;
+    *)       warn "unsupported arch for Go install: $(uname -m)"; return 0 ;;
+  esac
+  info "Installing Go ${goversion}"
+  curl -fsSL "https://go.dev/dl/go${goversion}.linux-${arch}.tar.gz" | $SUDO tar -C /usr/local -xz \
+    || { warn "Go install failed"; return 0; }
+  export PATH="/usr/local/go/bin:$PATH"
+  # Persist for future shells in this user
+  if [[ -w "$HOME" ]]; then
+    grep -q '/usr/local/go/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="/usr/local/go/bin:$PATH"' >> "$HOME/.bashrc"
+  fi
+}
+
+ensure_uv() {
+  command -v uv &>/dev/null && return 0
+  command -v curl &>/dev/null || { warn "curl not available — skipping uv install"; return 0; }
+  info "Installing uv (Python package manager)"
+  curl -LsSf https://astral.sh/uv/install.sh | sh 2>&1 | tail -3 || { warn "uv install failed"; return 0; }
+  [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
+}
+
+ensure_tmux() {
+  # Need tmux 3.3+ for our tmux.conf (allow-passthrough, display-popup).
+  # Universal:2 is focal-based and apt only ships 3.0a, so we build from source.
+  local minver="3.3"
+  if command -v tmux &>/dev/null; then
+    local current
+    current="$(tmux -V 2>/dev/null | awk '{print $2}' | sed 's/[a-z]//g')"
+    if awk "BEGIN{exit !(${current:-0} >= ${minver})}" 2>/dev/null; then
+      ok "tmux $current already installed"
+      return 0
+    fi
+    info "tmux ${current:-?} is older than $minver — building newer from source"
+  else
+    info "tmux not installed — building from source"
+  fi
+
+  command -v curl &>/dev/null || { warn "curl not available — skipping tmux build"; return 0; }
+  apt_install build-essential libevent-dev libncurses-dev pkg-config bison || {
+    warn "Could not install tmux build deps — falling back to apt's tmux"
+    apt_install tmux || true
+    return 0
+  }
+
+  local tmux_version="3.5a"
+  local build_dir="/tmp/tmux-build-$$"
+  rm -rf "$build_dir" && mkdir -p "$build_dir"
+  (
+    cd "$build_dir"
+    curl -fsSL "https://github.com/tmux/tmux/releases/download/${tmux_version}/tmux-${tmux_version}.tar.gz" \
+      | tar xz --strip-components=1
+    ./configure --prefix=/usr/local &>/dev/null
+    make -j"$(nproc)" &>/dev/null
+    $SUDO make install &>/dev/null
+  ) || { warn "tmux build failed — falling back to apt's tmux"; apt_install tmux || true; rm -rf "$build_dir"; return 0; }
+  rm -rf "$build_dir"
+  hash -r
+  ok "tmux ${tmux_version} built and installed to /usr/local/bin/tmux"
+}
+
+ensure_playwright_browsers() {
+  command -v npx &>/dev/null || return 0
+  local cache_dir="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+  if [[ -d "$cache_dir" ]] && [[ -n "$(ls -A "$cache_dir" 2>/dev/null)" ]]; then
+    ok "Playwright browsers already installed"
+    return 0
+  fi
+  info "Installing Playwright browsers (chromium)"
+  npx -y playwright install chromium 2>&1 | tail -5 || warn "Playwright browser install failed"
+}
+
+auto_install_prereqs() {
+  header "Auto-installing prerequisites"
+  ensure_login_shells_clean
+  command -v git    &>/dev/null || { info "Installing git";    apt_install git; }
+  command -v jq     &>/dev/null || { info "Installing jq";     apt_install jq; }
+  command -v bwrap  &>/dev/null || { info "Installing bubblewrap"; apt_install bubblewrap; }
+  ensure_tmux
+  # Modern terminal terminfos so tmux works for kitty/alacritty/wezterm users.
+  # Check for the xterm-kitty terminfo file directly — `infocmp` returns
+  # inconsistent exit codes across distro versions.
+  if ! ls /usr/share/terminfo/x/xterm-kitty /etc/terminfo/x/xterm-kitty 2>/dev/null | grep -q .; then
+    info "Installing kitty-terminfo"
+    apt_install kitty-terminfo
+  fi
+  # Make Node/npm available for install_mcp_packages and Playwright. With
+  # claude on the native installer we no longer call npm_install_global, so
+  # nothing else surfaces nvm-managed Node onto PATH.
+  ensure_node || warn "Node not available — npm-based MCPs and Playwright will be skipped"
+  ensure_claude_code
+  ensure_opencode
+  ensure_go
+  ensure_uv
+  ensure_locales
+  ensure_playwright_browsers
+}
+
 # --- Prerequisite checks ---
 check_prerequisites() {
+  # Auto-install on container mode or explicit opt-in (AICODINGSETUP_AUTO_INSTALL=1)
+  if [[ "$ENV_TYPE" == "container" ]] || [[ "${AICODINGSETUP_AUTO_INSTALL:-}" == "1" ]]; then
+    auto_install_prereqs
+  fi
+
   local missing=()
   command -v git   &>/dev/null || missing+=("git")
   command -v jq    &>/dev/null || missing+=("jq")
@@ -110,13 +372,24 @@ load_or_prompt_secrets() {
     info "No secrets file found — will prompt for all keys"
   fi
 
+  # Decide whether we can prompt (no tty, container mode, or env opt-out → no)
+  local can_prompt=true
+  [[ ! -t 0 ]] && can_prompt=false
+  [[ "$ENV_TYPE" == "container" ]] && can_prompt=false
+  [[ "${AICODINGSETUP_NONINTERACTIVE:-}" == "1" ]] && can_prompt=false
+
   # Prompt for missing keys (keys with empty values are treated as "skipped", not missing)
   local prompted=false
   for key in "${required_keys[@]}"; do
     if [[ ! -v "secrets[$key]" ]]; then
-      prompted=true
-      read -rp "Enter $key [or press Enter to skip]: " value
-      secrets["$key"]="${value:-}"
+      if [[ "$can_prompt" == "true" ]]; then
+        prompted=true
+        read -rp "Enter $key [or press Enter to skip]: " value
+        secrets["$key"]="${value:-}"
+      else
+        info "$key not set (non-interactive — leaving empty)"
+        secrets["$key"]=""
+      fi
     else
       if [[ -n "${secrets[$key]}" ]]; then
         ok "$key already set"
@@ -350,13 +623,33 @@ install_claude_mcps() {
     warn "Skipping brave-search MCP — no API key"
   fi
 
-  # context7 — provided by the context7 plugin, not as a standalone MCP
-  # The plugin install (install_claude_plugins) handles this
-  ok "context7 MCP provided by context7 plugin"
+  # context7 — register at user scope explicitly. The plugin reports
+  # "installed" but doesn't always surface the MCP, so we don't rely on it.
+  if claude mcp add context7 -s user -- npx -y @upstash/context7-mcp 2>/dev/null; then
+    ok "context7 MCP configured"
+  elif claude mcp get context7 &>/dev/null; then
+    ok "context7 MCP already configured"
+  else
+    warn "context7 MCP may need manual setup"
+  fi
 
   # playwright — provided by the playwright plugin, not as a standalone MCP
   # The plugin install (install_claude_plugins) handles this
   ok "playwright MCP provided by playwright plugin"
+}
+
+# --- Claude onboarding state ---
+# Without these flags ~/.claude.json, the CLI treats every session as a fresh
+# install and prompts for login even when ~/.claude/.credentials.json holds
+# valid OAuth tokens (the case in containers that mount creds from the host).
+ensure_claude_onboarding_state() {
+  header "Claude onboarding state"
+  local f="$HOME/.claude.json"
+  [[ -f "$f" ]] || echo '{}' > "$f"
+  local tmp
+  tmp="$(mktemp)"
+  jq '. + {hasCompletedOnboarding: true, installMethod: "native"}' "$f" > "$tmp" && mv "$tmp" "$f"
+  ok "hasCompletedOnboarding=true, installMethod=native"
 }
 
 # --- Claude Code settings.json ---
@@ -478,6 +771,30 @@ install_opencode_config() {
 
   rm -f "$tmp_source"
   ok "opencode config merged at $target_config"
+}
+
+# --- tmux config ---
+# Container-only: deploys configs/tmux/tmux.conf to ~/.tmux.conf so every
+# DevPod workspace ships with a consistent tmux setup (right prefix, OSC 52
+# clipboard, etc.). Skipped on hosts since they have their own ~/.tmux.conf.
+install_tmux_config() {
+  header "tmux config"
+
+  if [[ "$ENV_TYPE" != "container" ]]; then
+    info "Skipping tmux config install (host uses its own ~/.tmux.conf)"
+    return
+  fi
+
+  local src="$SCRIPT_DIR/configs/tmux/tmux.conf"
+  local dest="$HOME/.tmux.conf"
+
+  if [[ ! -f "$src" ]]; then
+    warn "configs/tmux/tmux.conf not found in repo"
+    return
+  fi
+
+  cp "$src" "$dest"
+  ok "tmux config installed to $dest"
 }
 
 # --- Hooks and statusline ---
@@ -644,9 +961,11 @@ main() {
   report_unmanaged
   install_mcp_packages
   install_claude_mcps
+  ensure_claude_onboarding_state
   install_claude_settings
   install_claude_plugins
   install_opencode_config
+  install_tmux_config
   install_hooks
   install_commands
   install_templates

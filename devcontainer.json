@@ -1,0 +1,11 @@
+{
+  "image": "mcr.microsoft.com/devcontainers/universal:6",
+  "remoteUser": "codespace",
+  "containerEnv": {
+    "BASH_FUNC_nvs%%": "() {  :; }",
+    "BASH_FUNC_nvsudo%%": "() {  :; }",
+    "BASH_FUNC_nvm%%": "() {  :; }"
+  },
+  "postCreateCommand": "git clone --quiet https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh",
+  "postStartCommand": "curl -fsSL https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/update.sh | bash"
+}
