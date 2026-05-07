@@ -808,12 +808,14 @@ install_tmux_plugins() {
   fi
 
   # Headless plugin install. Reads `set -g @plugin '...'` lines from
-  # ~/.tmux.conf; skips already-cloned plugins.
+  # ~/.tmux.conf; skips already-cloned plugins. Output is left visible —
+  # TPM is verbose on success ("Installing X / download success") and any
+  # failure surfaces inline rather than disappearing into /dev/null.
   if [[ -x "$tpm_dir/bin/install_plugins" ]]; then
-    if "$tpm_dir/bin/install_plugins" >/dev/null 2>&1; then
+    if "$tpm_dir/bin/install_plugins"; then
       ok "tmux plugins installed/updated"
     else
-      warn "TPM install_plugins exited non-zero"
+      warn "TPM install_plugins exited non-zero (see output above)"
     fi
   else
     warn "$tpm_dir/bin/install_plugins missing or not executable"
