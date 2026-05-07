@@ -780,6 +780,46 @@ install_tmux_config() {
   ok "tmux config installed to $dest"
 }
 
+# --- tmux plugins (TPM) ---
+# Container-only: bootstraps Tmux Plugin Manager and installs every plugin
+# declared in configs/tmux/tmux.conf (resurrect, continuum, catppuccin, fzf,
+# thumbs). Without this, the trailing `run '~/.tmux/plugins/tpm/tpm'` in
+# tmux.conf exits 127 and the theme + session save/restore + fzf binding
+# are all dead. Idempotent: re-running just updates clones in place.
+install_tmux_plugins() {
+  header "tmux plugins (TPM)"
+
+  if [[ "$ENV_TYPE" != "container" ]]; then
+    info "Skipping TPM install (host manages its own tmux plugins)"
+    return
+  fi
+
+  if ! command -v git &>/dev/null; then
+    warn "git not found — skipping TPM install"
+    return
+  fi
+
+  local tpm_dir="$HOME/.tmux/plugins/tpm"
+  if [[ ! -d "$tpm_dir" ]]; then
+    git clone --quiet --depth=1 https://github.com/tmux-plugins/tpm "$tpm_dir"
+    ok "TPM cloned to $tpm_dir"
+  else
+    ok "TPM already present at $tpm_dir"
+  fi
+
+  # Headless plugin install. Reads `set -g @plugin '...'` lines from
+  # ~/.tmux.conf; skips already-cloned plugins.
+  if [[ -x "$tpm_dir/bin/install_plugins" ]]; then
+    if "$tpm_dir/bin/install_plugins" >/dev/null 2>&1; then
+      ok "tmux plugins installed/updated"
+    else
+      warn "TPM install_plugins exited non-zero"
+    fi
+  else
+    warn "$tpm_dir/bin/install_plugins missing or not executable"
+  fi
+}
+
 # --- Hooks and statusline ---
 install_hooks() {
   header "Hooks & Statusline"
@@ -891,6 +931,7 @@ main() {
   install_claude_plugins
   install_opencode_config
   install_tmux_config
+  install_tmux_plugins
   install_hooks
   install_skills
   install_bubblewrap
