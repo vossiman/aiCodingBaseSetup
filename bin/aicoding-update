@@ -1,4 +1,59 @@
 #!/usr/bin/env bash
-# Placeholder — real implementation lands in Tasks 18-25.
-echo "aicoding-update: not yet implemented"
-exit 1
+set -euo pipefail
+
+# Resolve the blueprint directory: prefer the existing clone at
+# $AICODING_BLUEPRINT_CLONE (default /tmp/aicoding); refresh it from git.
+# Source the library from the resolved blueprint dir.
+
+SCRIPT_REAL=$(readlink -f "$0")
+SCRIPT_DIR=$(dirname "$(dirname "$SCRIPT_REAL")")
+
+: "${AICODING_BLUEPRINT_CLONE:=/tmp/aicoding}"
+: "${AICODING_BLUEPRINT_REMOTE:=https://github.com/vossiman/aiCodingBaseSetup}"
+
+ARG_DRY_RUN=0
+ARG_YES=0
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) ARG_DRY_RUN=1 ;;
+    --yes)     ARG_YES=1 ;;
+    -h|--help)
+      cat <<EOF
+Usage: aicoding-update [--dry-run] [--yes]
+  --dry-run  Show what would change, write nothing.
+  --yes      Skip the y/N confirm prompt.
+EOF
+      exit 0
+      ;;
+    *) echo "unknown argument: $arg" >&2; exit 2 ;;
+  esac
+done
+
+refresh_blueprint() {
+  if [[ -d "$AICODING_BLUEPRINT_CLONE/.git" ]]; then
+    git -C "$AICODING_BLUEPRINT_CLONE" fetch --quiet origin 2>/dev/null \
+      || { echo "could not fetch blueprint — using cached clone" >&2; }
+    git -C "$AICODING_BLUEPRINT_CLONE" reset --hard --quiet origin/main 2>/dev/null \
+      || git -C "$AICODING_BLUEPRINT_CLONE" reset --hard --quiet HEAD
+  elif [[ ! -d "$AICODING_BLUEPRINT_CLONE" ]]; then
+    git clone --quiet "$AICODING_BLUEPRINT_REMOTE" "$AICODING_BLUEPRINT_CLONE"
+  fi
+  # In tests, blueprint may already be a non-pristine git checkout we built.
+  # We always source from the clone, so its current state is what's used.
+}
+
+refresh_blueprint
+. "$AICODING_BLUEPRINT_CLONE/lib/blueprint-deploy.sh"
+
+if [[ ! -f "$AICODING_MANIFEST" ]]; then
+  echo "aicoding-update: no manifest at $AICODING_MANIFEST" >&2
+  echo "Run install.sh first to provision this container." >&2
+  exit 1
+fi
+
+OLD_COMMIT=$(jq -r '.blueprint_commit // "unknown"' "$AICODING_MANIFEST")
+NEW_COMMIT=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse --short HEAD 2>/dev/null || echo unknown)
+
+echo "Blueprint: ${OLD_COMMIT} -> ${NEW_COMMIT}"
+
+# Phase 2 lands in Task 19.
