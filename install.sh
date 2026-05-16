@@ -56,6 +56,11 @@ unset _aicoding_f
 EOF
 )
 
+CLAUDE_DIR="$HOME/.claude"
+OPENCODE_DIR="$HOME/.config/opencode"
+SECRETS_DIR="$HOME/.aicodingsetup"
+SECRETS_FILE="$SECRETS_DIR/.secrets.env"
+
 # deploy_all_managed_files — wraps every managed-file deployment in a single
 # manifest staging session. Skill files are enumerated from MANAGED_SKILLS.
 deploy_all_managed_files() {
@@ -122,11 +127,6 @@ deploy_all_managed_files() {
 
   manifest_stage_commit
 }
-
-CLAUDE_DIR="$HOME/.claude"
-OPENCODE_DIR="$HOME/.config/opencode"
-SECRETS_DIR="$HOME/.aicodingsetup"
-SECRETS_FILE="$SECRETS_DIR/.secrets.env"
 
 # Managed component lists (used for unmanaged component detection)
 MANAGED_MCPS=("firecrawl" "brave-search" "context7" "playwright")
