@@ -112,3 +112,38 @@ EOF
   write_manifest '{"schema_version":1,"files":{}}'
   [ -f "$AICODING_MANIFEST" ]
 }
+
+@test "manifest_get_file: returns per-file entry as JSON" {
+  cp "$BLUEPRINT_ROOT/tests/bats/fixtures/sample-manifest.json" "$AICODING_MANIFEST"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run manifest_get_file "/tmp/test-home/.tmux.conf"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.mode == "overwrite"'
+  echo "$output" | jq -e '.source == "configs/tmux/tmux.conf"'
+}
+
+@test "manifest_get_file: returns 'null' for missing entry" {
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run manifest_get_file "/tmp/test-home/.missing"
+  [ "$status" -eq 0 ]
+  [ "$output" = "null" ]
+}
+
+@test "manifest_set_file: stages a file entry in pending manifest" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  manifest_set_file "/tmp/foo" '{"mode":"overwrite","source":"x","deployed_hash":"deadbeef"}'
+  manifest_stage_commit
+  jq -e '.files["/tmp/foo"].mode == "overwrite"' "$AICODING_MANIFEST"
+  jq -e '.files["/tmp/foo"].deployed_hash == "deadbeef"' "$AICODING_MANIFEST"
+}
+
+@test "manifest_set_file: overwrites existing entry" {
+  cp "$BLUEPRINT_ROOT/tests/bats/fixtures/sample-manifest.json" "$AICODING_MANIFEST"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  manifest_set_file "/tmp/test-home/.tmux.conf" '{"mode":"overwrite","source":"x","deployed_hash":"newhash"}'
+  manifest_stage_commit
+  jq -e '.files["/tmp/test-home/.tmux.conf"].deployed_hash == "newhash"' "$AICODING_MANIFEST"
+}

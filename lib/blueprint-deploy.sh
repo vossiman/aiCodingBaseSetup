@@ -47,3 +47,46 @@ write_manifest() {
   printf '%s\n' "$json" | jq '.' > "$tmp"
   mv "$tmp" "$AICODING_MANIFEST"
 }
+
+# In-memory staged manifest; modified by manifest_set_file /
+# manifest_remove_file between stage_begin and stage_commit.
+_aicoding_pending_manifest=""
+
+manifest_stage_begin() {
+  _aicoding_pending_manifest=$(read_manifest)
+}
+
+manifest_stage_commit() {
+  local now
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  _aicoding_pending_manifest=$(printf '%s' "$_aicoding_pending_manifest" \
+    | jq --arg t "$now" '.deployed_at = $t')
+  write_manifest "$_aicoding_pending_manifest"
+  _aicoding_pending_manifest=""
+}
+
+manifest_stage_set_top() {
+  local key=$1 val=$2
+  _aicoding_pending_manifest=$(printf '%s' "$_aicoding_pending_manifest" \
+    | jq --arg k "$key" --arg v "$val" '.[$k] = $v')
+}
+
+# manifest_get_file <path> — echo the per-file JSON object, or "null".
+manifest_get_file() {
+  read_manifest | jq --arg p "$1" '.files[$p] // null'
+}
+
+# manifest_set_file <path> <entry_json> — merge a per-file entry into the
+# in-memory staged manifest (caller must have called manifest_stage_begin).
+manifest_set_file() {
+  local path=$1 entry=$2
+  _aicoding_pending_manifest=$(printf '%s' "$_aicoding_pending_manifest" \
+    | jq --arg p "$path" --argjson e "$entry" '.files[$p] = $e')
+}
+
+# manifest_remove_file <path> — drop a per-file entry from the staged manifest.
+manifest_remove_file() {
+  local path=$1
+  _aicoding_pending_manifest=$(printf '%s' "$_aicoding_pending_manifest" \
+    | jq --arg p "$path" 'del(.files[$p])')
+}
