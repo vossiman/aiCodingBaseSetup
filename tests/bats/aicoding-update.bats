@@ -61,3 +61,50 @@ EOF
   echo "$output" | grep -q "up_to_date" || echo "$output" | grep -q "up to date"
   echo "$output" | grep -qE "(drifted|needs your decision)"
 }
+
+@test "aicoding-update: shows inline diff for drifted_and_updating" {
+  mkdir -p "$HOME/.aicodingsetup"
+  echo "user-line" > "$HOME/.tmux.conf"
+  # Mutate blueprint so the new version differs from the user's content.
+  echo "blueprint-line" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
+  cat > "$AICODING_MANIFEST" <<EOF
+{
+  "schema_version": 1,
+  "blueprint_commit": "old",
+  "files": {
+    "$HOME/.tmux.conf": {
+      "mode": "overwrite",
+      "source": "configs/tmux/tmux.conf",
+      "deployed_hash": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    }
+  }
+}
+EOF
+  run bash -c "echo n | $BLUEPRINT_ROOT/bin/aicoding-update"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "user-line"
+  echo "$output" | grep -q "blueprint-line"
+  echo "$output" | grep -q "Apply?"
+}
+
+@test "aicoding-update: 'n' answer aborts without writing" {
+  mkdir -p "$HOME/.aicodingsetup"
+  echo "user-line" > "$HOME/.tmux.conf"
+  echo "blueprint-line" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
+  cat > "$AICODING_MANIFEST" <<EOF
+{
+  "schema_version": 1,
+  "blueprint_commit": "old",
+  "files": {
+    "$HOME/.tmux.conf": {
+      "mode": "overwrite",
+      "source": "configs/tmux/tmux.conf",
+      "deployed_hash": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    }
+  }
+}
+EOF
+  run bash -c "echo n | $BLUEPRINT_ROOT/bin/aicoding-update"
+  [ "$status" -eq 0 ]
+  grep -q "^user-line$" "$HOME/.tmux.conf"
+}

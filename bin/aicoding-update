@@ -31,14 +31,18 @@ done
 
 refresh_blueprint() {
   if [[ -d "$AICODING_BLUEPRINT_CLONE/.git" ]]; then
-    git -C "$AICODING_BLUEPRINT_CLONE" fetch --quiet origin 2>/dev/null \
-      || { echo "could not fetch blueprint — using cached clone" >&2; }
-    git -C "$AICODING_BLUEPRINT_CLONE" reset --hard --quiet origin/main 2>/dev/null \
-      || git -C "$AICODING_BLUEPRINT_CLONE" reset --hard --quiet HEAD
+    # Only hard-reset if we could actually fetch fresh refs. Otherwise
+    # leave the working tree alone — in particular, never wipe local
+    # state on the fallback path, which would clobber test setups and
+    # any user-staged blueprint experiments.
+    if git -C "$AICODING_BLUEPRINT_CLONE" fetch --quiet origin 2>/dev/null; then
+      git -C "$AICODING_BLUEPRINT_CLONE" reset --hard --quiet origin/main 2>/dev/null || true
+    else
+      echo "could not fetch blueprint — using cached clone" >&2
+    fi
   elif [[ ! -d "$AICODING_BLUEPRINT_CLONE" ]]; then
     git clone --quiet "$AICODING_BLUEPRINT_REMOTE" "$AICODING_BLUEPRINT_CLONE"
   fi
-  # In tests, blueprint may already be a non-pristine git checkout we built.
   # We always source from the clone, so its current state is what's used.
 }
 
@@ -131,4 +135,69 @@ if [[ $ARG_DRY_RUN -eq 1 ]]; then
     echo "  ${COUNT[$b]} $b"
   done
   exit 0
+fi
+
+print_summary() {
+  echo
+  echo "  ${COUNT[up_to_date]} up to date"
+
+  if (( COUNT[will_update] > 0 )); then
+    echo "  ${COUNT[will_update]} will update         (no drift):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} == will_update ]] && echo "      $dest"
+    done
+  fi
+
+  if (( COUNT[drifted_and_updating] > 0 )); then
+    echo "  ${COUNT[drifted_and_updating]} needs your decision (you've modified, blueprint also changed):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} != drifted_and_updating ]] && continue
+      echo "      $dest"
+      local src="$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]}"
+      diff -u --label "your version" --label "blueprint version" "$dest" "$src" \
+        | sed 's/^/        /' || true
+    done
+  fi
+
+  if (( COUNT[to_remove] > 0 )); then
+    echo "  ${COUNT[to_remove]} to remove           (no longer in blueprint):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} == to_remove ]] && echo "      $dest"
+    done
+  fi
+
+  if (( COUNT[new_file] > 0 )); then
+    echo "  ${COUNT[new_file]} new files           (will be deployed):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} == new_file ]] && echo "      $dest"
+    done
+  fi
+
+  if (( COUNT[merge] > 0 )); then
+    echo "  ${COUNT[merge]} merge target(s)     (will re-merge, additions preserved):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} == merge ]] && echo "      $dest"
+    done
+  fi
+
+  echo
+}
+
+print_summary
+
+# Nothing actionable?
+if (( COUNT[will_update] + COUNT[drifted_and_updating] + COUNT[new_file] + COUNT[to_remove] + COUNT[merge] == 0 )); then
+  echo "Nothing to do."
+  exit 0
+fi
+
+if [[ $ARG_YES -ne 1 ]]; then
+  # `read -p` only prints the prompt to a terminal; for piped/redirected
+  # stdin (tests, CI) we still want the prompt text visible in the log.
+  printf 'Apply? [y/N] '
+  read -r answer
+  case "$answer" in
+    y|Y|yes) ;;
+    *) echo "Aborted."; exit 0 ;;
+  esac
 fi
