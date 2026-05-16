@@ -801,6 +801,21 @@ install_claude_plugins() {
   done
 }
 
+# --- aicoding-update CLI symlink ---
+install_aicoding_update_symlink() {
+  header "aicoding-update CLI"
+  local src="$SCRIPT_DIR/bin/aicoding-update"
+  local dest="$HOME/.local/bin/aicoding-update"
+  if [[ ! -f "$src" ]]; then
+    warn "bin/aicoding-update not found in blueprint — skipping symlink"
+    return
+  fi
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$src" "$dest"
+  chmod +x "$src"
+  ok "aicoding-update installed at $dest -> $src"
+}
+
 # --- opencode configuration ---
 install_opencode_config() { : "moved into deploy_all_managed_files"; }
 # Original body, preserved for Task 22 reference:
@@ -1151,6 +1166,7 @@ main() {
   install_claude_mcps
   ensure_claude_onboarding_state
   install_claude_plugins
+  install_aicoding_update_symlink
 
   local mode
   if [[ $force_reinstall -eq 1 ]]; then

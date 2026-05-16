@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Placeholder — real implementation lands in Tasks 18-25.
+echo "aicoding-update: not yet implemented"
+exit 1

@@ -90,3 +90,13 @@ EOF
   fi
   grep -qF 'export PATH="/usr/local/go/bin:$PATH"' "$HOME/.bashrc"
 }
+
+@test "install.sh: symlinks aicoding-update into ~/.local/bin" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ -L "$HOME/.local/bin/aicoding-update" ]
+  [ -x "$HOME/.local/bin/aicoding-update" ]
+  # Target points back to bin/aicoding-update in the blueprint.
+  local target
+  target=$(readlink "$HOME/.local/bin/aicoding-update")
+  echo "$target" | grep -q "bin/aicoding-update"
+}
