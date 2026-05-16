@@ -131,3 +131,18 @@ classify_file() {
     echo "drifted_and_updating"
   fi
 }
+
+# deploy_overwrite_file <src> <dest> <source_label_relative_to_blueprint>
+# Copies src to dest and records {mode: overwrite, source, deployed_hash}
+# in the pending manifest. Caller must wrap with manifest_stage_begin/commit.
+deploy_overwrite_file() {
+  local src=$1 dest=$2 label=$3
+  mkdir -p "$(dirname "$dest")"
+  cp "$src" "$dest"
+  local h
+  h=$(compute_hash "$dest")
+  local entry
+  entry=$(jq -n --arg s "$label" --arg h "$h" \
+    '{mode:"overwrite", source:$s, deployed_hash:$h}')
+  manifest_set_file "$dest" "$entry"
+}

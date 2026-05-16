@@ -234,3 +234,26 @@ EOF
   [ "$status" -eq 0 ]
   [ "$output" = "merge" ]
 }
+
+@test "deploy_overwrite_file: writes file and records hash in pending manifest" {
+  echo "content" > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/dest" "configs/example.sh"
+  manifest_stage_commit
+  diff "$TMPDIR/src" "$TMPDIR/dest"
+  jq -e '.files["'"$TMPDIR"'/dest"].mode == "overwrite"' "$AICODING_MANIFEST"
+  jq -e '.files["'"$TMPDIR"'/dest"].source == "configs/example.sh"' "$AICODING_MANIFEST"
+  local expect_h
+  expect_h=$(compute_hash "$TMPDIR/dest")
+  jq -e --arg h "$expect_h" '.files["'"$TMPDIR"'/dest"].deployed_hash == $h' "$AICODING_MANIFEST"
+}
+
+@test "deploy_overwrite_file: creates parent directory if missing" {
+  echo "content" > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/nested/dir/dest" "configs/x"
+  manifest_stage_commit
+  [ -f "$TMPDIR/nested/dir/dest" ]
+}
