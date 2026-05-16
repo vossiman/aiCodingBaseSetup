@@ -32,7 +32,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Managed file inventory — every entry deploys to a known target.
 # Format: <dest_abs_path>|<mode>|<source_rel_to_blueprint>
-# (skills are enumerated dynamically; see install_skills.)
+# (skills are enumerated dynamically; see deploy_all_managed_files.)
 MANAGED_OVERWRITE_FILES=(
   "$HOME/.tmux.conf|overwrite|configs/tmux/tmux.conf"
   "$HOME/.claude/hooks/custom-statusline.js|overwrite|configs/claude/hooks/custom-statusline.js"
@@ -731,54 +731,6 @@ ensure_claude_onboarding_state() {
   ok "hasCompletedOnboarding=true, installMethod=native"
 }
 
-# --- Claude Code settings.json ---
-install_claude_settings() { : "moved into deploy_all_managed_files"; }
-# Original body, preserved for Task 22 reference:
-# install_claude_settings() {
-#   header "Claude Code settings.json"
-#
-#   mkdir -p "$CLAUDE_DIR"
-#
-#   local base_settings="$SCRIPT_DIR/configs/claude/settings.json"
-#   local target_settings="$CLAUDE_DIR/settings.json"
-#
-#   if [[ ! -f "$base_settings" ]]; then
-#     err "Missing configs/claude/settings.json"
-#     return
-#   fi
-#
-#   # Substitute {{HOME}} placeholder in base settings
-#   local resolved_settings
-#   resolved_settings="$(substitute_secrets "$(cat "$base_settings")")"
-#
-#   # Write to temp file for jq merge
-#   local tmp_source
-#   tmp_source="$(mktemp)"
-#   echo "$resolved_settings" > "$tmp_source"
-#
-#   # Create target if it doesn't exist
-#   if [[ ! -f "$target_settings" ]]; then
-#     echo '{}' > "$target_settings"
-#   fi
-#
-#   # Merge: base into existing (existing values preserved, new ones added)
-#   json_merge "$target_settings" "$tmp_source"
-#
-#   # Set defaults only if absent
-#   local tmp_out
-#   tmp_out="$(mktemp)"
-#
-#   if jq -e 'has("effortLevel") | not' "$target_settings" &>/dev/null; then
-#     jq '.effortLevel = "medium"' "$target_settings" > "$tmp_out" && mv "$tmp_out" "$target_settings"
-#   fi
-#   if jq -e 'has("skipDangerousModePermissionPrompt") | not' "$target_settings" &>/dev/null; then
-#     jq '.skipDangerousModePermissionPrompt = true' "$target_settings" > "$tmp_out" && mv "$tmp_out" "$target_settings"
-#   fi
-#
-#   rm -f "$tmp_source" "$tmp_out"
-#   ok "Claude Code settings.json merged"
-# }
-
 # --- Claude Code marketplace plugins ---
 install_claude_plugins() {
   header "Claude Code Plugins"
@@ -815,87 +767,6 @@ install_aicoding_update_symlink() {
   chmod +x "$src"
   ok "aicoding-update installed at $dest -> $src"
 }
-
-# --- opencode configuration ---
-install_opencode_config() { : "moved into deploy_all_managed_files"; }
-# Original body, preserved for Task 22 reference:
-# install_opencode_config() {
-#   header "opencode Configuration"
-#
-#   if ! command -v opencode &>/dev/null; then
-#     warn "opencode CLI not found — skipping opencode configuration"
-#     return
-#   fi
-#
-#   mkdir -p "$OPENCODE_DIR"
-#
-#   local base_config="$SCRIPT_DIR/configs/opencode/opencode.json"
-#   local target_config="$OPENCODE_DIR/opencode.json"
-#
-#   if [[ ! -f "$base_config" ]]; then
-#     err "Missing configs/opencode/opencode.json"
-#     return
-#   fi
-#
-#   # Build MCP block from shared definitions with secrets substituted
-#   local mcps_file="$SCRIPT_DIR/configs/mcps.json"
-#   local mcp_block
-#   mcp_block="$(substitute_secrets "$(cat "$mcps_file")")"
-#
-#   # Transform mcps.json format into opencode format (add "type": "local" to each)
-#   local opencode_mcps
-#   opencode_mcps="$(echo "$mcp_block" | jq '
-#     to_entries | map(
-#       .value += {"type": "local"} |
-#       if (.value.environment | length) == 0 then .value |= del(.environment) else . end
-#     ) | from_entries
-#   ')"
-#
-#   # Read base config and inject MCPs
-#   local resolved_config
-#   resolved_config="$(jq --argjson mcps "$opencode_mcps" '.mcp = $mcps' "$base_config")"
-#
-#   # Write to temp file for merge
-#   local tmp_source
-#   tmp_source="$(mktemp)"
-#   echo "$resolved_config" > "$tmp_source"
-#
-#   # Create target if it doesn't exist
-#   if [[ ! -f "$target_config" ]]; then
-#     echo '{}' > "$target_config"
-#   fi
-#
-#   json_merge "$target_config" "$tmp_source"
-#
-#   rm -f "$tmp_source"
-#   ok "opencode config merged at $target_config"
-# }
-
-# --- tmux config ---
-# Container-only: deploys configs/tmux/tmux.conf to ~/.tmux.conf so every
-# DevPod workspace ships with a consistent tmux setup (right prefix, OSC 52
-# clipboard, etc.). Skipped on hosts since they have their own ~/.tmux.conf.
-install_tmux_config() { : "moved into deploy_all_managed_files"; }
-# Original body, preserved for Task 22 reference:
-# install_tmux_config() {
-#   header "tmux config"
-#
-#   if [[ "$ENV_TYPE" != "container" ]]; then
-#     info "Skipping tmux config install (host uses its own ~/.tmux.conf)"
-#     return
-#   fi
-#
-#   local src="$SCRIPT_DIR/configs/tmux/tmux.conf"
-#   local dest="$HOME/.tmux.conf"
-#
-#   if [[ ! -f "$src" ]]; then
-#     warn "configs/tmux/tmux.conf not found in repo"
-#     return
-#   fi
-#
-#   cp "$src" "$dest"
-#   ok "tmux config installed to $dest"
-# }
 
 # --- tmux plugins (TPM) ---
 # Container-only: bootstraps Tmux Plugin Manager and installs every plugin
@@ -938,57 +809,6 @@ install_tmux_plugins() {
     warn "$tpm_dir/bin/install_plugins missing or not executable"
   fi
 }
-
-# --- Hooks and statusline ---
-install_hooks() { : "moved into deploy_all_managed_files"; }
-# Original body, preserved for Task 22 reference:
-# install_hooks() {
-#   header "Hooks & Statusline"
-#
-#   mkdir -p "$CLAUDE_DIR/hooks"
-#
-#   # Statusline — always overwrite (repo is source of truth)
-#   local statusline_src="$SCRIPT_DIR/configs/claude/hooks/custom-statusline.js"
-#   if [[ -f "$statusline_src" ]]; then
-#     cp "$statusline_src" "$CLAUDE_DIR/hooks/custom-statusline.js"
-#     ok "custom-statusline.js installed"
-#   else
-#     warn "custom-statusline.js not found in repo"
-#   fi
-#
-# }
-
-# --- Custom skills ---
-install_skills() { : "moved into deploy_all_managed_files"; }
-# Original body, preserved for Task 22 reference:
-# install_skills() {
-#   header "Custom Skills"
-#
-#   mkdir -p "$CLAUDE_DIR/skills"
-#
-#   for skill_dir in "$SCRIPT_DIR/skills"/*/; do
-#     [[ ! -d "$skill_dir" ]] && continue
-#     local skill_name
-#     skill_name="$(basename "$skill_dir")"
-#     local src_skill="$skill_dir/SKILL.md"
-#     local dest_dir="$CLAUDE_DIR/skills/$skill_name"
-#     local dest_skill="$dest_dir/SKILL.md"
-#
-#     if [[ ! -f "$src_skill" ]]; then
-#       warn "No SKILL.md found in $skill_dir"
-#       continue
-#     fi
-#
-#     mkdir -p "$dest_dir"
-#
-#     # Copy and substitute placeholders
-#     local content
-#     content="$(cat "$src_skill")"
-#     content="$(substitute_secrets "$content")"
-#     echo "$content" > "$dest_skill"
-#     ok "$skill_name skill installed"
-#   done
-# }
 
 # --- bubblewrap (bw-AICode) ---
 install_bubblewrap() {
