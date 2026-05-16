@@ -147,3 +147,90 @@ EOF
   manifest_stage_commit
   jq -e '.files["/tmp/test-home/.tmux.conf"].deployed_hash == "newhash"' "$AICODING_MANIFEST"
 }
+
+@test "classify_file: up_to_date when current == deployed == new" {
+  echo "same" > "$TMPDIR/dest"
+  echo "same" > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  local h
+  h=$(compute_hash "$TMPDIR/dest")
+  manifest_set_file "$TMPDIR/dest" "$(jq -n --arg s configs/x --arg h "$h" \
+    '{mode:"overwrite",source:$s,deployed_hash:$h}')"
+  manifest_stage_commit
+  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
+  [ "$status" -eq 0 ]
+  [ "$output" = "up_to_date" ]
+}
+
+@test "classify_file: will_update when current == deployed != new" {
+  echo "old" > "$TMPDIR/dest"
+  echo "new" > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  local h
+  h=$(compute_hash "$TMPDIR/dest")
+  manifest_set_file "$TMPDIR/dest" "$(jq -n --arg h "$h" \
+    '{mode:"overwrite",source:"configs/x",deployed_hash:$h}')"
+  manifest_stage_commit
+  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
+  [ "$status" -eq 0 ]
+  [ "$output" = "will_update" ]
+}
+
+@test "classify_file: drifted_but_aligned when current != deployed and current == new" {
+  echo "user-edit" > "$TMPDIR/dest"
+  echo "user-edit" > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  manifest_set_file "$TMPDIR/dest" '{"mode":"overwrite","source":"configs/x","deployed_hash":"obsolete"}'
+  manifest_stage_commit
+  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
+  [ "$status" -eq 0 ]
+  [ "$output" = "drifted_but_aligned" ]
+}
+
+@test "classify_file: drifted_and_updating when all three differ" {
+  echo "user-edit" > "$TMPDIR/dest"
+  echo "new-blueprint" > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  manifest_set_file "$TMPDIR/dest" '{"mode":"overwrite","source":"configs/x","deployed_hash":"obsolete"}'
+  manifest_stage_commit
+  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
+  [ "$status" -eq 0 ]
+  [ "$output" = "drifted_and_updating" ]
+}
+
+@test "classify_file: new_file when not in manifest" {
+  echo "new" > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  manifest_stage_commit
+  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
+  [ "$status" -eq 0 ]
+  [ "$output" = "new_file" ]
+}
+
+@test "classify_file: to_remove when in manifest but src is absent" {
+  echo "old" > "$TMPDIR/dest"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  local h
+  h=$(compute_hash "$TMPDIR/dest")
+  manifest_set_file "$TMPDIR/dest" "$(jq -n --arg h "$h" \
+    '{mode:"overwrite",source:"configs/x",deployed_hash:$h}')"
+  manifest_stage_commit
+  run classify_file "$TMPDIR/dest" "$TMPDIR/missing-src" "overwrite"
+  [ "$status" -eq 0 ]
+  [ "$output" = "to_remove" ]
+}
+
+@test "classify_file: merge mode always returns merge" {
+  echo "current" > "$TMPDIR/dest"
+  echo "new" > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "merge"
+  [ "$status" -eq 0 ]
+  [ "$output" = "merge" ]
+}

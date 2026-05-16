@@ -90,3 +90,44 @@ manifest_remove_file() {
   _aicoding_pending_manifest=$(printf '%s' "$_aicoding_pending_manifest" \
     | jq --arg p "$path" 'del(.files[$p])')
 }
+
+# classify_file <dest_path> <src_path> <mode> — echoes one of:
+#   up_to_date, will_update, drifted_but_aligned, drifted_and_updating,
+#   new_file, to_remove, merge.
+classify_file() {
+  local dest=$1 src=$2 mode=$3
+
+  if [ "$mode" = "merge" ]; then
+    echo "merge"
+    return 0
+  fi
+
+  local entry
+  entry=$(manifest_get_file "$dest")
+
+  if [ "$entry" = "null" ]; then
+    [ -e "$src" ] && { echo "new_file"; return 0; }
+    echo "up_to_date"  # neither tracked nor present in blueprint; no-op.
+    return 0
+  fi
+
+  if [ ! -e "$src" ]; then
+    echo "to_remove"
+    return 0
+  fi
+
+  local current new deployed
+  current=$(compute_hash "$dest")
+  new=$(compute_hash "$src")
+  deployed=$(printf '%s' "$entry" | jq -r '.deployed_hash // empty')
+
+  if [ "$current" = "$deployed" ] && [ "$current" = "$new" ]; then
+    echo "up_to_date"
+  elif [ "$current" = "$deployed" ] && [ "$current" != "$new" ]; then
+    echo "will_update"
+  elif [ "$current" != "$deployed" ] && [ "$current" = "$new" ]; then
+    echo "drifted_but_aligned"
+  else
+    echo "drifted_and_updating"
+  fi
+}
