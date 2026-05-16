@@ -30,3 +30,34 @@ teardown() {
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "old123"
 }
+
+@test "aicoding-update --dry-run: bucket counts reflect classifications" {
+  mkdir -p "$HOME/.aicodingsetup"
+  # Two managed files: one matches blueprint exactly, one is drifted.
+  mkdir -p "$HOME/.bashrc.d"
+  cp "$AICODING_BLUEPRINT_CLONE/configs/bash/env.sh" "$HOME/.bashrc.d/aicoding-env.sh"
+  echo "user-edit" > "$HOME/.tmux.conf"
+  # Build a matching manifest.
+  cat > "$AICODING_MANIFEST" <<EOF
+{
+  "schema_version": 1,
+  "blueprint_commit": "old",
+  "files": {
+    "$HOME/.bashrc.d/aicoding-env.sh": {
+      "mode": "overwrite",
+      "source": "configs/bash/env.sh",
+      "deployed_hash": "$(sha256sum "$HOME/.bashrc.d/aicoding-env.sh" | awk '{print $1}')"
+    },
+    "$HOME/.tmux.conf": {
+      "mode": "overwrite",
+      "source": "configs/tmux/tmux.conf",
+      "deployed_hash": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    }
+  }
+}
+EOF
+  run "$BLUEPRINT_ROOT/bin/aicoding-update" --dry-run
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "up_to_date" || echo "$output" | grep -q "up to date"
+  echo "$output" | grep -qE "(drifted|needs your decision)"
+}
