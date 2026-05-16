@@ -189,3 +189,38 @@ deploy_merge_file() {
   entry=$(jq -n --arg s "$label" '{mode:"merge", source:$s}')
   manifest_set_file "$dest" "$entry"
 }
+
+# deploy_marker_block <dest> <body> <start_marker> <end_marker>
+# Inserts or replaces a guarded block in dest. If markers are absent,
+# appends `<start>\n<body>\n<end>` at the end. If markers exist, replaces
+# the content between them (the markers themselves are preserved).
+deploy_marker_block() {
+  local dest=$1 body=$2 start=$3 end=$4
+  mkdir -p "$(dirname "$dest")"
+  touch "$dest"
+
+  if grep -qxF "$start" "$dest" && grep -qxF "$end" "$dest"; then
+    # Replace existing block.
+    local tmp="$dest.tmp"
+    awk -v s="$start" -v e="$end" -v b="$body" '
+      $0 == s { print; print b; in_block = 1; next }
+      $0 == e { print; in_block = 0; next }
+      !in_block { print }
+    ' "$dest" > "$tmp"
+    mv "$tmp" "$dest"
+  else
+    # Append a new block at the end.
+    {
+      printf '\n%s\n' "$start"
+      printf '%s\n' "$body"
+      printf '%s\n' "$end"
+    } >> "$dest"
+  fi
+
+  local h
+  h=$(compute_block_hash "$dest" "$start" "$end")
+  local entry
+  entry=$(jq -n --arg s "$start" --arg e "$end" --arg h "$h" \
+    '{mode:"marker_block", source:"(composed)", marker_start:$s, marker_end:$e, deployed_block_hash:$h}')
+  manifest_set_file "$dest" "$entry"
+}

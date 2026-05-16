@@ -300,3 +300,47 @@ EOF
   manifest_stage_commit
   jq -e '.key == "value"' "$TMPDIR/dest"
 }
+
+@test "deploy_marker_block: inserts block at end when file lacks markers" {
+  echo "prelude line" > "$TMPDIR/dest"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_marker_block "$TMPDIR/dest" "block content here" "# START" "# END"
+  manifest_stage_commit
+  grep -q "^prelude line$" "$TMPDIR/dest"
+  grep -q "^# START$" "$TMPDIR/dest"
+  grep -q "^block content here$" "$TMPDIR/dest"
+  grep -q "^# END$" "$TMPDIR/dest"
+}
+
+@test "deploy_marker_block: replaces block when markers already present" {
+  cat > "$TMPDIR/dest" <<EOF
+prelude
+# START
+old block content
+# END
+trailer
+EOF
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_marker_block "$TMPDIR/dest" "new block content" "# START" "# END"
+  manifest_stage_commit
+  grep -q "^prelude$" "$TMPDIR/dest"
+  grep -q "^new block content$" "$TMPDIR/dest"
+  ! grep -q "old block content" "$TMPDIR/dest"
+  grep -q "^trailer$" "$TMPDIR/dest"
+}
+
+@test "deploy_marker_block: records mode=marker_block with block hash" {
+  echo "prelude" > "$TMPDIR/dest"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_marker_block "$TMPDIR/dest" "body" "# START" "# END"
+  manifest_stage_commit
+  jq -e '.files["'"$TMPDIR"'/dest"].mode == "marker_block"' "$AICODING_MANIFEST"
+  jq -e '.files["'"$TMPDIR"'/dest"].marker_start == "# START"' "$AICODING_MANIFEST"
+  jq -e '.files["'"$TMPDIR"'/dest"].marker_end == "# END"' "$AICODING_MANIFEST"
+  local expect_h
+  expect_h=$(compute_block_hash "$TMPDIR/dest" "# START" "# END")
+  jq -e --arg h "$expect_h" '.files["'"$TMPDIR"'/dest"].deployed_block_hash == $h' "$AICODING_MANIFEST"
+}
