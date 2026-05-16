@@ -320,10 +320,9 @@ ensure_go() {
   curl -fsSL "https://go.dev/dl/go${goversion}.linux-${arch}.tar.gz" | $SUDO tar -C /usr/local -xz \
     || { warn "Go install failed"; return 0; }
   export PATH="/usr/local/go/bin:$PATH"
-  # Persist for future shells in this user
-  if [[ -w "$HOME" ]]; then
-    grep -q '/usr/local/go/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="/usr/local/go/bin:$PATH"' >> "$HOME/.bashrc"
-  fi
+  # Persistence for future shells is handled by the managed ~/.bashrc block
+  # (deployed by deploy_all_managed_files / adopt_existing_files); we no
+  # longer append a standalone export here.
 }
 
 ensure_uv() {
@@ -1042,6 +1041,12 @@ detect_install_mode() {
   done
   [[ -f "$HOME/.bashrc" ]] && grep -qxF "$BASHRC_BLOCK_START" "$HOME/.bashrc" \
     && { echo "adopt"; return; }
+  # Legacy: today's install.sh appends a standalone Go-PATH export to
+  # ~/.bashrc. Its presence signals a prior install, so treat as adopt
+  # (adopt_existing_files strips the line before deploying the managed block).
+  [[ -f "$HOME/.bashrc" ]] \
+    && grep -qxF 'export PATH="/usr/local/go/bin:$PATH"' "$HOME/.bashrc" \
+    && { echo "adopt"; return; }
   echo "first"
 }
 
@@ -1080,6 +1085,16 @@ adopt_existing_files() {
       deployed+=("$dest")
     fi
   done
+
+  # One-time fixup: today's install.sh appends a standalone Go-PATH export
+  # to ~/.bashrc. The managed block now absorbs this export, so we strip
+  # the standalone line during adopt to avoid duplication.
+  if [[ -f "$HOME/.bashrc" ]]; then
+    local tmp_bashrc
+    tmp_bashrc=$(mktemp)
+    grep -vxF 'export PATH="/usr/local/go/bin:$PATH"' "$HOME/.bashrc" > "$tmp_bashrc" || true
+    mv "$tmp_bashrc" "$HOME/.bashrc"
+  fi
 
   # ~/.bashrc managed block — adopt if marker block exists, else deploy.
   if [[ -f "$HOME/.bashrc" ]] && grep -qxF "$BASHRC_BLOCK_START" "$HOME/.bashrc"; then

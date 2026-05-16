@@ -5,6 +5,8 @@ setup() {
   export HOME="$TMPDIR"
   export AICODING_MANIFEST="$TMPDIR/.aicodingsetup/manifest.json"
   export AICODINGSETUP_NONINTERACTIVE=1
+  export BASHRC_BLOCK_START_LIT='# >>> aicoding managed block — do not edit between markers >>>'
+  export BASHRC_BLOCK_END_LIT='# <<< aicoding managed block <<<'
   # Stub apt etc. so install.sh's prereq steps no-op.
   export PATH="$TMPDIR/stubs:$PATH"
   mkdir -p "$TMPDIR/stubs"
@@ -65,4 +67,26 @@ teardown() {
   blueprint_hash=$(sha256sum "$BLUEPRINT_ROOT/configs/tmux/tmux.conf" | awk '{print $1}')
   deployed_hash=$(jq -r '.files["'"$HOME"'/.tmux.conf"].deployed_hash' "$AICODING_MANIFEST")
   [ "$blueprint_hash" = "$deployed_hash" ]
+}
+
+@test "install.sh adopt: strips standalone Go-PATH export from ~/.bashrc" {
+  mkdir -p "$HOME"
+  cat > "$HOME/.bashrc" <<'EOF'
+export PATH="/usr/local/go/bin:$PATH"
+echo hello
+EOF
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  # Standalone line is gone; managed block contains it inside markers.
+  local outside_block
+  outside_block=$(awk -v s="$BASHRC_BLOCK_START_LIT" -v e="$BASHRC_BLOCK_END_LIT" '
+    $0 == s { in_block = 1; next }
+    $0 == e { in_block = 0; next }
+    !in_block { print }
+  ' "$HOME/.bashrc")
+  if echo "$outside_block" | grep -qF 'export PATH="/usr/local/go/bin:$PATH"'; then
+    echo "Go-PATH export still present outside managed block:"
+    echo "$outside_block"
+    return 1
+  fi
+  grep -qF 'export PATH="/usr/local/go/bin:$PATH"' "$HOME/.bashrc"
 }
