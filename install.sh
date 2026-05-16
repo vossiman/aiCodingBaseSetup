@@ -1115,7 +1115,21 @@ adopt_existing_files() {
 }
 
 main() {
+  local force_reinstall=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force-reinstall) force_reinstall=1; shift ;;
+      *) shift ;;
+    esac
+  done
+
   header "AI Coding Base Setup"
+
+  if [[ $force_reinstall -eq 1 ]]; then
+    info "--force-reinstall: deleting existing manifest"
+    rm -f "$AICODING_MANIFEST"
+  fi
+
   load_or_prompt_secrets
   report_unmanaged
   install_mcp_packages
@@ -1124,7 +1138,11 @@ main() {
   install_claude_plugins
 
   local mode
-  mode=$(detect_install_mode)
+  if [[ $force_reinstall -eq 1 ]]; then
+    mode=first
+  else
+    mode=$(detect_install_mode)
+  fi
 
   case "$mode" in
     first)

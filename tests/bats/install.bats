@@ -51,3 +51,18 @@ teardown() {
   # Output must announce prereq-only mode.
   echo "$output" | grep -q "Container already initialized"
 }
+
+@test "install.sh --force-reinstall: deletes manifest and re-deploys" {
+  mkdir -p "$HOME/.aicodingsetup"
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  echo "user-edit-that-should-be-clobbered" > "$HOME/.tmux.conf"
+  run bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
+  [ "$status" -eq 0 ]
+  # File must be overwritten from blueprint.
+  ! grep -q "user-edit-that-should-be-clobbered" "$HOME/.tmux.conf"
+  # Manifest must record blueprint-hash, not user's hash.
+  local blueprint_hash deployed_hash
+  blueprint_hash=$(sha256sum "$BLUEPRINT_ROOT/configs/tmux/tmux.conf" | awk '{print $1}')
+  deployed_hash=$(jq -r '.files["'"$HOME"'/.tmux.conf"].deployed_hash' "$AICODING_MANIFEST")
+  [ "$blueprint_hash" = "$deployed_hash" ]
+}
