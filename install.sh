@@ -30,31 +30,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Shared deployment library — used by both install.sh and aicoding-update.
 . "$SCRIPT_DIR/lib/blueprint-deploy.sh"
 
-# Managed file inventory — every entry deploys to a known target.
-# Format: <dest_abs_path>|<mode>|<source_rel_to_blueprint>
-# (skills are enumerated dynamically; see deploy_all_managed_files.)
-MANAGED_OVERWRITE_FILES=(
-  "$HOME/.tmux.conf|overwrite|configs/tmux/tmux.conf"
-  "$HOME/.claude/hooks/custom-statusline.js|overwrite|configs/claude/hooks/custom-statusline.js"
-  "$HOME/.bashrc.d/aicoding-env.sh|overwrite|configs/bash/env.sh"
-  "$HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.sh"
-)
-MANAGED_MERGE_FILES=(
-  "$HOME/.claude/settings.json|merge|configs/claude/settings.json"
-  "$HOME/.config/opencode/opencode.json|merge|configs/opencode/opencode.json"
-)
-BASHRC_BLOCK_START='# >>> aicoding managed block — do not edit between markers >>>'
-BASHRC_BLOCK_END='# <<< aicoding managed block <<<'
-BASHRC_BLOCK_BODY=$(cat <<'EOF'
-# Sourced from configs/bash/* via the aicoding blueprint. Edit those
-# files (or your own ~/.bashrc.d/local-*.sh additions), not this block.
-export PATH="/usr/local/go/bin:$PATH"
-for _aicoding_f in "$HOME"/.bashrc.d/*.sh; do
-  [ -r "$_aicoding_f" ] && . "$_aicoding_f"
-done
-unset _aicoding_f
-EOF
-)
+# Managed file inventory + marker-block content live in lib/blueprint-deploy.sh
+# (managed_inventory_overwrite, managed_inventory_merge, managed_bashrc_*).
+# Cache the marker strings once; the body is re-emitted on each deploy.
+BASHRC_BLOCK_START="$(managed_marker_block_start)"
+BASHRC_BLOCK_END="$(managed_marker_block_end)"
 
 CLAUDE_DIR="$HOME/.claude"
 OPENCODE_DIR="$HOME/.config/opencode"
@@ -67,34 +47,28 @@ deploy_all_managed_files() {
   manifest_stage_begin
 
   local entry dest mode source
-  for entry in "${MANAGED_OVERWRITE_FILES[@]}"; do
-    IFS='|' read -r dest mode source <<<"$entry"
+  while IFS='|' read -r dest mode source; do
+    [[ -z "$dest" ]] && continue
     if [[ -f "$SCRIPT_DIR/$source" ]]; then
-      deploy_overwrite_file "$SCRIPT_DIR/$source" "$dest" "$source"
+      deploy_overwrite_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
       ok "deployed $dest"
     else
       warn "missing source in blueprint: $source — skipping $dest"
     fi
-  done
+  done < <(managed_inventory_overwrite)
 
-  for entry in "${MANAGED_MERGE_FILES[@]}"; do
-    IFS='|' read -r dest mode source <<<"$entry"
+  while IFS='|' read -r dest mode source; do
+    [[ -z "$dest" ]] && continue
     if [[ -f "$SCRIPT_DIR/$source" ]]; then
       mkdir -p "$(dirname "$dest")"
       [[ -f "$dest" ]] || echo '{}' > "$dest"
-      # Substitute {{HOME}} etc. in the source before merging (Claude only).
-      local resolved tmp_src
-      tmp_src=$(mktemp)
-      resolved=$(substitute_secrets "$(cat "$SCRIPT_DIR/$source")")
-      printf '%s' "$resolved" > "$tmp_src"
-      deploy_merge_file "$tmp_src" "$dest" "$source"
-      rm -f "$tmp_src"
+      deploy_merge_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
       ok "merged $dest"
     fi
-  done
+  done < <(managed_inventory_merge)
 
   # ~/.bashrc managed block.
-  deploy_marker_block "$HOME/.bashrc" "$BASHRC_BLOCK_BODY" \
+  deploy_marker_block "$HOME/.bashrc" "$(managed_bashrc_block_body)" \
     "$BASHRC_BLOCK_START" "$BASHRC_BLOCK_END"
   ok "managed block written to ~/.bashrc"
 
@@ -109,12 +83,7 @@ deploy_all_managed_files() {
     dest_skill="$dest_dir/SKILL.md"
     [[ ! -f "$src_skill" ]] && { warn "no SKILL.md in $skill_dir"; continue; }
     mkdir -p "$dest_dir"
-    # Substitute placeholders into a temp file.
-    local tmp_skill
-    tmp_skill=$(mktemp)
-    substitute_secrets "$(cat "$src_skill")" > "$tmp_skill"
-    deploy_overwrite_file "$tmp_skill" "$dest_skill" "skills/$skill_name/SKILL.md"
-    rm -f "$tmp_skill"
+    deploy_overwrite_file_substituted "$src_skill" "$dest_skill" "skills/$skill_name/SKILL.md"
     ok "skill $skill_name installed"
   done
 
@@ -568,17 +537,6 @@ json_merge() {
   echo "$merged" > "$target"
 }
 
-# --- Substitute placeholders in a string ---
-substitute_secrets() {
-  local content="$1"
-  content="${content//\{\{HOME\}\}/$HOME}"
-  content="${content//\{\{FIRECRAWL_API_KEY\}\}/${FIRECRAWL_API_KEY:-}}"
-  content="${content//\{\{BRAVE_API_KEY\}\}/${BRAVE_API_KEY:-}}"
-  content="${content//\{\{CLOUDFLARE_API_TOKEN\}\}/${CLOUDFLARE_API_TOKEN:-}}"
-  content="${content//\{\{CLOUDFLARE_ACCOUNT_ID\}\}/${CLOUDFLARE_ACCOUNT_ID:-}}"
-  echo "$content"
-}
-
 # --- Report unmanaged components ---
 report_unmanaged() {
   header "Checking for unmanaged components"
@@ -869,11 +827,11 @@ detect_install_mode() {
     return
   fi
   # No manifest. Check whether any managed files already exist on disk.
-  local entry dest
-  for entry in "${MANAGED_OVERWRITE_FILES[@]}" "${MANAGED_MERGE_FILES[@]}"; do
-    IFS='|' read -r dest _ _ <<<"$entry"
+  local dest
+  while IFS='|' read -r dest _ _; do
+    [[ -z "$dest" ]] && continue
     [[ -e "$dest" ]] && { echo "adopt"; return; }
-  done
+  done < <(managed_inventory_overwrite; managed_inventory_merge)
   [[ -f "$HOME/.bashrc" ]] && grep -qxF "$BASHRC_BLOCK_START" "$HOME/.bashrc" \
     && { echo "adopt"; return; }
   # Legacy: today's install.sh appends a standalone Go-PATH export to
@@ -889,11 +847,11 @@ detect_install_mode() {
 # without overwriting them. Files missing on disk are still deployed.
 adopt_existing_files() {
   manifest_stage_begin
-  local entry dest mode source
+  local dest mode source
   local -a adopted=() deployed=()
 
-  for entry in "${MANAGED_OVERWRITE_FILES[@]}"; do
-    IFS='|' read -r dest mode source <<<"$entry"
+  while IFS='|' read -r dest mode source; do
+    [[ -z "$dest" ]] && continue
     if [[ -e "$dest" ]]; then
       local h
       h=$(compute_hash "$dest")
@@ -902,13 +860,13 @@ adopt_existing_files() {
             '{mode:"overwrite",source:$s,deployed_hash:$h}')"
       adopted+=("$dest")
     elif [[ -f "$SCRIPT_DIR/$source" ]]; then
-      deploy_overwrite_file "$SCRIPT_DIR/$source" "$dest" "$source"
+      deploy_overwrite_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
       deployed+=("$dest")
     fi
-  done
+  done < <(managed_inventory_overwrite)
 
-  for entry in "${MANAGED_MERGE_FILES[@]}"; do
-    IFS='|' read -r dest mode source <<<"$entry"
+  while IFS='|' read -r dest mode source; do
+    [[ -z "$dest" ]] && continue
     if [[ -e "$dest" ]]; then
       manifest_set_file "$dest" \
         "$(jq -n --arg s "$source" '{mode:"merge",source:$s}')"
@@ -916,10 +874,10 @@ adopt_existing_files() {
     elif [[ -f "$SCRIPT_DIR/$source" ]]; then
       mkdir -p "$(dirname "$dest")"
       echo '{}' > "$dest"
-      deploy_merge_file "$SCRIPT_DIR/$source" "$dest" "$source"
+      deploy_merge_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
       deployed+=("$dest")
     fi
-  done
+  done < <(managed_inventory_merge)
 
   # One-time fixup: today's install.sh appends a standalone Go-PATH export
   # to ~/.bashrc. The managed block now absorbs this export, so we strip
@@ -940,7 +898,7 @@ adopt_existing_files() {
           '{mode:"marker_block",source:"(composed)",marker_start:$s,marker_end:$e,deployed_block_hash:$h}')"
     adopted+=("$HOME/.bashrc")
   else
-    deploy_marker_block "$HOME/.bashrc" "$BASHRC_BLOCK_BODY" \
+    deploy_marker_block "$HOME/.bashrc" "$(managed_bashrc_block_body)" \
       "$BASHRC_BLOCK_START" "$BASHRC_BLOCK_END"
     deployed+=("$HOME/.bashrc")
   fi

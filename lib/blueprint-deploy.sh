@@ -230,3 +230,192 @@ remove_managed_file() {
   rm -f "$dest"
   manifest_remove_file "$dest"
 }
+
+# ----------------------------------------------------------------------------
+# Managed inventory — single source of truth for both install.sh and
+# bin/aicoding-update. Each emitter prints pipe-delimited rows of the form
+# <dest_abs_path>|<mode>|<source_rel_to_blueprint>. Callers consume with
+#   while IFS= read -r entry; do ... done < <(managed_inventory_overwrite)
+# (Do NOT read into a bash array via $() — the dest paths interpolate $HOME
+# and we want shell expansion to happen at emit time, not earlier.)
+# ----------------------------------------------------------------------------
+
+# managed_inventory_overwrite — files deployed by full overwrite.
+managed_inventory_overwrite() {
+  cat <<EOF
+$HOME/.tmux.conf|overwrite|configs/tmux/tmux.conf
+$HOME/.claude/hooks/custom-statusline.js|overwrite|configs/claude/hooks/custom-statusline.js
+$HOME/.bashrc.d/aicoding-env.sh|overwrite|configs/bash/env.sh
+$HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.sh
+EOF
+}
+
+# managed_inventory_merge — JSON configs deep-merged into user files.
+managed_inventory_merge() {
+  cat <<EOF
+$HOME/.claude/settings.json|merge|configs/claude/settings.json
+$HOME/.config/opencode/opencode.json|merge|configs/opencode/opencode.json
+EOF
+}
+
+# Fixed marker strings for the managed ~/.bashrc block.
+managed_marker_block_start() { printf '%s' '# >>> aicoding managed block — do not edit between markers >>>'; }
+managed_marker_block_end()   { printf '%s' '# <<< aicoding managed block <<<'; }
+
+# managed_bashrc_path — destination of the marker_block managed file.
+managed_bashrc_path() { printf '%s' "$HOME/.bashrc"; }
+
+# managed_bashrc_block_body — emit the body that lives between the markers.
+managed_bashrc_block_body() {
+  cat <<'EOF'
+# Sourced from configs/bash/* via the aicoding blueprint. Edit those
+# files (or your own ~/.bashrc.d/local-*.sh additions), not this block.
+export PATH="/usr/local/go/bin:$PATH"
+for _aicoding_f in "$HOME"/.bashrc.d/*.sh; do
+  [ -r "$_aicoding_f" ] && . "$_aicoding_f"
+done
+unset _aicoding_f
+EOF
+}
+
+# load_secrets_env — source ~/.aicodingsetup/.secrets.env if present so that
+# substitute_secrets has the API-key env vars it needs. Idempotent and safe
+# to call with no file present (no-op).
+load_secrets_env() {
+  local f="${AICODING_SECRETS_FILE:-$HOME/.aicodingsetup/.secrets.env}"
+  if [ -f "$f" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$f"
+    set +a
+  fi
+}
+
+# substitute_secrets <content> — expand the {{HOME}} and {{*_API_KEY}}
+# placeholders shipped in configs/claude/settings.json and skill SKILL.md
+# files. Missing env vars expand to the empty string (same behavior as
+# install.sh's old definition).
+substitute_secrets() {
+  local content="$1"
+  content="${content//\{\{HOME\}\}/$HOME}"
+  content="${content//\{\{FIRECRAWL_API_KEY\}\}/${FIRECRAWL_API_KEY:-}}"
+  content="${content//\{\{BRAVE_API_KEY\}\}/${BRAVE_API_KEY:-}}"
+  content="${content//\{\{CLOUDFLARE_API_TOKEN\}\}/${CLOUDFLARE_API_TOKEN:-}}"
+  content="${content//\{\{CLOUDFLARE_ACCOUNT_ID\}\}/${CLOUDFLARE_ACCOUNT_ID:-}}"
+  printf '%s' "$content"
+}
+
+# _substitute_file_to <src> <dest_tmp> — like substitute_secrets but reads
+# from a file and writes to another file, preserving the source's exact byte
+# content (including any trailing newline). Uses sed to avoid bash command
+# substitution's "strip trailing newlines" behavior.
+_substitute_file_to() {
+  local src=$1 out=$2
+  # The five placeholders are mutually independent; one sed pipeline handles
+  # all of them with each value safely quoted (we escape `&`, `/`, and `\`
+  # because they're sed-replacement metacharacters).
+  local home_v="$HOME"
+  local fc_v="${FIRECRAWL_API_KEY:-}"
+  local br_v="${BRAVE_API_KEY:-}"
+  local cf_t_v="${CLOUDFLARE_API_TOKEN:-}"
+  local cf_a_v="${CLOUDFLARE_ACCOUNT_ID:-}"
+  _esc() { printf '%s' "$1" | sed -e 's/[\/&\\]/\\&/g'; }
+  sed \
+    -e "s/{{HOME}}/$(_esc "$home_v")/g" \
+    -e "s/{{FIRECRAWL_API_KEY}}/$(_esc "$fc_v")/g" \
+    -e "s/{{BRAVE_API_KEY}}/$(_esc "$br_v")/g" \
+    -e "s/{{CLOUDFLARE_API_TOKEN}}/$(_esc "$cf_t_v")/g" \
+    -e "s/{{CLOUDFLARE_ACCOUNT_ID}}/$(_esc "$cf_a_v")/g" \
+    "$src" > "$out"
+}
+
+# deploy_overwrite_file_substituted <src> <dest> <label>
+# Like deploy_overwrite_file, but expands {{HOME}} / {{*_API_KEY}} placeholders
+# in src before writing. The recorded deployed_hash is the hash of the
+# substituted-content file (matches what's actually on disk).
+deploy_overwrite_file_substituted() {
+  local src=$1 dest=$2 label=$3
+  local tmp; tmp=$(mktemp)
+  _substitute_file_to "$src" "$tmp"
+  deploy_overwrite_file "$tmp" "$dest" "$label"
+  rm -f "$tmp"
+}
+
+# deploy_merge_file_substituted <src> <dest> <label>
+# Like deploy_merge_file, but expands placeholders in src before merging.
+deploy_merge_file_substituted() {
+  local src=$1 dest=$2 label=$3
+  local tmp; tmp=$(mktemp)
+  _substitute_file_to "$src" "$tmp"
+  deploy_merge_file "$tmp" "$dest" "$label"
+  rm -f "$tmp"
+}
+
+# manifest_check_schema — exit non-zero if the on-disk manifest's
+# schema_version is higher than this library understands. Call after
+# verifying the manifest file exists.
+manifest_check_schema() {
+  local current=1
+  local manifest_schema
+  manifest_schema=$(jq -r '.schema_version // 1' "$AICODING_MANIFEST" 2>/dev/null || echo 1)
+  if [[ "$manifest_schema" =~ ^[0-9]+$ ]] && (( manifest_schema > current )); then
+    echo "aicoding-update: manifest schema_version $manifest_schema is newer than this tool (knows up to $current)." >&2
+    echo "Update aiCodingBaseSetup before running this." >&2
+    exit 3
+  fi
+}
+
+# classify_marker_block <dest> — echo a bucket like classify_file, specialized
+# for marker_block files. The "new" hash is what deploy_marker_block will
+# write (the body lines, each terminated by \n; matches compute_block_hash's
+# awk-print semantics). Returns one of: up_to_date, drifted_and_updating,
+# new_file.
+classify_marker_block() {
+  local dest=$1
+  local entry deployed current
+  entry=$(manifest_get_file "$dest")
+  local start; start=$(managed_marker_block_start)
+  local end;   end=$(managed_marker_block_end)
+
+  if [ "$entry" = "null" ]; then
+    # Not tracked yet. If the user happens to have an existing block, the
+    # caller (aicoding-update) shouldn't be classifying this — adopt is
+    # install.sh's job. Treat as new_file so the apply step writes it.
+    echo "new_file"
+    return 0
+  fi
+
+  current=$(compute_block_hash "$dest" "$start" "$end")
+  deployed=$(printf '%s' "$entry" | jq -r '.deployed_block_hash // empty')
+
+  if [ -z "$current" ]; then
+    # File missing or marker block missing on disk — re-deploy.
+    echo "drifted_and_updating"
+    return 0
+  fi
+
+  # Compare current block hash to the body the library would deploy. We
+  # build the expected hash by computing compute_block_hash on a temp file
+  # with the canonical body between the markers — guarantees the same awk
+  # semantics as the on-disk path.
+  local tmp_expected new_hash
+  tmp_expected=$(mktemp)
+  {
+    printf '%s\n' "$start"
+    managed_bashrc_block_body
+    printf '%s\n' "$end"
+  } > "$tmp_expected"
+  new_hash=$(compute_block_hash "$tmp_expected" "$start" "$end")
+  rm -f "$tmp_expected"
+
+  if [ "$current" = "$deployed" ] && [ "$current" = "$new_hash" ]; then
+    echo "up_to_date"
+  elif [ "$current" = "$deployed" ] && [ "$current" != "$new_hash" ]; then
+    # Tracked, user hasn't edited the block, blueprint advanced.
+    echo "will_update"
+  elif [ "$current" != "$deployed" ] && [ "$current" = "$new_hash" ]; then
+    echo "drifted_but_aligned"
+  else
+    echo "drifted_and_updating"
+  fi
+}
