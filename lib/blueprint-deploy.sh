@@ -27,3 +27,23 @@ compute_block_hash() {
     in_block { print }
   ' "$path" | sha256sum | awk '{print $1}'
 }
+
+# read_manifest — echo the manifest JSON; empty manifest if missing.
+read_manifest() {
+  if [ -f "$AICODING_MANIFEST" ]; then
+    cat "$AICODING_MANIFEST"
+  else
+    echo '{"schema_version":1,"files":{}}'
+  fi
+}
+
+# write_manifest <json> — atomically write the manifest JSON to disk.
+write_manifest() {
+  local json=$1
+  local dir
+  dir=$(dirname "$AICODING_MANIFEST")
+  mkdir -p "$dir"
+  local tmp="$AICODING_MANIFEST.tmp"
+  printf '%s\n' "$json" | jq '.' > "$tmp"
+  mv "$tmp" "$AICODING_MANIFEST"
+}

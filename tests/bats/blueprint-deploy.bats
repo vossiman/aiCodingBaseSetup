@@ -78,3 +78,37 @@ EOF
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
+
+@test "read_manifest: returns empty manifest when file missing" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run read_manifest
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '. == {"schema_version": 1, "files": {}}'
+}
+
+@test "read_manifest: returns existing manifest" {
+  cp "$BLUEPRINT_ROOT/tests/bats/fixtures/sample-manifest.json" "$AICODING_MANIFEST"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run read_manifest
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.schema_version == 1'
+  echo "$output" | jq -e '.blueprint_commit == "abc1234"'
+}
+
+@test "write_manifest: writes atomically via tmp+mv" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  write_manifest '{"schema_version":1,"files":{}}'
+  [ -f "$AICODING_MANIFEST" ]
+  jq -e '.schema_version == 1' "$AICODING_MANIFEST"
+  # No leftover tmp file.
+  [ ! -f "$AICODING_MANIFEST.tmp" ]
+}
+
+@test "write_manifest: creates parent directory if missing" {
+  rm -rf "$TMPDIR"
+  mkdir -p "$TMPDIR"
+  export AICODING_MANIFEST="$TMPDIR/nested/dir/manifest.json"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  write_manifest '{"schema_version":1,"files":{}}'
+  [ -f "$AICODING_MANIFEST" ]
+}
