@@ -257,3 +257,46 @@ EOF
   manifest_stage_commit
   [ -f "$TMPDIR/nested/dir/dest" ]
 }
+
+@test "deploy_merge_file: preserves user-added top-level keys" {
+  echo '{"theme":"dark","userKey":"userValue"}' > "$TMPDIR/dest"
+  echo '{"theme":"light","newKey":"newValue"}' > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_merge_file "$TMPDIR/src" "$TMPDIR/dest" "configs/example.json"
+  manifest_stage_commit
+  jq -e '.userKey == "userValue"' "$TMPDIR/dest"
+  jq -e '.newKey == "newValue"' "$TMPDIR/dest"
+  jq -e '.theme == "light"' "$TMPDIR/dest"  # source wins for shared keys
+}
+
+@test "deploy_merge_file: unions 'allow' arrays" {
+  echo '{"permissions":{"allow":["a","b"]}}' > "$TMPDIR/dest"
+  echo '{"permissions":{"allow":["b","c"]}}' > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_merge_file "$TMPDIR/src" "$TMPDIR/dest" "configs/example.json"
+  manifest_stage_commit
+  jq -e '.permissions.allow | sort == ["a","b","c"]' "$TMPDIR/dest"
+}
+
+@test "deploy_merge_file: records mode=merge in manifest, no hash" {
+  echo '{}' > "$TMPDIR/dest"
+  echo '{}' > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_merge_file "$TMPDIR/src" "$TMPDIR/dest" "configs/example.json"
+  manifest_stage_commit
+  jq -e '.files["'"$TMPDIR"'/dest"].mode == "merge"' "$AICODING_MANIFEST"
+  jq -e '.files["'"$TMPDIR"'/dest"].source == "configs/example.json"' "$AICODING_MANIFEST"
+  jq -e '.files["'"$TMPDIR"'/dest"] | has("deployed_hash") | not' "$AICODING_MANIFEST"
+}
+
+@test "deploy_merge_file: copies file when dest doesn't exist" {
+  echo '{"key":"value"}' > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_merge_file "$TMPDIR/src" "$TMPDIR/dest" "configs/example.json"
+  manifest_stage_commit
+  jq -e '.key == "value"' "$TMPDIR/dest"
+}

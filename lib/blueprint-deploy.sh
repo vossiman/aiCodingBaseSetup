@@ -146,3 +146,46 @@ deploy_overwrite_file() {
     '{mode:"overwrite", source:$s, deployed_hash:$h}')
   manifest_set_file "$dest" "$entry"
 }
+
+# _json_merge_into <target_path> <source_path> — deep-merge source into
+# target; source wins for scalars; "allow" arrays are unioned; other arrays:
+# source wins.
+_json_merge_into() {
+  local target=$1 source=$2
+  if [ ! -f "$target" ]; then
+    cp "$source" "$target"
+    return
+  fi
+  local merged
+  merged=$(jq -s '
+    def deep_merge(key):
+      if length == 2 then
+        .[0] as $a | .[1] as $b |
+        if ($a|type)=="object" and ($b|type)=="object" then
+          ($a|keys_unsorted) + ($b|keys_unsorted) | unique
+          | map(. as $k |
+              if ($a|has($k)) and ($b|has($k)) then
+                {($k): ([$a[$k],$b[$k]] | deep_merge($k))}
+              elif ($b|has($k)) then {($k): $b[$k]}
+              else {($k): $a[$k]} end)
+          | add // {}
+        elif ($a|type)=="array" and ($b|type)=="array" then
+          if key == "allow" then ($a + $b) | unique else $b end
+        else
+          if ($b == null or $b == "") then $a else $b end
+        end
+      else .[0] end;
+    [.[0],.[1]] | deep_merge("")
+  ' "$target" "$source")
+  printf '%s\n' "$merged" > "$target"
+}
+
+# deploy_merge_file <src> <dest> <source_label>
+deploy_merge_file() {
+  local src=$1 dest=$2 label=$3
+  mkdir -p "$(dirname "$dest")"
+  _json_merge_into "$dest" "$src"
+  local entry
+  entry=$(jq -n --arg s "$label" '{mode:"merge", source:$s}')
+  manifest_set_file "$dest" "$entry"
+}
