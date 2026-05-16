@@ -201,3 +201,69 @@ if [[ $ARG_YES -ne 1 ]]; then
     *) echo "Aborted."; exit 0 ;;
   esac
 fi
+
+manifest_stage_begin
+
+backup_drifted() {
+  local dest=$1
+  local stamp
+  stamp=$(date +%Y%m%d-%H%M%S)
+  cp "$dest" "$dest.bak.$stamp"
+  echo "      backup: $dest.bak.$stamp"
+}
+
+apply_all() {
+  local dest src bucket
+  for dest in "${!BUCKETS[@]}"; do
+    bucket=${BUCKETS[$dest]}
+    src="$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]:-}"
+
+    case "$bucket" in
+      up_to_date)
+        : ;;
+      will_update)
+        deploy_overwrite_file "$src" "$dest" "${FILE_SOURCE[$dest]}"
+        echo "      updated: $dest"
+        ;;
+      drifted_and_updating)
+        backup_drifted "$dest"
+        deploy_overwrite_file "$src" "$dest" "${FILE_SOURCE[$dest]}"
+        echo "      updated (with backup): $dest"
+        ;;
+      drifted_but_aligned)
+        # Refresh hash only.
+        local h
+        h=$(compute_hash "$dest")
+        manifest_set_file "$dest" \
+          "$(jq -n --arg s "${FILE_SOURCE[$dest]}" --arg h "$h" \
+              '{mode:"overwrite",source:$s,deployed_hash:$h}')"
+        ;;
+      new_file)
+        deploy_overwrite_file "$src" "$dest" "${FILE_SOURCE[$dest]}"
+        echo "      new: $dest"
+        ;;
+      to_remove)
+        remove_managed_file "$dest"
+        echo "      removed: $dest"
+        ;;
+      merge)
+        if [[ -f "$src" ]]; then
+          [[ -f "$dest" ]] || { mkdir -p "$(dirname "$dest")"; echo '{}' > "$dest"; }
+          deploy_merge_file "$src" "$dest" "${FILE_SOURCE[$dest]}"
+          echo "      merged: $dest"
+        fi
+        ;;
+    esac
+  done
+
+  manifest_stage_set_top blueprint_commit "$NEW_COMMIT"
+  local origin
+  origin=$(git -C "$AICODING_BLUEPRINT_CLONE" remote get-url origin 2>/dev/null || echo unknown)
+  manifest_stage_set_top blueprint_origin "$origin"
+}
+
+apply_all
+manifest_stage_commit
+
+echo
+echo "Manifest now at blueprint $NEW_COMMIT."

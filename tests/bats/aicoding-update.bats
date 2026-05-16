@@ -108,3 +108,76 @@ EOF
   [ "$status" -eq 0 ]
   grep -q "^user-line$" "$HOME/.tmux.conf"
 }
+
+@test "aicoding-update --yes: applies will_update files" {
+  mkdir -p "$HOME/.aicodingsetup"
+  echo "old-blueprint" > "$HOME/.tmux.conf"
+  echo "new-blueprint" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
+  cat > "$AICODING_MANIFEST" <<EOF
+{
+  "schema_version": 1,
+  "blueprint_commit": "old",
+  "files": {
+    "$HOME/.tmux.conf": {
+      "mode": "overwrite",
+      "source": "configs/tmux/tmux.conf",
+      "deployed_hash": "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')"
+    }
+  }
+}
+EOF
+  run "$BLUEPRINT_ROOT/bin/aicoding-update" --yes
+  [ "$status" -eq 0 ]
+  grep -q "^new-blueprint$" "$HOME/.tmux.conf"
+  # Manifest hash advanced.
+  local new_h
+  new_h=$(jq -r '.files["'"$HOME"'/.tmux.conf"].deployed_hash' "$AICODING_MANIFEST")
+  [ "$new_h" = "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')" ]
+}
+
+@test "aicoding-update --yes: saves .bak for drifted_and_updating before overwrite" {
+  mkdir -p "$HOME/.aicodingsetup"
+  echo "user-edit" > "$HOME/.tmux.conf"
+  echo "blueprint-version" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
+  cat > "$AICODING_MANIFEST" <<EOF
+{
+  "schema_version": 1,
+  "blueprint_commit": "old",
+  "files": {
+    "$HOME/.tmux.conf": {
+      "mode": "overwrite",
+      "source": "configs/tmux/tmux.conf",
+      "deployed_hash": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    }
+  }
+}
+EOF
+  run "$BLUEPRINT_ROOT/bin/aicoding-update" --yes
+  [ "$status" -eq 0 ]
+  grep -q "^blueprint-version$" "$HOME/.tmux.conf"
+  # A .bak.* file exists with the user's original content.
+  ls "$HOME/.tmux.conf.bak."*
+  cat "$HOME"/.tmux.conf.bak.* | grep -q "user-edit"
+}
+
+@test "aicoding-update --yes: removes to_remove files and manifest entries" {
+  mkdir -p "$HOME/.aicodingsetup" "$HOME/.bashrc.d"
+  echo "orphan content" > "$HOME/.bashrc.d/aicoding-old-thing.sh"
+  cat > "$AICODING_MANIFEST" <<EOF
+{
+  "schema_version": 1,
+  "blueprint_commit": "old",
+  "files": {
+    "$HOME/.bashrc.d/aicoding-old-thing.sh": {
+      "mode": "overwrite",
+      "source": "configs/bash/old-thing.sh",
+      "deployed_hash": "$(sha256sum "$HOME/.bashrc.d/aicoding-old-thing.sh" | awk '{print $1}')"
+    }
+  }
+}
+EOF
+  run "$BLUEPRINT_ROOT/bin/aicoding-update" --yes
+  [ "$status" -eq 0 ]
+  [ ! -e "$HOME/.bashrc.d/aicoding-old-thing.sh" ]
+  jq -e '.files | has("'"$HOME"'/.bashrc.d/aicoding-old-thing.sh") | not' "$AICODING_MANIFEST"
+}
