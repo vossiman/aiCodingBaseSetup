@@ -14,14 +14,13 @@ compute_hash() {
 # compute_block_hash <path> <start_marker> <end_marker> — sha256 of content
 # strictly between the start and end marker lines (exclusive). Each captured
 # line retains its trailing newline (so two lines hash "line1\nline2\n").
-# Empty if the start marker is absent.
+# Returns empty string if either marker is absent.
 compute_block_hash() {
   local path=$1 start=$2 end=$3
   [ -e "$path" ] || { echo ""; return 0; }
-  if ! grep -qF "$start" "$path"; then
-    echo ""
-    return 0
-  fi
+  # Both markers must be present (as full-line matches) for a block to exist.
+  grep -qxF "$start" "$path" || { echo ""; return 0; }
+  grep -qxF "$end"   "$path" || { echo ""; return 0; }
   awk -v s="$start" -v e="$end" '
     $0 == s { in_block = 1; next }
     $0 == e { in_block = 0; exit }

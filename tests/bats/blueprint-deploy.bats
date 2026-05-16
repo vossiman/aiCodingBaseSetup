@@ -52,3 +52,29 @@ EOF
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
+
+@test "compute_block_hash: returns empty when end marker is absent" {
+  cat > "$TMPDIR/f" <<EOF
+prelude
+# START
+only opening marker
+no end marker here
+EOF
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run compute_block_hash "$TMPDIR/f" "# START" "# END"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "compute_block_hash: returns empty when start marker is absent" {
+  cat > "$TMPDIR/f" <<EOF
+prelude
+only closing marker below
+# END
+trailer
+EOF
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run compute_block_hash "$TMPDIR/f" "# START" "# END"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
