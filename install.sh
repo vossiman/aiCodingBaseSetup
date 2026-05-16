@@ -1028,7 +1028,92 @@ check_playwright() {
   fi
 }
 
-# --- Main flow ---
+# Detect which deploy mode this install.sh run should use.
+detect_install_mode() {
+  if [[ -f "$AICODING_MANIFEST" ]]; then
+    echo "prereq_only"
+    return
+  fi
+  # No manifest. Check whether any managed files already exist on disk.
+  local entry dest
+  for entry in "${MANAGED_OVERWRITE_FILES[@]}" "${MANAGED_MERGE_FILES[@]}"; do
+    IFS='|' read -r dest _ _ <<<"$entry"
+    [[ -e "$dest" ]] && { echo "adopt"; return; }
+  done
+  [[ -f "$HOME/.bashrc" ]] && grep -qxF "$BASHRC_BLOCK_START" "$HOME/.bashrc" \
+    && { echo "adopt"; return; }
+  echo "first"
+}
+
+# adopt_existing_files — record current hashes for existing managed files
+# without overwriting them. Files missing on disk are still deployed.
+adopt_existing_files() {
+  manifest_stage_begin
+  local entry dest mode source
+  local -a adopted=() deployed=()
+
+  for entry in "${MANAGED_OVERWRITE_FILES[@]}"; do
+    IFS='|' read -r dest mode source <<<"$entry"
+    if [[ -e "$dest" ]]; then
+      local h
+      h=$(compute_hash "$dest")
+      manifest_set_file "$dest" \
+        "$(jq -n --arg s "$source" --arg h "$h" \
+            '{mode:"overwrite",source:$s,deployed_hash:$h}')"
+      adopted+=("$dest")
+    elif [[ -f "$SCRIPT_DIR/$source" ]]; then
+      deploy_overwrite_file "$SCRIPT_DIR/$source" "$dest" "$source"
+      deployed+=("$dest")
+    fi
+  done
+
+  for entry in "${MANAGED_MERGE_FILES[@]}"; do
+    IFS='|' read -r dest mode source <<<"$entry"
+    if [[ -e "$dest" ]]; then
+      manifest_set_file "$dest" \
+        "$(jq -n --arg s "$source" '{mode:"merge",source:$s}')"
+      adopted+=("$dest")
+    elif [[ -f "$SCRIPT_DIR/$source" ]]; then
+      mkdir -p "$(dirname "$dest")"
+      echo '{}' > "$dest"
+      deploy_merge_file "$SCRIPT_DIR/$source" "$dest" "$source"
+      deployed+=("$dest")
+    fi
+  done
+
+  # ~/.bashrc managed block — adopt if marker block exists, else deploy.
+  if [[ -f "$HOME/.bashrc" ]] && grep -qxF "$BASHRC_BLOCK_START" "$HOME/.bashrc"; then
+    local h
+    h=$(compute_block_hash "$HOME/.bashrc" "$BASHRC_BLOCK_START" "$BASHRC_BLOCK_END")
+    manifest_set_file "$HOME/.bashrc" \
+      "$(jq -n --arg s "$BASHRC_BLOCK_START" --arg e "$BASHRC_BLOCK_END" --arg h "$h" \
+          '{mode:"marker_block",source:"(composed)",marker_start:$s,marker_end:$e,deployed_block_hash:$h}')"
+    adopted+=("$HOME/.bashrc")
+  else
+    deploy_marker_block "$HOME/.bashrc" "$BASHRC_BLOCK_BODY" \
+      "$BASHRC_BLOCK_START" "$BASHRC_BLOCK_END"
+    deployed+=("$HOME/.bashrc")
+  fi
+
+  local commit origin
+  commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
+  origin=$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo unknown)
+  manifest_stage_set_top blueprint_commit "$commit"
+  manifest_stage_set_top blueprint_origin "$origin"
+
+  manifest_stage_commit
+
+  info "Adopt mode: ${#adopted[@]} existing managed files captured into manifest:"
+  local f
+  for f in "${adopted[@]}"; do info "    $f"; done
+  if [[ ${#deployed[@]} -gt 0 ]]; then
+    info "Adopt mode: ${#deployed[@]} new managed files deployed from blueprint:"
+    for f in "${deployed[@]}"; do info "    $f"; done
+  fi
+  info "Adopted files were not modified. To see what diverges from the blueprint,"
+  info "run: aicoding-update --dry-run"
+}
+
 main() {
   header "AI Coding Base Setup"
   load_or_prompt_secrets
@@ -1036,20 +1121,39 @@ main() {
   install_mcp_packages
   install_claude_mcps
   ensure_claude_onboarding_state
-  deploy_all_managed_files
   install_claude_plugins
+
+  local mode
+  mode=$(detect_install_mode)
+
+  case "$mode" in
+    first)
+      info "Mode: first-deploy (no manifest, no managed files on disk)"
+      deploy_all_managed_files
+      ;;
+    adopt)
+      info "Mode: adopt-existing (no manifest, managed files present)"
+      adopt_existing_files
+      ;;
+    prereq_only)
+      info "Mode: prereq-only (manifest exists)"
+      local commit
+      commit=$(jq -r '.blueprint_commit // "unknown"' "$AICODING_MANIFEST")
+      info "Container already initialized at blueprint $commit."
+      info "Prereqs re-checked. For blueprint file changes, run: aicoding-update"
+      info "(To rewrite all managed files from scratch: install.sh --force-reinstall)"
+      ;;
+  esac
+
   install_tmux_plugins
   install_bubblewrap
   install_infra_audit
   check_playwright
 
   header "Done!"
-  info "Environment: $ENV_TYPE"
+  info "Mode: $mode"
   info "Secrets: $SECRETS_FILE"
   info "Claude Code: $CLAUDE_DIR"
-  if command -v opencode &>/dev/null; then
-    info "opencode: $OPENCODE_DIR"
-  fi
 }
 
 main "$@"
