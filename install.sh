@@ -26,6 +26,36 @@ if [[ "${_AICODINGSETUP_NVS_STRIPPED:-}" != 1 ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Shared deployment library — used by both install.sh and aicoding-update.
+. "$SCRIPT_DIR/lib/blueprint-deploy.sh"
+
+# Managed file inventory — every entry deploys to a known target.
+# Format: <dest_abs_path>|<mode>|<source_rel_to_blueprint>
+# (skills are enumerated dynamically; see install_skills.)
+MANAGED_OVERWRITE_FILES=(
+  "$HOME/.tmux.conf|overwrite|configs/tmux/tmux.conf"
+  "$HOME/.claude/hooks/custom-statusline.js|overwrite|configs/claude/hooks/custom-statusline.js"
+  "$HOME/.bashrc.d/aicoding-env.sh|overwrite|configs/bash/env.sh"
+  "$HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.sh"
+)
+MANAGED_MERGE_FILES=(
+  "$HOME/.claude/settings.json|merge|configs/claude/settings.json"
+  "$HOME/.config/opencode/opencode.json|merge|configs/opencode/opencode.json"
+)
+BASHRC_BLOCK_START='# >>> aicoding managed block — do not edit between markers >>>'
+BASHRC_BLOCK_END='# <<< aicoding managed block <<<'
+BASHRC_BLOCK_BODY=$(cat <<'EOF'
+# Sourced from configs/bash/* via the aicoding blueprint. Edit those
+# files (or your own ~/.bashrc.d/local-*.sh additions), not this block.
+export PATH="/usr/local/go/bin:$PATH"
+for _aicoding_f in "$HOME"/.bashrc.d/*.sh; do
+  [ -r "$_aicoding_f" ] && . "$_aicoding_f"
+done
+unset _aicoding_f
+EOF
+)
+
 CLAUDE_DIR="$HOME/.claude"
 OPENCODE_DIR="$HOME/.config/opencode"
 SECRETS_DIR="$HOME/.aicodingsetup"
