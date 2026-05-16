@@ -224,3 +224,9 @@ deploy_marker_block() {
     '{mode:"marker_block", source:"(composed)", marker_start:$s, marker_end:$e, deployed_block_hash:$h}')
   manifest_set_file "$dest" "$entry"
 }
+
+remove_managed_file() {
+  local dest=$1
+  rm -f "$dest"
+  manifest_remove_file "$dest"
+}

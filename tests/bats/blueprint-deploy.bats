@@ -344,3 +344,31 @@ EOF
   expect_h=$(compute_block_hash "$TMPDIR/dest" "# START" "# END")
   jq -e --arg h "$expect_h" '.files["'"$TMPDIR"'/dest"].deployed_block_hash == $h' "$AICODING_MANIFEST"
 }
+
+@test "remove_managed_file: deletes file and removes manifest entry" {
+  echo "x" > "$TMPDIR/dest"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  manifest_set_file "$TMPDIR/dest" '{"mode":"overwrite","source":"x","deployed_hash":"y"}'
+  manifest_stage_commit
+
+  manifest_stage_begin
+  remove_managed_file "$TMPDIR/dest"
+  manifest_stage_commit
+
+  [ ! -e "$TMPDIR/dest" ]
+  jq -e '.files | has("'"$TMPDIR"'/dest") | not' "$AICODING_MANIFEST"
+}
+
+@test "remove_managed_file: tolerates missing file" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  manifest_set_file "$TMPDIR/dest" '{"mode":"overwrite","source":"x","deployed_hash":"y"}'
+  manifest_stage_commit
+
+  manifest_stage_begin
+  remove_managed_file "$TMPDIR/dest"   # file already absent
+  manifest_stage_commit
+
+  jq -e '.files | has("'"$TMPDIR"'/dest") | not' "$AICODING_MANIFEST"
+}
