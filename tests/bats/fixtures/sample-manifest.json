@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "blueprint_commit": "abc1234",
+  "blueprint_origin": "https://github.com/vossiman/aiCodingBaseSetup",
+  "deployed_at": "2026-05-16T00:00:00Z",
+  "files": {
+    "/tmp/test-home/.tmux.conf": {
+      "mode": "overwrite",
+      "source": "configs/tmux/tmux.conf",
+      "deployed_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+}
