@@ -49,11 +49,20 @@ refresh_blueprint() {
 refresh_blueprint
 . "$AICODING_BLUEPRINT_CLONE/lib/blueprint-deploy.sh"
 
+# Secrets need to be in the environment before any deploy_*_substituted call,
+# otherwise the substituted output strips placeholders to empty strings and
+# our deployed file would lose any value previously written by install.sh.
+# load_secrets_env is a no-op if no .secrets.env exists (e.g. test runs).
+load_secrets_env
+
 if [[ ! -f "$AICODING_MANIFEST" ]]; then
   echo "aicoding-update: no manifest at $AICODING_MANIFEST" >&2
   echo "Run install.sh first to provision this container." >&2
   exit 1
 fi
+
+# Refuse to operate on a manifest written by a future schema we don't know.
+manifest_check_schema
 
 OLD_COMMIT=$(jq -r '.blueprint_commit // "unknown"' "$AICODING_MANIFEST")
 NEW_COMMIT=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -64,41 +73,32 @@ echo "Blueprint: ${OLD_COMMIT} -> ${NEW_COMMIT}"
 declare -A FILE_MODE FILE_SOURCE
 declare -A BUCKETS
 
-# Load blueprint inventory by sourcing the same MANAGED_* declarations
-# install.sh uses. Reuse: extract them from the cloned install.sh.
-# Simpler approach: hardcode the file list here (must stay in sync).
-MANAGED_OVERWRITE_FILES=(
-  "$HOME/.tmux.conf|overwrite|configs/tmux/tmux.conf"
-  "$HOME/.claude/hooks/custom-statusline.js|overwrite|configs/claude/hooks/custom-statusline.js"
-  "$HOME/.bashrc.d/aicoding-env.sh|overwrite|configs/bash/env.sh"
-  "$HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.sh"
-)
-MANAGED_MERGE_FILES=(
-  "$HOME/.claude/settings.json|merge|configs/claude/settings.json"
-  "$HOME/.config/opencode/opencode.json|merge|configs/opencode/opencode.json"
-)
-BASHRC_BLOCK_START='# >>> aicoding managed block — do not edit between markers >>>'
-BASHRC_BLOCK_END='# <<< aicoding managed block <<<'
+# Marker strings come from the library — keep this script free of duplicate
+# managed-file declarations (install.sh and aicoding-update used to drift).
+BASHRC_DEST=$(managed_bashrc_path)
 
 classify_all() {
   local entry dest mode source
-  # Blueprint-side files.
-  for entry in "${MANAGED_OVERWRITE_FILES[@]}" "${MANAGED_MERGE_FILES[@]}"; do
-    IFS='|' read -r dest mode source <<<"$entry"
+  # Overwrite-mode files from the blueprint inventory.
+  while IFS='|' read -r dest mode source; do
+    [[ -z "$dest" ]] && continue
     FILE_MODE[$dest]=$mode
     FILE_SOURCE[$dest]=$source
-    local bucket
-    bucket=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" "$mode")
-    BUCKETS[$dest]=$bucket
-  done
+    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" "$mode")
+  done < <(managed_inventory_overwrite)
 
-  # Files in manifest but absent from blueprint inventory → to_remove.
-  local manifest_files
-  manifest_files=$(jq -r '.files | keys[]' "$AICODING_MANIFEST")
-  while IFS= read -r dest; do
+  # Merge-mode files from the blueprint inventory.
+  while IFS='|' read -r dest mode source; do
     [[ -z "$dest" ]] && continue
-    [[ -z "${FILE_MODE[$dest]:-}" ]] && BUCKETS[$dest]=to_remove
-  done <<<"$manifest_files"
+    FILE_MODE[$dest]=$mode
+    FILE_SOURCE[$dest]=$source
+    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" "$mode")
+  done < <(managed_inventory_merge)
+
+  # The single marker_block file (~/.bashrc) — classified by block hash.
+  FILE_MODE[$BASHRC_DEST]=marker_block
+  FILE_SOURCE[$BASHRC_DEST]="(composed)"
+  BUCKETS[$BASHRC_DEST]=$(classify_marker_block "$BASHRC_DEST")
 
   # Enumerate skills in blueprint clone.
   local skill_dir skill_name
@@ -111,6 +111,19 @@ classify_all() {
     FILE_SOURCE[$dest]=$source
     BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" overwrite)
   done
+
+  # Files in manifest but absent from blueprint inventory → to_remove.
+  # Done LAST so any blueprint-tracked entry above wins over manifest sweep.
+  local manifest_files
+  manifest_files=$(jq -r '.files | keys[]' "$AICODING_MANIFEST")
+  while IFS= read -r dest; do
+    [[ -z "$dest" ]] && continue
+    [[ -z "${FILE_MODE[$dest]:-}" ]] && BUCKETS[$dest]=to_remove
+  done <<<"$manifest_files"
+  # Ensure a clean exit code under `set -e` — the while loop above ends with
+  # whatever the last short-circuit `&&` returned (often 1 when nothing was
+  # appended), which would otherwise propagate up and abort the script.
+  return 0
 }
 
 classify_all
@@ -153,9 +166,12 @@ print_summary() {
     for dest in "${!BUCKETS[@]}"; do
       [[ ${BUCKETS[$dest]} != drifted_and_updating ]] && continue
       echo "      $dest"
-      local src="$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]}"
-      diff -u --label "your version" --label "blueprint version" "$dest" "$src" \
-        | sed 's/^/        /' || true
+      # marker_block has no on-disk blueprint source path; skip the diff there.
+      if [[ "${FILE_MODE[$dest]:-overwrite}" != "marker_block" ]]; then
+        local src="$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]}"
+        diff -u --label "your version" --label "blueprint version" "$dest" "$src" \
+          | sed 's/^/        /' || true
+      fi
     done
   fi
 
@@ -212,34 +228,71 @@ backup_drifted() {
   echo "      backup: $dest.bak.$stamp"
 }
 
+# _apply_deploy <mode> <dest> <src> — dispatch to the correct deploy
+# primitive based on the file's mode. Used for will_update / new_file /
+# drifted_and_updating cases; substitutes secrets on overwrite/merge so
+# that {{HOME}} / {{*_API_KEY}} placeholders never reach disk.
+_apply_deploy() {
+  local mode=$1 dest=$2 src=$3
+  case "$mode" in
+    overwrite)
+      deploy_overwrite_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
+      ;;
+    merge)
+      [[ -f "$dest" ]] || { mkdir -p "$(dirname "$dest")"; echo '{}' > "$dest"; }
+      deploy_merge_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
+      ;;
+    marker_block)
+      deploy_marker_block "$dest" \
+        "$(managed_bashrc_block_body)" \
+        "$(managed_marker_block_start)" "$(managed_marker_block_end)"
+      ;;
+  esac
+}
+
 apply_all() {
-  local dest src bucket
+  local dest src bucket mode
   for dest in "${!BUCKETS[@]}"; do
     bucket=${BUCKETS[$dest]}
+    mode=${FILE_MODE[$dest]:-overwrite}
     src="$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]:-}"
 
     case "$bucket" in
       up_to_date)
         : ;;
       will_update)
-        deploy_overwrite_file "$src" "$dest" "${FILE_SOURCE[$dest]}"
+        _apply_deploy "$mode" "$dest" "$src"
         echo "      updated: $dest"
         ;;
       drifted_and_updating)
-        backup_drifted "$dest"
-        deploy_overwrite_file "$src" "$dest" "${FILE_SOURCE[$dest]}"
+        # marker_block carries user-managed content too; back up on drift.
+        if [[ -e "$dest" ]]; then
+          backup_drifted "$dest"
+        fi
+        _apply_deploy "$mode" "$dest" "$src"
         echo "      updated (with backup): $dest"
         ;;
       drifted_but_aligned)
-        # Refresh hash only.
-        local h
-        h=$(compute_hash "$dest")
-        manifest_set_file "$dest" \
-          "$(jq -n --arg s "${FILE_SOURCE[$dest]}" --arg h "$h" \
-              '{mode:"overwrite",source:$s,deployed_hash:$h}')"
+        # Refresh hash only — content on disk already matches blueprint.
+        if [[ "$mode" = "marker_block" ]]; then
+          local h
+          h=$(compute_block_hash "$dest" \
+              "$(managed_marker_block_start)" "$(managed_marker_block_end)")
+          manifest_set_file "$dest" \
+            "$(jq -n --arg s "$(managed_marker_block_start)" \
+                     --arg e "$(managed_marker_block_end)" \
+                     --arg h "$h" \
+                '{mode:"marker_block",source:"(composed)",marker_start:$s,marker_end:$e,deployed_block_hash:$h}')"
+        else
+          local h
+          h=$(compute_hash "$dest")
+          manifest_set_file "$dest" \
+            "$(jq -n --arg s "${FILE_SOURCE[$dest]}" --arg h "$h" \
+                '{mode:"overwrite",source:$s,deployed_hash:$h}')"
+        fi
         ;;
       new_file)
-        deploy_overwrite_file "$src" "$dest" "${FILE_SOURCE[$dest]}"
+        _apply_deploy "$mode" "$dest" "$src"
         echo "      new: $dest"
         ;;
       to_remove)
@@ -247,9 +300,10 @@ apply_all() {
         echo "      removed: $dest"
         ;;
       merge)
+        # Classification bucket for merge-mode files (always 'merge', never
+        # 'will_update' etc). Identical handling to will_update via mode.
         if [[ -f "$src" ]]; then
-          [[ -f "$dest" ]] || { mkdir -p "$(dirname "$dest")"; echo '{}' > "$dest"; }
-          deploy_merge_file "$src" "$dest" "${FILE_SOURCE[$dest]}"
+          _apply_deploy merge "$dest" "$src"
           echo "      merged: $dest"
         fi
         ;;
