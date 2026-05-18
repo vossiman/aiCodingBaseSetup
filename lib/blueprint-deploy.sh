@@ -116,6 +116,14 @@ classify_file() {
     return 0
   fi
 
+  # File tracked in manifest + blueprint source present + dest missing →
+  # restore (not drifted_and_updating, since the user didn't modify anything;
+  # the file just isn't on disk).
+  if [ ! -e "$dest" ]; then
+    echo "restore"
+    return 0
+  fi
+
   local current new deployed
   current=$(compute_hash "$dest")
   new=$(compute_hash "$src")
@@ -385,11 +393,20 @@ classify_marker_block() {
     return 0
   fi
 
+  # File truly absent on disk → restore (not drift; nothing was edited away,
+  # the file simply isn't there). Distinguish from "file present but markers
+  # missing", which IS user-edit drift and stays drifted_and_updating.
+  if [ ! -e "$dest" ]; then
+    echo "restore"
+    return 0
+  fi
+
   current=$(compute_block_hash "$dest" "$start" "$end")
   deployed=$(printf '%s' "$entry" | jq -r '.deployed_block_hash // empty')
 
   if [ -z "$current" ]; then
-    # File missing or marker block missing on disk — re-deploy.
+    # File present but marker block missing on disk — user removed the
+    # markers; treat as drift so the apply step backs up before re-deploy.
     echo "drifted_and_updating"
     return 0
   fi
