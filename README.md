@@ -45,6 +45,11 @@ On first run, you'll be prompted for API keys. Press Enter to skip any you don't
 - **custom-statusline.js** — Powerline-style status bar with context window, rate limits, git branch
 - **bw-deny-files.sh** — Blocks AI access to sensitive files (from [bw-AICode](https://github.com/vossiman/bw-AICode))
 
+### Container-side helpers
+
+- **`~/.bashrc.d/aicoding-env.sh`** — empty by default; put container-wide `export FOO=bar` lines here. Sourced from every login shell via the managed block in `~/.bashrc`.
+- **`~/.bashrc.d/aicoding-ssh-auth-sock.sh`** — stabilizes the forwarded SSH agent socket across DevPod / Cursor reconnects. Routes every shell through `~/.ssh/agent.sock` (a symlink we keep current). Without it, long-lived tmux panes hold a stale `SSH_AUTH_SOCK` path after the host's SSH session rotates, and `git push` fails with `Permission denied (publickey)` until you open a new pane.
+
 ### External Tools (detected, not installed)
 
 - **infra-audit** — Python project infrastructure auditor ([python-infra-audit-cc](https://github.com/vossiman/python-infra-audit-cc))
@@ -65,18 +70,50 @@ Secrets are stored at `~/.aicodingsetup/.secrets.env` (outside the repo).
 
 ## Update
 
-Just run the installer again:
+Two distinct flows after the initial install:
+
+### `aicoding-update` — for blueprint file changes (recommended)
 
 ```bash
-./install.sh
+aicoding-update --dry-run    # show what would change vs your environment
+aicoding-update              # interactive — single y/N confirm, inline diff for drift
+aicoding-update --yes        # scripted — auto-confirms; backs up anything drifted
 ```
 
-It's idempotent:
-- Existing secrets are preserved
-- Configs are merged (never overwritten)
-- Unmanaged MCPs, hooks, and skills are reported but never removed
-- bubblewrap repo is git-pulled
-- Plugins are updated if newer versions exist
+`aicoding-update` is installed into `~/.local/bin/` by `install.sh`. It compares three hashes per managed file (currently on disk, last-deployed per the manifest, current blueprint source) and classifies each file into one of seven outcomes. Drifted files (you modified them) are surfaced with full inline `diff -u` output and backed up to `<file>.bak.<YYYYMMDD-HHMMSS>` before being overwritten. Missing-on-disk managed files are classified as `restore` and silently re-deployed.
+
+The manifest at `~/.aicodingsetup/manifest.json` records the blueprint commit and a per-file hash for every overwrite-mode file, plus a block-hash for the marker-guarded section of `~/.bashrc`.
+
+### `./install.sh` — for prereq changes only
+
+Re-running `install.sh` on an initialized container (manifest exists) **does NOT redeploy managed files**. It re-runs the apt/build/locale prereq steps (idempotent), then prints:
+
+```
+Container already initialized at blueprint <commit>.
+Prereqs re-checked. For blueprint file changes, run: aicoding-update
+```
+
+This protects you from accidental clobbers. If you genuinely want to nuke local drift and re-deploy from scratch, use the escape hatch:
+
+```bash
+./install.sh --force-reinstall   # deletes manifest, falls through to first-deploy
+```
+
+### Install modes
+
+`install.sh` picks one of three modes based on what it finds:
+
+| State on disk | Mode | Behaviour |
+|---|---|---|
+| No manifest, no managed files exist | `first` | Deploys everything; writes initial manifest. |
+| No manifest, but managed files already on disk (older install) | `adopt` | Captures current file hashes into the manifest without overwriting. Surfaces accumulated drift on the next `aicoding-update --dry-run`. |
+| Manifest exists | `prereq_only` | Re-runs prereqs; skips file deploys. |
+
+The `~/.bashrc.d/` convention for user additions: anything matching `local-*.sh` (or any name *not* prefixed `aicoding-`) is sourced by the managed block but never touched by the blueprint. Personal aliases, env vars, and shell tweaks belong there.
+
+### Why the model
+
+The pre-manifest installer would silently clobber any file you'd hand-edited on every re-run. The manifest + drift detection lets the installer guarantee "your changes are never overwritten without a prompt." See `docs/superpowers/specs/2026-05-16-blueprint-sync-design.md` in the parent [devMachine](https://github.com/vossiman/devMachine) repo for the full design.
 
 ## Windows
 
@@ -136,24 +173,33 @@ install.sh
   3. Load or prompt for secrets (~/.aicodingsetup/.secrets.env — non-interactive in containers)
   4. Report unmanaged components (leave untouched)
   5. Configure Claude Code MCPs (claude mcp add)
-  6. Merge Claude Code settings.json (deep merge, preserve existing)
-  7. Install Claude Code marketplace plugins
-  8. Merge opencode config (opencode.json with MCPs)
-  9. Copy hooks and statusline
- 10. Deploy custom skills (with secret substitution)
- 11. Clone/update bubblewrap, symlink hook
- 12. Detect infra-audit
- 13. Check Playwright installation
+  6. Install Claude Code marketplace plugins
+  7. Install aicoding-update symlink → ~/.local/bin/aicoding-update
+  8. Detect install mode (first / adopt / prereq_only) — see Update section
+  9. Deploy managed files (first mode) OR adopt existing hashes (adopt mode) OR
+     skip file deploys (prereq_only mode). Writes / updates the manifest.
+ 10. Install tmux plugins (TPM), clone/update bubblewrap, detect infra-audit,
+     check Playwright
 ```
+
+File deployment is centralised in `lib/blueprint-deploy.sh`. Every managed file flows through one of three deploy modes (`overwrite`, `merge`, `marker_block`), captured in the manifest at `~/.aicodingsetup/manifest.json` so subsequent `aicoding-update` runs can detect and surface drift.
 
 ## Repo Structure
 
 ```
 aiCodingBaseSetup/
-├── install.sh                     # Linux/WSL installer
+├── install.sh                     # Linux/WSL installer with three-mode dispatch
 ├── install.ps1                    # Windows installer (stub)
+├── update.sh                      # postStartCommand: refresh claude + opencode binaries
+├── bin/
+│   └── aicoding-update            # CLI for applying blueprint changes to a live container
+├── lib/
+│   └── blueprint-deploy.sh        # Shared library: hash, manifest, classify, deploy primitives
 ├── .secrets.env.example           # Template for required API keys
 ├── configs/
+│   ├── bash/
+│   │   ├── env.sh                 # Empty — container-wide env vars go here
+│   │   └── ssh-auth-sock.sh       # SSH_AUTH_SOCK stabilizer across reconnects
 │   ├── claude/
 │   │   ├── settings.json          # Base Claude Code settings
 │   │   └── hooks/
@@ -164,6 +210,8 @@ aiCodingBaseSetup/
 ├── skills/
 │   └── cloudflare-browser/
 │       └── SKILL.md
+├── tests/
+│   └── bats/                      # bats-core unit + integration + regression tests
 └── vendor/                        # External repos (gitignored)
     └── bw-AICode/
 ```
