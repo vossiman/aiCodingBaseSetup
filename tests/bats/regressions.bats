@@ -161,6 +161,33 @@ teardown() {
   jq -e '.files["'"$HOME"'/.bashrc"].mode == "marker_block"' "$AICODING_MANIFEST"
 }
 
+# Cosmetic regression: a managed file in the manifest but absent from disk
+# must be cleanly restored — no `diff: ... No such file` stderr, no
+# "updated (with backup)" misleading line, no silent cp failures inside
+# backup_drifted. Should classify as `restore` and re-deploy.
+@test "regression: aicoding-update restores missing managed file cleanly" {
+  bash "$AICODING_BLUEPRINT_CLONE/install.sh" </dev/null
+  rm -f "$HOME/.bashrc.d/aicoding-env.sh"
+  [ ! -e "$HOME/.bashrc.d/aicoding-env.sh" ]
+
+  # aicoding-update should classify as restore, deploy without trying to diff.
+  run "$HOME/.local/bin/aicoding-update" --yes
+  [ "$status" -eq 0 ]
+
+  # File is restored.
+  [ -f "$HOME/.bashrc.d/aicoding-env.sh" ]
+
+  # No "diff: ... No such file" error in output.
+  ! echo "$output" | grep -q "diff:.*No such file"
+
+  # Output mentions "restored:" not "updated (with backup): <env.sh>".
+  echo "$output" | grep -q "restored:"
+  ! echo "$output" | grep -q "updated (with backup): $HOME/.bashrc.d/aicoding-env.sh"
+
+  # Summary section labeled "restore" not "needs your decision".
+  echo "$output" | grep -q "restore"
+}
+
 # Bug 3 regression: manifest schema_version higher than supported aborts.
 @test "regression: aicoding-update refuses newer manifest schema_version" {
   mkdir -p "$HOME/.aicodingsetup"

@@ -134,6 +134,7 @@ COUNT[up_to_date]=0
 COUNT[will_update]=0
 COUNT[drifted_but_aligned]=0
 COUNT[drifted_and_updating]=0
+COUNT[restore]=0
 COUNT[new_file]=0
 COUNT[to_remove]=0
 COUNT[merge]=0
@@ -144,7 +145,7 @@ for dest in "${!BUCKETS[@]}"; do
 done
 
 if [[ $ARG_DRY_RUN -eq 1 ]]; then
-  for b in up_to_date will_update drifted_but_aligned drifted_and_updating new_file to_remove merge; do
+  for b in up_to_date will_update drifted_but_aligned drifted_and_updating restore new_file to_remove merge; do
     echo "  ${COUNT[$b]} $b"
   done
   exit 0
@@ -161,6 +162,13 @@ print_summary() {
     done
   fi
 
+  if (( COUNT[restore] > 0 )); then
+    echo "  ${COUNT[restore]} restore             (file missing, will be restored from blueprint):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} == restore ]] && echo "      $dest"
+    done
+  fi
+
   if (( COUNT[drifted_and_updating] > 0 )); then
     echo "  ${COUNT[drifted_and_updating]} needs your decision (you've modified, blueprint also changed):"
     for dest in "${!BUCKETS[@]}"; do
@@ -169,7 +177,10 @@ print_summary() {
       # marker_block has no on-disk blueprint source path; skip the diff there.
       if [[ "${FILE_MODE[$dest]:-overwrite}" != "marker_block" ]]; then
         local src="$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]}"
-        diff -u --label "your version" --label "blueprint version" "$dest" "$src" \
+        # Defensive 2>/dev/null: after the restore-bucket split, both sides
+        # should exist here, but if classify_file ever misroutes, we don't
+        # want `diff: <path>: No such file or directory` leaking to stderr.
+        diff -u --label "your version" --label "blueprint version" "$dest" "$src" 2>/dev/null \
           | sed 's/^/        /' || true
       fi
     done
@@ -202,7 +213,7 @@ print_summary() {
 print_summary
 
 # Nothing actionable?
-if (( COUNT[will_update] + COUNT[drifted_and_updating] + COUNT[new_file] + COUNT[to_remove] + COUNT[merge] == 0 )); then
+if (( COUNT[will_update] + COUNT[drifted_and_updating] + COUNT[restore] + COUNT[new_file] + COUNT[to_remove] + COUNT[merge] == 0 )); then
   echo "Nothing to do."
   exit 0
 fi
@@ -222,6 +233,10 @@ manifest_stage_begin
 
 backup_drifted() {
   local dest=$1
+  # Defensive: a restore-bucket file won't reach this codepath, but if a
+  # future caller misroutes a missing file here, skip silently rather than
+  # producing a cp error and a misleading "backup:" line.
+  [ -e "$dest" ] || return 0
   local stamp
   stamp=$(date +%Y%m%d-%H%M%S)
   cp "$dest" "$dest.bak.$stamp"
@@ -271,6 +286,13 @@ apply_all() {
         fi
         _apply_deploy "$mode" "$dest" "$src"
         echo "      updated (with backup): $dest"
+        ;;
+      restore)
+        # File tracked in manifest, source present in blueprint, but the
+        # file isn't on disk. No backup attempt (nothing to back up); just
+        # re-deploy and announce it cleanly.
+        _apply_deploy "$mode" "$dest" "$src"
+        echo "      restored: $dest"
         ;;
       drifted_but_aligned)
         # Refresh hash only — content on disk already matches blueprint.
