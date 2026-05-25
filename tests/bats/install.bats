@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 
 setup() {
+  : "${BLUEPRINT_ROOT:?unset — run via tests/bats/run.sh; refusing to default to / and copy the whole filesystem}"
   TMPDIR=$(mktemp -d)
   export HOME="$TMPDIR"
   export AICODING_MANIFEST="$TMPDIR/.aicodingsetup/manifest.json"
