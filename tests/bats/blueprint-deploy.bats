@@ -373,6 +373,40 @@ EOF
   jq -e '.files | has("'"$TMPDIR"'/dest") | not' "$AICODING_MANIFEST"
 }
 
+@test "apply_managed_buckets: applies only the listed buckets" {
+  # Restoring a missing file is in the allowed set; to_remove is not.
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs/tmux"
+  echo "tmux from blueprint" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
+  mkdir -p "$HOME/.aicodingsetup"
+  local tmux_hash
+  tmux_hash=$(sha256sum "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf" | awk '{print $1}')
+  cat > "$AICODING_MANIFEST" <<EOF
+{"schema_version":1,"files":{
+  "$HOME/.tmux.conf":{"mode":"overwrite","source":"configs/tmux/tmux.conf","deployed_hash":"$tmux_hash"},
+  "$HOME/.obsolete":{"mode":"overwrite","source":"configs/obsolete","deployed_hash":"$tmux_hash"}
+}}
+EOF
+  # ~/.tmux.conf missing → bucket restore. ~/.obsolete not in inventory → to_remove.
+  touch "$HOME/.obsolete"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE
+  classify_managed_files
+  [ "${BUCKETS[$HOME/.tmux.conf]}" = "restore" ]
+  [ "${BUCKETS[$HOME/.obsolete]}" = "to_remove" ]
+
+  # Apply only restore + new_file + will_update + drifted_but_aligned + merge.
+  manifest_stage_begin
+  apply_managed_buckets "restore new_file will_update drifted_but_aligned merge"
+  manifest_stage_commit
+
+  # tmux.conf restored.
+  [ -f "$HOME/.tmux.conf" ]
+  grep -q "tmux from blueprint" "$HOME/.tmux.conf"
+  # obsolete file NOT removed (to_remove was excluded).
+  [ -f "$HOME/.obsolete" ]
+}
+
 @test "classify_managed_files: populates BUCKETS for tracked + on-disk + missing scenarios" {
   # Set up a blueprint clone with one overwrite file.
   export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
