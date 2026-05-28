@@ -372,3 +372,23 @@ EOF
 
   jq -e '.files | has("'"$TMPDIR"'/dest") | not' "$AICODING_MANIFEST"
 }
+
+@test "classify_managed_files: populates BUCKETS for tracked + on-disk + missing scenarios" {
+  # Set up a blueprint clone with one overwrite file.
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs/tmux" "$AICODING_BLUEPRINT_CLONE/configs/claude"
+  echo "blueprint tmux content" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
+  echo '{}' > "$AICODING_BLUEPRINT_CLONE/configs/claude/settings.json"
+  # Manifest tracks the tmux file with matching hash.
+  mkdir -p "$HOME/.aicodingsetup"
+  local tmux_hash
+  tmux_hash=$(sha256sum "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf" | awk '{print $1}')
+  cat > "$AICODING_MANIFEST" <<EOF
+{"schema_version":1,"files":{"$HOME/.tmux.conf":{"mode":"overwrite","source":"configs/tmux/tmux.conf","deployed_hash":"$tmux_hash"}}}
+EOF
+  # File is missing on disk → should classify as restore.
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE
+  classify_managed_files
+  [ "${BUCKETS[$HOME/.tmux.conf]}" = "restore" ]
+}

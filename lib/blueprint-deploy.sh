@@ -436,3 +436,63 @@ classify_marker_block() {
     echo "drifted_and_updating"
   fi
 }
+
+# classify_managed_files — populate the caller's BUCKETS, FILE_MODE, and
+# FILE_SOURCE associative arrays with one entry per managed file (overwrite,
+# merge, marker_block, blueprint skills) plus any manifest entries not in
+# the current blueprint inventory (bucketed to_remove).
+#
+# Caller must declare:
+#   declare -A BUCKETS FILE_MODE FILE_SOURCE
+# and set AICODING_BLUEPRINT_CLONE to the blueprint working tree.
+#
+# Used by bin/aicoding-update and by install.sh's reconcile mode.
+classify_managed_files() {
+  local entry dest mode source
+  # Overwrite-mode files from the blueprint inventory.
+  while IFS='|' read -r dest mode source; do
+    [[ -z "$dest" ]] && continue
+    FILE_MODE[$dest]=$mode
+    FILE_SOURCE[$dest]=$source
+    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" "$mode")
+  done < <(managed_inventory_overwrite)
+
+  # Merge-mode files.
+  while IFS='|' read -r dest mode source; do
+    [[ -z "$dest" ]] && continue
+    FILE_MODE[$dest]=$mode
+    FILE_SOURCE[$dest]=$source
+    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" "$mode")
+  done < <(managed_inventory_merge)
+
+  # marker_block (~/.bashrc).
+  local bashrc_dest
+  bashrc_dest=$(managed_bashrc_path)
+  FILE_MODE[$bashrc_dest]=marker_block
+  FILE_SOURCE[$bashrc_dest]="(composed)"
+  BUCKETS[$bashrc_dest]=$(classify_marker_block "$bashrc_dest")
+
+  # Skills enumerated from the blueprint clone.
+  local skill_dir skill_name
+  for skill_dir in "$AICODING_BLUEPRINT_CLONE/skills"/*/; do
+    [[ ! -d "$skill_dir" ]] && continue
+    skill_name=$(basename "$skill_dir")
+    dest="$HOME/.claude/skills/$skill_name/SKILL.md"
+    source="skills/$skill_name/SKILL.md"
+    FILE_MODE[$dest]=overwrite
+    FILE_SOURCE[$dest]=$source
+    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" overwrite)
+  done
+
+  # Files in manifest but absent from blueprint inventory → to_remove.
+  local manifest_files
+  manifest_files=$(jq -r '.files | keys[]' "$AICODING_MANIFEST")
+  while IFS= read -r dest; do
+    [[ -z "$dest" ]] && continue
+    [[ -z "${FILE_MODE[$dest]:-}" ]] && BUCKETS[$dest]=to_remove
+  done <<<"$manifest_files"
+  # Ensure a clean exit code under `set -e` — the while loop above ends with
+  # whatever the last short-circuit `&&` returned (often 1 when nothing was
+  # appended), which would otherwise propagate up and abort the script.
+  return 0
+}
