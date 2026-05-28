@@ -442,13 +442,14 @@ classify_marker_block() {
 # merge, marker_block, blueprint skills) plus any manifest entries not in
 # the current blueprint inventory (bucketed to_remove).
 #
-# Caller must declare:
-#   declare -A BUCKETS FILE_MODE FILE_SOURCE
-# and set AICODING_BLUEPRINT_CLONE to the blueprint working tree.
+# Caller must:
+#   - declare -A BUCKETS FILE_MODE FILE_SOURCE
+#   - set AICODING_BLUEPRINT_CLONE to the blueprint working tree
+#   - set AICODING_MANIFEST to the manifest path (read for to_remove sweep)
 #
 # Used by bin/aicoding-update and by install.sh's reconcile mode.
 classify_managed_files() {
-  local entry dest mode source
+  local dest mode source
   # Overwrite-mode files from the blueprint inventory.
   while IFS='|' read -r dest mode source; do
     [[ -z "$dest" ]] && continue
@@ -581,8 +582,12 @@ _apply_deploy() {
 }
 
 # Internal: timestamped sibling backup. Caller already verified file exists.
+# Prints the backup-path announcement line to stdout — restores the visible
+# "      backup: <path>" line the original bin/aicoding-update backup_drifted
+# emitted, so users still see exactly where the backup landed.
 _backup_file() {
   local dest=$1 stamp
   stamp=$(date +%Y%m%d-%H%M%S)
   cp "$dest" "$dest.bak.$stamp"
+  echo "      backup: $dest.bak.$stamp"
 }

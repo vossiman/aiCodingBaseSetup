@@ -75,8 +75,6 @@ declare -A BUCKETS
 
 # Marker strings come from the library — keep this script free of duplicate
 # managed-file declarations (install.sh and aicoding-update used to drift).
-BASHRC_DEST=$(managed_bashrc_path)
-
 classify_all() {
   classify_managed_files
 }
