@@ -43,16 +43,16 @@ teardown() {
   [ "$user_hash" = "$blueprint_hash" ]
 }
 
-@test "install.sh mode: prereq-only when manifest exists" {
+@test "install.sh mode: reconcile when manifest exists" {
   mkdir -p "$HOME/.aicodingsetup"
   echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
   echo "untouched" > "$HOME/.tmux.conf"
   run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   [ "$status" -eq 0 ]
-  # File must NOT have been overwritten.
+  # An empty manifest means tmux.conf isn't tracked, so reconcile leaves it alone.
   grep -q "^untouched$" "$HOME/.tmux.conf"
-  # Output must announce prereq-only mode.
-  echo "$output" | grep -q "Container already initialized"
+  # Output announces reconcile mode (replaces the old "Container already initialized" line).
+  echo "$output" | grep -q "Mode: reconcile"
 }
 
 @test "install.sh --force-reinstall: deletes manifest and re-deploys" {
@@ -100,4 +100,33 @@ EOF
   local target
   target=$(readlink "$HOME/.local/bin/aicoding-update")
   echo "$target" | grep -q "bin/aicoding-update"
+}
+
+@test "install.sh reconcile mode: restores missing files without touching edited ones" {
+  # First-deploy populates the manifest and all managed files.
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ -f "$AICODING_MANIFEST" ]
+  [ -f "$HOME/.tmux.conf" ]
+  [ -f "$HOME/.bashrc.d/aicoding-env.sh" ]
+
+  # Simulate a rebuild: manifest persists (bind-mount), one file is wiped,
+  # another is locally edited.
+  rm -f "$HOME/.tmux.conf"
+  echo "user edit" >> "$HOME/.bashrc.d/aicoding-env.sh"
+  local edited_hash
+  edited_hash=$(sha256sum "$HOME/.bashrc.d/aicoding-env.sh" | awk '{print $1}')
+
+  # Re-run install.sh — should enter reconcile mode.
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+
+  # Missing file restored.
+  [ -f "$HOME/.tmux.conf" ]
+  # Edited file untouched.
+  local after_hash
+  after_hash=$(sha256sum "$HOME/.bashrc.d/aicoding-env.sh" | awk '{print $1}')
+  [ "$after_hash" = "$edited_hash" ]
+  # Output mentions reconcile mode and restored count.
+  echo "$output" | grep -q "Mode: reconcile"
+  echo "$output" | grep -qE "restored [1-9]"
 }

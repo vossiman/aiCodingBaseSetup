@@ -823,7 +823,7 @@ check_playwright() {
 # Detect which deploy mode this install.sh run should use.
 detect_install_mode() {
   if [[ -f "$AICODING_MANIFEST" ]]; then
-    echo "prereq_only"
+    echo "reconcile"
     return
   fi
   # No manifest. Check whether any managed files already exist on disk.
@@ -922,6 +922,41 @@ adopt_existing_files() {
   info "run: aicoding-update --dry-run"
 }
 
+# reconcile_existing_install — manifest exists; classify each managed file
+# and auto-apply only the conservative bucket set (restore, will_update,
+# drifted_but_aligned, merge). new_file and to_remove are skipped — they stay
+# for the human-driven `aicoding-update`.
+#
+# Strictly more conservative than `aicoding-update --yes`: never auto-applies
+# drifted_and_updating or to_remove, because automatic provisioning should
+# never silently overwrite or delete files the user has touched.
+reconcile_existing_install() {
+  # aicoding-update's classify pass needs the blueprint clone path. install.sh
+  # is *itself* running from the blueprint, so $SCRIPT_DIR is the clone.
+  export AICODING_BLUEPRINT_CLONE="$SCRIPT_DIR"
+
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE
+  classify_managed_files
+
+  # Count files to be restored (missing on disk but tracked in manifest).
+  local restored_count=0
+  local dest bucket
+  for dest in "${!BUCKETS[@]}"; do
+    bucket=${BUCKETS[$dest]}
+    [[ "$bucket" == "restore" ]] && (( restored_count++ )) || true
+  done
+
+  manifest_stage_begin
+  apply_managed_buckets "restore will_update drifted_but_aligned merge"
+  manifest_stage_commit
+
+  if (( restored_count > 0 )); then
+    info "Reconcile: restored $restored_count missing managed file(s) from blueprint."
+  else
+    info "Reconcile: no missing files detected."
+  fi
+}
+
 main() {
   local force_reinstall=0
   while [[ $# -gt 0 ]]; do
@@ -962,13 +997,9 @@ main() {
       info "Mode: adopt-existing (no manifest, managed files present)"
       adopt_existing_files
       ;;
-    prereq_only)
-      info "Mode: prereq-only (manifest exists)"
-      local commit
-      commit=$(jq -r '.blueprint_commit // "unknown"' "$AICODING_MANIFEST")
-      info "Container already initialized at blueprint $commit."
-      info "Prereqs re-checked. For blueprint file changes, run: aicoding-update"
-      info "(To rewrite all managed files from scratch: install.sh --force-reinstall)"
+    reconcile)
+      info "Mode: reconcile (manifest exists — restoring missing files, applying safe blueprint updates)"
+      reconcile_existing_install
       ;;
   esac
 
