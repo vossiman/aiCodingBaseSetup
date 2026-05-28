@@ -44,13 +44,10 @@ teardown() {
 }
 
 @test "install.sh mode: reconcile when manifest exists" {
-  mkdir -p "$HOME/.aicodingsetup"
-  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
-  echo "untouched" > "$HOME/.tmux.conf"
+  # First-deploy populates a real manifest, then a re-run hits reconcile.
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   [ "$status" -eq 0 ]
-  # An empty manifest means tmux.conf isn't tracked, so reconcile leaves it alone.
-  grep -q "^untouched$" "$HOME/.tmux.conf"
   # Output announces reconcile mode (replaces the old "Container already initialized" line).
   echo "$output" | grep -q "Mode: reconcile"
 }

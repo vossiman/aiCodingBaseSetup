@@ -947,7 +947,7 @@ reconcile_existing_install() {
   done
 
   manifest_stage_begin
-  apply_managed_buckets "restore will_update drifted_but_aligned merge"
+  apply_managed_buckets "restore new_file will_update drifted_but_aligned merge"
   manifest_stage_commit
 
   if (( restored_count > 0 )); then
