@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set -E
+_CURRENT_STEP="(startup)"
+trap '_rc=$?; printf "INSTALL FAILED  step=%s  line=%s\n" "$_CURRENT_STEP" "$LINENO" >&2; exit "$_rc"' ERR
 
 # ============================================================================
 # AI Coding Base Setup — Installer/Updater
@@ -124,7 +127,10 @@ info()  { echo -e "${BLUE}INFO:${NC} $*"; }
 ok()    { echo -e "${GREEN}  OK:${NC} $*"; }
 warn()  { echo -e "${YELLOW}WARN:${NC} $*"; }
 err()   { echo -e "${RED}ERROR:${NC} $*"; }
-header(){ echo -e "\n${GREEN}=== $* ===${NC}"; }
+header(){
+  _CURRENT_STEP="$*"
+  echo -e "\n${GREEN}=== $* ===${NC}"
+}
 
 # --- Environment Detection ---
 detect_environment() {

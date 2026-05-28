@@ -227,3 +227,16 @@ EOF
 
   printf '%s' "$original_blueprint" > "$blueprint_src"
 }
+
+@test "install.sh: ERR trap announces step name on failure" {
+  # Force a failure by stubbing jq to exit nonzero. install.sh uses jq heavily.
+  cat > "$TMPDIR/stubs/jq" <<'STUB'
+#!/bin/sh
+exit 1
+STUB
+  chmod +x "$TMPDIR/stubs/jq"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -qE '^INSTALL FAILED  step=.*  line=[0-9]+$'
+}
