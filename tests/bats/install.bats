@@ -127,3 +127,80 @@ EOF
   echo "$output" | grep -q "Mode: reconcile"
   echo "$output" | grep -qE "restored [1-9]"
 }
+
+@test "install.sh reconcile mode: applies will_update for unedited file" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  # Snapshot the deployed tmux.conf hash and overwrite the blueprint source
+  # to simulate a blueprint update (test-only — does not commit upstream).
+  local deployed_hash
+  deployed_hash=$(jq -r '.files["'"$HOME"'/.tmux.conf"].deployed_hash' "$AICODING_MANIFEST")
+  local blueprint_src="$BLUEPRINT_ROOT/configs/tmux/tmux.conf"
+  local original_blueprint
+  original_blueprint=$(cat "$blueprint_src")
+  echo "${original_blueprint}
+# new blueprint addition" > "$blueprint_src"
+
+  # Re-run; should auto-update since user hasn't touched ~/.tmux.conf.
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+
+  # File now matches new blueprint, not old deployed_hash.
+  grep -q "# new blueprint addition" "$HOME/.tmux.conf"
+  local new_hash
+  new_hash=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
+  [ "$new_hash" != "$deployed_hash" ]
+  # Manifest deployed_hash refreshed.
+  local manifest_hash
+  manifest_hash=$(jq -r '.files["'"$HOME"'/.tmux.conf"].deployed_hash' "$AICODING_MANIFEST")
+  [ "$manifest_hash" = "$new_hash" ]
+
+  # Restore blueprint source so other tests don't see the modified file.
+  printf '%s' "$original_blueprint" > "$blueprint_src"
+}
+
+@test "install.sh reconcile mode: does not auto-resolve drifted_and_updating" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  # Edit the deployed file (user drift).
+  echo "user local change" >> "$HOME/.tmux.conf"
+  local edited_hash
+  edited_hash=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
+
+  # Also change the blueprint so the bucket is drifted_and_updating, not drifted_but_aligned.
+  local blueprint_src="$BLUEPRINT_ROOT/configs/tmux/tmux.conf"
+  local original_blueprint
+  original_blueprint=$(cat "$blueprint_src")
+  echo "${original_blueprint}
+# blueprint also changed" > "$blueprint_src"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+
+  # User's edit must be preserved byte-for-byte.
+  local after_hash
+  after_hash=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
+  [ "$after_hash" = "$edited_hash" ]
+  # No .bak.* file created (reconcile didn't back up + overwrite).
+  [ -z "$(ls "$HOME"/.tmux.conf.bak.* 2>/dev/null)" ]
+
+  # Cleanup.
+  printf '%s' "$original_blueprint" > "$blueprint_src"
+}
+
+@test "install.sh reconcile mode: does not delete to_remove entries" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  # Inject a manifest entry not present in the blueprint inventory.
+  local fake_hash
+  fake_hash=$(echo "junk" | sha256sum | awk '{print $1}')
+  echo "obsolete content" > "$HOME/.obsolete"
+  jq --arg p "$HOME/.obsolete" --arg h "$fake_hash" \
+     '.files[$p] = {mode:"overwrite",source:"configs/obsolete",deployed_hash:$h}' \
+     "$AICODING_MANIFEST" > "$AICODING_MANIFEST.tmp" && mv "$AICODING_MANIFEST.tmp" "$AICODING_MANIFEST"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+
+  # File must still exist (to_remove is report-only in reconcile).
+  [ -f "$HOME/.obsolete" ]
+  # Manifest entry should still be there too — removal is aicoding-update's job.
+  jq -e '.files["'"$HOME"'/.obsolete"]' "$AICODING_MANIFEST"
+}
