@@ -257,7 +257,7 @@ ensure_locales() {
   for loc in "de_AT.UTF-8" "en_US.UTF-8"; do
     local short="${loc%.UTF-8}.utf8"
     if ! locale -a 2>/dev/null | grep -qi "^${short}$"; then
-      $SUDO sed -i "s/^# *${loc}/${loc}/" /etc/locale.gen 2>/dev/null || true
+      $SUDO sed -i "s/^# *${loc}/${loc}/" /etc/locale.gen 2>/dev/null || warn "could not uncomment $loc in /etc/locale.gen (non-fatal)"
       need_gen=true
     fi
   done
@@ -327,7 +327,7 @@ ensure_tmux() {
   command -v curl &>/dev/null || { warn "curl not available — skipping tmux build"; return 0; }
   apt_install build-essential libevent-dev libncurses-dev pkg-config bison || {
     warn "Could not install tmux build deps — falling back to apt's tmux"
-    apt_install tmux || true
+    apt_install tmux || warn "apt tmux install also failed — tmux may be missing (non-fatal)"
     return 0
   }
 
@@ -341,7 +341,7 @@ ensure_tmux() {
     ./configure --prefix=/usr/local &>/dev/null
     make -j"$(nproc)" &>/dev/null
     $SUDO make install &>/dev/null
-  ) || { warn "tmux build failed — falling back to apt's tmux"; apt_install tmux || true; rm -rf "$build_dir"; return 0; }
+  ) || { warn "tmux build failed — falling back to apt's tmux"; apt_install tmux || warn "apt tmux install also failed — tmux may be missing (non-fatal)"; rm -rf "$build_dir"; return 0; }
   rm -rf "$build_dir"
   hash -r
   ok "tmux ${tmux_version} built and installed to /usr/local/bin/tmux"
