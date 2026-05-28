@@ -1,11 +1,8 @@
 #!/bin/bash
 # update.sh — postStartCommand runner. Updates claude + opencode binaries
-# on every devpod container start. Shipped from aiCodingBaseSetup, fetched
-# via `curl https://.../update.sh | bash` from devcontainer.json.
-set -euo pipefail
-
-SELF="$HOME/.aicodingsetup/update.sh"
-SOURCE_URL="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/update.sh"
+# on every devpod container start. Invoked by the parent project's
+# devcontainer.json as `bash devpod/aicoding/update.sh`.
+set -uo pipefail
 
 # universal:6 leaks broken multi-line BASH_FUNC_nvs%% / BASH_FUNC_nvsudo%%
 # / BASH_FUNC_nvm%% env exports into every shell devpod spawns. Bash fails
@@ -13,14 +10,16 @@ SOURCE_URL="https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/up
 # only way to actually strip them is `env -u` at the process boundary —
 # `unset` from inside bash silently does nothing because the names contain
 # `%%`, which bash rejects as an invalid identifier. See KNOWN_ISSUES.md.
-# We self-stash so $0 is a real path we can re-exec under env -u.
+# Re-exec under env -u using $0 (a real submodule path).
 if [[ "${_NVS_STRIPPED:-}" != 1 ]]; then
-  mkdir -p "$(dirname "$SELF")"
-  curl -fsSL "$SOURCE_URL" -o "$SELF"
   exec env -u 'BASH_FUNC_nvs%%' -u 'BASH_FUNC_nvsudo%%' -u 'BASH_FUNC_nvm%%' \
-    _NVS_STRIPPED=1 bash "$SELF" "$@"
+    _NVS_STRIPPED=1 bash "$0" "$@"
 fi
 
+warn() { printf 'WARN: %s\n' "$*" >&2; }
+
 # === actual work ===
-claude update    2>/dev/null || true
-opencode upgrade 2>/dev/null || true
+# Failures are non-fatal (a transient upgrade error shouldn't block container
+# start) but they're announced — the previous '2>/dev/null || true' hid both.
+claude update    || warn "claude update failed (non-fatal — container will still start)"
+opencode upgrade || warn "opencode upgrade failed (non-fatal — container will still start)"
