@@ -204,3 +204,26 @@ EOF
   # Manifest entry should still be there too — removal is aicoding-update's job.
   jq -e '.files["'"$HOME"'/.obsolete"]' "$AICODING_MANIFEST"
 }
+
+@test "install.sh: prints summary line in expected format" {
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qE '^INSTALL OK  blueprint [0-9a-f]+  new [0-9]+  restored [0-9]+  updated [0-9]+  merged [0-9]+  drifted [0-9]+  to_review [0-9]+$'
+}
+
+@test "install.sh: prints NOTE follow-up when drifted or to_review > 0" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  # Force a drifted_and_updating bucket.
+  echo "user local change" >> "$HOME/.tmux.conf"
+  local blueprint_src="$BLUEPRINT_ROOT/configs/tmux/tmux.conf"
+  local original_blueprint
+  original_blueprint=$(cat "$blueprint_src")
+  echo "${original_blueprint}
+# blueprint also changed" > "$blueprint_src"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qE '^NOTE: [0-9]+ drifted file\(s\), [0-9]+ file\(s\) to review'
+
+  printf '%s' "$original_blueprint" > "$blueprint_src"
+}

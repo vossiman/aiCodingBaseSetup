@@ -931,29 +931,55 @@ adopt_existing_files() {
 # drifted_and_updating or to_remove, because automatic provisioning should
 # never silently overwrite or delete files the user has touched.
 reconcile_existing_install() {
-  # aicoding-update's classify pass needs the blueprint clone path. install.sh
-  # is *itself* running from the blueprint, so $SCRIPT_DIR is the clone.
   export AICODING_BLUEPRINT_CLONE="$SCRIPT_DIR"
 
   declare -gA BUCKETS FILE_MODE FILE_SOURCE
   classify_managed_files
 
-  # Count files to be restored (missing on disk but tracked in manifest).
-  local restored_count=0
-  local dest bucket
-  for dest in "${!BUCKETS[@]}"; do
-    bucket=${BUCKETS[$dest]}
-    [[ "$bucket" == "restore" ]] && (( restored_count++ )) || true
-  done
-
   manifest_stage_begin
   apply_managed_buckets "restore new_file will_update drifted_but_aligned merge"
   manifest_stage_commit
 
-  if (( restored_count > 0 )); then
-    info "Reconcile: restored $restored_count missing managed file(s) from blueprint."
-  else
-    info "Reconcile: no missing files detected."
+  # Counts for the end-of-run summary. drifted_but_aligned is auto-handled
+  # (silent hash refresh) and not counted.
+  local n_new=0 n_restored=0 n_updated=0 n_merged=0 n_drifted=0 n_to_review=0
+  local dest bucket
+  for dest in "${!BUCKETS[@]}"; do
+    bucket=${BUCKETS[$dest]}
+    case "$bucket" in
+      new_file)             n_new=$((n_new+1)) ;;
+      restore)              n_restored=$((n_restored+1)) ;;
+      will_update)          n_updated=$((n_updated+1)) ;;
+      merge)                n_merged=$((n_merged+1)) ;;
+      drifted_and_updating) n_drifted=$((n_drifted+1)) ;;
+      to_remove)            n_to_review=$((n_to_review+1)) ;;
+    esac
+  done
+
+  _RECONCILE_NEW=$n_new
+  _RECONCILE_RESTORED=$n_restored
+  _RECONCILE_UPDATED=$n_updated
+  _RECONCILE_MERGED=$n_merged
+  _RECONCILE_DRIFTED=$n_drifted
+  _RECONCILE_TO_REVIEW=$n_to_review
+}
+
+# _print_install_summary — emit the fixed-format summary line plus an
+# optional NOTE follow-up. Counters default to 0 when not set by the mode.
+_print_install_summary() {
+  local commit_short
+  commit_short=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
+  local n_new=${_RECONCILE_NEW:-0}
+  local n_restored=${_RECONCILE_RESTORED:-0}
+  local n_updated=${_RECONCILE_UPDATED:-0}
+  local n_merged=${_RECONCILE_MERGED:-0}
+  local n_drifted=${_RECONCILE_DRIFTED:-0}
+  local n_to_review=${_RECONCILE_TO_REVIEW:-0}
+  printf 'INSTALL OK  blueprint %s  new %d  restored %d  updated %d  merged %d  drifted %d  to_review %d\n' \
+    "$commit_short" "$n_new" "$n_restored" "$n_updated" "$n_merged" "$n_drifted" "$n_to_review"
+  if (( n_drifted > 0 || n_to_review > 0 )); then
+    printf 'NOTE: %d drifted file(s), %d file(s) to review. Run aicoding-update to address.\n' \
+      "$n_drifted" "$n_to_review"
   fi
 }
 
@@ -1012,6 +1038,8 @@ main() {
   info "Mode: $mode"
   info "Secrets: $SECRETS_FILE"
   info "Claude Code: $CLAUDE_DIR"
+
+  _print_install_summary
 }
 
 main "$@"
