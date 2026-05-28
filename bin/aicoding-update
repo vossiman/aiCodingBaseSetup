@@ -78,52 +78,7 @@ declare -A BUCKETS
 BASHRC_DEST=$(managed_bashrc_path)
 
 classify_all() {
-  local entry dest mode source
-  # Overwrite-mode files from the blueprint inventory.
-  while IFS='|' read -r dest mode source; do
-    [[ -z "$dest" ]] && continue
-    FILE_MODE[$dest]=$mode
-    FILE_SOURCE[$dest]=$source
-    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" "$mode")
-  done < <(managed_inventory_overwrite)
-
-  # Merge-mode files from the blueprint inventory.
-  while IFS='|' read -r dest mode source; do
-    [[ -z "$dest" ]] && continue
-    FILE_MODE[$dest]=$mode
-    FILE_SOURCE[$dest]=$source
-    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" "$mode")
-  done < <(managed_inventory_merge)
-
-  # The single marker_block file (~/.bashrc) — classified by block hash.
-  FILE_MODE[$BASHRC_DEST]=marker_block
-  FILE_SOURCE[$BASHRC_DEST]="(composed)"
-  BUCKETS[$BASHRC_DEST]=$(classify_marker_block "$BASHRC_DEST")
-
-  # Enumerate skills in blueprint clone.
-  local skill_dir skill_name
-  for skill_dir in "$AICODING_BLUEPRINT_CLONE/skills"/*/; do
-    [[ ! -d "$skill_dir" ]] && continue
-    skill_name=$(basename "$skill_dir")
-    dest="$HOME/.claude/skills/$skill_name/SKILL.md"
-    source="skills/$skill_name/SKILL.md"
-    FILE_MODE[$dest]=overwrite
-    FILE_SOURCE[$dest]=$source
-    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" overwrite)
-  done
-
-  # Files in manifest but absent from blueprint inventory → to_remove.
-  # Done LAST so any blueprint-tracked entry above wins over manifest sweep.
-  local manifest_files
-  manifest_files=$(jq -r '.files | keys[]' "$AICODING_MANIFEST")
-  while IFS= read -r dest; do
-    [[ -z "$dest" ]] && continue
-    [[ -z "${FILE_MODE[$dest]:-}" ]] && BUCKETS[$dest]=to_remove
-  done <<<"$manifest_files"
-  # Ensure a clean exit code under `set -e` — the while loop above ends with
-  # whatever the last short-circuit `&&` returned (often 1 when nothing was
-  # appended), which would otherwise propagate up and abort the script.
-  return 0
+  classify_managed_files
 }
 
 classify_all
@@ -231,104 +186,21 @@ fi
 
 manifest_stage_begin
 
-backup_drifted() {
-  local dest=$1
-  # Defensive: a restore-bucket file won't reach this codepath, but if a
-  # future caller misroutes a missing file here, skip silently rather than
-  # producing a cp error and a misleading "backup:" line.
-  [ -e "$dest" ] || return 0
-  local stamp
-  stamp=$(date +%Y%m%d-%H%M%S)
-  cp "$dest" "$dest.bak.$stamp"
-  echo "      backup: $dest.bak.$stamp"
-}
-
-# _apply_deploy <mode> <dest> <src> — dispatch to the correct deploy
-# primitive based on the file's mode. Used for will_update / new_file /
-# drifted_and_updating cases; substitutes secrets on overwrite/merge so
-# that {{HOME}} / {{*_API_KEY}} placeholders never reach disk.
-_apply_deploy() {
-  local mode=$1 dest=$2 src=$3
-  case "$mode" in
-    overwrite)
-      deploy_overwrite_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
-      ;;
-    merge)
-      [[ -f "$dest" ]] || { mkdir -p "$(dirname "$dest")"; echo '{}' > "$dest"; }
-      deploy_merge_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
-      ;;
-    marker_block)
-      deploy_marker_block "$dest" \
-        "$(managed_bashrc_block_body)" \
-        "$(managed_marker_block_start)" "$(managed_marker_block_end)"
-      ;;
-  esac
-}
-
 apply_all() {
-  local dest src bucket mode
+  apply_managed_buckets "restore new_file will_update drifted_but_aligned drifted_and_updating merge to_remove"
+
+  # Drift backups + per-bucket announcements stay in this script: they're
+  # interactive output, not deploy behavior.
+  local dest bucket
   for dest in "${!BUCKETS[@]}"; do
     bucket=${BUCKETS[$dest]}
-    mode=${FILE_MODE[$dest]:-overwrite}
-    src="$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]:-}"
-
     case "$bucket" in
-      up_to_date)
-        : ;;
-      will_update)
-        _apply_deploy "$mode" "$dest" "$src"
-        echo "      updated: $dest"
-        ;;
-      drifted_and_updating)
-        # marker_block carries user-managed content too; back up on drift.
-        if [[ -e "$dest" ]]; then
-          backup_drifted "$dest"
-        fi
-        _apply_deploy "$mode" "$dest" "$src"
-        echo "      updated (with backup): $dest"
-        ;;
-      restore)
-        # File tracked in manifest, source present in blueprint, but the
-        # file isn't on disk. No backup attempt (nothing to back up); just
-        # re-deploy and announce it cleanly.
-        _apply_deploy "$mode" "$dest" "$src"
-        echo "      restored: $dest"
-        ;;
-      drifted_but_aligned)
-        # Refresh hash only — content on disk already matches blueprint.
-        if [[ "$mode" = "marker_block" ]]; then
-          local h
-          h=$(compute_block_hash "$dest" \
-              "$(managed_marker_block_start)" "$(managed_marker_block_end)")
-          manifest_set_file "$dest" \
-            "$(jq -n --arg s "$(managed_marker_block_start)" \
-                     --arg e "$(managed_marker_block_end)" \
-                     --arg h "$h" \
-                '{mode:"marker_block",source:"(composed)",marker_start:$s,marker_end:$e,deployed_block_hash:$h}')"
-        else
-          local h
-          h=$(compute_hash "$dest")
-          manifest_set_file "$dest" \
-            "$(jq -n --arg s "${FILE_SOURCE[$dest]}" --arg h "$h" \
-                '{mode:"overwrite",source:$s,deployed_hash:$h}')"
-        fi
-        ;;
-      new_file)
-        _apply_deploy "$mode" "$dest" "$src"
-        echo "      new: $dest"
-        ;;
-      to_remove)
-        remove_managed_file "$dest"
-        echo "      removed: $dest"
-        ;;
-      merge)
-        # Classification bucket for merge-mode files (always 'merge', never
-        # 'will_update' etc). Identical handling to will_update via mode.
-        if [[ -f "$src" ]]; then
-          _apply_deploy merge "$dest" "$src"
-          echo "      merged: $dest"
-        fi
-        ;;
+      restore)              echo "      restored: $dest" ;;
+      new_file)             echo "      new: $dest" ;;
+      will_update)          echo "      updated: $dest" ;;
+      drifted_and_updating) echo "      updated (with backup): $dest" ;;
+      merge)                echo "      merged: $dest" ;;
+      to_remove)            echo "      removed: $dest" ;;
     esac
   done
 
