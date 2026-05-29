@@ -1,6 +1,6 @@
 # AI Coding Base Setup
 
-Cross-platform installer/updater for Claude Code and opencode configurations. Syncs MCPs, skills, hooks, plugins, and statusline across Mint Linux, WSL, Windows, and devcontainers (DevPod / Codespaces / Dev Containers).
+Cross-platform installer/updater for **Claude Code, opencode, OpenAI Codex, and Cursor Agent** configurations. Syncs the same set of MCPs across all four CLIs, plus Claude-specific skills, hooks, plugins, and statusline. Runs on Mint Linux, WSL, Windows, and devcontainers (DevPod / Codespaces / Dev Containers).
 
 ## Quick Start
 
@@ -14,7 +14,22 @@ On first run, you'll be prompted for API keys. Press Enter to skip any you don't
 
 ## What Gets Installed
 
+### CLIs
+
+The installer ensures four AI coding CLIs are present and configured:
+
+| CLI | Binary | Login | Auth file persisted at |
+|-----|--------|-------|------------------------|
+| Claude Code | `claude` | `claude` (browser OAuth) | `~/.claude/.credentials.json` |
+| opencode | `opencode` | `opencode auth login <provider>` | `~/.local/share/opencode/auth.json` |
+| OpenAI Codex | `codex` | `codex` (first run — ChatGPT sign-in or `OPENAI_API_KEY`) | `~/.codex/auth.json` |
+| Cursor Agent | `agent` (or `cursor-agent` on older releases) | `agent login` (or `CURSOR_API_KEY`) | `~/.cursor/` (exact filename varies; whole dir is bind-mounted in DevPod setups) |
+
+All four read the same 4 MCP servers; auth state persists across containers via bind-mounted home directories (DevPod setup — see "Devcontainers" below).
+
 ### MCP Servers
+
+Configured for **all four CLIs**: `claude mcp add` for Claude Code (existing), `~/.config/opencode/opencode.json` `mcp` field for opencode, `~/.codex/config.toml` `[mcp_servers.*]` tables for codex, and `~/.cursor/mcp.json` `mcpServers` object for cursor-agent. Same four servers, four config formats — `install.sh` deploys each from a template in `configs/`.
 
 | MCP | Purpose | Auth |
 |-----|---------|------|
@@ -49,6 +64,8 @@ On first run, you'll be prompted for API keys. Press Enter to skip any you don't
 
 - **`~/.bashrc.d/aicoding-env.sh`** — empty by default; put container-wide `export FOO=bar` lines here. Sourced from every login shell via the managed block in `~/.bashrc`.
 - **`~/.bashrc.d/aicoding-ssh-auth-sock.sh`** — stabilizes the forwarded SSH agent socket across DevPod / Cursor reconnects. Routes every shell through `~/.ssh/agent.sock` (a symlink we keep current). Without it, long-lived tmux panes hold a stale `SSH_AUTH_SOCK` path after the host's SSH session rotates, and `git push` fails with `Permission denied (publickey)` until you open a new pane.
+- **`~/.codex/config.toml`** — overwrite-mode managed file; declares the 4 MCPs in TOML `[mcp_servers.<name>]` tables with secrets substituted at deploy time. Tracked in `manifest.json`; redeployed on every rebuild via `reconcile`.
+- **`~/.cursor/mcp.json`** — merge-mode managed file; declares the 4 MCPs in JSON `{mcpServers: ...}` (Claude-Desktop-compatible schema). User-added entries are preserved by the merge.
 
 ### External Tools (detected, not installed)
 
@@ -91,6 +108,19 @@ Re-running `install.sh` on an initialized container (manifest exists) re-runs th
 ```bash
 ./install.sh --force-reinstall   # deletes manifest, falls through to first-deploy
 ```
+
+### Per-CLI update behavior
+
+Different CLIs have different in-place update stories. `update.sh` (run by `postStartCommand` on every container start) handles each according to its upstream:
+
+| CLI | Update path | Run on every start? |
+|-----|-------------|---------------------|
+| Claude Code | `claude update` | ✅ |
+| opencode | `opencode upgrade` | ✅ |
+| Cursor Agent | `agent update` (or `cursor-agent update` on older releases) | ✅ — `update.sh` probes both binary names |
+| OpenAI Codex | None — no in-place subcommand exists upstream | ❌ — pinned at install-time. Re-run the installer manually when you want a newer version, OR use `./install.sh --force-reinstall` which re-invokes `ensure_codex`. |
+
+Failures on any of the in-place updates are non-fatal and surface as `WARN:` lines so a transient network blip doesn't block container start.
 
 ### Install modes
 
@@ -160,15 +190,36 @@ curl -fsSL https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/dev
 
 `remoteUser` must match the image's hardcoded user — `codespace` for `universal:6`, `vscode` for most others (`python`, `base`, etc.). Mismatch → mounts land at the wrong path and nothing works.
 
-Add `"mounts": [...]` for project- or host-specific bind mounts (e.g. to share `~/.aicodingsetup/` and `~/.claude/` across containers from a backend like DevPod's host). The shipped template has no `mounts` so it stays portable.
+Add `"mounts": [...]` for project- or host-specific bind mounts. With a DevPod-style backend (e.g. `vossisrv` hosting all containers), bind-mounting five dirs gives all four CLIs persistent state across every container the user spins up:
+
+| Host source | Container target | What persists |
+|---|---|---|
+| `…/aicodingsetup/` | `~/.aicodingsetup/` | `.secrets.env`, `manifest.json` |
+| `…/claude/` | `~/.claude/` | Claude credentials, settings, plugins |
+| `…/opencode/` | `~/.local/share/opencode/` | opencode `auth.json` (per-provider tokens) |
+| `…/codex/` | `~/.codex/` | codex `auth.json` + `config.toml` |
+| `…/cursor/` | `~/.cursor/` | cursor-agent credentials + `mcp.json` |
+
+`install.sh` re-deploys `~/.codex/config.toml` and `~/.cursor/mcp.json` on every rebuild via `reconcile`, so config drift heals automatically — auth files persist untouched.
+
+The shipped `devcontainer.json` template here has no `mounts` so it stays portable; project-specific consumers (e.g. `vossiman/devMachine`) add the bind mounts themselves.
 
 ### Why both `.credentials.json` and `~/.claude.json` matter
 
 Claude Code reads OAuth tokens from `~/.claude/.credentials.json` *and* checks `~/.claude.json` (a file at home root, **not** inside `.claude/`) for `hasCompletedOnboarding: true`. Without that flag, the CLI treats every session as a fresh install and prompts for login even when valid tokens exist. `install.sh` writes that flag automatically when it sets up MCPs — without it, copying the credentials file alone is not sufficient to authenticate a container.
 
-### MCPs needing one-time interactive auth
+### Agent logins (one-time interactive)
 
-HTTP-based MCPs (logfire, claude.ai Google Drive, etc.) can't be set up by `install.sh` — they require a browser OAuth flow. Auth once in any DevPod workspace via `claude` → `/mcp` → select the MCP → follow the link. State persists in the bind-mounted `~/.claude/`, so every future workspace inherits it.
+All four CLIs use the same pattern: log in once in any DevPod workspace, and the credential file lands in the bind-mounted home directory — every future workspace inherits the auth automatically.
+
+| CLI | Login command | Where the token lands |
+|-----|---------------|------------------------|
+| Claude Code | `claude` → browser OAuth flow | `~/.claude/.credentials.json` |
+| opencode | `opencode auth login <provider>` | `~/.local/share/opencode/auth.json` |
+| OpenAI Codex | `codex` on first run → ChatGPT sign-in (or `OPENAI_API_KEY` env var) | `~/.codex/auth.json` |
+| Cursor Agent | `agent login` (or `cursor-agent login`) — or `CURSOR_API_KEY` env var | inside `~/.cursor/` |
+
+HTTP-based MCPs that need their own OAuth (logfire, claude.ai Google Drive, etc.) still require a browser flow per-MCP via `claude` → `/mcp` → select the MCP → follow the link. State persists in the bind-mounted `~/.claude/`, so every future workspace inherits it.
 
 ## How It Works
 
@@ -189,6 +240,8 @@ install.sh
 ```
 
 File deployment is centralised in `lib/blueprint-deploy.sh`. Every managed file flows through one of three deploy modes (`overwrite`, `merge`, `marker_block`), captured in the manifest at `~/.aicodingsetup/manifest.json` so subsequent `aicoding-update` runs can detect and surface drift.
+
+The same persist-once-share-everywhere property applies to all four CLIs once their bind mounts are wired: `claude`, `opencode`, `codex`, and `agent` each persist their auth into their respective bind-mounted home directories, so a single login in any container is reusable from every other.
 
 ## Repo Structure
 
