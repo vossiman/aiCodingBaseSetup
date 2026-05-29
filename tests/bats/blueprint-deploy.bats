@@ -464,3 +464,27 @@ EOF
   # Output mentions the backup line (visible-failure regression guard).
   echo "$output" | grep -qE "^      backup: $HOME/.tmux.conf.bak\.[0-9]+-[0-9]+$"
 }
+
+@test "managed_inventory_overwrite: includes codex config.toml" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run managed_inventory_overwrite
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qF "$HOME/.codex/config.toml|overwrite|configs/codex/config.toml"
+}
+
+@test "managed_inventory_merge: includes cursor mcp.json" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run managed_inventory_merge
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qF "$HOME/.cursor/mcp.json|merge|configs/cursor/mcp.json"
+}
+
+@test "managed_inventory_merge: opencode.json row is unchanged" {
+  # Defensive: opencode.json row is still the existing $HOME/.config/opencode
+  # path with merge mode — Task 5 widened the source content but did not
+  # change the inventory row.
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run managed_inventory_merge
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qF "$HOME/.config/opencode/opencode.json|merge|configs/opencode/opencode.json"
+}

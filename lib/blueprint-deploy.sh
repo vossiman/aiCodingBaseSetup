@@ -255,6 +255,7 @@ $HOME/.tmux.conf|overwrite|configs/tmux/tmux.conf
 $HOME/.claude/hooks/custom-statusline.js|overwrite|configs/claude/hooks/custom-statusline.js
 $HOME/.bashrc.d/aicoding-env.sh|overwrite|configs/bash/env.sh
 $HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.sh
+$HOME/.codex/config.toml|overwrite|configs/codex/config.toml
 EOF
 }
 
@@ -263,6 +264,7 @@ managed_inventory_merge() {
   cat <<EOF
 $HOME/.claude/settings.json|merge|configs/claude/settings.json
 $HOME/.config/opencode/opencode.json|merge|configs/opencode/opencode.json
+$HOME/.cursor/mcp.json|merge|configs/cursor/mcp.json
 EOF
 }
 
