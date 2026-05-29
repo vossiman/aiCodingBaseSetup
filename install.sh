@@ -298,6 +298,44 @@ ensure_codex() {
   [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
 }
 
+ensure_cursor_agent() {
+  header "Ensuring Cursor CLI"
+  # Binary name is empirically uncertain (see spec Open Question #2):
+  # current docs say `agent`, older releases shipped `cursor-agent`, npm
+  # distro is `@cursor/cli`. Probe both names.
+  local already_installed=0
+  if command -v agent &>/dev/null || command -v cursor-agent &>/dev/null; then
+    ok "cursor-agent already installed"
+    already_installed=1
+  fi
+
+  if [[ $already_installed -eq 0 ]]; then
+    command -v curl &>/dev/null || { warn "curl not available — skipping cursor-agent install"; return 0; }
+    info "Installing Cursor CLI"
+    curl -fsSL https://cursor.com/install | bash 2>&1 | tail -5 \
+      || warn "cursor-agent install failed (non-fatal)"
+
+    # Empirical probe: report which name the installer actually dropped.
+    # This information is useful in postCreate logs when debugging.
+    local found=""
+    if   [[ -x "$HOME/.local/bin/agent" ]];        then found="agent"
+    elif [[ -x "$HOME/.local/bin/cursor-agent" ]]; then found="cursor-agent"
+    fi
+    [[ -n "$found" ]] && info "cursor-agent installer dropped binary as: $found"
+  fi
+
+  # Establish a canonical name regardless of whether we just installed or
+  # it was already present. update.sh and downstream tooling expect either
+  # `agent` or `cursor-agent` to resolve; symlink whichever is present so
+  # both names work. Idempotent across re-runs.
+  if [[ -x "$HOME/.local/bin/cursor-agent" ]] && [[ ! -e "$HOME/.local/bin/agent" ]]; then
+    ln -sf cursor-agent "$HOME/.local/bin/agent"
+  elif [[ -x "$HOME/.local/bin/agent" ]] && [[ ! -e "$HOME/.local/bin/cursor-agent" ]]; then
+    ln -sf agent "$HOME/.local/bin/cursor-agent"
+  fi
+  [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
+}
+
 ensure_go() {
   command -v go &>/dev/null && return 0
   command -v curl &>/dev/null || { warn "curl not available — skipping Go install"; return 0; }
@@ -396,6 +434,7 @@ auto_install_prereqs() {
   ensure_claude_code
   ensure_opencode
   ensure_codex
+  ensure_cursor_agent
   ensure_go
   ensure_uv
   ensure_locales

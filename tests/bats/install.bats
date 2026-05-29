@@ -279,3 +279,57 @@ EOF
   [ -f "$TMPDIR/codex-install-attempted" ]
   [ -x "$HOME/.local/bin/codex" ]
 }
+
+@test "ensure_cursor_agent: install.sh warns and returns 0 when curl missing" {
+  cat > "$TMPDIR/stubs/curl" <<'STUB'
+#!/bin/sh
+exit 127
+STUB
+  chmod +x "$TMPDIR/stubs/curl"
+
+  export DEVCONTAINER=1
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qE "WARN.*cursor|skipping cursor-agent install"
+}
+
+@test "ensure_cursor_agent: symlinks cursor-agent -> agent when only cursor-agent is dropped" {
+  # Stub curl to drop the binary as 'cursor-agent' (the older-release name).
+  cat > "$TMPDIR/stubs/curl" <<EOF
+#!/bin/sh
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/cursor-agent" <<'BIN'
+#!/bin/sh
+echo "cursor-agent 0.0.0-stub"
+BIN
+chmod +x "$HOME/.local/bin/cursor-agent"
+EOF
+  chmod +x "$TMPDIR/stubs/curl"
+
+  export DEVCONTAINER=1
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  # Expect the symlink to exist so downstream code (update.sh) can call either name.
+  [ -x "$HOME/.local/bin/cursor-agent" ]
+  [ -L "$HOME/.local/bin/agent" ] || [ -x "$HOME/.local/bin/agent" ]
+}
+
+@test "ensure_cursor_agent: skips install when 'agent' is already on PATH" {
+  # Pre-stub 'agent' so the function's existence check trips.
+  cat > "$TMPDIR/stubs/agent" <<'STUB'
+#!/bin/sh
+echo "agent 0.0.0-stub"
+STUB
+  chmod +x "$TMPDIR/stubs/agent"
+  # If curl gets called by ensure_cursor_agent (only), we'd see this marker.
+  # NOTE: curl is also called by other ensure_* steps (claude, opencode,
+  # codex, go, uv); the marker name distinguishes cursor's invocation by
+  # checking install.sh output instead — see test below.
+  export DEVCONTAINER=1
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  # The "Installing Cursor CLI" info line must NOT appear because the
+  # binary check short-circuits before the install attempt.
+  ! echo "$output" | grep -qE "Installing Cursor CLI"
+  echo "$output" | grep -qE "cursor-agent already installed"
+}
