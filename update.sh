@@ -23,3 +23,13 @@ warn() { printf 'WARN: %s\n' "$*" >&2; }
 # start) but they're announced — the previous '2>/dev/null || true' hid both.
 claude update    || warn "claude update failed (non-fatal — container will still start)"
 opencode upgrade || warn "opencode upgrade failed (non-fatal — container will still start)"
+
+# Cursor CLI: 'agent update' (or 'cursor-agent update' on older releases).
+# Codex has no in-place update subcommand upstream — re-running the curl-pipe-sh
+# installer is the only path, which is too aggressive for postStartCommand-on-
+# every-start. Codex stays pinned at install-time; bump manually when wanted.
+if command -v agent &>/dev/null; then
+  agent update        || warn "agent update failed (non-fatal — container will still start)"
+elif command -v cursor-agent &>/dev/null; then
+  cursor-agent update || warn "cursor-agent update failed (non-fatal — container will still start)"
+fi
