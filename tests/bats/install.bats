@@ -240,3 +240,288 @@ STUB
   [ "$status" -ne 0 ]
   echo "$output" | grep -qE '^INSTALL FAILED  step=.*  line=[0-9]+$'
 }
+
+@test "ensure_codex: install.sh warns and returns 0 when curl missing" {
+  # Stub curl to exit 127 (not installed); install.sh's ensure_codex
+  # should detect this, emit a WARN line, and continue (return 0).
+  cat > "$TMPDIR/stubs/curl" <<'STUB'
+#!/bin/sh
+exit 127
+STUB
+  chmod +x "$TMPDIR/stubs/curl"
+
+  # Force container detection so auto_install_prereqs runs.
+  export DEVCONTAINER=1
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  # Expect a WARN line referencing codex install.
+  echo "$output" | grep -qE "WARN.*codex|skipping codex install"
+}
+
+@test "ensure_codex: install.sh runs codex installer when curl available and codex missing" {
+  # Stub curl to write a marker file so we can assert the installer ran.
+  cat > "$TMPDIR/stubs/curl" <<EOF
+#!/bin/sh
+echo "(stub) curl-pipe-sh for codex installer would run" > "$TMPDIR/codex-install-attempted"
+# Mimic the upstream installer dropping the binary in ~/.local/bin.
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/codex" <<'BIN'
+#!/bin/sh
+echo "codex 0.0.0-stub"
+BIN
+chmod +x "$HOME/.local/bin/codex"
+EOF
+  chmod +x "$TMPDIR/stubs/curl"
+
+  export DEVCONTAINER=1
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  [ -f "$TMPDIR/codex-install-attempted" ]
+  [ -x "$HOME/.local/bin/codex" ]
+}
+
+@test "ensure_cursor_agent: install.sh warns and returns 0 when curl missing" {
+  cat > "$TMPDIR/stubs/curl" <<'STUB'
+#!/bin/sh
+exit 127
+STUB
+  chmod +x "$TMPDIR/stubs/curl"
+
+  export DEVCONTAINER=1
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qE "WARN.*cursor|skipping cursor-agent install"
+}
+
+@test "ensure_cursor_agent: symlinks cursor-agent -> agent when only cursor-agent is dropped" {
+  # Stub curl to drop the binary as 'cursor-agent' (the older-release name).
+  cat > "$TMPDIR/stubs/curl" <<EOF
+#!/bin/sh
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/cursor-agent" <<'BIN'
+#!/bin/sh
+echo "cursor-agent 0.0.0-stub"
+BIN
+chmod +x "$HOME/.local/bin/cursor-agent"
+EOF
+  chmod +x "$TMPDIR/stubs/curl"
+
+  export DEVCONTAINER=1
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  # Expect the symlink to exist so downstream code (update.sh) can call either name.
+  [ -x "$HOME/.local/bin/cursor-agent" ]
+  [ -L "$HOME/.local/bin/agent" ] || [ -x "$HOME/.local/bin/agent" ]
+}
+
+@test "ensure_cursor_agent: skips install when 'agent' is already on PATH" {
+  # Pre-stub 'agent' so the function's existence check trips.
+  cat > "$TMPDIR/stubs/agent" <<'STUB'
+#!/bin/sh
+echo "agent 0.0.0-stub"
+STUB
+  chmod +x "$TMPDIR/stubs/agent"
+  # If curl gets called by ensure_cursor_agent (only), we'd see this marker.
+  # NOTE: curl is also called by other ensure_* steps (claude, opencode,
+  # codex, go, uv); the marker name distinguishes cursor's invocation by
+  # checking install.sh output instead — see test below.
+  export DEVCONTAINER=1
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  # The "Installing Cursor CLI" info line must NOT appear because the
+  # binary check short-circuits before the install attempt.
+  ! echo "$output" | grep -qE "Installing Cursor CLI"
+  echo "$output" | grep -qE "cursor-agent already installed"
+}
+
+@test "first-deploy: codex config.toml deploys with substituted FIRECRAWL_API_KEY" {
+  # Seed a secrets file so substitution has a value to inject.
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
+FIRECRAWL_API_KEY=fake-firecrawl-123
+BRAVE_API_KEY=fake-brave-456
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_ACCOUNT_ID=
+EOF
+  chmod 600 "$HOME/.aicodingsetup/.secrets.env"
+
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+
+  # File deployed under bind-mount target ~/.codex/.
+  [ -f "$HOME/.codex/config.toml" ]
+  # Secret substituted (no {{...}} placeholder survives).
+  grep -qF 'FIRECRAWL_API_KEY = "fake-firecrawl-123"' "$HOME/.codex/config.toml"
+  ! grep -qF '{{FIRECRAWL_API_KEY}}' "$HOME/.codex/config.toml"
+  # Manifest records overwrite mode + deployed_hash.
+  local mode
+  mode=$(jq -r '.files["'"$HOME"'/.codex/config.toml"].mode' "$AICODING_MANIFEST")
+  [ "$mode" = "overwrite" ]
+  local hash
+  hash=$(jq -r '.files["'"$HOME"'/.codex/config.toml"].deployed_hash' "$AICODING_MANIFEST")
+  [ -n "$hash" ]
+  [ "$hash" != "null" ]
+}
+
+@test "first-deploy: cursor mcp.json merges 4 blueprint servers without dropping user adds" {
+  # Pre-create ~/.cursor/mcp.json with one user-added server. The merge
+  # pipeline must preserve it while adding the blueprint's 4 servers.
+  mkdir -p "$HOME/.cursor"
+  cat > "$HOME/.cursor/mcp.json" <<'EOF'
+{
+  "mcpServers": {
+    "user-custom": {
+      "command": "my-custom-mcp",
+      "args": ["--flag"]
+    }
+  }
+}
+EOF
+  # Make sure first-deploy fires (no manifest yet); Plan 1's detect_install_mode
+  # picks 'adopt' when a managed file exists but no manifest is present, so
+  # cursor mcp.json on disk -> mode=adopt. Use --force-reinstall to force first.
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
+FIRECRAWL_API_KEY=fake-firecrawl-123
+BRAVE_API_KEY=fake-brave-456
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_ACCOUNT_ID=
+EOF
+
+  bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
+
+  [ -f "$HOME/.cursor/mcp.json" ]
+  # All 4 blueprint servers present.
+  jq -e '.mcpServers.firecrawl'    "$HOME/.cursor/mcp.json"
+  jq -e '.mcpServers["brave-search"]' "$HOME/.cursor/mcp.json"
+  jq -e '.mcpServers.context7'     "$HOME/.cursor/mcp.json"
+  jq -e '.mcpServers.playwright'   "$HOME/.cursor/mcp.json"
+  # User's custom server preserved.
+  jq -e '.mcpServers["user-custom"]' "$HOME/.cursor/mcp.json"
+  # Substitution applied.
+  jq -r '.mcpServers.firecrawl.env.FIRECRAWL_API_KEY' "$HOME/.cursor/mcp.json" | grep -qF 'fake-firecrawl-123'
+}
+
+@test "first-deploy: opencode.json mcp field populated with 4 servers and substituted secrets" {
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
+FIRECRAWL_API_KEY=fake-firecrawl-123
+BRAVE_API_KEY=fake-brave-456
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_ACCOUNT_ID=
+EOF
+
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+
+  [ -f "$HOME/.config/opencode/opencode.json" ]
+  # All 4 servers present under the 'mcp' (not 'mcpServers') top-level key.
+  jq -e '.mcp.firecrawl.type == "local"'                  "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp["brave-search"].type == "local"'            "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp.context7.type == "local"'                   "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp.playwright.type == "local"'                 "$HOME/.config/opencode/opencode.json"
+  # opencode schema uses 'environment' not 'env' and 'command' is an array.
+  jq -e '.mcp.firecrawl.environment.FIRECRAWL_API_KEY == "fake-firecrawl-123"' "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp.firecrawl.command | type == "array"'        "$HOME/.config/opencode/opencode.json"
+}
+
+@test "merge: opencode.json mcp field preserves user-added server" {
+  # Pre-populate opencode.json with an existing user-added mcp entry.
+  mkdir -p "$HOME/.config/opencode"
+  cat > "$HOME/.config/opencode/opencode.json" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "anthropic/claude-opus-4-6",
+  "mcp": {
+    "user-server": {
+      "type": "local",
+      "command": ["my-custom"],
+      "enabled": true
+    }
+  }
+}
+EOF
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
+FIRECRAWL_API_KEY=fake-firecrawl-123
+BRAVE_API_KEY=fake-brave-456
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_ACCOUNT_ID=
+EOF
+
+  bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
+
+  # User server + all 4 blueprint servers both present.
+  jq -e '.mcp["user-server"]'   "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp.firecrawl'        "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp["brave-search"]'  "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp.context7'         "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp.playwright'       "$HOME/.config/opencode/opencode.json"
+}
+
+@test "reconcile: restores deleted ~/.codex/config.toml on rebuild" {
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
+FIRECRAWL_API_KEY=fake-firecrawl-123
+BRAVE_API_KEY=fake-brave-456
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_ACCOUNT_ID=
+EOF
+  # First-deploy seeds the manifest.
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ -f "$HOME/.codex/config.toml" ]
+  local first_hash
+  first_hash=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
+
+  # Simulate a rebuild: manifest persists (bind-mount), file is wiped.
+  rm -f "$HOME/.codex/config.toml"
+  [ ! -f "$HOME/.codex/config.toml" ]
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  # File restored, content byte-identical to pre-wipe.
+  [ -f "$HOME/.codex/config.toml" ]
+  local restored_hash
+  restored_hash=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
+  [ "$restored_hash" = "$first_hash" ]
+  # Plan 1's summary line shows restored count >= 1.
+  echo "$output" | grep -qE 'restored [1-9][0-9]* '
+  # Mode line announces reconcile.
+  echo "$output" | grep -q "Mode: reconcile"
+}
+
+@test "reconcile: leaves edited ~/.codex/config.toml byte-unchanged" {
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
+FIRECRAWL_API_KEY=fake-firecrawl-123
+BRAVE_API_KEY=fake-brave-456
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_ACCOUNT_ID=
+EOF
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+
+  # User edits the file (drift).
+  echo "# user-added line" >> "$HOME/.codex/config.toml"
+  local edited_hash
+  edited_hash=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
+
+  # Also change the blueprint source so the bucket is drifted_and_updating
+  # (not drifted_but_aligned), which is the conservatism case we care about.
+  local original_blueprint
+  original_blueprint=$(cat "$BLUEPRINT_ROOT/configs/codex/config.toml")
+  echo "# blueprint also changed" >> "$BLUEPRINT_ROOT/configs/codex/config.toml"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  # User's edit preserved byte-for-byte (reconcile excludes drifted_and_updating).
+  local after_hash
+  after_hash=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
+  [ "$after_hash" = "$edited_hash" ]
+  # Summary shows drifted >= 1.
+  echo "$output" | grep -qE 'drifted [1-9][0-9]* '
+  # NOTE line surfaces.
+  echo "$output" | grep -qE '^NOTE: [0-9]+ drifted file'
+
+  # Restore blueprint so other tests don't see the modification. The
+  # source codex/config.toml ends with a trailing newline; preserve it
+  # with `printf '%s\n'` (a bare `printf '%s'` would silently strip it).
+  printf '%s\n' "$original_blueprint" > "$BLUEPRINT_ROOT/configs/codex/config.toml"
+}

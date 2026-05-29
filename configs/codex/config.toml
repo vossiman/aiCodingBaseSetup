@@ -1,0 +1,23 @@
+# aiCodingBaseSetup — managed by install.sh. Do not edit directly; your
+# edits will be classified as "drifted" by aicoding-update.
+#
+# {{HOME}} / {{*_API_KEY}} placeholders are substituted at deploy time by
+# lib/blueprint-deploy.sh's deploy_overwrite_file_substituted pipeline.
+
+model = "gpt-5.5"
+
+[mcp_servers.firecrawl]
+command = "firecrawl-mcp"
+env = { FIRECRAWL_API_KEY = "{{FIRECRAWL_API_KEY}}" }
+
+[mcp_servers.brave-search]
+command = "brave-search-mcp-server"
+env = { BRAVE_API_KEY = "{{BRAVE_API_KEY}}" }
+
+[mcp_servers.context7]
+command = "npx"
+args = ["-y", "@upstash/context7-mcp"]
+
+[mcp_servers.playwright]
+command = "npx"
+args = ["@playwright/mcp@latest", "--browser", "chromium"]
