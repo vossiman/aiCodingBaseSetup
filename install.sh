@@ -281,6 +281,23 @@ ensure_opencode() {
   fi
 }
 
+ensure_codex() {
+  header "Ensuring OpenAI Codex CLI"
+  command -v codex &>/dev/null && { ok "codex already installed"; return 0; }
+  command -v curl  &>/dev/null || { warn "curl not available — skipping codex install"; return 0; }
+  info "Installing OpenAI Codex CLI"
+  curl -fsSL https://chatgpt.com/codex/install.sh | sh 2>&1 | tail -5 \
+    || warn "codex install failed (non-fatal)"
+  # Upstream installer's drop-path isn't formally documented. Probe two
+  # likely locations and symlink into ~/.local/bin so non-interactive
+  # shells (postStartCommand) see codex without sourcing rc files.
+  if [[ ! -x "$HOME/.local/bin/codex" ]] && [[ -x "$HOME/.codex/bin/codex" ]]; then
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$HOME/.codex/bin/codex" "$HOME/.local/bin/codex"
+  fi
+  [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
+}
+
 ensure_go() {
   command -v go &>/dev/null && return 0
   command -v curl &>/dev/null || { warn "curl not available — skipping Go install"; return 0; }
@@ -378,6 +395,7 @@ auto_install_prereqs() {
   ensure_node || warn "Node not available — npm-based MCPs and Playwright will be skipped"
   ensure_claude_code
   ensure_opencode
+  ensure_codex
   ensure_go
   ensure_uv
   ensure_locales

@@ -240,3 +240,42 @@ STUB
   [ "$status" -ne 0 ]
   echo "$output" | grep -qE '^INSTALL FAILED  step=.*  line=[0-9]+$'
 }
+
+@test "ensure_codex: install.sh warns and returns 0 when curl missing" {
+  # Stub curl to exit 127 (not installed); install.sh's ensure_codex
+  # should detect this, emit a WARN line, and continue (return 0).
+  cat > "$TMPDIR/stubs/curl" <<'STUB'
+#!/bin/sh
+exit 127
+STUB
+  chmod +x "$TMPDIR/stubs/curl"
+
+  # Force container detection so auto_install_prereqs runs.
+  export DEVCONTAINER=1
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  # Expect a WARN line referencing codex install.
+  echo "$output" | grep -qE "WARN.*codex|skipping codex install"
+}
+
+@test "ensure_codex: install.sh runs codex installer when curl available and codex missing" {
+  # Stub curl to write a marker file so we can assert the installer ran.
+  cat > "$TMPDIR/stubs/curl" <<EOF
+#!/bin/sh
+echo "(stub) curl-pipe-sh for codex installer would run" > "$TMPDIR/codex-install-attempted"
+# Mimic the upstream installer dropping the binary in ~/.local/bin.
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/codex" <<'BIN'
+#!/bin/sh
+echo "codex 0.0.0-stub"
+BIN
+chmod +x "$HOME/.local/bin/codex"
+EOF
+  chmod +x "$TMPDIR/stubs/curl"
+
+  export DEVCONTAINER=1
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  [ -f "$TMPDIR/codex-install-attempted" ]
+  [ -x "$HOME/.local/bin/codex" ]
+}
