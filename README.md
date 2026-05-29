@@ -84,16 +84,9 @@ aicoding-update --yes        # scripted — auto-confirms; backs up anything dri
 
 The manifest at `~/.aicodingsetup/manifest.json` records the blueprint commit and a per-file hash for every overwrite-mode file, plus a block-hash for the marker-guarded section of `~/.bashrc`.
 
-### `./install.sh` — for prereq changes only
+### `./install.sh` — reconciles on every rebuild
 
-Re-running `install.sh` on an initialized container (manifest exists) **does NOT redeploy managed files**. It re-runs the apt/build/locale prereq steps (idempotent), then prints:
-
-```
-Container already initialized at blueprint <commit>.
-Prereqs re-checked. For blueprint file changes, run: aicoding-update
-```
-
-This protects you from accidental clobbers. If you genuinely want to nuke local drift and re-deploy from scratch, use the escape hatch:
+Re-running `install.sh` on an initialized container (manifest exists) re-runs the apt/build/locale prereq steps (idempotent) **and** then runs **reconcile mode**, which automatically applies the conservative buckets without any prompts. If you genuinely want to nuke local drift and re-deploy from scratch, use the escape hatch:
 
 ```bash
 ./install.sh --force-reinstall   # deletes manifest, falls through to first-deploy
@@ -107,7 +100,20 @@ This protects you from accidental clobbers. If you genuinely want to nuke local 
 |---|---|---|
 | No manifest, no managed files exist | `first` | Deploys everything; writes initial manifest. |
 | No manifest, but managed files already on disk (older install) | `adopt` | Captures current file hashes into the manifest without overwriting. Surfaces accumulated drift on the next `aicoding-update --dry-run`. |
-| Manifest exists | `prereq_only` | Re-runs prereqs; skips file deploys. |
+| Manifest exists | `reconcile` | Re-runs prereqs, then auto-applies the conservative buckets (see below). |
+
+**Reconcile mode** runs every time `install.sh` is invoked on a container that already has a manifest (e.g., every devcontainer rebuild). It classifies each managed file and automatically applies the conservative buckets:
+- `restore` (file tracked but missing on disk → redeploy from blueprint)
+- `new_file` (in blueprint inventory, not yet in manifest → deploy)
+- `will_update` (tracked, unedited locally, blueprint changed → deploy)
+- `drifted_but_aligned` (you edited to match the new blueprint → refresh manifest hash, no file write)
+- `merge` (settings.json / opencode.json → deep-merge blueprint over local)
+
+It deliberately does **not** auto-apply two buckets:
+- `drifted_and_updating` (you edited AND blueprint changed differently) — reported, left for `aicoding-update`.
+- `to_remove` (file dropped from blueprint inventory) — reported, never auto-deleted.
+
+This is strictly more conservative than `aicoding-update --yes`, which DOES auto-resolve drift (with backup) and DOES auto-remove. The automatic provisioning path is intentionally more cautious about touching files the user has edited.
 
 The `~/.bashrc.d/` convention for user additions: anything matching `local-*.sh` (or any name *not* prefixed `aicoding-`) is sourced by the managed block but never touched by the blueprint. Personal aliases, env vars, and shell tweaks belong there.
 
@@ -175,9 +181,9 @@ install.sh
   5. Configure Claude Code MCPs (claude mcp add)
   6. Install Claude Code marketplace plugins
   7. Install aicoding-update symlink → ~/.local/bin/aicoding-update
-  8. Detect install mode (first / adopt / prereq_only) — see Update section
+  8. Detect install mode (first / adopt / reconcile) — see Update section
   9. Deploy managed files (first mode) OR adopt existing hashes (adopt mode) OR
-     skip file deploys (prereq_only mode). Writes / updates the manifest.
+     auto-apply conservative buckets (reconcile mode). Writes / updates the manifest.
  10. Install tmux plugins (TPM), clone/update bubblewrap, detect infra-audit,
      check Playwright
 ```

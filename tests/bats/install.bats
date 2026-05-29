@@ -43,16 +43,13 @@ teardown() {
   [ "$user_hash" = "$blueprint_hash" ]
 }
 
-@test "install.sh mode: prereq-only when manifest exists" {
-  mkdir -p "$HOME/.aicodingsetup"
-  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
-  echo "untouched" > "$HOME/.tmux.conf"
+@test "install.sh mode: reconcile when manifest exists" {
+  # First-deploy populates a real manifest, then a re-run hits reconcile.
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   [ "$status" -eq 0 ]
-  # File must NOT have been overwritten.
-  grep -q "^untouched$" "$HOME/.tmux.conf"
-  # Output must announce prereq-only mode.
-  echo "$output" | grep -q "Container already initialized"
+  # Output announces reconcile mode (replaces the old "Container already initialized" line).
+  echo "$output" | grep -q "Mode: reconcile"
 }
 
 @test "install.sh --force-reinstall: deletes manifest and re-deploys" {
@@ -100,4 +97,146 @@ EOF
   local target
   target=$(readlink "$HOME/.local/bin/aicoding-update")
   echo "$target" | grep -q "bin/aicoding-update"
+}
+
+@test "install.sh reconcile mode: restores missing files without touching edited ones" {
+  # First-deploy populates the manifest and all managed files.
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ -f "$AICODING_MANIFEST" ]
+  [ -f "$HOME/.tmux.conf" ]
+  [ -f "$HOME/.bashrc.d/aicoding-env.sh" ]
+
+  # Simulate a rebuild: manifest persists (bind-mount), one file is wiped,
+  # another is locally edited.
+  rm -f "$HOME/.tmux.conf"
+  echo "user edit" >> "$HOME/.bashrc.d/aicoding-env.sh"
+  local edited_hash
+  edited_hash=$(sha256sum "$HOME/.bashrc.d/aicoding-env.sh" | awk '{print $1}')
+
+  # Re-run install.sh — should enter reconcile mode.
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+
+  # Missing file restored.
+  [ -f "$HOME/.tmux.conf" ]
+  # Edited file untouched.
+  local after_hash
+  after_hash=$(sha256sum "$HOME/.bashrc.d/aicoding-env.sh" | awk '{print $1}')
+  [ "$after_hash" = "$edited_hash" ]
+  # Output mentions reconcile mode and restored count.
+  echo "$output" | grep -q "Mode: reconcile"
+  echo "$output" | grep -qE "restored [1-9]"
+}
+
+@test "install.sh reconcile mode: applies will_update for unedited file" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  # Snapshot the deployed tmux.conf hash and overwrite the blueprint source
+  # to simulate a blueprint update (test-only — does not commit upstream).
+  local deployed_hash
+  deployed_hash=$(jq -r '.files["'"$HOME"'/.tmux.conf"].deployed_hash' "$AICODING_MANIFEST")
+  local blueprint_src="$BLUEPRINT_ROOT/configs/tmux/tmux.conf"
+  local original_blueprint
+  original_blueprint=$(cat "$blueprint_src")
+  echo "${original_blueprint}
+# new blueprint addition" > "$blueprint_src"
+
+  # Re-run; should auto-update since user hasn't touched ~/.tmux.conf.
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+
+  # File now matches new blueprint, not old deployed_hash.
+  grep -q "# new blueprint addition" "$HOME/.tmux.conf"
+  local new_hash
+  new_hash=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
+  [ "$new_hash" != "$deployed_hash" ]
+  # Manifest deployed_hash refreshed.
+  local manifest_hash
+  manifest_hash=$(jq -r '.files["'"$HOME"'/.tmux.conf"].deployed_hash' "$AICODING_MANIFEST")
+  [ "$manifest_hash" = "$new_hash" ]
+
+  # Restore blueprint source so other tests don't see the modified file.
+  printf '%s' "$original_blueprint" > "$blueprint_src"
+}
+
+@test "install.sh reconcile mode: does not auto-resolve drifted_and_updating" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  # Edit the deployed file (user drift).
+  echo "user local change" >> "$HOME/.tmux.conf"
+  local edited_hash
+  edited_hash=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
+
+  # Also change the blueprint so the bucket is drifted_and_updating, not drifted_but_aligned.
+  local blueprint_src="$BLUEPRINT_ROOT/configs/tmux/tmux.conf"
+  local original_blueprint
+  original_blueprint=$(cat "$blueprint_src")
+  echo "${original_blueprint}
+# blueprint also changed" > "$blueprint_src"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+
+  # User's edit must be preserved byte-for-byte.
+  local after_hash
+  after_hash=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
+  [ "$after_hash" = "$edited_hash" ]
+  # No .bak.* file created (reconcile didn't back up + overwrite).
+  [ -z "$(ls "$HOME"/.tmux.conf.bak.* 2>/dev/null)" ]
+
+  # Cleanup.
+  printf '%s' "$original_blueprint" > "$blueprint_src"
+}
+
+@test "install.sh reconcile mode: does not delete to_remove entries" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  # Inject a manifest entry not present in the blueprint inventory.
+  local fake_hash
+  fake_hash=$(echo "junk" | sha256sum | awk '{print $1}')
+  echo "obsolete content" > "$HOME/.obsolete"
+  jq --arg p "$HOME/.obsolete" --arg h "$fake_hash" \
+     '.files[$p] = {mode:"overwrite",source:"configs/obsolete",deployed_hash:$h}' \
+     "$AICODING_MANIFEST" > "$AICODING_MANIFEST.tmp" && mv "$AICODING_MANIFEST.tmp" "$AICODING_MANIFEST"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+
+  # File must still exist (to_remove is report-only in reconcile).
+  [ -f "$HOME/.obsolete" ]
+  # Manifest entry should still be there too — removal is aicoding-update's job.
+  jq -e '.files["'"$HOME"'/.obsolete"]' "$AICODING_MANIFEST"
+}
+
+@test "install.sh: prints summary line in expected format" {
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qE '^INSTALL OK  blueprint [0-9a-f]+  new [0-9]+  restored [0-9]+  updated [0-9]+  merged [0-9]+  drifted [0-9]+  to_review [0-9]+$'
+}
+
+@test "install.sh: prints NOTE follow-up when drifted or to_review > 0" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  # Force a drifted_and_updating bucket.
+  echo "user local change" >> "$HOME/.tmux.conf"
+  local blueprint_src="$BLUEPRINT_ROOT/configs/tmux/tmux.conf"
+  local original_blueprint
+  original_blueprint=$(cat "$blueprint_src")
+  echo "${original_blueprint}
+# blueprint also changed" > "$blueprint_src"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qE '^NOTE: [0-9]+ drifted file\(s\), [0-9]+ file\(s\) to review'
+
+  printf '%s' "$original_blueprint" > "$blueprint_src"
+}
+
+@test "install.sh: ERR trap announces step name on failure" {
+  # Force a failure by stubbing jq to exit nonzero. install.sh uses jq heavily.
+  cat > "$TMPDIR/stubs/jq" <<'STUB'
+#!/bin/sh
+exit 1
+STUB
+  chmod +x "$TMPDIR/stubs/jq"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -qE '^INSTALL FAILED  step=.*  line=[0-9]+$'
 }

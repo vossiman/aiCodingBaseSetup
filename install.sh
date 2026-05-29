@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set -E
+_CURRENT_STEP="(startup)"
+trap '_rc=$?; printf "INSTALL FAILED  step=%s  line=%s\n" "$_CURRENT_STEP" "$LINENO" >&2; exit "$_rc"' ERR
 
 # ============================================================================
 # AI Coding Base Setup — Installer/Updater
@@ -124,7 +127,10 @@ info()  { echo -e "${BLUE}INFO:${NC} $*"; }
 ok()    { echo -e "${GREEN}  OK:${NC} $*"; }
 warn()  { echo -e "${YELLOW}WARN:${NC} $*"; }
 err()   { echo -e "${RED}ERROR:${NC} $*"; }
-header(){ echo -e "\n${GREEN}=== $* ===${NC}"; }
+header(){
+  _CURRENT_STEP="$*"
+  echo -e "\n${GREEN}=== $* ===${NC}"
+}
 
 # --- Environment Detection ---
 detect_environment() {
@@ -251,7 +257,7 @@ ensure_locales() {
   for loc in "de_AT.UTF-8" "en_US.UTF-8"; do
     local short="${loc%.UTF-8}.utf8"
     if ! locale -a 2>/dev/null | grep -qi "^${short}$"; then
-      $SUDO sed -i "s/^# *${loc}/${loc}/" /etc/locale.gen 2>/dev/null || true
+      $SUDO sed -i "s/^# *${loc}/${loc}/" /etc/locale.gen 2>/dev/null || warn "could not uncomment $loc in /etc/locale.gen (non-fatal)"
       need_gen=true
     fi
   done
@@ -321,7 +327,7 @@ ensure_tmux() {
   command -v curl &>/dev/null || { warn "curl not available — skipping tmux build"; return 0; }
   apt_install build-essential libevent-dev libncurses-dev pkg-config bison || {
     warn "Could not install tmux build deps — falling back to apt's tmux"
-    apt_install tmux || true
+    apt_install tmux || warn "apt tmux install also failed — tmux may be missing (non-fatal)"
     return 0
   }
 
@@ -335,7 +341,7 @@ ensure_tmux() {
     ./configure --prefix=/usr/local &>/dev/null
     make -j"$(nproc)" &>/dev/null
     $SUDO make install &>/dev/null
-  ) || { warn "tmux build failed — falling back to apt's tmux"; apt_install tmux || true; rm -rf "$build_dir"; return 0; }
+  ) || { warn "tmux build failed — falling back to apt's tmux"; apt_install tmux || warn "apt tmux install also failed — tmux may be missing (non-fatal)"; rm -rf "$build_dir"; return 0; }
   rm -rf "$build_dir"
   hash -r
   ok "tmux ${tmux_version} built and installed to /usr/local/bin/tmux"
@@ -823,7 +829,7 @@ check_playwright() {
 # Detect which deploy mode this install.sh run should use.
 detect_install_mode() {
   if [[ -f "$AICODING_MANIFEST" ]]; then
-    echo "prereq_only"
+    echo "reconcile"
     return
   fi
   # No manifest. Check whether any managed files already exist on disk.
@@ -922,6 +928,67 @@ adopt_existing_files() {
   info "run: aicoding-update --dry-run"
 }
 
+# reconcile_existing_install — manifest exists; classify each managed file
+# and auto-apply only the conservative bucket set (restore, will_update,
+# drifted_but_aligned, merge). new_file and to_remove are skipped — they stay
+# for the human-driven `aicoding-update`.
+#
+# Strictly more conservative than `aicoding-update --yes`: never auto-applies
+# drifted_and_updating or to_remove, because automatic provisioning should
+# never silently overwrite or delete files the user has touched.
+reconcile_existing_install() {
+  export AICODING_BLUEPRINT_CLONE="$SCRIPT_DIR"
+
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE
+  classify_managed_files
+
+  manifest_stage_begin
+  apply_managed_buckets "restore new_file will_update drifted_but_aligned merge"
+  manifest_stage_commit
+
+  # Counts for the end-of-run summary. drifted_but_aligned is auto-handled
+  # (silent hash refresh) and not counted.
+  local n_new=0 n_restored=0 n_updated=0 n_merged=0 n_drifted=0 n_to_review=0
+  local dest bucket
+  for dest in "${!BUCKETS[@]}"; do
+    bucket=${BUCKETS[$dest]}
+    case "$bucket" in
+      new_file)             n_new=$((n_new+1)) ;;
+      restore)              n_restored=$((n_restored+1)) ;;
+      will_update)          n_updated=$((n_updated+1)) ;;
+      merge)                n_merged=$((n_merged+1)) ;;
+      drifted_and_updating) n_drifted=$((n_drifted+1)) ;;
+      to_remove)            n_to_review=$((n_to_review+1)) ;;
+    esac
+  done
+
+  _RECONCILE_NEW=$n_new
+  _RECONCILE_RESTORED=$n_restored
+  _RECONCILE_UPDATED=$n_updated
+  _RECONCILE_MERGED=$n_merged
+  _RECONCILE_DRIFTED=$n_drifted
+  _RECONCILE_TO_REVIEW=$n_to_review
+}
+
+# _print_install_summary — emit the fixed-format summary line plus an
+# optional NOTE follow-up. Counters default to 0 when not set by the mode.
+_print_install_summary() {
+  local commit_short
+  commit_short=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
+  local n_new=${_RECONCILE_NEW:-0}
+  local n_restored=${_RECONCILE_RESTORED:-0}
+  local n_updated=${_RECONCILE_UPDATED:-0}
+  local n_merged=${_RECONCILE_MERGED:-0}
+  local n_drifted=${_RECONCILE_DRIFTED:-0}
+  local n_to_review=${_RECONCILE_TO_REVIEW:-0}
+  printf 'INSTALL OK  blueprint %s  new %d  restored %d  updated %d  merged %d  drifted %d  to_review %d\n' \
+    "$commit_short" "$n_new" "$n_restored" "$n_updated" "$n_merged" "$n_drifted" "$n_to_review"
+  if (( n_drifted > 0 || n_to_review > 0 )); then
+    printf 'NOTE: %d drifted file(s), %d file(s) to review. Run aicoding-update to address.\n' \
+      "$n_drifted" "$n_to_review"
+  fi
+}
+
 main() {
   local force_reinstall=0
   while [[ $# -gt 0 ]]; do
@@ -962,13 +1029,9 @@ main() {
       info "Mode: adopt-existing (no manifest, managed files present)"
       adopt_existing_files
       ;;
-    prereq_only)
-      info "Mode: prereq-only (manifest exists)"
-      local commit
-      commit=$(jq -r '.blueprint_commit // "unknown"' "$AICODING_MANIFEST")
-      info "Container already initialized at blueprint $commit."
-      info "Prereqs re-checked. For blueprint file changes, run: aicoding-update"
-      info "(To rewrite all managed files from scratch: install.sh --force-reinstall)"
+    reconcile)
+      info "Mode: reconcile (manifest exists — restoring missing files, applying safe blueprint updates)"
+      reconcile_existing_install
       ;;
   esac
 
@@ -981,6 +1044,8 @@ main() {
   info "Mode: $mode"
   info "Secrets: $SECRETS_FILE"
   info "Claude Code: $CLAUDE_DIR"
+
+  _print_install_summary
 }
 
 main "$@"

@@ -436,3 +436,158 @@ classify_marker_block() {
     echo "drifted_and_updating"
   fi
 }
+
+# classify_managed_files — populate the caller's BUCKETS, FILE_MODE, and
+# FILE_SOURCE associative arrays with one entry per managed file (overwrite,
+# merge, marker_block, blueprint skills) plus any manifest entries not in
+# the current blueprint inventory (bucketed to_remove).
+#
+# Caller must:
+#   - declare -A BUCKETS FILE_MODE FILE_SOURCE
+#   - set AICODING_BLUEPRINT_CLONE to the blueprint working tree
+#   - set AICODING_MANIFEST to the manifest path (read for to_remove sweep)
+#
+# Used by bin/aicoding-update and by install.sh's reconcile mode.
+classify_managed_files() {
+  local dest mode source
+  # Overwrite-mode files from the blueprint inventory.
+  while IFS='|' read -r dest mode source; do
+    [[ -z "$dest" ]] && continue
+    FILE_MODE[$dest]=$mode
+    FILE_SOURCE[$dest]=$source
+    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" "$mode")
+  done < <(managed_inventory_overwrite)
+
+  # Merge-mode files.
+  while IFS='|' read -r dest mode source; do
+    [[ -z "$dest" ]] && continue
+    FILE_MODE[$dest]=$mode
+    FILE_SOURCE[$dest]=$source
+    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" "$mode")
+  done < <(managed_inventory_merge)
+
+  # marker_block (~/.bashrc).
+  local bashrc_dest
+  bashrc_dest=$(managed_bashrc_path)
+  FILE_MODE[$bashrc_dest]=marker_block
+  FILE_SOURCE[$bashrc_dest]="(composed)"
+  BUCKETS[$bashrc_dest]=$(classify_marker_block "$bashrc_dest")
+
+  # Skills enumerated from the blueprint clone.
+  local skill_dir skill_name
+  for skill_dir in "$AICODING_BLUEPRINT_CLONE/skills"/*/; do
+    [[ ! -d "$skill_dir" ]] && continue
+    skill_name=$(basename "$skill_dir")
+    dest="$HOME/.claude/skills/$skill_name/SKILL.md"
+    source="skills/$skill_name/SKILL.md"
+    FILE_MODE[$dest]=overwrite
+    FILE_SOURCE[$dest]=$source
+    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" overwrite)
+  done
+
+  # Files in manifest but absent from blueprint inventory → to_remove.
+  local manifest_files
+  manifest_files=$(jq -r '.files | keys[]' "$AICODING_MANIFEST")
+  while IFS= read -r dest; do
+    [[ -z "$dest" ]] && continue
+    [[ -z "${FILE_MODE[$dest]:-}" ]] && BUCKETS[$dest]=to_remove
+  done <<<"$manifest_files"
+  # Ensure a clean exit code under `set -e` — the while loop above ends with
+  # whatever the last short-circuit `&&` returned (often 1 when nothing was
+  # appended), which would otherwise propagate up and abort the script.
+  return 0
+}
+
+# apply_managed_buckets <bucket_list> — apply blueprint state to disk for
+# files whose bucket appears in the space-separated <bucket_list>. Buckets
+# not listed are silently skipped (the caller reports them separately).
+#
+# Caller must have already called classify_managed_files (populating
+# BUCKETS / FILE_MODE / FILE_SOURCE) and manifest_stage_begin. Caller is
+# responsible for manifest_stage_commit afterwards.
+#
+# Buckets the caller can request:
+#   restore               — file in manifest, missing on disk; redeploy.
+#   new_file              — in blueprint, not in manifest; deploy.
+#   will_update           — tracked, unedited, blueprint changed; deploy.
+#   drifted_but_aligned   — refresh manifest hash, no file write.
+#   merge                 — re-merge JSON merge-mode files.
+#   drifted_and_updating  — back up current file, deploy blueprint version.
+#   to_remove             — delete file and drop from manifest.
+apply_managed_buckets() {
+  local allowed=" $1 "  # space-pad for substring match
+  local dest src bucket mode
+  for dest in "${!BUCKETS[@]}"; do
+    bucket=${BUCKETS[$dest]}
+    case "$allowed" in
+      *" $bucket "*) ;;
+      *) continue ;;
+    esac
+    mode=${FILE_MODE[$dest]:-overwrite}
+    src="$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]:-}"
+    case "$bucket" in
+      restore|new_file|will_update)
+        _apply_deploy "$mode" "$dest" "$src"
+        ;;
+      drifted_and_updating)
+        [[ -e "$dest" ]] && _backup_file "$dest"
+        _apply_deploy "$mode" "$dest" "$src"
+        ;;
+      drifted_but_aligned)
+        if [[ "$mode" = "marker_block" ]]; then
+          local h
+          h=$(compute_block_hash "$dest" \
+              "$(managed_marker_block_start)" "$(managed_marker_block_end)")
+          manifest_set_file "$dest" \
+            "$(jq -n --arg s "$(managed_marker_block_start)" \
+                     --arg e "$(managed_marker_block_end)" \
+                     --arg h "$h" \
+                '{mode:"marker_block",source:"(composed)",marker_start:$s,marker_end:$e,deployed_block_hash:$h}')"
+        else
+          local h
+          h=$(compute_hash "$dest")
+          manifest_set_file "$dest" \
+            "$(jq -n --arg s "${FILE_SOURCE[$dest]}" --arg h "$h" \
+                '{mode:"overwrite",source:$s,deployed_hash:$h}')"
+        fi
+        ;;
+      merge)
+        [[ -f "$src" ]] && _apply_deploy merge "$dest" "$src"
+        ;;
+      to_remove)
+        remove_managed_file "$dest"
+        ;;
+    esac
+  done
+}
+
+# Internal: dispatch deploy by mode. Substitutes secrets so {{HOME}} and
+# {{*_API_KEY}} never reach disk.
+_apply_deploy() {
+  local mode=$1 dest=$2 src=$3
+  case "$mode" in
+    overwrite)
+      deploy_overwrite_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
+      ;;
+    merge)
+      [[ -f "$dest" ]] || { mkdir -p "$(dirname "$dest")"; echo '{}' > "$dest"; }
+      deploy_merge_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
+      ;;
+    marker_block)
+      deploy_marker_block "$dest" \
+        "$(managed_bashrc_block_body)" \
+        "$(managed_marker_block_start)" "$(managed_marker_block_end)"
+      ;;
+  esac
+}
+
+# Internal: timestamped sibling backup. Caller already verified file exists.
+# Prints the backup-path announcement line to stdout — restores the visible
+# "      backup: <path>" line the original bin/aicoding-update backup_drifted
+# emitted, so users still see exactly where the backup landed.
+_backup_file() {
+  local dest=$1 stamp
+  stamp=$(date +%Y%m%d-%H%M%S)
+  cp "$dest" "$dest.bak.$stamp"
+  echo "      backup: $dest.bak.$stamp"
+}

@@ -372,3 +372,95 @@ EOF
 
   jq -e '.files | has("'"$TMPDIR"'/dest") | not' "$AICODING_MANIFEST"
 }
+
+@test "apply_managed_buckets: applies only the listed buckets" {
+  # Restoring a missing file is in the allowed set; to_remove is not.
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs/tmux"
+  echo "tmux from blueprint" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
+  mkdir -p "$HOME/.aicodingsetup"
+  local tmux_hash
+  tmux_hash=$(sha256sum "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf" | awk '{print $1}')
+  cat > "$AICODING_MANIFEST" <<EOF
+{"schema_version":1,"files":{
+  "$HOME/.tmux.conf":{"mode":"overwrite","source":"configs/tmux/tmux.conf","deployed_hash":"$tmux_hash"},
+  "$HOME/.obsolete":{"mode":"overwrite","source":"configs/obsolete","deployed_hash":"$tmux_hash"}
+}}
+EOF
+  # ~/.tmux.conf missing → bucket restore. ~/.obsolete not in inventory → to_remove.
+  touch "$HOME/.obsolete"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE
+  classify_managed_files
+  [ "${BUCKETS[$HOME/.tmux.conf]}" = "restore" ]
+  [ "${BUCKETS[$HOME/.obsolete]}" = "to_remove" ]
+
+  # Apply only restore + new_file + will_update + drifted_but_aligned + merge.
+  manifest_stage_begin
+  apply_managed_buckets "restore new_file will_update drifted_but_aligned merge"
+  manifest_stage_commit
+
+  # tmux.conf restored.
+  [ -f "$HOME/.tmux.conf" ]
+  grep -q "tmux from blueprint" "$HOME/.tmux.conf"
+  # obsolete file NOT removed (to_remove was excluded).
+  [ -f "$HOME/.obsolete" ]
+}
+
+@test "classify_managed_files: populates BUCKETS for tracked + on-disk + missing scenarios" {
+  # Set up a blueprint clone with one overwrite file.
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs/tmux" "$AICODING_BLUEPRINT_CLONE/configs/claude"
+  echo "blueprint tmux content" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
+  echo '{}' > "$AICODING_BLUEPRINT_CLONE/configs/claude/settings.json"
+  # Manifest tracks the tmux file with matching hash.
+  mkdir -p "$HOME/.aicodingsetup"
+  local tmux_hash
+  tmux_hash=$(sha256sum "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf" | awk '{print $1}')
+  cat > "$AICODING_MANIFEST" <<EOF
+{"schema_version":1,"files":{"$HOME/.tmux.conf":{"mode":"overwrite","source":"configs/tmux/tmux.conf","deployed_hash":"$tmux_hash"}}}
+EOF
+  # File is missing on disk → should classify as restore.
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE
+  classify_managed_files
+  [ "${BUCKETS[$HOME/.tmux.conf]}" = "restore" ]
+}
+
+@test "apply_managed_buckets: drifted_and_updating backs up and redeploys" {
+  # Source the lib (other tests in this file do the same).
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs/tmux"
+  echo "new blueprint tmux" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
+
+  # User has an edited file (drift). Manifest hash is from neither current
+  # disk content nor blueprint content → bucket drifted_and_updating.
+  mkdir -p "$HOME/.aicodingsetup"
+  echo "user edited tmux" > "$HOME/.tmux.conf"
+  local stale_hash
+  stale_hash=$(echo "original deployed content" | sha256sum | awk '{print $1}')
+  cat > "$AICODING_MANIFEST" <<EOF
+{"schema_version":1,"files":{"$HOME/.tmux.conf":{"mode":"overwrite","source":"configs/tmux/tmux.conf","deployed_hash":"$stale_hash"}}}
+EOF
+
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE
+  classify_managed_files
+  [ "${BUCKETS[$HOME/.tmux.conf]}" = "drifted_and_updating" ]
+
+  manifest_stage_begin
+  run apply_managed_buckets "drifted_and_updating"
+  manifest_stage_commit
+  [ "$status" -eq 0 ]
+
+  # Blueprint version deployed.
+  grep -q "new blueprint tmux" "$HOME/.tmux.conf"
+  # A .bak.<stamp> sibling exists with the user's previous content.
+  local bak
+  bak=$(ls "$HOME"/.tmux.conf.bak.* 2>/dev/null | head -1)
+  [ -n "$bak" ]
+  grep -q "user edited tmux" "$bak"
+  # Output mentions the backup line (visible-failure regression guard).
+  echo "$output" | grep -qE "^      backup: $HOME/.tmux.conf.bak\.[0-9]+-[0-9]+$"
+}
