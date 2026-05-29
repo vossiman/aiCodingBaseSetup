@@ -333,3 +333,195 @@ STUB
   ! echo "$output" | grep -qE "Installing Cursor CLI"
   echo "$output" | grep -qE "cursor-agent already installed"
 }
+
+@test "first-deploy: codex config.toml deploys with substituted FIRECRAWL_API_KEY" {
+  # Seed a secrets file so substitution has a value to inject.
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
+FIRECRAWL_API_KEY=fake-firecrawl-123
+BRAVE_API_KEY=fake-brave-456
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_ACCOUNT_ID=
+EOF
+  chmod 600 "$HOME/.aicodingsetup/.secrets.env"
+
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+
+  # File deployed under bind-mount target ~/.codex/.
+  [ -f "$HOME/.codex/config.toml" ]
+  # Secret substituted (no {{...}} placeholder survives).
+  grep -qF 'FIRECRAWL_API_KEY = "fake-firecrawl-123"' "$HOME/.codex/config.toml"
+  ! grep -qF '{{FIRECRAWL_API_KEY}}' "$HOME/.codex/config.toml"
+  # Manifest records overwrite mode + deployed_hash.
+  local mode
+  mode=$(jq -r '.files["'"$HOME"'/.codex/config.toml"].mode' "$AICODING_MANIFEST")
+  [ "$mode" = "overwrite" ]
+  local hash
+  hash=$(jq -r '.files["'"$HOME"'/.codex/config.toml"].deployed_hash' "$AICODING_MANIFEST")
+  [ -n "$hash" ]
+  [ "$hash" != "null" ]
+}
+
+@test "first-deploy: cursor mcp.json merges 4 blueprint servers without dropping user adds" {
+  # Pre-create ~/.cursor/mcp.json with one user-added server. The merge
+  # pipeline must preserve it while adding the blueprint's 4 servers.
+  mkdir -p "$HOME/.cursor"
+  cat > "$HOME/.cursor/mcp.json" <<'EOF'
+{
+  "mcpServers": {
+    "user-custom": {
+      "command": "my-custom-mcp",
+      "args": ["--flag"]
+    }
+  }
+}
+EOF
+  # Make sure first-deploy fires (no manifest yet); Plan 1's detect_install_mode
+  # picks 'adopt' when a managed file exists but no manifest is present, so
+  # cursor mcp.json on disk -> mode=adopt. Use --force-reinstall to force first.
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
+FIRECRAWL_API_KEY=fake-firecrawl-123
+BRAVE_API_KEY=fake-brave-456
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_ACCOUNT_ID=
+EOF
+
+  bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
+
+  [ -f "$HOME/.cursor/mcp.json" ]
+  # All 4 blueprint servers present.
+  jq -e '.mcpServers.firecrawl'    "$HOME/.cursor/mcp.json"
+  jq -e '.mcpServers["brave-search"]' "$HOME/.cursor/mcp.json"
+  jq -e '.mcpServers.context7'     "$HOME/.cursor/mcp.json"
+  jq -e '.mcpServers.playwright'   "$HOME/.cursor/mcp.json"
+  # User's custom server preserved.
+  jq -e '.mcpServers["user-custom"]' "$HOME/.cursor/mcp.json"
+  # Substitution applied.
+  jq -r '.mcpServers.firecrawl.env.FIRECRAWL_API_KEY' "$HOME/.cursor/mcp.json" | grep -qF 'fake-firecrawl-123'
+}
+
+@test "first-deploy: opencode.json mcp field populated with 4 servers and substituted secrets" {
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
+FIRECRAWL_API_KEY=fake-firecrawl-123
+BRAVE_API_KEY=fake-brave-456
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_ACCOUNT_ID=
+EOF
+
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+
+  [ -f "$HOME/.config/opencode/opencode.json" ]
+  # All 4 servers present under the 'mcp' (not 'mcpServers') top-level key.
+  jq -e '.mcp.firecrawl.type == "local"'                  "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp["brave-search"].type == "local"'            "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp.context7.type == "local"'                   "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp.playwright.type == "local"'                 "$HOME/.config/opencode/opencode.json"
+  # opencode schema uses 'environment' not 'env' and 'command' is an array.
+  jq -e '.mcp.firecrawl.environment.FIRECRAWL_API_KEY == "fake-firecrawl-123"' "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp.firecrawl.command | type == "array"'        "$HOME/.config/opencode/opencode.json"
+}
+
+@test "merge: opencode.json mcp field preserves user-added server" {
+  # Pre-populate opencode.json with an existing user-added mcp entry.
+  mkdir -p "$HOME/.config/opencode"
+  cat > "$HOME/.config/opencode/opencode.json" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "anthropic/claude-opus-4-6",
+  "mcp": {
+    "user-server": {
+      "type": "local",
+      "command": ["my-custom"],
+      "enabled": true
+    }
+  }
+}
+EOF
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
+FIRECRAWL_API_KEY=fake-firecrawl-123
+BRAVE_API_KEY=fake-brave-456
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_ACCOUNT_ID=
+EOF
+
+  bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
+
+  # User server + all 4 blueprint servers both present.
+  jq -e '.mcp["user-server"]'   "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp.firecrawl'        "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp["brave-search"]'  "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp.context7'         "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp.playwright'       "$HOME/.config/opencode/opencode.json"
+}
+
+@test "reconcile: restores deleted ~/.codex/config.toml on rebuild" {
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
+FIRECRAWL_API_KEY=fake-firecrawl-123
+BRAVE_API_KEY=fake-brave-456
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_ACCOUNT_ID=
+EOF
+  # First-deploy seeds the manifest.
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ -f "$HOME/.codex/config.toml" ]
+  local first_hash
+  first_hash=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
+
+  # Simulate a rebuild: manifest persists (bind-mount), file is wiped.
+  rm -f "$HOME/.codex/config.toml"
+  [ ! -f "$HOME/.codex/config.toml" ]
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  # File restored, content byte-identical to pre-wipe.
+  [ -f "$HOME/.codex/config.toml" ]
+  local restored_hash
+  restored_hash=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
+  [ "$restored_hash" = "$first_hash" ]
+  # Plan 1's summary line shows restored count >= 1.
+  echo "$output" | grep -qE 'restored [1-9][0-9]* '
+  # Mode line announces reconcile.
+  echo "$output" | grep -q "Mode: reconcile"
+}
+
+@test "reconcile: leaves edited ~/.codex/config.toml byte-unchanged" {
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
+FIRECRAWL_API_KEY=fake-firecrawl-123
+BRAVE_API_KEY=fake-brave-456
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_ACCOUNT_ID=
+EOF
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+
+  # User edits the file (drift).
+  echo "# user-added line" >> "$HOME/.codex/config.toml"
+  local edited_hash
+  edited_hash=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
+
+  # Also change the blueprint source so the bucket is drifted_and_updating
+  # (not drifted_but_aligned), which is the conservatism case we care about.
+  local original_blueprint
+  original_blueprint=$(cat "$BLUEPRINT_ROOT/configs/codex/config.toml")
+  echo "# blueprint also changed" >> "$BLUEPRINT_ROOT/configs/codex/config.toml"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  # User's edit preserved byte-for-byte (reconcile excludes drifted_and_updating).
+  local after_hash
+  after_hash=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
+  [ "$after_hash" = "$edited_hash" ]
+  # Summary shows drifted >= 1.
+  echo "$output" | grep -qE 'drifted [1-9][0-9]* '
+  # NOTE line surfaces.
+  echo "$output" | grep -qE '^NOTE: [0-9]+ drifted file'
+
+  # Restore blueprint so other tests don't see the modification. The
+  # source codex/config.toml ends with a trailing newline; preserve it
+  # with `printf '%s\n'` (a bare `printf '%s'` would silently strip it).
+  printf '%s\n' "$original_blueprint" > "$BLUEPRINT_ROOT/configs/codex/config.toml"
+}
