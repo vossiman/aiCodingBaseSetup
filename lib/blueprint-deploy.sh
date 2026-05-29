@@ -561,6 +561,12 @@ apply_managed_buckets() {
         ;;
     esac
   done
+  # Ensure a clean exit code under `set -e` — the for loop's last iteration
+  # may have been the `merge)` case with `[[ -f $src ]] && ...` returning 1
+  # (because the blueprint clone in test fixtures only stages a subset of
+  # managed sources). Without this, the function would propagate that 1
+  # depending on associative-array iteration order — flaky-as-baselined.
+  return 0
 }
 
 # Internal: dispatch deploy by mode. Substitutes secrets so {{HOME}} and
