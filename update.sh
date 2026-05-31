@@ -18,6 +18,14 @@ fi
 
 warn() { printf 'WARN: %s\n' "$*" >&2; }
 
+# Surface ~/.local/bin where install.sh's ensure_* functions drop the four
+# CLIs (claude, opencode, codex, agent). postStartCommand runs in a non-
+# interactive shell that doesn't source ~/.bashrc, so PATH lacks ~/.local/bin
+# unless we add it here. Without this, every update line below fails with
+# "command not found" on every container start — silent skip until you read
+# the postStart log carefully. Discovered during Plan 3 verification.
+export PATH="$HOME/.local/bin:$PATH"
+
 # === actual work ===
 # Failures are non-fatal (a transient upgrade error shouldn't block container
 # start) but they're announced — the previous '2>/dev/null || true' hid both.
