@@ -407,9 +407,14 @@ classify_marker_block() {
   deployed=$(printf '%s' "$entry" | jq -r '.deployed_block_hash // empty')
 
   if [ -z "$current" ]; then
-    # File present but marker block missing on disk — user removed the
-    # markers; treat as drift so the apply step backs up before re-deploy.
-    echo "drifted_and_updating"
+    # File present but our managed markers absent. The dominant cause is an
+    # ephemeral-home reset (devpod recreate ships a fresh image ~/.bashrc with
+    # no markers) — NOT a user edit. Treat as restore so reconcile re-adds the
+    # block automatically; the block is self-contained between markers and only
+    # appends, so re-adding it never clobbers the user's own ~/.bashrc content.
+    # (Previously this was drifted_and_updating, which reconcile skips — that
+    # stranded the block, and anything in ~/.bashrc.d/*.sh, after every recreate.)
+    echo "restore"
     return 0
   fi
 
