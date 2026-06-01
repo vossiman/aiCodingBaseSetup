@@ -348,6 +348,11 @@ deploy_overwrite_file_substituted() {
   local src=$1 dest=$2 label=$3
   local tmp; tmp=$(mktemp)
   _substitute_file_to "$src" "$tmp"
+  # Substitution writes through a 0600 mktemp, which strips the source's
+  # executable bit — fatal for hook scripts (e.g. check-archived-docs.sh)
+  # that must be runnable. Propagate +x when the blueprint source is
+  # executable so cp carries it onto the deployed file.
+  [[ -x "$src" ]] && chmod +x "$tmp"
   deploy_overwrite_file "$tmp" "$dest" "$label"
   rm -f "$tmp"
 }
