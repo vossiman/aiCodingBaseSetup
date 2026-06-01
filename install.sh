@@ -90,6 +90,16 @@ deploy_all_managed_files() {
     ok "skill $skill_name installed"
   done
 
+  # Slash commands — dynamic enumeration, parallel to skills.
+  mkdir -p "$CLAUDE_DIR/commands"
+  local cmd_file cmd_name
+  for cmd_file in "$SCRIPT_DIR/commands"/*.md; do
+    [[ ! -f "$cmd_file" ]] && continue
+    cmd_name=$(basename "$cmd_file")
+    deploy_overwrite_file_substituted "$cmd_file" "$CLAUDE_DIR/commands/$cmd_name" "commands/$cmd_name"
+    ok "command $cmd_name installed"
+  done
+
   # Record blueprint origin/commit metadata at the top of the manifest.
   local commit origin
   commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
@@ -102,7 +112,7 @@ deploy_all_managed_files() {
 
 # Managed component lists (used for unmanaged component detection)
 MANAGED_MCPS=("firecrawl" "brave-search" "context7" "playwright")
-MANAGED_HOOKS=("custom-statusline.js" "bw-deny-files.sh")
+MANAGED_HOOKS=("custom-statusline.js" "bw-deny-files.sh" "check-archived-docs.sh")
 MANAGED_SKILLS=("cloudflare-browser")
 MANAGED_PLUGINS=(
   "superpowers@claude-plugins-official"
@@ -1046,6 +1056,33 @@ _print_install_summary() {
   fi
 }
 
+# install_templates — mirror the project-scaffold templates into
+# ~/.aicodingsetup/templates/project. These are scaffolding source material
+# consumed by /scaffold-project, not user-managed dotfiles, so they live
+# outside the manifest: the repo is the source of truth and every run mirrors
+# the latest tree over (rsync --delete, cp -r fallback for minimal containers).
+install_templates() {
+  header "Project Templates"
+
+  local src_dir="$SCRIPT_DIR/templates/project"
+  local dest_dir="$SECRETS_DIR/templates/project"
+
+  if [[ ! -d "$src_dir" ]]; then
+    warn "No templates/project directory in repo — skipping"
+    return
+  fi
+
+  mkdir -p "$dest_dir"
+  if command -v rsync &>/dev/null; then
+    rsync -a --delete "$src_dir/" "$dest_dir/"
+  else
+    rm -rf "$dest_dir"
+    mkdir -p "$dest_dir"
+    cp -r "$src_dir/." "$dest_dir/"
+  fi
+  ok "templates/project mirrored to $dest_dir"
+}
+
 main() {
   local force_reinstall=0
   while [[ $# -gt 0 ]]; do
@@ -1092,6 +1129,7 @@ main() {
       ;;
   esac
 
+  install_templates
   install_tmux_plugins
   install_bubblewrap
   install_infra_audit

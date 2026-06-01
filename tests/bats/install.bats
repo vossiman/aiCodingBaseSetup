@@ -525,3 +525,55 @@ EOF
   # with `printf '%s\n'` (a bare `printf '%s'` would silently strip it).
   printf '%s\n' "$original_blueprint" > "$BLUEPRINT_ROOT/configs/codex/config.toml"
 }
+
+@test "install.sh first-deploy: installs slash commands and tracks them in the manifest" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  # Every blueprint command lands in ~/.claude/commands and is manifest-tracked.
+  local cmd_file cmd_name
+  for cmd_file in "$BLUEPRINT_ROOT/commands"/*.md; do
+    cmd_name=$(basename "$cmd_file")
+    [ -f "$HOME/.claude/commands/$cmd_name" ]
+    local h
+    h=$(jq -r '.files["'"$HOME"'/.claude/commands/'"$cmd_name"'"].deployed_hash' "$AICODING_MANIFEST")
+    [ "$h" != "null" ] && [ -n "$h" ]
+  done
+}
+
+@test "install.sh first-deploy: installs check-archived-docs hook so settings.json reference is not dangling" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  # The SessionStart hook wired in settings.json must actually exist on disk.
+  [ -f "$HOME/.claude/hooks/check-archived-docs.sh" ]
+  [ -x "$HOME/.claude/hooks/check-archived-docs.sh" ]
+  grep -q "check-archived-docs.sh" "$HOME/.claude/settings.json"
+  # Manifest tracks it as a managed overwrite file.
+  local h
+  h=$(jq -r '.files["'"$HOME"'/.claude/hooks/check-archived-docs.sh"].deployed_hash' "$AICODING_MANIFEST")
+  [ "$h" != "null" ] && [ -n "$h" ]
+}
+
+@test "install.sh first-deploy: mirrors project templates into ~/.aicodingsetup" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  local dest="$HOME/.aicodingsetup/templates/project"
+  [ -d "$dest" ]
+  [ -f "$dest/CLAUDE.md.tpl" ]
+  [ -f "$dest/dot-claude/settings.json.tpl" ]
+  # The docs scaffold dirs (carried by .gitkeep) must survive the mirror so
+  # /scaffold-project can walk them.
+  [ -f "$dest/docs/specs/active/.gitkeep" ]
+  # Scaffold-time placeholders must NOT be expanded at install time.
+  grep -q "{{PROJECT_NAME}}" "$dest/CLAUDE.md.tpl"
+}
+
+@test "install.sh reconcile mode: restores a deleted slash command" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  local one
+  one=$(basename "$(ls "$BLUEPRINT_ROOT/commands"/*.md | head -1)")
+  [ -f "$HOME/.claude/commands/$one" ]
+  rm -f "$HOME/.claude/commands/$one"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "Mode: reconcile"
+  # The deleted command is restored by reconcile (classify → restore bucket).
+  [ -f "$HOME/.claude/commands/$one" ]
+}
