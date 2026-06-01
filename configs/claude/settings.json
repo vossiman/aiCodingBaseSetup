@@ -4,6 +4,11 @@
       "Bash(git show:*)"
     ]
   },
+  "env": {
+    "CLAUDE_CODE_NO_FLICKER": "1"
+  },
+  "effortLevel": "medium",
+  "skipDangerousModePermissionPrompt": true,
   "hooks": {
     "PreToolUse": [
       {

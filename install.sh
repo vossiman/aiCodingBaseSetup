@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set -E
+_CURRENT_STEP="(startup)"
+trap '_rc=$?; printf "INSTALL FAILED  step=%s  line=%s\n" "$_CURRENT_STEP" "$LINENO" >&2; exit "$_rc"' ERR
 
 # ============================================================================
 # AI Coding Base Setup — Installer/Updater
@@ -26,15 +29,80 @@ if [[ "${_AICODINGSETUP_NVS_STRIPPED:-}" != 1 ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Shared deployment library — used by both install.sh and aicoding-update.
+. "$SCRIPT_DIR/lib/blueprint-deploy.sh"
+
+# Managed file inventory + marker-block content live in lib/blueprint-deploy.sh
+# (managed_inventory_overwrite, managed_inventory_merge, managed_bashrc_*).
+# Cache the marker strings once; the body is re-emitted on each deploy.
+BASHRC_BLOCK_START="$(managed_marker_block_start)"
+BASHRC_BLOCK_END="$(managed_marker_block_end)"
+
 CLAUDE_DIR="$HOME/.claude"
 OPENCODE_DIR="$HOME/.config/opencode"
 SECRETS_DIR="$HOME/.aicodingsetup"
 SECRETS_FILE="$SECRETS_DIR/.secrets.env"
 
+# deploy_all_managed_files — wraps every managed-file deployment in a single
+# manifest staging session. Skill files are enumerated from MANAGED_SKILLS.
+deploy_all_managed_files() {
+  manifest_stage_begin
+
+  local entry dest mode source
+  while IFS='|' read -r dest mode source; do
+    [[ -z "$dest" ]] && continue
+    if [[ -f "$SCRIPT_DIR/$source" ]]; then
+      deploy_overwrite_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
+      ok "deployed $dest"
+    else
+      warn "missing source in blueprint: $source — skipping $dest"
+    fi
+  done < <(managed_inventory_overwrite)
+
+  while IFS='|' read -r dest mode source; do
+    [[ -z "$dest" ]] && continue
+    if [[ -f "$SCRIPT_DIR/$source" ]]; then
+      mkdir -p "$(dirname "$dest")"
+      [[ -f "$dest" ]] || echo '{}' > "$dest"
+      deploy_merge_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
+      ok "merged $dest"
+    fi
+  done < <(managed_inventory_merge)
+
+  # ~/.bashrc managed block.
+  deploy_marker_block "$HOME/.bashrc" "$(managed_bashrc_block_body)" \
+    "$BASHRC_BLOCK_START" "$BASHRC_BLOCK_END"
+  ok "managed block written to ~/.bashrc"
+
+  # Skills — dynamic enumeration.
+  mkdir -p "$CLAUDE_DIR/skills"
+  local skill_dir skill_name src_skill dest_dir dest_skill
+  for skill_dir in "$SCRIPT_DIR/skills"/*/; do
+    [[ ! -d "$skill_dir" ]] && continue
+    skill_name=$(basename "$skill_dir")
+    src_skill="$skill_dir/SKILL.md"
+    dest_dir="$CLAUDE_DIR/skills/$skill_name"
+    dest_skill="$dest_dir/SKILL.md"
+    [[ ! -f "$src_skill" ]] && { warn "no SKILL.md in $skill_dir"; continue; }
+    mkdir -p "$dest_dir"
+    deploy_overwrite_file_substituted "$src_skill" "$dest_skill" "skills/$skill_name/SKILL.md"
+    ok "skill $skill_name installed"
+  done
+
+  # Record blueprint origin/commit metadata at the top of the manifest.
+  local commit origin
+  commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
+  origin=$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo unknown)
+  manifest_stage_set_top blueprint_commit "$commit"
+  manifest_stage_set_top blueprint_origin "$origin"
+
+  manifest_stage_commit
+}
+
 # Managed component lists (used for unmanaged component detection)
 MANAGED_MCPS=("firecrawl" "brave-search" "context7" "playwright")
-MANAGED_HOOKS=("custom-statusline.js" "bw-deny-files.sh" "check-archived-docs.sh")
-MANAGED_COMMANDS=("scaffold-project.md" "housekeep.md")
+MANAGED_HOOKS=("custom-statusline.js" "bw-deny-files.sh")
 MANAGED_SKILLS=("cloudflare-browser")
 MANAGED_PLUGINS=(
   "superpowers@claude-plugins-official"
@@ -59,7 +127,10 @@ info()  { echo -e "${BLUE}INFO:${NC} $*"; }
 ok()    { echo -e "${GREEN}  OK:${NC} $*"; }
 warn()  { echo -e "${YELLOW}WARN:${NC} $*"; }
 err()   { echo -e "${RED}ERROR:${NC} $*"; }
-header(){ echo -e "\n${GREEN}=== $* ===${NC}"; }
+header(){
+  _CURRENT_STEP="$*"
+  echo -e "\n${GREEN}=== $* ===${NC}"
+}
 
 # --- Environment Detection ---
 detect_environment() {
@@ -186,7 +257,7 @@ ensure_locales() {
   for loc in "de_AT.UTF-8" "en_US.UTF-8"; do
     local short="${loc%.UTF-8}.utf8"
     if ! locale -a 2>/dev/null | grep -qi "^${short}$"; then
-      $SUDO sed -i "s/^# *${loc}/${loc}/" /etc/locale.gen 2>/dev/null || true
+      $SUDO sed -i "s/^# *${loc}/${loc}/" /etc/locale.gen 2>/dev/null || warn "could not uncomment $loc in /etc/locale.gen (non-fatal)"
       need_gen=true
     fi
   done
@@ -210,6 +281,61 @@ ensure_opencode() {
   fi
 }
 
+ensure_codex() {
+  header "Ensuring OpenAI Codex CLI"
+  command -v codex &>/dev/null && { ok "codex already installed"; return 0; }
+  command -v curl  &>/dev/null || { warn "curl not available — skipping codex install"; return 0; }
+  info "Installing OpenAI Codex CLI"
+  curl -fsSL https://chatgpt.com/codex/install.sh | sh 2>&1 | tail -5 \
+    || warn "codex install failed (non-fatal)"
+  # Upstream installer's drop-path isn't formally documented. Probe two
+  # likely locations and symlink into ~/.local/bin so non-interactive
+  # shells (postStartCommand) see codex without sourcing rc files.
+  if [[ ! -x "$HOME/.local/bin/codex" ]] && [[ -x "$HOME/.codex/bin/codex" ]]; then
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$HOME/.codex/bin/codex" "$HOME/.local/bin/codex"
+  fi
+  [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
+}
+
+ensure_cursor_agent() {
+  header "Ensuring Cursor CLI"
+  # Binary name is empirically uncertain (see spec Open Question #2):
+  # current docs say `agent`, older releases shipped `cursor-agent`, npm
+  # distro is `@cursor/cli`. Probe both names.
+  local already_installed=0
+  if command -v agent &>/dev/null || command -v cursor-agent &>/dev/null; then
+    ok "cursor-agent already installed"
+    already_installed=1
+  fi
+
+  if [[ $already_installed -eq 0 ]]; then
+    command -v curl &>/dev/null || { warn "curl not available — skipping cursor-agent install"; return 0; }
+    info "Installing Cursor CLI"
+    curl -fsSL https://cursor.com/install | bash 2>&1 | tail -5 \
+      || warn "cursor-agent install failed (non-fatal)"
+
+    # Empirical probe: report which name the installer actually dropped.
+    # This information is useful in postCreate logs when debugging.
+    local found=""
+    if   [[ -x "$HOME/.local/bin/agent" ]];        then found="agent"
+    elif [[ -x "$HOME/.local/bin/cursor-agent" ]]; then found="cursor-agent"
+    fi
+    [[ -n "$found" ]] && info "cursor-agent installer dropped binary as: $found"
+  fi
+
+  # Establish a canonical name regardless of whether we just installed or
+  # it was already present. update.sh and downstream tooling expect either
+  # `agent` or `cursor-agent` to resolve; symlink whichever is present so
+  # both names work. Idempotent across re-runs.
+  if [[ -x "$HOME/.local/bin/cursor-agent" ]] && [[ ! -e "$HOME/.local/bin/agent" ]]; then
+    ln -sf cursor-agent "$HOME/.local/bin/agent"
+  elif [[ -x "$HOME/.local/bin/agent" ]] && [[ ! -e "$HOME/.local/bin/cursor-agent" ]]; then
+    ln -sf agent "$HOME/.local/bin/cursor-agent"
+  fi
+  [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
+}
+
 ensure_go() {
   command -v go &>/dev/null && return 0
   command -v curl &>/dev/null || { warn "curl not available — skipping Go install"; return 0; }
@@ -224,10 +350,9 @@ ensure_go() {
   curl -fsSL "https://go.dev/dl/go${goversion}.linux-${arch}.tar.gz" | $SUDO tar -C /usr/local -xz \
     || { warn "Go install failed"; return 0; }
   export PATH="/usr/local/go/bin:$PATH"
-  # Persist for future shells in this user
-  if [[ -w "$HOME" ]]; then
-    grep -q '/usr/local/go/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="/usr/local/go/bin:$PATH"' >> "$HOME/.bashrc"
-  fi
+  # Persistence for future shells is handled by the managed ~/.bashrc block
+  # (deployed by deploy_all_managed_files / adopt_existing_files); we no
+  # longer append a standalone export here.
 }
 
 ensure_uv() {
@@ -257,7 +382,7 @@ ensure_tmux() {
   command -v curl &>/dev/null || { warn "curl not available — skipping tmux build"; return 0; }
   apt_install build-essential libevent-dev libncurses-dev pkg-config bison || {
     warn "Could not install tmux build deps — falling back to apt's tmux"
-    apt_install tmux || true
+    apt_install tmux || warn "apt tmux install also failed — tmux may be missing (non-fatal)"
     return 0
   }
 
@@ -271,7 +396,7 @@ ensure_tmux() {
     ./configure --prefix=/usr/local &>/dev/null
     make -j"$(nproc)" &>/dev/null
     $SUDO make install &>/dev/null
-  ) || { warn "tmux build failed — falling back to apt's tmux"; apt_install tmux || true; rm -rf "$build_dir"; return 0; }
+  ) || { warn "tmux build failed — falling back to apt's tmux"; apt_install tmux || warn "apt tmux install also failed — tmux may be missing (non-fatal)"; rm -rf "$build_dir"; return 0; }
   rm -rf "$build_dir"
   hash -r
   ok "tmux ${tmux_version} built and installed to /usr/local/bin/tmux"
@@ -308,6 +433,8 @@ auto_install_prereqs() {
   ensure_node || warn "Node not available — npm-based MCPs and Playwright will be skipped"
   ensure_claude_code
   ensure_opencode
+  ensure_codex
+  ensure_cursor_agent
   ensure_go
   ensure_uv
   ensure_locales
@@ -473,17 +600,6 @@ json_merge() {
   echo "$merged" > "$target"
 }
 
-# --- Substitute placeholders in a string ---
-substitute_secrets() {
-  local content="$1"
-  content="${content//\{\{HOME\}\}/$HOME}"
-  content="${content//\{\{FIRECRAWL_API_KEY\}\}/${FIRECRAWL_API_KEY:-}}"
-  content="${content//\{\{BRAVE_API_KEY\}\}/${BRAVE_API_KEY:-}}"
-  content="${content//\{\{CLOUDFLARE_API_TOKEN\}\}/${CLOUDFLARE_API_TOKEN:-}}"
-  content="${content//\{\{CLOUDFLARE_ACCOUNT_ID\}\}/${CLOUDFLARE_ACCOUNT_ID:-}}"
-  echo "$content"
-}
-
 # --- Report unmanaged components ---
 report_unmanaged() {
   header "Checking for unmanaged components"
@@ -525,22 +641,6 @@ report_unmanaged() {
       [[ "$hook_name" == infra-* ]] && managed=true
       if [[ "$managed" == "false" ]]; then
         info "Found hook '$hook_name' not managed by this installer — leaving untouched"
-      fi
-    done
-  fi
-
-  # Check commands (slash commands in ~/.claude/commands)
-  if [[ -d "$CLAUDE_DIR/commands" ]]; then
-    for cmd_file in "$CLAUDE_DIR/commands"/*.md; do
-      [[ ! -f "$cmd_file" ]] && continue
-      local cmd_name
-      cmd_name="$(basename "$cmd_file")"
-      local managed=false
-      for m in "${MANAGED_COMMANDS[@]}"; do
-        [[ "$cmd_name" == "$m" ]] && managed=true && break
-      done
-      if [[ "$managed" == "false" ]]; then
-        info "Found command '$cmd_name' not managed by this installer — leaving untouched"
       fi
     done
   fi
@@ -652,52 +752,6 @@ ensure_claude_onboarding_state() {
   ok "hasCompletedOnboarding=true, installMethod=native"
 }
 
-# --- Claude Code settings.json ---
-install_claude_settings() {
-  header "Claude Code settings.json"
-
-  mkdir -p "$CLAUDE_DIR"
-
-  local base_settings="$SCRIPT_DIR/configs/claude/settings.json"
-  local target_settings="$CLAUDE_DIR/settings.json"
-
-  if [[ ! -f "$base_settings" ]]; then
-    err "Missing configs/claude/settings.json"
-    return
-  fi
-
-  # Substitute {{HOME}} placeholder in base settings
-  local resolved_settings
-  resolved_settings="$(substitute_secrets "$(cat "$base_settings")")"
-
-  # Write to temp file for jq merge
-  local tmp_source
-  tmp_source="$(mktemp)"
-  echo "$resolved_settings" > "$tmp_source"
-
-  # Create target if it doesn't exist
-  if [[ ! -f "$target_settings" ]]; then
-    echo '{}' > "$target_settings"
-  fi
-
-  # Merge: base into existing (existing values preserved, new ones added)
-  json_merge "$target_settings" "$tmp_source"
-
-  # Set defaults only if absent
-  local tmp_out
-  tmp_out="$(mktemp)"
-
-  if jq -e 'has("effortLevel") | not' "$target_settings" &>/dev/null; then
-    jq '.effortLevel = "medium"' "$target_settings" > "$tmp_out" && mv "$tmp_out" "$target_settings"
-  fi
-  if jq -e 'has("skipDangerousModePermissionPrompt") | not' "$target_settings" &>/dev/null; then
-    jq '.skipDangerousModePermissionPrompt = true' "$target_settings" > "$tmp_out" && mv "$tmp_out" "$target_settings"
-  fi
-
-  rm -f "$tmp_source" "$tmp_out"
-  ok "Claude Code settings.json merged"
-}
-
 # --- Claude Code marketplace plugins ---
 install_claude_plugins() {
   header "Claude Code Plugins"
@@ -720,186 +774,61 @@ install_claude_plugins() {
   done
 }
 
-# --- opencode configuration ---
-install_opencode_config() {
-  header "opencode Configuration"
-
-  if ! command -v opencode &>/dev/null; then
-    warn "opencode CLI not found — skipping opencode configuration"
+# --- aicoding-update CLI symlink ---
+install_aicoding_update_symlink() {
+  header "aicoding-update CLI"
+  local src="$SCRIPT_DIR/bin/aicoding-update"
+  local dest="$HOME/.local/bin/aicoding-update"
+  if [[ ! -f "$src" ]]; then
+    warn "bin/aicoding-update not found in blueprint — skipping symlink"
     return
   fi
-
-  mkdir -p "$OPENCODE_DIR"
-
-  local base_config="$SCRIPT_DIR/configs/opencode/opencode.json"
-  local target_config="$OPENCODE_DIR/opencode.json"
-
-  if [[ ! -f "$base_config" ]]; then
-    err "Missing configs/opencode/opencode.json"
-    return
-  fi
-
-  # Build MCP block from shared definitions with secrets substituted
-  local mcps_file="$SCRIPT_DIR/configs/mcps.json"
-  local mcp_block
-  mcp_block="$(substitute_secrets "$(cat "$mcps_file")")"
-
-  # Transform mcps.json format into opencode format (add "type": "local" to each)
-  local opencode_mcps
-  opencode_mcps="$(echo "$mcp_block" | jq '
-    to_entries | map(
-      .value += {"type": "local"} |
-      if (.value.environment | length) == 0 then .value |= del(.environment) else . end
-    ) | from_entries
-  ')"
-
-  # Read base config and inject MCPs
-  local resolved_config
-  resolved_config="$(jq --argjson mcps "$opencode_mcps" '.mcp = $mcps' "$base_config")"
-
-  # Write to temp file for merge
-  local tmp_source
-  tmp_source="$(mktemp)"
-  echo "$resolved_config" > "$tmp_source"
-
-  # Create target if it doesn't exist
-  if [[ ! -f "$target_config" ]]; then
-    echo '{}' > "$target_config"
-  fi
-
-  json_merge "$target_config" "$tmp_source"
-
-  rm -f "$tmp_source"
-  ok "opencode config merged at $target_config"
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$src" "$dest"
+  chmod +x "$src"
+  ok "aicoding-update installed at $dest -> $src"
 }
 
-# --- tmux config ---
-# Container-only: deploys configs/tmux/tmux.conf to ~/.tmux.conf so every
-# DevPod workspace ships with a consistent tmux setup (right prefix, OSC 52
-# clipboard, etc.). Skipped on hosts since they have their own ~/.tmux.conf.
-install_tmux_config() {
-  header "tmux config"
+# --- tmux plugins (TPM) ---
+# Container-only: bootstraps Tmux Plugin Manager and installs every plugin
+# declared in configs/tmux/tmux.conf (resurrect, continuum, catppuccin, fzf,
+# thumbs). Without this, the trailing `run '~/.tmux/plugins/tpm/tpm'` in
+# tmux.conf exits 127 and the theme + session save/restore + fzf binding
+# are all dead. Idempotent: re-running just updates clones in place.
+install_tmux_plugins() {
+  header "tmux plugins (TPM)"
 
   if [[ "$ENV_TYPE" != "container" ]]; then
-    info "Skipping tmux config install (host uses its own ~/.tmux.conf)"
+    info "Skipping TPM install (host manages its own tmux plugins)"
     return
   fi
 
-  local src="$SCRIPT_DIR/configs/tmux/tmux.conf"
-  local dest="$HOME/.tmux.conf"
-
-  if [[ ! -f "$src" ]]; then
-    warn "configs/tmux/tmux.conf not found in repo"
+  if ! command -v git &>/dev/null; then
+    warn "git not found — skipping TPM install"
     return
   fi
 
-  cp "$src" "$dest"
-  ok "tmux config installed to $dest"
-}
-
-# --- Hooks and statusline ---
-install_hooks() {
-  header "Hooks & Statusline"
-
-  mkdir -p "$CLAUDE_DIR/hooks"
-
-  # Statusline — always overwrite (repo is source of truth)
-  local statusline_src="$SCRIPT_DIR/configs/claude/hooks/custom-statusline.js"
-  if [[ -f "$statusline_src" ]]; then
-    cp "$statusline_src" "$CLAUDE_DIR/hooks/custom-statusline.js"
-    ok "custom-statusline.js installed"
+  local tpm_dir="$HOME/.tmux/plugins/tpm"
+  if [[ ! -d "$tpm_dir" ]]; then
+    git clone --quiet --depth=1 https://github.com/tmux-plugins/tpm "$tpm_dir"
+    ok "TPM cloned to $tpm_dir"
   else
-    warn "custom-statusline.js not found in repo"
+    ok "TPM already present at $tpm_dir"
   fi
 
-  # SessionStart hook — archive reminder
-  local session_hook_src="$SCRIPT_DIR/hooks/check-archived-docs.sh"
-  if [[ -f "$session_hook_src" ]]; then
-    cp "$session_hook_src" "$CLAUDE_DIR/hooks/check-archived-docs.sh"
-    chmod +x "$CLAUDE_DIR/hooks/check-archived-docs.sh"
-    ok "check-archived-docs.sh installed"
-  else
-    warn "check-archived-docs.sh not found in repo"
-  fi
-}
-
-# --- Slash commands ---
-install_commands() {
-  header "Slash Commands"
-
-  mkdir -p "$CLAUDE_DIR/commands"
-
-  local src_dir="$SCRIPT_DIR/commands"
-  if [[ ! -d "$src_dir" ]]; then
-    warn "No commands/ directory in repo — skipping"
-    return
-  fi
-
-  for cmd in "${MANAGED_COMMANDS[@]}"; do
-    local src="$src_dir/$cmd"
-    if [[ -f "$src" ]]; then
-      cp "$src" "$CLAUDE_DIR/commands/$cmd"
-      ok "$cmd installed"
+  # Headless plugin install. Reads `set -g @plugin '...'` lines from
+  # ~/.tmux.conf; skips already-cloned plugins. Output is left visible —
+  # TPM is verbose on success ("Installing X / download success") and any
+  # failure surfaces inline rather than disappearing into /dev/null.
+  if [[ -x "$tpm_dir/bin/install_plugins" ]]; then
+    if "$tpm_dir/bin/install_plugins"; then
+      ok "tmux plugins installed/updated"
     else
-      warn "$cmd not found in repo"
+      warn "TPM install_plugins exited non-zero (see output above)"
     fi
-  done
-}
-
-# --- Project templates ---
-install_templates() {
-  header "Project Templates"
-
-  local src_dir="$SCRIPT_DIR/templates/project"
-  local dest_dir="$SECRETS_DIR/templates/project"
-
-  if [[ ! -d "$src_dir" ]]; then
-    warn "No templates/project directory in repo — skipping"
-    return
-  fi
-
-  mkdir -p "$dest_dir"
-
-  # Copy the whole tree; preserves .gitkeep and subdirectories. Repo is source of truth.
-  # Use rsync if available for idempotent mirroring, fall back to cp -r.
-  if command -v rsync &>/dev/null; then
-    rsync -a --delete "$src_dir/" "$dest_dir/"
   else
-    rm -rf "$dest_dir"
-    mkdir -p "$dest_dir"
-    cp -r "$src_dir/." "$dest_dir/"
+    warn "$tpm_dir/bin/install_plugins missing or not executable"
   fi
-  ok "templates/project mirrored to $dest_dir"
-}
-
-# --- Custom skills ---
-install_skills() {
-  header "Custom Skills"
-
-  mkdir -p "$CLAUDE_DIR/skills"
-
-  for skill_dir in "$SCRIPT_DIR/skills"/*/; do
-    [[ ! -d "$skill_dir" ]] && continue
-    local skill_name
-    skill_name="$(basename "$skill_dir")"
-    local src_skill="$skill_dir/SKILL.md"
-    local dest_dir="$CLAUDE_DIR/skills/$skill_name"
-    local dest_skill="$dest_dir/SKILL.md"
-
-    if [[ ! -f "$src_skill" ]]; then
-      warn "No SKILL.md found in $skill_dir"
-      continue
-    fi
-
-    mkdir -p "$dest_dir"
-
-    # Copy and substitute placeholders
-    local content
-    content="$(cat "$src_skill")"
-    content="$(substitute_secrets "$content")"
-    echo "$content" > "$dest_skill"
-    ok "$skill_name skill installed"
-  done
 }
 
 # --- bubblewrap (bw-AICode) ---
@@ -954,33 +883,226 @@ check_playwright() {
   fi
 }
 
-# --- Main flow ---
+# Detect which deploy mode this install.sh run should use.
+detect_install_mode() {
+  if [[ -f "$AICODING_MANIFEST" ]]; then
+    echo "reconcile"
+    return
+  fi
+  # No manifest. Check whether any managed files already exist on disk.
+  local dest
+  while IFS='|' read -r dest _ _; do
+    [[ -z "$dest" ]] && continue
+    [[ -e "$dest" ]] && { echo "adopt"; return; }
+  done < <(managed_inventory_overwrite; managed_inventory_merge)
+  [[ -f "$HOME/.bashrc" ]] && grep -qxF "$BASHRC_BLOCK_START" "$HOME/.bashrc" \
+    && { echo "adopt"; return; }
+  # Legacy: today's install.sh appends a standalone Go-PATH export to
+  # ~/.bashrc. Its presence signals a prior install, so treat as adopt
+  # (adopt_existing_files strips the line before deploying the managed block).
+  [[ -f "$HOME/.bashrc" ]] \
+    && grep -qxF 'export PATH="/usr/local/go/bin:$PATH"' "$HOME/.bashrc" \
+    && { echo "adopt"; return; }
+  echo "first"
+}
+
+# adopt_existing_files — record current hashes for existing managed files
+# without overwriting them. Files missing on disk are still deployed.
+adopt_existing_files() {
+  manifest_stage_begin
+  local dest mode source
+  local -a adopted=() deployed=()
+
+  while IFS='|' read -r dest mode source; do
+    [[ -z "$dest" ]] && continue
+    if [[ -e "$dest" ]]; then
+      local h
+      h=$(compute_hash "$dest")
+      manifest_set_file "$dest" \
+        "$(jq -n --arg s "$source" --arg h "$h" \
+            '{mode:"overwrite",source:$s,deployed_hash:$h}')"
+      adopted+=("$dest")
+    elif [[ -f "$SCRIPT_DIR/$source" ]]; then
+      deploy_overwrite_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
+      deployed+=("$dest")
+    fi
+  done < <(managed_inventory_overwrite)
+
+  while IFS='|' read -r dest mode source; do
+    [[ -z "$dest" ]] && continue
+    if [[ -e "$dest" ]]; then
+      manifest_set_file "$dest" \
+        "$(jq -n --arg s "$source" '{mode:"merge",source:$s}')"
+      adopted+=("$dest")
+    elif [[ -f "$SCRIPT_DIR/$source" ]]; then
+      mkdir -p "$(dirname "$dest")"
+      echo '{}' > "$dest"
+      deploy_merge_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
+      deployed+=("$dest")
+    fi
+  done < <(managed_inventory_merge)
+
+  # One-time fixup: today's install.sh appends a standalone Go-PATH export
+  # to ~/.bashrc. The managed block now absorbs this export, so we strip
+  # the standalone line during adopt to avoid duplication.
+  if [[ -f "$HOME/.bashrc" ]]; then
+    local tmp_bashrc
+    tmp_bashrc=$(mktemp)
+    grep -vxF 'export PATH="/usr/local/go/bin:$PATH"' "$HOME/.bashrc" > "$tmp_bashrc" || true
+    mv "$tmp_bashrc" "$HOME/.bashrc"
+  fi
+
+  # ~/.bashrc managed block — adopt if marker block exists, else deploy.
+  if [[ -f "$HOME/.bashrc" ]] && grep -qxF "$BASHRC_BLOCK_START" "$HOME/.bashrc"; then
+    local h
+    h=$(compute_block_hash "$HOME/.bashrc" "$BASHRC_BLOCK_START" "$BASHRC_BLOCK_END")
+    manifest_set_file "$HOME/.bashrc" \
+      "$(jq -n --arg s "$BASHRC_BLOCK_START" --arg e "$BASHRC_BLOCK_END" --arg h "$h" \
+          '{mode:"marker_block",source:"(composed)",marker_start:$s,marker_end:$e,deployed_block_hash:$h}')"
+    adopted+=("$HOME/.bashrc")
+  else
+    deploy_marker_block "$HOME/.bashrc" "$(managed_bashrc_block_body)" \
+      "$BASHRC_BLOCK_START" "$BASHRC_BLOCK_END"
+    deployed+=("$HOME/.bashrc")
+  fi
+
+  local commit origin
+  commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
+  origin=$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo unknown)
+  manifest_stage_set_top blueprint_commit "$commit"
+  manifest_stage_set_top blueprint_origin "$origin"
+
+  manifest_stage_commit
+
+  info "Adopt mode: ${#adopted[@]} existing managed files captured into manifest:"
+  local f
+  for f in "${adopted[@]}"; do info "    $f"; done
+  if [[ ${#deployed[@]} -gt 0 ]]; then
+    info "Adopt mode: ${#deployed[@]} new managed files deployed from blueprint:"
+    for f in "${deployed[@]}"; do info "    $f"; done
+  fi
+  info "Adopted files were not modified. To see what diverges from the blueprint,"
+  info "run: aicoding-update --dry-run"
+}
+
+# reconcile_existing_install — manifest exists; classify each managed file
+# and auto-apply only the conservative bucket set (restore, will_update,
+# drifted_but_aligned, merge). new_file and to_remove are skipped — they stay
+# for the human-driven `aicoding-update`.
+#
+# Strictly more conservative than `aicoding-update --yes`: never auto-applies
+# drifted_and_updating or to_remove, because automatic provisioning should
+# never silently overwrite or delete files the user has touched.
+reconcile_existing_install() {
+  export AICODING_BLUEPRINT_CLONE="$SCRIPT_DIR"
+
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE
+  classify_managed_files
+
+  manifest_stage_begin
+  apply_managed_buckets "restore new_file will_update drifted_but_aligned merge"
+  manifest_stage_commit
+
+  # Counts for the end-of-run summary. drifted_but_aligned is auto-handled
+  # (silent hash refresh) and not counted.
+  local n_new=0 n_restored=0 n_updated=0 n_merged=0 n_drifted=0 n_to_review=0
+  local dest bucket
+  for dest in "${!BUCKETS[@]}"; do
+    bucket=${BUCKETS[$dest]}
+    case "$bucket" in
+      new_file)             n_new=$((n_new+1)) ;;
+      restore)              n_restored=$((n_restored+1)) ;;
+      will_update)          n_updated=$((n_updated+1)) ;;
+      merge)                n_merged=$((n_merged+1)) ;;
+      drifted_and_updating) n_drifted=$((n_drifted+1)) ;;
+      to_remove)            n_to_review=$((n_to_review+1)) ;;
+    esac
+  done
+
+  _RECONCILE_NEW=$n_new
+  _RECONCILE_RESTORED=$n_restored
+  _RECONCILE_UPDATED=$n_updated
+  _RECONCILE_MERGED=$n_merged
+  _RECONCILE_DRIFTED=$n_drifted
+  _RECONCILE_TO_REVIEW=$n_to_review
+}
+
+# _print_install_summary — emit the fixed-format summary line plus an
+# optional NOTE follow-up. Counters default to 0 when not set by the mode.
+_print_install_summary() {
+  local commit_short
+  commit_short=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
+  local n_new=${_RECONCILE_NEW:-0}
+  local n_restored=${_RECONCILE_RESTORED:-0}
+  local n_updated=${_RECONCILE_UPDATED:-0}
+  local n_merged=${_RECONCILE_MERGED:-0}
+  local n_drifted=${_RECONCILE_DRIFTED:-0}
+  local n_to_review=${_RECONCILE_TO_REVIEW:-0}
+  printf 'INSTALL OK  blueprint %s  new %d  restored %d  updated %d  merged %d  drifted %d  to_review %d\n' \
+    "$commit_short" "$n_new" "$n_restored" "$n_updated" "$n_merged" "$n_drifted" "$n_to_review"
+  if (( n_drifted > 0 || n_to_review > 0 )); then
+    printf 'NOTE: %d drifted file(s), %d file(s) to review. Run aicoding-update to address.\n' \
+      "$n_drifted" "$n_to_review"
+  fi
+}
+
 main() {
+  local force_reinstall=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force-reinstall) force_reinstall=1; shift ;;
+      *) shift ;;
+    esac
+  done
+
   header "AI Coding Base Setup"
+
+  if [[ $force_reinstall -eq 1 ]]; then
+    info "--force-reinstall: deleting existing manifest"
+    rm -f "$AICODING_MANIFEST"
+  fi
+
   load_or_prompt_secrets
   report_unmanaged
   install_mcp_packages
   install_claude_mcps
   ensure_claude_onboarding_state
-  install_claude_settings
   install_claude_plugins
-  install_opencode_config
-  install_tmux_config
-  install_hooks
-  install_commands
-  install_templates
-  install_skills
+  install_aicoding_update_symlink
+
+  local mode
+  if [[ $force_reinstall -eq 1 ]]; then
+    mode=first
+  else
+    mode=$(detect_install_mode)
+  fi
+
+  case "$mode" in
+    first)
+      info "Mode: first-deploy (no manifest, no managed files on disk)"
+      deploy_all_managed_files
+      ;;
+    adopt)
+      info "Mode: adopt-existing (no manifest, managed files present)"
+      adopt_existing_files
+      ;;
+    reconcile)
+      info "Mode: reconcile (manifest exists — restoring missing files, applying safe blueprint updates)"
+      reconcile_existing_install
+      ;;
+  esac
+
+  install_tmux_plugins
   install_bubblewrap
   install_infra_audit
   check_playwright
 
   header "Done!"
-  info "Environment: $ENV_TYPE"
+  info "Mode: $mode"
   info "Secrets: $SECRETS_FILE"
   info "Claude Code: $CLAUDE_DIR"
-  if command -v opencode &>/dev/null; then
-    info "opencode: $OPENCODE_DIR"
-  fi
+
+  _print_install_summary
 }
 
 main "$@"

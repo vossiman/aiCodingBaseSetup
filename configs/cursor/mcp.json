@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "firecrawl": {
+      "command": "firecrawl-mcp",
+      "env": { "FIRECRAWL_API_KEY": "{{FIRECRAWL_API_KEY}}" }
+    },
+    "brave-search": {
+      "command": "brave-search-mcp-server",
+      "env": { "BRAVE_API_KEY": "{{BRAVE_API_KEY}}" }
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp@latest", "--browser", "chromium"]
+    }
+  }
+}
