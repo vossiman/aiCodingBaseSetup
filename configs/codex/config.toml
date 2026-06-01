@@ -6,6 +6,15 @@
 
 model = "gpt-5.5"
 
+# Setting BOTH of these explicitly suppresses codex's per-project trust screen,
+# so codex stops writing [projects."<path>"].trust_level into this file. That
+# write is what made config.toml drift and get clobbered (with a .bak) on every
+# `aicoding-update`. Spike-verified: with both set, no trust_level is written.
+# Tune to taste — approval_policy: untrusted|on-request|never;
+# sandbox_mode: read-only|workspace-write|danger-full-access.
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
 [mcp_servers.firecrawl]
 command = "firecrawl-mcp"
 env = { FIRECRAWL_API_KEY = "{{FIRECRAWL_API_KEY}}" }
