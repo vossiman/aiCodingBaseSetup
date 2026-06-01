@@ -752,6 +752,37 @@ ensure_claude_onboarding_state() {
   ok "hasCompletedOnboarding=true, installMethod=native"
 }
 
+# --- GitHub SSH host key ---
+# Containers start with an empty ~/.ssh/known_hosts, so the first git-over-SSH to
+# GitHub (riding the forwarded agent) dies with "Host key verification failed"
+# *before* auth — the key is never even offered. Seed GitHub's published ed25519
+# host key, fingerprint-verified (not trust-on-first-use), so git pull/push/submodule
+# work non-interactively. Idempotent.
+seed_github_known_host() {
+  header "GitHub SSH host key"
+  local expected="SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"  # GitHub's published ed25519 fingerprint
+  local kh="$HOME/.ssh/known_hosts"
+  mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"; touch "$kh"
+  if ssh-keygen -F github.com -f "$kh" >/dev/null 2>&1; then
+    ok "github.com already in known_hosts"
+    return
+  fi
+  local tmp scanned
+  tmp="$(mktemp)"
+  if ! ssh-keyscan -t ed25519 github.com >"$tmp" 2>/dev/null || [[ ! -s "$tmp" ]]; then
+    warn "ssh-keyscan github.com failed (offline?) — skipping; git over SSH may prompt"
+    rm -f "$tmp"; return
+  fi
+  scanned="$(ssh-keygen -lf "$tmp" | awk '{print $2}')"
+  if [[ "$scanned" == "$expected" ]]; then
+    cat "$tmp" >>"$kh"
+    ok "Seeded github.com ed25519 host key (fingerprint verified)"
+  else
+    warn "github.com host-key fingerprint mismatch ($scanned) — NOT seeding"
+  fi
+  rm -f "$tmp"
+}
+
 # --- Claude Code marketplace plugins ---
 install_claude_plugins() {
   header "Claude Code Plugins"
@@ -1056,6 +1087,8 @@ main() {
   done
 
   header "AI Coding Base Setup"
+
+  seed_github_known_host
 
   if [[ $force_reinstall -eq 1 ]]; then
     info "--force-reinstall: deleting existing manifest"
