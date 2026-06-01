@@ -41,6 +41,30 @@ warn() { printf 'WARN: %s\n' "$*" >&2; }
 # the postStart log carefully. Discovered during Plan 3 verification.
 export PATH="$HOME/.local/bin:$PATH"
 
+# Seed GitHub's SSH host key so git-over-SSH (forwarded agent) works on this
+# start. Fresh containers have an empty ~/.ssh/known_hosts, so the first push/pull
+# dies with "Host key verification failed" before auth. install.sh seeds this on
+# create; doing it here too means already-running containers self-heal on their
+# next start without a rebuild. Fingerprint-verified (not TOFU), idempotent.
+seed_github_known_host() {
+  local expected="SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"  # GitHub's published ed25519 fingerprint
+  local kh="$HOME/.ssh/known_hosts" tmp scanned
+  mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"; touch "$kh"
+  ssh-keygen -F github.com -f "$kh" >/dev/null 2>&1 && return 0
+  tmp="$(mktemp)"
+  if ! ssh-keyscan -t ed25519 github.com >"$tmp" 2>/dev/null || [[ ! -s "$tmp" ]]; then
+    warn "ssh-keyscan github.com failed (offline?) — git over SSH may prompt"; rm -f "$tmp"; return 0
+  fi
+  scanned="$(ssh-keygen -lf "$tmp" | awk '{print $2}')"
+  if [[ "$scanned" == "$expected" ]]; then
+    cat "$tmp" >>"$kh"
+  else
+    warn "github.com host-key fingerprint mismatch ($scanned) — NOT seeding"
+  fi
+  rm -f "$tmp"
+}
+seed_github_known_host
+
 # === actual work ===
 # Failures are non-fatal (a transient upgrade error shouldn't block container
 # start) but they're announced — the previous '2>/dev/null || true' hid both.
