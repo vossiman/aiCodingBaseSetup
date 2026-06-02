@@ -571,12 +571,17 @@ EOF
   local dest="$HOME/.aicodingsetup/templates/project"
   [ -d "$dest" ]
   [ -f "$dest/CLAUDE.md.tpl" ]
+  [ -f "$dest/AGENTS.md.tpl" ]
   [ -f "$dest/dot-claude/settings.json.tpl" ]
   # The docs scaffold dirs (carried by .gitkeep) must survive the mirror so
   # /scaffold-project can walk them.
   [ -f "$dest/docs/specs/active/.gitkeep" ]
+  # AGENTS.md is the canonical, agent-agnostic conventions file; CLAUDE.md
+  # imports it via `@AGENTS.md` so Claude Code and the other CLIs share one
+  # source of truth.
+  grep -q "@AGENTS.md" "$dest/CLAUDE.md.tpl"
   # Scaffold-time placeholders must NOT be expanded at install time.
-  grep -q "{{PROJECT_NAME}}" "$dest/CLAUDE.md.tpl"
+  grep -q "{{PROJECT_NAME}}" "$dest/AGENTS.md.tpl"
 }
 
 @test "install.sh reconcile mode: restores a deleted slash command" {

@@ -10,6 +10,7 @@ You are scaffolding a new project from templates. Follow this procedure exactly.
 
 Inspect the current working directory (do not run a tool yet — just reason about what files would be created). The scaffold will create, at minimum:
 
+- `AGENTS.md`
 - `CLAUDE.md`
 - `README.md`
 - `TODO.md`

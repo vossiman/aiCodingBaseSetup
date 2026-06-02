@@ -40,11 +40,29 @@ and a gentle session-start reminder.
 |---|---|---|
 | Slash command: interactive project scaffold | `commands/scaffold-project.md` | `~/.claude/commands/scaffold-project.md` |
 | Slash command: archive sweep + TODO prune | `commands/housekeep.md` | `~/.claude/commands/housekeep.md` |
-| SessionStart hook: archive-eligible banner (fail-open) | `hooks/check-archived-docs.sh` | `~/.claude/hooks/check-archived-docs.sh` |
-| Project templates (CLAUDE/README/TODO + .claude + docs tree) | `templates/project/` | `~/.aicodingsetup/templates/project/` (mirrored) |
+| SessionStart hook: archive-eligible banner (fail-open) | `configs/claude/hooks/check-archived-docs.sh` | `~/.claude/hooks/check-archived-docs.sh` |
+| Project templates (AGENTS/CLAUDE/README/TODO + .claude + docs tree) | `templates/project/` | `~/.aicodingsetup/templates/project/` (mirrored) |
 | Settings integration (SessionStart entry) | `configs/claude/settings.json` | merged into `~/.claude/settings.json` |
-| Installer wiring (`install_commands`, `install_templates`, SessionStart hook copy, unmanaged-commands detection) | `install.sh` | run by user |
+| Installer wiring | `install.sh` + `lib/blueprint-deploy.sh` | run by user |
 | Docs: new test-prompt entries + README section | `test-prompt.md`, `README.md` | — |
+
+> **Re-ported onto main's manifest installer** (commit `0cc4614`): the hook moved
+> to `configs/claude/hooks/` and is tracked in `managed_inventory_overwrite` +
+> `MANAGED_HOOKS`; slash commands deploy dynamically inside
+> `deploy_all_managed_files` **and** `classify_managed_files` (so reconcile
+> restores them); `install_templates()` mirrors the template tree. There is no
+> standalone `install_commands` function any more. A later fix (`12bf21b`)
+> preserves the hook's executable bit through substituted deploys. Full bats
+> suite is green (81/81) and the harness was verified end-to-end against a real
+> `$HOME` in a container.
+
+> **Cross-agent conventions** (AGENTS.md): the scaffold now writes `AGENTS.md` as
+> the canonical, agent-agnostic conventions file (read natively by Codex,
+> OpenCode, and Cursor), and `CLAUDE.md` imports it via `@AGENTS.md` (Anthropic's
+> recommended pattern — Claude Code reads only `CLAUDE.md`, but `@path` imports
+> resolve relative to the file, up to 4 hops). One source of truth; all four CLIs
+> honor the same `active/archive` + frontmatter rules. The `/housekeep` sweep and
+> the SessionStart nudge remain Claude-Code-only (see deferred parity below).
 
 ### Canonical layout materialized by `/scaffold-project`
 
@@ -229,11 +247,36 @@ Candidate work items:
    Store last-run timestamp under `~/.aicodingsetup/state/last-housekeep` per
    project dir hash.
 
-3. **OpenCode parity for slash commands.**
-   `commands/*.md` copy cleanly into OpenCode's command directory. No hook
-   equivalent possible (OpenCode lacks them today). Extend `install.sh` with
-   an `install_opencode_commands` function that mirrors `~/.claude/commands`
-   into whatever OpenCode uses.
+3. **Cross-CLI command + hook parity (codex / opencode / cursor).**
+   The agent-agnostic *conventions* already reach all four CLIs via `AGENTS.md`
+   (shipped). What's still Claude-only is the *automation* — `/scaffold-project`,
+   `/housekeep`, and the SessionStart nudge. The original premise here ("no hook
+   equivalent possible") is **outdated**: as of 2026-06 all three other CLIs have
+   both command and hook/plugin surfaces. Verified capabilities:
+
+   | CLI | Custom commands | Lifecycle hooks | Reads `AGENTS.md`? |
+   |---|---|---|---|
+   | Codex | `~/.codex/prompts/*.md` (deprecated → **Skills**) | **Yes** — `~/.codex/hooks.json` / `.codex/hooks.json`, events incl. `SessionStart`, `PreToolUse`, `PostToolUse`, `Stop` | Yes (also `AGENTS.override.md`, nested) |
+   | OpenCode | `.opencode/commands/*.md` + `~/.config/opencode/commands/` (`$ARGUMENTS`, `` !`cmd` `` ) | **Yes** — JS/TS plugins; `session.created` (~session-start), `tool.execute.before/after` | Yes (CLAUDE.md fallback) |
+   | Cursor CLI | `.cursor/commands/*.md` + `~/.cursor/commands/` | Hooks exist (`.cursor/hooks.json`, `sessionStart`, `preToolUse`…); **local-CLI applicability unconfirmed** (confirmed for IDE + cloud agents) | Yes (also `.cursor/rules/*.mdc`, `CLAUDE.md`) |
+
+   Concrete parity work, in rough effort order:
+   - **Commands.** Port `scaffold-project` / `housekeep` into each CLI's command
+     dir. Blocker: `scaffold-project` uses Claude Code's `AskUserQuestion` tool,
+     which has no cross-tool equivalent — the interactive flow needs a redesign
+     (e.g. positional/`KEY=value` args) before it ports. `housekeep` is
+     instruction-only and ports more directly. Codex's command format is
+     deprecated in favor of **Skills**, so target Skills there, not prompts.
+   - **Hooks.** Re-implement the `check-archived-docs` nudge per tool: Codex
+     `SessionStart` hook (closest 1:1), OpenCode `session.created` plugin, Cursor
+     `sessionStart` (pending local-CLI confirmation). The shell script itself is
+     reusable; only the registration/wiring differs.
+   - **Installer.** Extend deploy to mirror commands/hooks into each CLI's paths,
+     tracked in the manifest like the Claude artifacts.
+
+   Sources (as of 2026-06-02): Codex — developers.openai.com/codex/{hooks,custom-prompts,skills,guides/agents-md};
+   OpenCode — opencode.ai/docs/{commands,plugins,rules}; Cursor — cursor.com/docs/{cli/using,hooks,context/commands}.
+   Sequence by pain (real usage data), not by completeness.
 
 4. **Frontmatter lint helper (optional).**
    A quick `lint-frontmatter` command or non-blocking PostToolUse hook that
