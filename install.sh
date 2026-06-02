@@ -475,7 +475,11 @@ check_prerequisites() {
   fi
 }
 
-check_prerequisites
+# Top-level actions run only when executed, not when sourced — so tests can
+# `source install.sh` to unit-test individual functions without triggering the
+# prereq auto-install (and main) as a side effect. `if` (not `&&`) so a sourced
+# run's final statement still exits 0 and doesn't trip the caller's set -e.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then check_prerequisites; fi
 
 # --- Secrets Management ---
 load_or_prompt_secrets() {
@@ -1143,4 +1147,4 @@ main() {
   _print_install_summary
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main "$@"; fi

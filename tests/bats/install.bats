@@ -241,28 +241,60 @@ STUB
   echo "$output" | grep -qE '^INSTALL FAILED  step=.*  line=[0-9]+$'
 }
 
-@test "ensure_codex: install.sh warns and returns 0 when curl missing" {
-  # Stub curl to exit 127 (not installed); install.sh's ensure_codex
-  # should detect this, emit a WARN line, and continue (return 0).
-  cat > "$TMPDIR/stubs/curl" <<'STUB'
-#!/bin/sh
-exit 127
-STUB
-  chmod +x "$TMPDIR/stubs/curl"
+# ---------------------------------------------------------------------------
+# ensure_codex / ensure_cursor_agent — function-level unit tests.
+#
+# These source install.sh and call the two functions directly instead of
+# booting the whole installer. That makes them fast and — crucially — hermetic.
+# Both functions start with `command -v codex` / `command -v agent` existence
+# checks, so the only way to test their "tool missing" paths is to control PATH
+# so those binaries don't resolve. You cannot stub a command into *non-existence*
+# (a stub file only makes it look present); the previous `bash install.sh` tests
+# left the host's real codex/cursor-agent on PATH, so every "missing" assertion
+# silently exercised the "already installed" short-circuit instead.
+# ---------------------------------------------------------------------------
 
-  # Force container detection so auto_install_prereqs runs.
-  export DEVCONTAINER=1
-  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+# Invoke one install.sh function in an isolated subshell with a pinned PATH.
+#   - _AICODINGSETUP_NVS_STRIPPED=1 skips install.sh's nvs self-reexec.
+#   - sourcing defines the functions; the `BASH_SOURCE != $0` guards keep
+#     check_prerequisites()/main() from running as a side effect.
+#   - we disarm install.sh's global `set -eEuo`/ERR-trap after sourcing so a
+#     function's exit status is reported to `run` instead of killing the test.
+# HOME and any per-test stubs are inherited from the test environment.
+_run_install_fn() {
+  local fn_path="$1"; shift
+  run env _AICODINGSETUP_NVS_STRIPPED=1 PATH="$fn_path" \
+    bash -c 'source "$1"; trap - ERR; set +eEu +o pipefail; shift; "$@"' \
+    _ "$BLUEPRINT_ROOT/install.sh" "$@"
+}
+
+# A PATH with only the tools install.sh touches before the curl check — and
+# deliberately NO curl — so `command -v curl` genuinely fails. (curl shares
+# /usr/bin with coreutils, so we curate a dir rather than drop one.) It also
+# omits the host bin dirs, so codex/cursor-agent/agent don't resolve either.
+_curl_less_path() {
+  local d="$TMPDIR/nocurl"
+  mkdir -p "$d"
+  local t
+  for t in bash sh dirname uname id; do ln -sf "$(command -v "$t")" "$d/$t"; done
+  printf '%s' "$d"
+}
+
+# A PATH that keeps real coreutils + curl but excludes the host's user-bin dirs
+# (~/.local/bin et al.), so only the *injected* stubs decide whether
+# codex/cursor-agent/agent exist.
+_isolated_path() { printf '%s' "$TMPDIR/stubs:/usr/bin:/bin"; }
+
+@test "ensure_codex: warns and skips (non-fatal) when curl is unavailable" {
+  _run_install_fn "$(_curl_less_path)" ensure_codex
   [ "$status" -eq 0 ]
-  # Expect a WARN line referencing codex install.
   echo "$output" | grep -qE "WARN.*codex|skipping codex install"
 }
 
-@test "ensure_codex: install.sh runs codex installer when curl available and codex missing" {
-  # Stub curl to write a marker file so we can assert the installer ran.
+@test "ensure_codex: runs the installer and keeps codex when curl works and codex is absent" {
   cat > "$TMPDIR/stubs/curl" <<EOF
 #!/bin/sh
-echo "(stub) curl-pipe-sh for codex installer would run" > "$TMPDIR/codex-install-attempted"
+echo "(stub) curl-pipe-sh for codex installer ran" > "$TMPDIR/codex-install-attempted"
 # Mimic the upstream installer dropping the binary in ~/.local/bin.
 mkdir -p "$HOME/.local/bin"
 cat > "$HOME/.local/bin/codex" <<'BIN'
@@ -273,27 +305,18 @@ chmod +x "$HOME/.local/bin/codex"
 EOF
   chmod +x "$TMPDIR/stubs/curl"
 
-  export DEVCONTAINER=1
-  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  [ "$status" -eq 0 ]
+  _run_install_fn "$(_isolated_path)" ensure_codex
   [ -f "$TMPDIR/codex-install-attempted" ]
   [ -x "$HOME/.local/bin/codex" ]
 }
 
-@test "ensure_cursor_agent: install.sh warns and returns 0 when curl missing" {
-  cat > "$TMPDIR/stubs/curl" <<'STUB'
-#!/bin/sh
-exit 127
-STUB
-  chmod +x "$TMPDIR/stubs/curl"
-
-  export DEVCONTAINER=1
-  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+@test "ensure_cursor_agent: warns and skips (non-fatal) when curl is unavailable" {
+  _run_install_fn "$(_curl_less_path)" ensure_cursor_agent
   [ "$status" -eq 0 ]
   echo "$output" | grep -qE "WARN.*cursor|skipping cursor-agent install"
 }
 
-@test "ensure_cursor_agent: symlinks cursor-agent -> agent when only cursor-agent is dropped" {
+@test "ensure_cursor_agent: symlinks agent -> cursor-agent when only cursor-agent is dropped" {
   # Stub curl to drop the binary as 'cursor-agent' (the older-release name).
   cat > "$TMPDIR/stubs/curl" <<EOF
 #!/bin/sh
@@ -306,32 +329,24 @@ chmod +x "$HOME/.local/bin/cursor-agent"
 EOF
   chmod +x "$TMPDIR/stubs/curl"
 
-  export DEVCONTAINER=1
-  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  [ "$status" -eq 0 ]
-  # Expect the symlink to exist so downstream code (update.sh) can call either name.
+  _run_install_fn "$(_isolated_path)" ensure_cursor_agent
+  # Both names must resolve so downstream tooling (update.sh) can call either.
   [ -x "$HOME/.local/bin/cursor-agent" ]
   [ -L "$HOME/.local/bin/agent" ] || [ -x "$HOME/.local/bin/agent" ]
 }
 
-@test "ensure_cursor_agent: skips install when 'agent' is already on PATH" {
-  # Pre-stub 'agent' so the function's existence check trips.
+@test "ensure_cursor_agent: skips the installer when 'agent' is already on PATH" {
+  # Inject an 'agent' stub so the function's existence check trips.
   cat > "$TMPDIR/stubs/agent" <<'STUB'
 #!/bin/sh
 echo "agent 0.0.0-stub"
 STUB
   chmod +x "$TMPDIR/stubs/agent"
-  # If curl gets called by ensure_cursor_agent (only), we'd see this marker.
-  # NOTE: curl is also called by other ensure_* steps (claude, opencode,
-  # codex, go, uv); the marker name distinguishes cursor's invocation by
-  # checking install.sh output instead — see test below.
-  export DEVCONTAINER=1
-  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  [ "$status" -eq 0 ]
-  # The "Installing Cursor CLI" info line must NOT appear because the
-  # binary check short-circuits before the install attempt.
-  ! echo "$output" | grep -qE "Installing Cursor CLI"
+
+  _run_install_fn "$(_isolated_path)" ensure_cursor_agent
   echo "$output" | grep -qE "cursor-agent already installed"
+  # The install attempt must be short-circuited before it starts.
+  ! echo "$output" | grep -qE "Installing Cursor CLI"
 }
 
 @test "first-deploy: codex config.toml deploys with substituted FIRECRAWL_API_KEY" {
