@@ -1079,6 +1079,15 @@ reconcile_existing_install() {
 
   manifest_stage_begin
   apply_managed_buckets "restore new_file will_update drifted_but_aligned merge"
+  # Stamp the blueprint commit/origin we reconciled to, so the manifest's
+  # recorded version matches what's actually deployed. Without this, reconcile
+  # leaves blueprint_commit stale (first-deploy/adopt set it, reconcile didn't),
+  # which makes anything reading it — e.g. the update notifier — report wrongly.
+  local rc_commit rc_origin
+  rc_commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
+  rc_origin=$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo unknown)
+  manifest_stage_set_top blueprint_commit "$rc_commit"
+  manifest_stage_set_top blueprint_origin "$rc_origin"
   manifest_stage_commit
 
   # Counts for the end-of-run summary. drifted_but_aligned is auto-handled
