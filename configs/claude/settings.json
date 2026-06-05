@@ -20,6 +20,17 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{{HOME}}/.claude/hooks/check-archived-docs.sh\""
+          }
+        ]
+      }
     ]
   },
   "statusLine": {

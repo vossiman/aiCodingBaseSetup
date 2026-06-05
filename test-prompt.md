@@ -33,6 +33,15 @@ Invoke the brainstorming skill and confirm it loads successfully. You don't need
 ### 7. Hook: bubblewrap (bw-deny-files)
 Verify the hook is installed by checking that ~/.claude/hooks/bw-deny-files.sh exists and is executable. Run: ls -la ~/.claude/hooks/bw-deny-files.sh
 
+### 8. Scaffold: /scaffold-project in a tmp dir
+Create a fresh directory with `mkdir -p /tmp/scaffold-test-$$ && cd /tmp/scaffold-test-$$` (in Bash), then invoke the `/scaffold-project` slash command. Verify the resulting tree contains: CLAUDE.md, README.md, TODO.md, .claude/settings.json, and docs/{specs,plans,notes}/{active,archive}/.gitkeep. Also verify `git status` shows an initialized repo. Clean up the tmp dir after.
+
+### 9. Housekeep: mark a doc done and sweep
+Inside a scaffolded project, create a file `docs/specs/active/fake-spec.md` with YAML frontmatter including `status: done`. Invoke the `/housekeep` slash command. Verify the file is now at `docs/specs/archive/fake-spec.md` and is no longer in `active/`.
+
+### 10. SessionStart hook: archive banner
+In a scaffolded project that has at least one `status: done` doc in `docs/*/active/`, start a new Claude Code session. Verify the SessionStart banner appears: `📦 N docs ready to archive — run /housekeep to sweep.` (Cannot be tested from within the same session — note as PASS if mechanism verified another way, e.g., by running `bash ~/.claude/hooks/check-archived-docs.sh` with `CLAUDE_PROJECT_DIR` set and seeing the banner on stdout.)
+
 ---
 
 After all tests, print a summary table:
@@ -46,8 +55,11 @@ After all tests, print a summary table:
 | 5 | cloudflare-browser | Skill | PASS/FAIL/SKIP |
 | 6 | superpowers | Skill | PASS/FAIL/SKIP |
 | 7 | bw-deny-files | Hook | PASS/FAIL/SKIP |
+| 8 | /scaffold-project | Command | PASS/FAIL/SKIP |
+| 9 | /housekeep | Command | PASS/FAIL/SKIP |
+| 10 | check-archived-docs (SessionStart) | Hook | PASS/FAIL/SKIP |
 
-Report the overall score: X/7 passed, Y skipped, Z failed.
+Report the overall score: X/10 passed, Y skipped, Z failed.
 
 Finally: can you see the custom powerline statusline at the bottom of the terminal? It should show model name, directory, git branch, context usage, and rate limits. Let me know what you see.
 ```

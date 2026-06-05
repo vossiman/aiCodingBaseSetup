@@ -253,6 +253,7 @@ managed_inventory_overwrite() {
   cat <<EOF
 $HOME/.tmux.conf|overwrite|configs/tmux/tmux.conf
 $HOME/.claude/hooks/custom-statusline.js|overwrite|configs/claude/hooks/custom-statusline.js
+$HOME/.claude/hooks/check-archived-docs.sh|overwrite|configs/claude/hooks/check-archived-docs.sh
 $HOME/.bashrc.d/aicoding-env.sh|overwrite|configs/bash/env.sh
 $HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.sh
 $HOME/.codex/config.toml|overwrite|configs/codex/config.toml
@@ -347,6 +348,11 @@ deploy_overwrite_file_substituted() {
   local src=$1 dest=$2 label=$3
   local tmp; tmp=$(mktemp)
   _substitute_file_to "$src" "$tmp"
+  # Substitution writes through a 0600 mktemp, which strips the source's
+  # executable bit — fatal for hook scripts (e.g. check-archived-docs.sh)
+  # that must be runnable. Propagate +x when the blueprint source is
+  # executable so cp carries it onto the deployed file.
+  [[ -x "$src" ]] && chmod +x "$tmp"
   deploy_overwrite_file "$tmp" "$dest" "$label"
   rm -f "$tmp"
 }
@@ -487,6 +493,18 @@ classify_managed_files() {
     skill_name=$(basename "$skill_dir")
     dest="$HOME/.claude/skills/$skill_name/SKILL.md"
     source="skills/$skill_name/SKILL.md"
+    FILE_MODE[$dest]=overwrite
+    FILE_SOURCE[$dest]=$source
+    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" overwrite)
+  done
+
+  # Slash commands enumerated from the blueprint clone.
+  local cmd_file cmd_name
+  for cmd_file in "$AICODING_BLUEPRINT_CLONE/commands"/*.md; do
+    [[ ! -f "$cmd_file" ]] && continue
+    cmd_name=$(basename "$cmd_file")
+    dest="$HOME/.claude/commands/$cmd_name"
+    source="commands/$cmd_name"
     FILE_MODE[$dest]=overwrite
     FILE_SOURCE[$dest]=$source
     BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" overwrite)
