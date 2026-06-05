@@ -65,6 +65,17 @@ seed_github_known_host() {
 }
 seed_github_known_host
 
+# Keep ~/.ssh/agent.sock pointed at the live forwarded ssh-agent for the whole
+# container lifetime — heals SSH for non-interactive processes across devpod /
+# VS Code reconnects (the bashrc snippet only heals interactive shells). Started
+# here, on each container start, rather than in install.sh so full installs and
+# the test suite don't leave a background loop behind. Idempotent: --ensure
+# no-ops if the daemon is already running. Deployed to ~/.local/bin by install.sh.
+if [[ -f /.dockerenv || -n "${CODESPACES:-}" || -n "${REMOTE_CONTAINERS:-}" || -n "${DEVCONTAINER:-}" ]] \
+   && command -v aicoding-ssh-agent-watch >/dev/null 2>&1; then
+  aicoding-ssh-agent-watch --ensure || warn "ssh-agent watcher failed to start (non-fatal)"
+fi
+
 # === actual work ===
 # Failures are non-fatal (a transient upgrade error shouldn't block container
 # start) but they're announced — the previous '2>/dev/null || true' hid both.
