@@ -34,10 +34,15 @@ _refresh_all() {
     [ -z "$name" ] && continue
     installed=$("$ifn" 2>/dev/null || true)
     latest=$(timeout "$NET_TIMEOUT" git ls-remote "$remote" "$branch" 2>/dev/null | awk 'NR==1{print $1}')
+    # Transient fetch failure (no latest) — keep the prior entry rather than
+    # clobbering a known status with "unknown" and hiding the CTA.
+    if [ -z "$latest" ] && [ -f "$STATE/$name.json" ]; then
+      continue
+    fi
     if [ -z "$installed" ] || [ -z "$latest" ]; then status=unknown
     elif [ "$(_norm "$installed")" = "$(_norm "$latest")" ]; then status=up_to_date
     else status=behind; fi
-    tmp=$(mktemp)
+    tmp=$(mktemp "$STATE/.${name}.XXXXXX")
     jq -n --arg t "$name" --arg i "${installed:-}" --arg l "${latest:-}" \
           --arg s "$status" --arg c "$(_now_iso)" --arg a "$(_apply_cmd "$name")" \
       '{tool:$t,installed:$i,latest:$l,status:$s,checked_at:$c,apply_cmd:$a}' > "$tmp"
@@ -70,13 +75,16 @@ _print_banner() {
     [ -f "$f" ] || continue
     st=$(jq -r '.status' "$f" 2>/dev/null)
     [ "$st" = "behind" ] || continue
-    tool=$(jq -r '.tool' "$f"); apply=$(jq -r '.apply_cmd' "$f")
+    tool=$(jq -r '.tool' "$f" 2>/dev/null); apply=$(jq -r '.apply_cmd' "$f" 2>/dev/null)
     printf '⬆ %s behind main — run: %s\n' "$tool" "$apply"
   done
 }
 
 case "${1:-}" in
   --refresh)  _maybe_refresh ;;
+  # --banner: kick a throttled refresh in the background and print the CURRENT
+  # cache. The first shell after an update may show stale state until the async
+  # refresh lands; subsequent shells reflect it. Keeps shell startup non-blocking.
   --banner)   _refresh_detached; _print_banner ;;
   --print)    _print_banner ;;
   -h|--help)  echo "usage: update-status [--refresh|--banner|--print]" ;;

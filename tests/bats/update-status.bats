@@ -51,11 +51,20 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   [ "$(cache | jq -r .latest | cut -c1-7)" = "1111111" ]
 }
 
-@test "fail-open: ls-remote failure -> unknown, exit 0, prior cache kept" {
+@test "fail-open: ls-remote failure on cold cache -> unknown, exit 0" {
   echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
   AICODING_UPDATE_TTL=0 FAKE_LSREMOTE_FAIL=1 run "$BIN" --refresh
   [ "$status" -eq 0 ]
   [ "$(cache | jq -r .status)" = "unknown" ]
+}
+
+@test "fail-open: ls-remote failure preserves a prior good status (no clobber)" {
+  echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
+  [ "$(cache | jq -r .status)" = "behind" ]
+  AICODING_UPDATE_TTL=0 FAKE_LSREMOTE_FAIL=1 run "$BIN" --refresh
+  [ "$status" -eq 0 ]
+  [ "$(cache | jq -r .status)" = "behind" ]
 }
 
 @test "stale-lock: a lock older than TTL is stolen and refresh proceeds" {
