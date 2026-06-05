@@ -607,3 +607,20 @@ EOF
   h=$(jq -r '.files["'"$HOME"'/.bashrc.d/aicoding-update-notify.sh"].deployed_hash' "$AICODING_MANIFEST")
   [ "$h" != "null" ] && [ -n "$h" ]
 }
+
+@test "install.sh reconcile: stamps blueprint_commit to the current blueprint HEAD" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null            # first-deploy stamps it
+  # Simulate a stale recorded commit (as if installed from an older blueprint).
+  local tmp; tmp=$(mktemp)
+  jq '.blueprint_commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"' "$AICODING_MANIFEST" > "$tmp"
+  mv "$tmp" "$AICODING_MANIFEST"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null        # reconcile
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "Mode: reconcile"
+  # Manifest must now record the actual deployed blueprint HEAD, not the stale one.
+  local head stamped
+  head=$(git -C "$BLUEPRINT_ROOT" rev-parse HEAD)
+  stamped=$(jq -r '.blueprint_commit' "$AICODING_MANIFEST")
+  [ "$stamped" = "$head" ]
+}
