@@ -834,6 +834,31 @@ install_aicoding_update_symlink() {
   ok "aicoding-update installed at $dest -> $src"
 }
 
+# --- SSH agent socket self-heal watcher (container only) ---
+# Deploys the watcher onto PATH. We only DEPLOY here (a pure symlink); the
+# daemon is *started* by update.sh on each container start — that keeps full
+# install.sh runs (and the bats suite, which run install.sh end-to-end) free of
+# a lingering background process. The watcher keeps ~/.ssh/agent.sock pointed at
+# the live forwarded ssh-agent for non-interactive processes; the bashrc snippet
+# (configs/bash/ssh-auth-sock.sh) covers interactive shells.
+install_ssh_agent_watch_symlink() {
+  header "SSH agent socket watcher"
+  if [[ "$ENV_TYPE" != "container" ]]; then
+    info "Skipping (host manages its own ssh-agent)"
+    return
+  fi
+  local src="$SCRIPT_DIR/bin/aicoding-ssh-agent-watch"
+  local dest="$HOME/.local/bin/aicoding-ssh-agent-watch"
+  if [[ ! -f "$src" ]]; then
+    warn "bin/aicoding-ssh-agent-watch not found in blueprint — skipping"
+    return
+  fi
+  mkdir -p "$HOME/.local/bin"
+  chmod +x "$src"
+  ln -sf "$src" "$dest"
+  ok "aicoding-ssh-agent-watch installed at $dest -> $src (started by update.sh)"
+}
+
 # --- tmux plugins (TPM) ---
 # Container-only: bootstraps Tmux Plugin Manager and installs every plugin
 # declared in configs/tmux/tmux.conf (resurrect, continuum, catppuccin, fzf,
@@ -1143,6 +1168,7 @@ main() {
   ensure_claude_onboarding_state
   install_claude_plugins
   install_aicoding_update_symlink
+  install_ssh_agent_watch_symlink
 
   local mode
   if [[ $force_reinstall -eq 1 ]]; then

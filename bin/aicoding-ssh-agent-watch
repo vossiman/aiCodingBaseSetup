@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# aicoding-ssh-agent-watch — keep ~/.ssh/agent.sock pointed at the newest LIVE
+# forwarded ssh-agent socket, so SSH_AUTH_SOCK=~/.ssh/agent.sock keeps working
+# across devpod / VS Code reconnects for EVERY process — including the
+# non-interactive ones (scripts, cron, IDE/agent tool shells) that never source
+# ~/.bashrc.d/aicoding-ssh-auth-sock.sh.
+#
+# The bashrc snippet self-heals interactive shells on their next start; this
+# daemon closes the gap for everything else by repointing the symlink in the
+# background as soon as a new forwarded socket appears.
+#
+# Usage:
+#   aicoding-ssh-agent-watch            run the watch loop in the foreground
+#   aicoding-ssh-agent-watch --ensure   start the loop in the background once
+#                                        (idempotent; safe to call every start)
+set -uo pipefail
+
+STABLE="$HOME/.ssh/agent.sock"
+POLL="${AICODING_SSH_WATCH_POLL:-5}"
+
+# _live <path> — true if <path> is a socket whose agent answers (rc 0/1).
+# `timeout` guards against a wedged agent hanging the loop; rc 124 (timeout)
+# and 2 (cannot connect) both count as not-live.
+_live() {
+  [ -S "$1" ] || return 1
+  command -v ssh-add >/dev/null 2>&1 || return 0
+  local rc
+  if command -v timeout >/dev/null 2>&1; then
+    SSH_AUTH_SOCK="$1" timeout 2 ssh-add -l >/dev/null 2>&1; rc=$?
+  else
+    SSH_AUTH_SOCK="$1" ssh-add -l >/dev/null 2>&1; rc=$?
+  fi
+  [ "$rc" = 0 ] || [ "$rc" = 1 ]
+}
+
+# Echo the newest live forwarded socket, or nothing. `ls -1t` = newest first.
+# Search paths are overridable (AICODING_AGENT_SOCK_GLOBS) for testing.
+_newest_live() {
+  local cand
+  for cand in $(ls -1t ${AICODING_AGENT_SOCK_GLOBS:-/tmp/auth-agent*/listener.sock /tmp/ssh-*/agent.*} 2>/dev/null); do
+    if _live "$cand"; then printf '%s' "$cand"; return 0; fi
+  done
+  return 1
+}
+
+_repoint_if_needed() {
+  _live "$STABLE" && return 0          # current target still good — nothing to do
+  local live
+  live="$(_newest_live)" || return 1   # no live socket right now
+  mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
+  ln -sfn "$live" "$STABLE"
+}
+
+run_loop() {
+  while :; do
+    _repoint_if_needed || true
+    sleep "$POLL"
+  done
+}
+
+ensure_running() {
+  # Match the daemon (cmdline ends in the script name), NOT this --ensure call.
+  if pgrep -f 'aicoding-ssh-agent-watch$' >/dev/null 2>&1; then
+    return 0
+  fi
+  nohup "$0" >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+}
+
+case "${1:-}" in
+  --ensure) ensure_running ;;
+  "")       run_loop ;;
+  *)        echo "usage: $(basename "$0") [--ensure]" >&2; exit 2 ;;
+esac
