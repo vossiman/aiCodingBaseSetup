@@ -834,6 +834,14 @@ install_aicoding_update_symlink() {
   ok "aicoding-update installed at $dest -> $src"
 }
 
+install_update_status_symlink() {
+  header "update-status CLI"
+  local src="$SCRIPT_DIR/bin/update-status" dest="$HOME/.local/bin/update-status"
+  [[ -f "$src" ]] || { warn "bin/update-status not found — skipping"; return; }
+  mkdir -p "$HOME/.local/bin"; chmod +x "$src"; ln -sf "$src" "$dest"
+  ok "update-status installed at $dest -> $src"
+}
+
 # --- SSH agent socket self-heal watcher (container only) ---
 # Deploys the watcher onto PATH. We only DEPLOY here (a pure symlink); the
 # daemon is *started* by update.sh on each container start — that keeps full
@@ -1168,6 +1176,7 @@ main() {
   ensure_claude_onboarding_state
   install_claude_plugins
   install_aicoding_update_symlink
+  install_update_status_symlink
   install_ssh_agent_watch_symlink
 
   local mode
