@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# update-status — detect whether managed tools are behind their main branch and
+# print a CTA. CTA-ONLY: never applies an update. Reads/writes a per-tool JSON
+# cache; network checks are throttled, timeout-bounded, and fail-open.
+set -uo pipefail
+
+STATE="${AICODING_UPDATE_STATE:-$HOME/.aicodingsetup/state/updates}"
+TTL="${AICODING_UPDATE_TTL:-21600}"             # 6h
+NET_TIMEOUT="${AICODING_UPDATE_NET_TIMEOUT:-8}"
+LOCK="$STATE/.lock"
+: "${AICODING_MANIFEST:=$HOME/.aicodingsetup/manifest.json}"
+
+_installed_aicoding() { jq -r '.blueprint_commit // empty' "$AICODING_MANIFEST" 2>/dev/null; }
+_installed_dvw()      { local f="${DVW_STATE_DIR:-$HOME/.local/state/dvw}/version"; [ -f "$f" ] && tr -d '[:space:]' < "$f"; }
+_installed_testonly() { tr -d '[:space:]' < "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE" 2>/dev/null; }
+_registry() {
+  if [ -n "${AICODING_UPDATE_TESTONLY_TOOL:-}" ]; then
+    printf '%s|%s|main|_installed_testonly\n' "$AICODING_UPDATE_TESTONLY_TOOL" "$AICODING_UPDATE_TESTONLY_REMOTE"
+    return
+  fi
+  cat <<EOF
+aicoding|https://github.com/vossiman/aiCodingBaseSetup|main|_installed_aicoding
+dvw|https://github.com/vossiman/dvw|main|_installed_dvw
+EOF
+}
+_apply_cmd() { case "$1" in aicoding) echo "aicoding-update";; dvw) echo "dvw update";; *) echo "update";; esac; }
+_norm() { printf '%.12s' "${1:-}"; }
+_now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+_refresh_all() {
+  mkdir -p "$STATE"
+  local name remote branch ifn installed latest status tmp
+  while IFS='|' read -r name remote branch ifn; do
+    [ -z "$name" ] && continue
+    installed=$("$ifn" 2>/dev/null || true)
+    latest=$(timeout "$NET_TIMEOUT" git ls-remote "$remote" "$branch" 2>/dev/null | awk 'NR==1{print $1}')
+    if [ -z "$installed" ] || [ -z "$latest" ]; then status=unknown
+    elif [ "$(_norm "$installed")" = "$(_norm "$latest")" ]; then status=up_to_date
+    else status=behind; fi
+    tmp=$(mktemp)
+    jq -n --arg t "$name" --arg i "${installed:-}" --arg l "${latest:-}" \
+          --arg s "$status" --arg c "$(_now_iso)" --arg a "$(_apply_cmd "$name")" \
+      '{tool:$t,installed:$i,latest:$l,status:$s,checked_at:$c,apply_cmd:$a}' > "$tmp"
+    mv "$tmp" "$STATE/$name.json"
+  done < <(_registry)
+}
+
+_cache_fresh() {
+  local newest
+  newest=$(find "$STATE" -maxdepth 1 -name '*.json' -newermt "-${TTL} seconds" 2>/dev/null | head -1)
+  [ -n "$newest" ]
+}
+
+_maybe_refresh() {
+  mkdir -p "$STATE"
+  _cache_fresh && return 0
+  if [ -d "$LOCK" ] && [ -z "$(find "$LOCK" -maxdepth 0 -newermt "-${TTL} seconds" 2>/dev/null)" ]; then
+    rmdir "$LOCK" 2>/dev/null || true
+  fi
+  mkdir "$LOCK" 2>/dev/null || return 0
+  _refresh_all
+  rmdir "$LOCK" 2>/dev/null || true
+}
+
+_refresh_detached() { ( _maybe_refresh >/dev/null 2>&1 & ) ; }
+
+_print_banner() {
+  local f st tool apply
+  for f in "$STATE"/*.json; do
+    [ -f "$f" ] || continue
+    st=$(jq -r '.status' "$f" 2>/dev/null)
+    [ "$st" = "behind" ] || continue
+    tool=$(jq -r '.tool' "$f"); apply=$(jq -r '.apply_cmd' "$f")
+    printf '⬆ %s behind main — run: %s\n' "$tool" "$apply"
+  done
+}
+
+case "${1:-}" in
+  --refresh)  _maybe_refresh ;;
+  --banner)   _refresh_detached; _print_banner ;;
+  --print)    _print_banner ;;
+  -h|--help)  echo "usage: update-status [--refresh|--banner|--print]" ;;
+  *)          echo "usage: update-status [--refresh|--banner|--print]" >&2; exit 2 ;;
+esac
+exit 0
