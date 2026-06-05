@@ -1,7 +1,8 @@
 # Update notifier (CTA-only) for containerized tools — aicoding + dvw
 
 **Date:** 2026-06-05
-**Status:** design approved, pending spec review
+**Status:** design approved; spec hardened (decoupled dvw marker, stale-lock
+recovery, network timeout/detach, behind-semantics, two-phase rollout)
 
 ## Problem
 
@@ -56,16 +57,23 @@ Lives in the notifier (hosted in aicoding). Adding a third tool = one entry.
 ### 2. Version sources
 
 - **Latest SHA:** `git ls-remote <remote> <branch>` → tip SHA. One cheap call,
-  HTTPS, no clone/fetch. (Works even when the forwarded SSH agent is stale.)
-- **Installed SHA, per tool:**
+  HTTPS, no clone/fetch, **wrapped in `timeout`** (see §3). Works even when the
+  forwarded SSH agent is stale.
+- **Installed SHA, per tool — each tool owns its own marker; the registry's
+  `installed_fn` only *reads* it. No tool writes into another tool's directory:**
   - *aicoding:* manifest `blueprint_commit` (already recorded by install.sh /
     aicoding-update).
-  - *dvw:* a new marker `~/.aicodingsetup/state/dvw.version` containing the dvw
-    repo HEAD SHA, **written by `dvw-install.sh` at install time** (dvw has no
-    version awareness today — this adds it).
+  - *dvw:* a new **dvw-owned** marker (e.g. `~/.config/dvw/version` — final path
+    is dvw's choice, in dvw's own state dir), containing the dvw repo HEAD SHA,
+    **written by `dvw-install.sh` at install and by `dvw update`**. dvw has no
+    version awareness today; this adds it. The aicoding registry points
+    `installed_fn` at that path — **dvw never touches `~/.aicodingsetup`**.
 
-`status = up_to_date` if `installed == latest`, else `behind`. If either SHA is
-unavailable (offline, missing marker) → `unknown` (rendered as nothing).
+`status = behind` if `installed != latest`. Note we compare SHAs, so this
+strictly means "installed **differs from the main tip**"; for containers that
+only ever track main that is equivalent to "behind". `up_to_date` if equal.
+If either SHA is unavailable (offline, missing marker) → `unknown` (rendered as
+nothing).
 
 ### 3. Checker + cache
 
@@ -81,11 +89,17 @@ resolves installed + latest and writes:
 
 - **Throttled:** network refresh only if the cache is older than `TTL`
   (default 6h; override `AICODING_UPDATE_TTL`). Otherwise serve cache.
-- **Atomic + locked:** write via tmp+`mv`; a best-effort lock (mkdir) prevents
-  concurrent shells/panes from stampeding the network. Lock contention → skip
+- **Atomic + locked, with stale-lock recovery:** write via tmp+`mv`; a
+  best-effort `mkdir` lock stops concurrent shells/panes from stampeding the
+  network. **A lock older than `TTL` is treated as stale and stolen** — a
+  crashed refresh must never wedge checks forever. Fresh-lock contention → skip
   refresh, serve cache.
-- **Fail-open:** any error (no network, ls-remote fails, missing marker) leaves
-  the prior cache intact and exits 0. Never blocks the caller.
+- **Network never stalls the caller:** `git ls-remote` is wrapped in `timeout`
+  (default 8s; `AICODING_UPDATE_NET_TIMEOUT`) and the refresh runs **detached**
+  (backgrounded, stdout/stderr discarded). Shell startup and the tmux status bar
+  only ever *read the cache* — they never block on the network.
+- **Fail-open:** any error (no network, ls-remote timeout/failure, missing
+  marker) leaves the prior cache intact and exits 0. Never blocks the caller.
 
 Modes:
 - `update-status --refresh`   force a (throttled) refresh, write cache.
@@ -115,9 +129,9 @@ Modes:
 - *aicoding:* `aicoding-update` (exists).
 - *dvw:* **new `dvw update`** subcommand — a thin, **user-invoked** wrapper that
   updates dvw in place (pull latest main + re-run its installer), then rewrites
-  `~/.aicodingsetup/state/dvw.version`. It is run manually by the user; the
-  notifier never calls it. This is the "dvw should have an update mechanism"
-  piece — manual, not self-updating.
+  dvw's own version marker (§2). It is run manually by the user; the notifier
+  never calls it. This is the "dvw should have an update mechanism" piece —
+  manual, not self-updating.
 
 After any apply, the installed SHA advances → next check flips status to
 `up_to_date` → both surfaces clear themselves.
@@ -130,11 +144,27 @@ update in-container moves the container ahead of the pin (the pin is not a
 ceiling). The session-end pin bump (devMachine `CLAUDE.md`) is unchanged and
 independent. No conflict.
 
+## Rollout (two phases)
+
+The tmux badge is the fiddliest piece (slotting cleanly into the existing
+**catppuccin** status line without fighting its modules), so split delivery:
+
+- **Phase 1 — checker + shell banner.** Registry, `bin/update-status`, cache
+  with throttle / stale-lock / timeout, `configs/bash/update-notify.sh` (+
+  manifest entry), dvw version marker + `dvw update`. This alone delivers the
+  persistent CTA (banner on every new shell). Lower risk, immediate value.
+- **Phase 2 — tmux badge.** Add the `update-status --tmux` segment into the
+  catppuccin status line. Purely additive; ships once Phase 1 is in use.
+
+Each phase is its own plan/PR cycle.
+
 ## Failure & concurrency summary
 
-- Offline / ls-remote failure → `unknown`, stale cache served, exit 0.
+- Offline / ls-remote timeout or failure → `unknown`, stale cache served, exit 0.
 - Missing dvw marker → dvw shows `unknown` (not behind), never errors.
-- Concurrent shells/panes → mkdir-lock; losers serve cache.
+- Concurrent shells/panes → mkdir-lock; losers serve cache. A lock older than
+  TTL is stolen, so a crashed refresh never permanently wedges checks.
+- Background refresh is detached + `timeout`-bounded → never stalls shell/tmux.
 - Every entry point exits 0 regardless of internal failure (fail-open).
 
 ## Testing (bats)
@@ -145,8 +175,12 @@ independent. No conflict.
   older → refresh.
 - Banner + tmux formatters: seed cache → assert exact output (behind vs empty).
 - Fail-open: ls-remote returns non-zero / offline → exit 0, cache untouched.
-- dvw marker: `dvw-install.sh` writes `state/dvw.version`; `dvw update` rewrites
-  it (where feasible without network — assert the write path).
+- Stale-lock: a lock dir older than TTL is stolen and refresh proceeds; a fresh
+  lock is respected (serve cache, no network call).
+- Timeout: an ls-remote that hangs is killed by `timeout` → `unknown`, cache
+  intact, exit 0; shell/tmux path returns immediately.
+- dvw marker: `dvw-install.sh` writes dvw's own version marker; `dvw update`
+  rewrites it (assert the write path; network steps stubbed).
 
 ## Scope / YAGNI
 
@@ -159,8 +193,10 @@ Out: counts, auto-apply, daemon, systemd, push/desktop notifications.
 - **aiCodingBaseSetup** (this repo): registry + `bin/update-status`,
   `configs/bash/update-notify.sh` (+ manifest entry), tmux status segment,
   bats tests, README/PHASES note.
-- **dvw**: `dvw-install.sh` writes `~/.aicodingsetup/state/dvw.version`; new
-  `dvw update` subcommand; its own tests. Separate PR.
+- **dvw**: `dvw-install.sh` writes **dvw's own** version marker; new `dvw update`
+  subcommand (rewrites it); its own tests. dvw never writes into
+  `~/.aicodingsetup`. Separate PR.
 
 Each repo ships on a feature branch → PR → merge to its `main` (per the devbox
-conventions).
+conventions). Phase 1 = aicoding banner/checker + dvw changes; Phase 2 =
+aicoding tmux badge.
