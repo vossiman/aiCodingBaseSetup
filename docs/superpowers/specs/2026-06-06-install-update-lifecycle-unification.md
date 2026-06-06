@@ -114,12 +114,46 @@ self-heal, but **never re-applies managed config**. So config drift only heals o
 skips the drifted snippets, or (b) a manual `aicoding-update` you have to
 remember. The drifted auth snippets fall into the one gap with no routine repair.
 
-### Adjacent (host-side, out of repo scope)
+### Defect C — ssh-agent *absence* is not surfaced or self-recovered
 
-`~/.aicodingsetup/.secrets.env` currently has `GH_TOKEN=` **empty** (other keys
-populated). Even a perfect deploy exports an empty token, so gh stays
-unauthenticated until the **host** puts a real PAT there. The repo fix can't
-solve this; it should at minimum *detect & warn*.
+Distinct from the stale-snippet bug. On a **remote** devbox, when **all clients
+detach** (no terminal/IDE attached anywhere), there is **no forwarded ssh-agent
+at all** — every `/tmp/auth-agent*/listener.sock` is a dead file (`Connection
+refused`). Observed live this session: the watcher (`aicoding-ssh-agent-watch`)
+*was running*, `~/.ssh/agent.sock` pointed at the newest socket, but nothing was
+listening, so git-over-ssh failed with `Permission denied (publickey)`.
+
+This is a *legitimate steady state*, not a fault — but today it manifests as an
+opaque auth failure. Requirements this implies:
+
+- The watcher / snippet must distinguish "agent present but socket rotated" (→
+  repoint, today's job) from "**no live agent anywhere**" (→ leave a clear signal,
+  don't present a dead symlink as valid).
+- On **client reattach**, recovery must be automatic (the watcher repoints to the
+  newly-forwarded socket) — verify the running watcher actually does this with the
+  *current* snippet version (note: this container's deployed watcher snippet is
+  the stale one per Defect A, so its reattach behavior may be the old logic).
+- `aicoding-status` should report ssh-agent reachability (live / rotated / absent)
+  so "why is git asking for a password" has a one-glance answer.
+
+### Adjacent — `GH_TOKEN` (mostly a non-issue; verified)
+
+`~/.aicodingsetup/.secrets.env` has `GH_TOKEN=` **empty**. Re-checked, this is
+**not** a real problem and is **decoupled from git auth**:
+
+- **Git is unaffected.** Remotes are `git@github.com` (ssh); no git operation
+  reads `GH_TOKEN`. The recurring git deauth is Defect A/C (ssh), not the token.
+- **Empty doesn't shadow.** Verified: `GH_TOKEN=` empty → gh treats it as *unset*
+  ("not logged into any host"); only a non-empty value is consulted. So an empty
+  token never overrides a keyring/hosts.yml login — it's simply absent.
+- **Only the `gh` CLI cares** (`gh pr create`, `gh api`). With no keyring either,
+  gh is just unauthenticated. If PRs are made via the web, gh is not needed and
+  the empty token costs nothing.
+
+**Conclusion:** out of scope for the auth-staleness fix. *Optional:* if headless
+`gh` is wanted, the host populates a real PAT in `GH_TOKEN`. Tooling could note
+"gh unauthenticated" in `aicoding-status` as info, but no hard warning is
+warranted. **Priority stays on the ssh path (Defect A + C).**
 
 ---
 
@@ -143,15 +177,49 @@ solve this; it should at minimum *detect & warn*.
 
 ### 1. Fix Defect A — heal overwrite-owned drift in reconcile
 
-In `reconcile_existing_install`, auto-apply `drifted_and_updating` **for
-`overwrite`-mode files only** (leave `merge` and `marker_block` on their current
-paths). The apply handler already backs up the file before overwriting
-(blueprint-deploy.sh:559), so a genuine in-place edit is preserved as a `.bak`
-while the blueprint version is restored. This mirrors the marker-block precedent
-and makes reconcile able to self-heal owned dotfiles.
+> ⚠️ **Tension discovered during review — this is the real decision.** The current
+> "skip `drifted_and_updating`" behavior is **deliberate and tested**:
+> `install.bats:161` ("does not auto-resolve drifted_and_updating") edits
+> `~/.tmux.conf` in place and asserts reconcile preserves it **byte-for-byte with
+> no `.bak`**; `install.bats:506` asserts the same for an edited
+> `~/.codex/config.toml`. So reconcile intentionally **preserves in-place user
+> edits to overwrite files.**
+>
+> **The crux:** a home-reset *stale snapshot* and a *genuine user edit* are
+> **indistinguishable by content hash** — both yield `current != deployed &&
+> current != new` → `drifted_and_updating`. Any fix must choose how to tell them
+> apart (or decide it doesn't care). This is a product-behavior call.
 
-*Rejected alternative:* a per-entry `owned` flag. More plumbing for no gain —
-`overwrite` already encodes ownership.
+Options, least → most surgical:
+
+- **(a) Heal all overwrite drift (revert with `.bak`).** Auto-apply
+  `drifted_and_updating` for overwrite files in reconcile. Simplest, but
+  **reverses the tested philosophy** — genuine in-place edits get reverted (kept
+  as `.bak`). Breaks install.bats:161/506 (they'd be rewritten to assert the new
+  behavior). Pick this only if "overwrite = blueprint always wins" is the desired
+  contract.
+
+- **(b) Provenance discriminator (most precise).** Heal only when the on-disk
+  content matches a **known prior blueprint version** of that file (provably stale
+  blueprint output), and otherwise preserve (genuine user edit). The 4-line
+  `aicoding-env.sh` *is* an older blueprint version → healed; arbitrary user
+  content is not → preserved. Requires either a `deployed_hash_history[]` per file
+  in the manifest, or hashing the source file's git history in the blueprint
+  clone to recognize "this is an old me." Keeps the preserve-edits guarantee
+  intact while fixing the auth case. More code.
+
+- **(c) Owned-set carve-out (recommended for the immediate fix).** Declare the
+  auth-critical snippets (`~/.bashrc.d/aicoding-*.sh`) as **force-managed**:
+  reconcile always restores them to blueprint (with `.bak`), users put their own
+  shell config in `~/.bashrc.d/local-*.sh` (already the documented convention).
+  Everything else keeps today's preserve-edits behavior, so install.bats:161/506
+  stay green. Smallest blast radius; fixes the reported pain; honest about the
+  one class of files that genuinely isn't user-editable.
+
+**Recommendation:** ship **(c)** as Phase A (narrow, no philosophy reversal,
+existing tests stay valid), and consider **(b)** later if you want *every*
+overwrite file to self-heal after a recreate without losing edits. Avoid **(a)**
+— it throws away a deliberate guarantee.
 
 ### 2. Fix Defect B — converge config on the boot path
 
@@ -225,10 +293,15 @@ Each phase is its own PR. Phase A alone fixes the reported pain; B and C are the
    interval? Default cadence?
 3. **Renames (#3):** worth the churn now, or keep names and just document the
    model? If renaming, OK with one-cycle back-compat shims?
-4. **`drifted_and_updating` for overwrite:** auto-heal silently (with `.bak`), or
-   heal-but-log each one so you can see what got reverted?
-5. **Scope of "owned":** apply the heal to *all* overwrite files, or only the
-   `~/.bashrc.d/aicoding-*.sh` auth-critical subset to start?
-6. **`GH_TOKEN` empty:** want the tooling to hard-warn, or also attempt a
-   fallback (e.g. detect a working `gh auth` keyring and not shadow it with an
-   empty env var)?
+4. **Defect A discriminator (the key call):** which option — (a) heal all
+   overwrite drift and accept reverting in-place edits (reverses tested
+   behavior), (b) provenance discriminator that heals only provably-stale
+   blueprint output (preserves edits, more code), or (c) force-manage just the
+   `~/.bashrc.d/aicoding-*.sh` auth set (recommended, narrow, keeps existing
+   tests green)?
+5. **Logging:** when reconcile heals/reverts a file, just back up to `.bak`, or
+   also print each reverted file in the summary so nothing changes silently?
+6. **`GH_TOKEN`:** confirmed mostly a non-issue (git unaffected; empty doesn't
+   shadow; only the `gh` CLI cares). OK to drop it from scope and just surface
+   "gh unauthenticated" as info in `aicoding-status` — or do you want headless
+   `gh` to work (→ you add a PAT to the host secrets)?
