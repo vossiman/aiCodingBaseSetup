@@ -107,6 +107,13 @@ EOF
   echo "$target" | grep -q "bin/aicoding-update"
 }
 
+@test "install.sh symlinks aicoding-sync into ~/.local/bin" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ -L "$HOME/.local/bin/aicoding-sync" ]
+  [ -x "$HOME/.local/bin/aicoding-sync" ]
+  readlink "$HOME/.local/bin/aicoding-sync" | grep -q "bin/aicoding-sync"
+}
+
 @test "install.sh reconcile mode: restores missing files without touching edited ones" {
   # First-deploy populates the manifest and all managed files.
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
