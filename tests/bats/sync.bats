@@ -14,7 +14,7 @@ setup() {
   mkdir -p "$TMP/.local/bin"
   # Neutralise install.sh's prereq installers so install.sh no-ops them and
   # leaves our logging stubs (claude/opencode/agent) on PATH untouched.
-  for cmd in apt-get sudo curl npm bash-build-tmux cursor-agent; do
+  for cmd in apt-get sudo curl npm npx bash-build-tmux cursor-agent; do
     printf '#!/bin/sh\nexit 0\n' > "$TMP/stubs/$cmd"
     chmod +x "$TMP/stubs/$cmd"
   done

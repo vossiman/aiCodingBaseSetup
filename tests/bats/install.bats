@@ -10,8 +10,16 @@ setup() {
   export BASHRC_BLOCK_END_LIT='# <<< aicoding managed block <<<'
   # Stub apt etc. so install.sh's prereq steps no-op.
   export PATH="$TMPDIR/stubs:$PATH"
-  mkdir -p "$TMPDIR/stubs"
-  for cmd in apt-get sudo curl npm bash-build-tmux; do
+  mkdir -p "$TMPDIR/stubs" "$TMPDIR/.local/bin"
+  # Stub the prereq tools so install.sh's ensure_*/check_* steps no-op instead of
+  # doing real work on every test (the biggest suite cost):
+  #  - npx: check_playwright runs `npx playwright install chromium` (~22s Chromium
+  #    re-download into the fresh per-test $HOME cache).
+  #  - claude/opencode: prereq ensure_* invoke the real binaries (migration /
+  #    version calls) when present on PATH.
+  # NOT stubbed here: codex / agent / cursor-agent — dedicated ensure_codex /
+  # ensure_cursor_agent tests set up their own present/absent scenarios for those.
+  for cmd in apt-get sudo curl npm npx bash-build-tmux claude opencode; do
     cat > "$TMPDIR/stubs/$cmd" <<'STUB'
 #!/bin/sh
 exit 0
