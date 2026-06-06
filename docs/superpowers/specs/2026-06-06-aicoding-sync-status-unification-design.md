@@ -56,11 +56,11 @@ Two real defects fall out of this shape:
 ## The model: two verbs, triggers are flags
 
 ```
-aicoding sync     # make THIS container current  (changes things)
-aicoding status   # am I current?                (changes nothing)
+aicoding-sync     # make THIS container current  (changes things)
+aicoding-status   # am I current?                (changes nothing)
 ```
 
-`aicoding sync` is one idempotent routine with three ordered steps:
+`aicoding-sync` is one idempotent routine with three ordered steps:
 
 1. **Auth plumbing** (fast, every run): repoint the forwarded ssh-agent socket,
    seed GitHub `known_hosts`. These genuinely must run every boot (the forwarded
@@ -70,7 +70,7 @@ aicoding status   # am I current?                (changes nothing)
 3. **Binaries** (throttled — network): `claude update`, `opencode upgrade`,
    `agent update`.
 
-`aicoding status` is `sync`'s **dry-run**: run the same checks (config drift +
+`aicoding-status` is `sync`'s **dry-run**: run the same checks (config drift +
 binary/blueprint behind-ness), report, change nothing. (This is today's
 `update-status`, minus the dead dvw entry.)
 
@@ -80,33 +80,31 @@ binary/blueprint behind-ness), report, change nothing. (This is today's
 |---|---|---|
 | container **create** | `install.sh` (bootstrap: ensure clone/deps) → `sync` | `--first` (provision; may prompt for secrets on a real host) |
 | container **start** (`postStartCommand`) | `on-start.sh` (bootstrap: nvs-strip, PATH, fetch blueprint) → `sync` | `--boot` (non-interactive, throttled) |
-| **you** | `aicoding sync` | interactive: show diffs, confirm |
+| **you** | `aicoding-sync` | interactive: show diffs, confirm |
 
 `install.sh` and `on-start.sh` keep only the **bootstrap prologue** that must run
 before the CLI exists (strip broken `nvs` env funcs, put `~/.local/bin` on PATH,
 clone/refresh the blueprint, source the library). Everything else is `sync`.
 
-## Naming
+## Naming  *(decided: separate scripts, no verb subcommands)*
 
-Recommended: a single **`aicoding <verb>`** dispatcher (consistent with the
-existing `dvw <verb>` pattern) — you only ever type `aicoding`, and `aicoding`
-with no args lists the verbs.
+Two distinct, tab-completable commands — **no `aicoding <verb>` dispatcher**
+(deliberately rejected: subcommand verbs are hard to remember and unwanted):
 
-- `aicoding sync`   (was `aicoding-update`)
-- `aicoding status` (was `update-status`)
-- `install.sh`      (kept — the create-time bootstrap; optionally also `aicoding install`)
-- `on-start.sh`     (was `update.sh` — boot bootstrap; stays a standalone fetchable
-                     script because it runs before the CLI is present)
+- `aicoding-sync`    (was `aicoding-update`)
+- `aicoding-status`  (was `update-status`)
+- `install.sh`       (kept — the create-time bootstrap)
+- `on-start.sh`      (was `update.sh` — boot bootstrap; stays a standalone fetchable
+                      script because it runs before the CLI is present)
+
+So in the head: `aicoding-sync` = make me current, `aicoding-status` = am I current.
 
 **Back-compat (one release):** keep `aicoding-update`, `update-status`, and
-`update.sh` as thin shims that exec the new path, so existing `postStartCommand`s
+`update.sh` as thin shims that exec the new script, so existing `postStartCommand`s
 and muscle memory don't break. `devcontainer.json` `postStart`/`postCreate` get
-updated to the new names (the shim covers already-created containers).
+updated to the new names (the shims cover already-created containers).
 
-> Open decision A (confirm in review): unified `aicoding <verb>` dispatcher
-> (recommended) vs. separate `aicoding-sync` / `aicoding-status` scripts.
-
-## Config self-heal (the Defect-A piece)
+## Config self-heal (the Defect-A piece)  *(decided: safer split)*
 
 `sync` must heal blueprint-owned config that goes stale after a home reset
 (manifest persists on the host mount; `~/.bashrc.d/*` is ephemeral → reverts to
@@ -115,7 +113,7 @@ skips). But a stale snapshot and a genuine in-place edit are **indistinguishable
 by hash**, and `install.bats:161/506` deliberately protect in-place edits to
 `~/.tmux.conf` and `~/.codex/config.toml`.
 
-Recommended resolution:
+Decision:
 - **Blueprint-owned plumbing** (`~/.bashrc.d/aicoding-*.sh`, hooks): **always
   restore** to blueprint in every mode (incl. `--boot`), backing up to `.bak`.
   These are never meant to be hand-edited (the documented escape hatch is
@@ -126,9 +124,9 @@ Recommended resolution:
   users customize without touching the managed file. In interactive `sync`, show
   the diff and let the user choose; in `--boot`, leave them.
 
-> Open decision B (confirm in review): the user leaned toward "restore *all*
-> overwrite files". The above is the safer split (auth plumbing always heals;
-> the two genuinely-editable files are preserved/confirmed). Confirm which.
+The "restore *all* overwrite files" alternative is **deferred** — it needs a
+proper diff/merge flow first (see Deferred ideas) rather than silently reverting
+in-place edits.
 
 ## Throttling
 
@@ -162,15 +160,29 @@ is still one entry.
    binary-refresh + plumbing (from `update.sh`) into one routine with
    `--first/--boot/interactive` modes. Wire `install.sh`/`on-start.sh` to call it.
 2. **Self-heal**: force-restore blueprint-owned files in reconcile (per decision B).
-3. **`status`**: rename `update-status` → `aicoding status`, drop dvw entry.
+3. **`status`**: rename `update-status` → `aicoding-status`, drop dvw entry.
 4. **Names + shims**: introduce `aicoding <verb>`, add back-compat shims, update
    `devcontainer.json`.
 
 Each step is its own PR; the suite stays green throughout.
 
-## Open decisions (confirm in spec review)
+## Decisions (resolved)
 
-- **A. Naming:** unified `aicoding <verb>` dispatcher (recommended) vs. separate
-  `aicoding-sync`/`aicoding-status`.
-- **B. Self-heal scope:** auth-plumbing-only force-restore + include hatches
-  (recommended/safe) vs. restore *all* overwrite files (your earlier lean).
+- **A. Naming:** separate scripts — `aicoding-sync` / `aicoding-status`. No
+  `aicoding <verb>` dispatcher (verbs are hard to remember / unwanted).
+- **B. Self-heal scope:** safer split — auth-plumbing files force-restore in all
+  modes; user-editable files (`~/.tmux.conf`, `~/.codex/config.toml`) preserved
+  with include hatches. "Restore all" deferred behind a proper diff flow.
+
+## Deferred ideas
+
+- **Proper diff/merge for user-editable overwrite files.** Today drift on
+  `~/.tmux.conf` / `~/.codex/config.toml` is binary: preserve, or clobber-with-
+  `.bak`. A better future flow: when a managed overwrite file has drifted *and*
+  the blueprint changed, show a real **3-way diff** (your version ↔ last-deployed
+  ↔ new blueprint) and let the user choose per-file/per-hunk (keep mine / take
+  blueprint / merge), the way a config-management tool or `git mergetool` would.
+  With that in place, the "restore *all* overwrite files" option (Decision B's
+  alternative) becomes safe — nothing is reverted without the user seeing exactly
+  what changes. Until then we keep the conservative preserve + include-hatch
+  approach. *(Candidate for promotion to `devMachine/docs/deferred-ideas.md`.)*
