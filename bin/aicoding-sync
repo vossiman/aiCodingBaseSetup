@@ -9,4 +9,4 @@ esac
 # Prefer the refreshed blueprint clone if present; else the install dir.
 [ -f "$AICODING_BLUEPRINT_CLONE/lib/sync.sh" ] && . "$AICODING_BLUEPRINT_CLONE/lib/sync.sh" \
   || . "$SCRIPT_DIR/lib/sync.sh"
-aicoding_sync "${1:-}"
+aicoding_sync "$@"

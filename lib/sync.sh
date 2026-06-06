@@ -5,6 +5,7 @@
 # Sourced (no shebang / set -e); matches the lib/*.sh style.
 
 : "${AICODING_BLUEPRINT_CLONE:=/tmp/aicoding}"
+: "${AICODING_BLUEPRINT_REMOTE:=https://github.com/vossiman/aiCodingBaseSetup}"
 : "${AICODING_UPDATE_TTL:=21600}"
 : "${AICODING_UPDATE_STATE:=$HOME/.aicodingsetup/state/updates}"
 
@@ -36,27 +37,217 @@ _sync_plumbing() {            # never throttled — must be correct now
   command -v seed_github_known_host >/dev/null 2>&1 && seed_github_known_host || true
 }
 
-_sync_config() {              # config reconcile via the deploy engine
-  # No blueprint clone yet (e.g. first boot before bootstrap) → nothing to
-  # reconcile; degrade quietly rather than erroring. Also explicit about
-  # fail-open in case a caller ever sources us under `set -e`.
+# Bring the blueprint clone current. Clone if absent; otherwise fetch and
+# hard-reset to origin/main — but ONLY for a throwaway tracking clone that's
+# actually on `main`. The dev repo (used in tests and during development)
+# lives on a feature branch and may be ahead of origin/main; resetting it
+# would clobber working-tree state, so we leave non-main checkouts alone.
+# Fetch failure (e.g. no origin remote in test fixtures) falls back to the
+# cached clone — never resets. Fail-open throughout.
+refresh_blueprint() {
+  if [[ -d "$AICODING_BLUEPRINT_CLONE/.git" ]]; then
+    if git -C "$AICODING_BLUEPRINT_CLONE" fetch --quiet origin 2>/dev/null; then
+      local branch
+      branch=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
+      if [[ "$branch" == main ]]; then
+        git -C "$AICODING_BLUEPRINT_CLONE" reset --hard --quiet origin/main 2>/dev/null || true
+      fi
+    else
+      echo "could not fetch blueprint — using cached clone" >&2
+    fi
+  elif [[ ! -d "$AICODING_BLUEPRINT_CLONE" ]]; then
+    git clone --quiet "$AICODING_BLUEPRINT_REMOTE" "$AICODING_BLUEPRINT_CLONE" || true
+  fi
+}
+
+# Config reconcile: classify managed files, preview/prompt/apply per mode,
+# stamp the manifest. Ported from the old aicoding-update CLI and folded in.
+# $1 = mode: boot | first | dry-run | yes | interactive.
+# Returns 1 only in the no-manifest manual-error case (interactive/dry-run/yes);
+# returns 0 everywhere else.
+_sync_reconcile() {
+  local mode=$1
+
+  refresh_blueprint
+
   [ -f "$AICODING_BLUEPRINT_CLONE/lib/blueprint-deploy.sh" ] || return 0
   . "$AICODING_BLUEPRINT_CLONE/lib/blueprint-deploy.sh"
   command -v load_secrets_env >/dev/null 2>&1 && load_secrets_env || true
-  [ -f "$AICODING_MANIFEST" ] || return 0
+
+  if [[ ! -f "$AICODING_MANIFEST" ]]; then
+    case "$mode" in
+      boot|first) return 0 ;;  # nothing provisioned yet — tolerate
+      *)
+        echo "aicoding-sync: no manifest at $AICODING_MANIFEST" >&2
+        echo "Run install.sh first to provision this container." >&2
+        return 1
+        ;;
+    esac
+  fi
+
+  manifest_check_schema
+
+  local OLD_COMMIT NEW_COMMIT
+  OLD_COMMIT=$(jq -r '.blueprint_commit // "unknown"' "$AICODING_MANIFEST")
+  NEW_COMMIT=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse --short HEAD 2>/dev/null || echo unknown)
+  echo "Blueprint: ${OLD_COMMIT} -> ${NEW_COMMIT}"
+
   declare -gA BUCKETS FILE_MODE FILE_SOURCE
   export AICODING_BLUEPRINT_CLONE
   classify_managed_files
+
+  # Re-bucket owned overwrites: a drifted-but-blueprint-owned file is ours to
+  # update without a "needs your decision" prompt.
   local d
   for d in "${!BUCKETS[@]}"; do
     if [[ "${BUCKETS[$d]}" == drifted_and_updating ]] && _is_owned_overwrite "$d"; then
       BUCKETS[$d]=will_update_owned
     fi
   done
+
+  declare -A COUNT
+  local b
+  for b in up_to_date will_update will_update_owned drifted_but_aligned \
+           drifted_and_updating restore new_file to_remove merge; do
+    COUNT[$b]=0
+  done
+  for d in "${!BUCKETS[@]}"; do
+    b=${BUCKETS[$d]}
+    COUNT[$b]=$(( ${COUNT[$b]:-0} + 1 ))
+  done
+
+  if [[ "$mode" == dry-run ]]; then
+    for b in up_to_date will_update will_update_owned drifted_but_aligned \
+             drifted_and_updating restore new_file to_remove merge; do
+      echo "  ${COUNT[$b]} $b"
+    done
+    return 0
+  fi
+
+  # Interactive preview (default mode only): counts + inline diffs.
+  if [[ "$mode" == interactive ]]; then
+    _sync_print_summary
+  fi
+
+  # Nothing actionable across every apply bucket?
+  if (( COUNT[will_update] + COUNT[will_update_owned] + COUNT[drifted_and_updating] \
+        + COUNT[restore] + COUNT[new_file] + COUNT[to_remove] + COUNT[merge] \
+        + COUNT[drifted_but_aligned] == 0 )); then
+    echo "Nothing to do."
+    return 0
+  fi
+
+  if [[ "$mode" == interactive ]]; then
+    printf 'Apply? [y/N] '
+    local answer
+    read -r answer
+    case "$answer" in
+      y|Y|yes) ;;
+      *) echo "Aborted."; return 0 ;;
+    esac
+  fi
+
   manifest_stage_begin
-  apply_managed_buckets "restore new_file will_update will_update_owned drifted_but_aligned merge"
-  manifest_stage_set_top blueprint_commit "$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD 2>/dev/null || echo unknown)"
+
+  local buckets
+  if [[ "$mode" == boot ]]; then
+    # Conservative on boot: preserve user edits (no drifted_and_updating, no
+    # to_remove) since boot runs unattended on every container start.
+    buckets="restore new_file will_update will_update_owned drifted_but_aligned merge"
+  else
+    # interactive / yes / first: full reconcile.
+    buckets="restore new_file will_update will_update_owned drifted_but_aligned drifted_and_updating merge to_remove"
+  fi
+  apply_managed_buckets "$buckets"
+
+  # Per-bucket announcements (interactive output, not deploy behavior). Only
+  # report buckets that were actually in the applied set for this mode.
+  local bucket
+  for d in "${!BUCKETS[@]}"; do
+    bucket=${BUCKETS[$d]}
+    case " $buckets " in *" $bucket "*) ;; *) continue ;; esac
+    case "$bucket" in
+      restore)              echo "      restored: $d" ;;
+      new_file)             echo "      new: $d" ;;
+      will_update)          echo "      updated: $d" ;;
+      will_update_owned)    echo "      updated: $d" ;;
+      drifted_and_updating) echo "      updated (with backup): $d" ;;
+      merge)                echo "      merged: $d" ;;
+      to_remove)            echo "      removed: $d" ;;
+    esac
+  done
+
+  manifest_stage_set_top blueprint_commit "$NEW_COMMIT"
+  local origin
+  origin=$(git -C "$AICODING_BLUEPRINT_CLONE" remote get-url origin 2>/dev/null || echo unknown)
+  manifest_stage_set_top blueprint_origin "$origin"
+
   manifest_stage_commit
+  return 0
+}
+
+# Interactive summary: tally + inline `diff -u` per drifted_and_updating file.
+# Reads the COUNT / BUCKETS / FILE_MODE / FILE_SOURCE state from the caller.
+_sync_print_summary() {
+  echo
+  echo "  ${COUNT[up_to_date]} up to date"
+
+  if (( COUNT[will_update] > 0 )); then
+    echo "  ${COUNT[will_update]} will update         (no drift):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} == will_update ]] && echo "      $dest"
+    done
+  fi
+
+  if (( COUNT[will_update_owned] > 0 )); then
+    echo "  ${COUNT[will_update_owned]} will update (owned) (blueprint-owned, will refresh):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} == will_update_owned ]] && echo "      $dest"
+    done
+  fi
+
+  if (( COUNT[restore] > 0 )); then
+    echo "  ${COUNT[restore]} restore             (file missing, will be restored from blueprint):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} == restore ]] && echo "      $dest"
+    done
+  fi
+
+  if (( COUNT[drifted_and_updating] > 0 )); then
+    echo "  ${COUNT[drifted_and_updating]} needs your decision (you've modified, blueprint also changed):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} != drifted_and_updating ]] && continue
+      echo "      $dest"
+      if [[ "${FILE_MODE[$dest]:-overwrite}" != "marker_block" ]]; then
+        local src="$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]}"
+        diff -u --label "your version" --label "blueprint version" "$dest" "$src" 2>/dev/null \
+          | sed 's/^/        /' || true
+      fi
+    done
+  fi
+
+  if (( COUNT[to_remove] > 0 )); then
+    echo "  ${COUNT[to_remove]} to remove           (no longer in blueprint):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} == to_remove ]] && echo "      $dest"
+    done
+  fi
+
+  if (( COUNT[new_file] > 0 )); then
+    echo "  ${COUNT[new_file]} new files           (will be deployed):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} == new_file ]] && echo "      $dest"
+    done
+  fi
+
+  if (( COUNT[merge] > 0 )); then
+    echo "  ${COUNT[merge]} merge target(s)     (will re-merge, additions preserved):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} == merge ]] && echo "      $dest"
+    done
+  fi
+
+  echo
 }
 
 _sync_binaries() {            # throttled network refresh
@@ -75,12 +266,28 @@ _sync_binaries_stamp() {
 }
 
 aicoding_sync() {
-  local mode=interactive
-  case "${1:-}" in --first) mode=first ;; --boot) mode=boot ;; "" ) ;; *) mode=interactive ;; esac
-  _sync_plumbing
-  _sync_config
-  # Only --boot throttles binary refresh; --first and interactive always refresh
-  # (the boot path is the only one that runs unattended on every container start).
-  if [ "$mode" = boot ] && _sync_binaries_fresh; then :; else _sync_binaries; _sync_binaries_stamp; fi
+  # Parse the FIRST recognized flag; no flag = interactive.
+  local mode=interactive arg
+  for arg in "$@"; do
+    case "$arg" in
+      --dry-run) mode=dry-run; break ;;
+      --yes)     mode=yes;     break ;;
+      --boot)    mode=boot;    break ;;
+      --first)   mode=first;   break ;;
+    esac
+  done
+
+  # 1. Plumbing — always correct now, but write nothing under --dry-run.
+  [ "$mode" != dry-run ] && _sync_plumbing
+
+  # 2. Reconcile (preview / prompt / apply per mode). The no-manifest manual
+  #    error is the only nonzero return.
+  _sync_reconcile "$mode" || return $?
+
+  # 3. Binaries — never under --dry-run. Only --boot throttles (it's the only
+  #    path that runs unattended on every container start).
+  if [ "$mode" != dry-run ]; then
+    if [ "$mode" = boot ] && _sync_binaries_fresh; then :; else _sync_binaries; _sync_binaries_stamp; fi
+  fi
   return 0
 }
