@@ -80,14 +80,31 @@ _print_banner() {
   done
 }
 
+# --tmux: a compact, no-newline segment for the tmux status line — one `⬆<tool>`
+# per behind tool (space-joined), empty when all current/unknown. Like --banner
+# it kicks a throttled detached refresh, then only reads the cache, so it stays
+# fast enough to run on every tmux status-interval and never blocks the bar.
+_print_tmux() {
+  local f st tool out=""
+  for f in "$STATE"/*.json; do
+    [ -f "$f" ] || continue
+    st=$(jq -r '.status' "$f" 2>/dev/null)
+    [ "$st" = "behind" ] || continue
+    tool=$(jq -r '.tool' "$f" 2>/dev/null)
+    out="${out:+$out }⬆$tool"
+  done
+  [ -n "$out" ] && printf '%s' "$out"
+}
+
 case "${1:-}" in
   --refresh)  _maybe_refresh ;;
   # --banner: kick a throttled refresh in the background and print the CURRENT
   # cache. The first shell after an update may show stale state until the async
   # refresh lands; subsequent shells reflect it. Keeps shell startup non-blocking.
   --banner)   _refresh_detached; _print_banner ;;
+  --tmux)     _refresh_detached; _print_tmux ;;
   --print)    _print_banner ;;
-  -h|--help)  echo "usage: update-status [--refresh|--banner|--print]" ;;
-  *)          echo "usage: update-status [--refresh|--banner|--print]" >&2; exit 2 ;;
+  -h|--help)  echo "usage: update-status [--refresh|--banner|--tmux|--print]" ;;
+  *)          echo "usage: update-status [--refresh|--banner|--tmux|--print]" >&2; exit 2 ;;
 esac
 exit 0
