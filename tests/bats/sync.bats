@@ -48,3 +48,16 @@ teardown() { rm -rf "$TMP"; }
   run env AICODING_UPDATE_TTL=0 bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_sync --boot'
   [ "$status" -eq 0 ]
 }
+
+@test "aicoding-sync --boot runs end to end (exit 0)" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  run env AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT" AICODING_UPDATE_TTL=0 \
+      "$BLUEPRINT_ROOT/bin/aicoding-sync" --boot
+  [ "$status" -eq 0 ]
+}
+@test "aicoding-update shim still works (delegates to aicoding-sync)" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  run env AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT" AICODING_UPDATE_TTL=0 \
+      "$BLUEPRINT_ROOT/bin/aicoding-update" --yes
+  [ "$status" -eq 0 ]
+}
