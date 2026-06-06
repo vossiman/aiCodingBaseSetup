@@ -7,5 +7,5 @@
     "BASH_FUNC_nvm%%": "() {  :; }"
   },
   "postCreateCommand": "git clone --quiet https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh",
-  "postStartCommand": "curl -fsSL https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/update.sh | bash"
+  "postStartCommand": "curl -fsSL https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/on-start.sh | bash"
 }

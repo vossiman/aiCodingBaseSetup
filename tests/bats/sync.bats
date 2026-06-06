@@ -61,3 +61,10 @@ teardown() { rm -rf "$TMP"; }
       "$BLUEPRINT_ROOT/bin/aicoding-update" --yes
   [ "$status" -eq 0 ]
 }
+
+@test "on-start.sh runs the boot path (exit 0)" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  run env AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT" AICODING_UPDATE_TTL=0 \
+      bash "$BLUEPRINT_ROOT/on-start.sh"
+  [ "$status" -eq 0 ]
+}

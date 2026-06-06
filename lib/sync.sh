@@ -8,6 +8,29 @@
 : "${AICODING_UPDATE_TTL:=21600}"
 : "${AICODING_UPDATE_STATE:=$HOME/.aicodingsetup/state/updates}"
 
+# Seed GitHub's SSH host key so git-over-SSH (forwarded agent) works on this
+# start. Fresh containers have an empty ~/.ssh/known_hosts, so the first push/pull
+# dies with "Host key verification failed" before auth. install.sh seeds this on
+# create; doing it here too means already-running containers self-heal on their
+# next start without a rebuild. Fingerprint-verified (not TOFU), idempotent.
+seed_github_known_host() {
+  local expected="SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"  # GitHub's published ed25519 fingerprint
+  local kh="$HOME/.ssh/known_hosts" tmp scanned
+  mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"; touch "$kh"
+  ssh-keygen -F github.com -f "$kh" >/dev/null 2>&1 && return 0
+  tmp="$(mktemp)"
+  if ! ssh-keyscan -t ed25519 github.com >"$tmp" 2>/dev/null || [[ ! -s "$tmp" ]]; then
+    printf 'WARN: %s\n' "ssh-keyscan github.com failed (offline?) — git over SSH may prompt" >&2; rm -f "$tmp"; return 0
+  fi
+  scanned="$(ssh-keygen -lf "$tmp" | awk '{print $2}')"
+  if [[ "$scanned" == "$expected" ]]; then
+    cat "$tmp" >>"$kh"
+  else
+    printf 'WARN: %s\n' "github.com host-key fingerprint mismatch ($scanned) — NOT seeding" >&2
+  fi
+  rm -f "$tmp"
+}
+
 _sync_plumbing() {            # never throttled — must be correct now
   command -v aicoding-ssh-agent-watch >/dev/null 2>&1 && aicoding-ssh-agent-watch --ensure 2>/dev/null || true
   command -v seed_github_known_host >/dev/null 2>&1 && seed_github_known_host || true
