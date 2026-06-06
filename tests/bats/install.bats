@@ -349,6 +349,31 @@ STUB
   ! echo "$output" | grep -qE "Installing Cursor CLI"
 }
 
+@test "install.sh non-interactive: never rewrites an existing .secrets.env (no host-secret clobber)" {
+  # ~/.aicodingsetup/.secrets.env is a host bind mount — the single source of
+  # truth across containers. A non-interactive container install must NOT
+  # regenerate it; doing so blanks keys it can't prompt for and destroys the
+  # user's real tokens on the host. The file must come out byte-identical.
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<'EOF'
+# my host secrets — hand maintained, do not let a container touch this
+GH_TOKEN=github_pat_REALTOKENVALUE
+FIRECRAWL_API_KEY=fc-abc
+MY_CUSTOM_KEY=keepme
+EOF
+  chmod 600 "$HOME/.aicodingsetup/.secrets.env"
+  local before after
+  before=$(sha256sum "$HOME/.aicodingsetup/.secrets.env" | awk '{print $1}')
+
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+
+  after=$(sha256sum "$HOME/.aicodingsetup/.secrets.env" | awk '{print $1}')
+  [ "$before" = "$after" ]
+  # The real token and a non-blueprint custom key must both survive verbatim.
+  grep -qx 'GH_TOKEN=github_pat_REALTOKENVALUE' "$HOME/.aicodingsetup/.secrets.env"
+  grep -qx 'MY_CUSTOM_KEY=keepme' "$HOME/.aicodingsetup/.secrets.env"
+}
+
 @test "first-deploy: codex config.toml deploys with substituted FIRECRAWL_API_KEY" {
   # Seed a secrets file so substitution has a value to inject.
   mkdir -p "$HOME/.aicodingsetup"
