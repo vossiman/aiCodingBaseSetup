@@ -654,11 +654,12 @@ EOF
   [ -f "$HOME/.claude/commands/$one" ]
 }
 
-@test "install.sh first-deploy: deploys update-notify snippet and update-status symlink" {
+@test "install.sh first-deploy: deploys update-notify snippet and aicoding-status symlink" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   [ -f "$HOME/.bashrc.d/aicoding-update-notify.sh" ]
-  grep -q "update-status --banner" "$HOME/.bashrc.d/aicoding-update-notify.sh"
-  [ -x "$HOME/.local/bin/update-status" ]
+  grep -q "aicoding-status --banner" "$HOME/.bashrc.d/aicoding-update-notify.sh"
+  [ -x "$HOME/.local/bin/aicoding-status" ]
+  [ -x "$HOME/.local/bin/update-status" ]   # back-compat shim
   local h
   h=$(jq -r '.files["'"$HOME"'/.bashrc.d/aicoding-update-notify.sh"].deployed_hash' "$AICODING_MANIFEST")
   [ "$h" != "null" ] && [ -n "$h" ]

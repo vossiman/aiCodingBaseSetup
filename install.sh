@@ -846,11 +846,18 @@ install_aicoding_update_symlink() {
 }
 
 install_update_status_symlink() {
-  header "update-status CLI"
-  local src="$SCRIPT_DIR/bin/update-status" dest="$HOME/.local/bin/update-status"
-  [[ -f "$src" ]] || { warn "bin/update-status not found — skipping"; return; }
+  header "aicoding-status CLI"
+  local src="$SCRIPT_DIR/bin/aicoding-status" dest="$HOME/.local/bin/aicoding-status"
+  [[ -f "$src" ]] || { warn "bin/aicoding-status not found — skipping"; return; }
   mkdir -p "$HOME/.local/bin"; chmod +x "$src"; ln -sf "$src" "$dest"
-  ok "update-status installed at $dest -> $src"
+  ok "aicoding-status installed at $dest -> $src"
+  # Back-compat shim: keep ~/.local/bin/update-status pointing at the renamed CLI.
+  # Remove after one release.
+  local shim_src="$SCRIPT_DIR/bin/update-status" shim_dest="$HOME/.local/bin/update-status"
+  if [[ -f "$shim_src" ]]; then
+    chmod +x "$shim_src"; ln -sf "$shim_src" "$shim_dest"
+    ok "update-status shim installed at $shim_dest -> $shim_src"
+  fi
 }
 
 # --- SSH agent socket self-heal watcher (container only) ---

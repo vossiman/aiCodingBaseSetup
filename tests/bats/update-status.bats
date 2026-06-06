@@ -2,7 +2,7 @@
 
 setup() {
   : "${BLUEPRINT_ROOT:?unset — run via tests/bats/run.sh}"
-  BIN="$BLUEPRINT_ROOT/bin/update-status"
+  BIN="$BLUEPRINT_ROOT/bin/aicoding-status"
   TMP=$(mktemp -d); export HOME="$TMP"
   export AICODING_UPDATE_STATE="$TMP/state/updates"
   export AICODING_UPDATE_TTL=3600
@@ -99,4 +99,16 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   AICODING_UPDATE_TTL=0 FAKE_LATEST=1111111111111111111111111111111111111111 run "$BIN" --refresh
   [ "$status" -eq 0 ]
   [ "$(cache | jq -r .status)" = "behind" ]
+}
+
+@test "registry is aicoding-only (no dvw entry) in-container" {
+  # Unset the TESTONLY override so the real in-container registry is used.
+  unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE AICODING_UPDATE_TESTONLY_INSTALLED_FILE
+  run "$BIN" --print
+  ! echo "$output" | grep -qi dvw
+}
+
+@test "update-status shim still works" {
+  run "$BLUEPRINT_ROOT/bin/update-status" --tmux
+  [ "$status" -eq 0 ]
 }
