@@ -107,21 +107,21 @@ EOF
   [ -f "$HOME/.bashrc.d/aicoding-env.sh" ]
 
   # Simulate a rebuild: manifest persists (bind-mount), one file is wiped,
-  # another is locally edited.
-  rm -f "$HOME/.tmux.conf"
-  echo "user edit" >> "$HOME/.bashrc.d/aicoding-env.sh"
+  # another (user-editable, non-owned) is locally edited.
+  rm -f "$HOME/.bashrc.d/aicoding-env.sh"
+  echo "user edit" >> "$HOME/.tmux.conf"
   local edited_hash
-  edited_hash=$(sha256sum "$HOME/.bashrc.d/aicoding-env.sh" | awk '{print $1}')
+  edited_hash=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
 
   # Re-run install.sh — should enter reconcile mode.
   run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   [ "$status" -eq 0 ]
 
   # Missing file restored.
-  [ -f "$HOME/.tmux.conf" ]
-  # Edited file untouched.
+  [ -f "$HOME/.bashrc.d/aicoding-env.sh" ]
+  # Edited non-owned file untouched.
   local after_hash
-  after_hash=$(sha256sum "$HOME/.bashrc.d/aicoding-env.sh" | awk '{print $1}')
+  after_hash=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
   [ "$after_hash" = "$edited_hash" ]
   # Output mentions reconcile mode and restored count.
   echo "$output" | grep -q "Mode: reconcile"
@@ -184,6 +184,29 @@ EOF
 
   # Cleanup.
   printf '%s' "$original_blueprint" > "$blueprint_src"
+}
+
+@test "reconcile force-restores a drifted owned bashrc.d snippet (with backup)" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  echo "# STALE old version" > "$HOME/.bashrc.d/aicoding-env.sh"
+  printf '\n# blueprint moved\n' >> "$BLUEPRINT_ROOT/configs/bash/env.sh"
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  ! grep -q "STALE old version" "$HOME/.bashrc.d/aicoding-env.sh"
+  grep -q "blueprint moved" "$HOME/.bashrc.d/aicoding-env.sh"
+  ls "$HOME"/.bashrc.d/aicoding-env.sh.bak.* >/dev/null 2>&1
+  git -C "$BLUEPRINT_ROOT" checkout -- configs/bash/env.sh
+}
+
+@test "reconcile still preserves an edited non-owned overwrite file" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  echo "# user tweak" >> "$HOME/.tmux.conf"
+  local edited; edited=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
+  printf '\n# blueprint moved\n' >> "$BLUEPRINT_ROOT/configs/tmux/tmux.conf"
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  [ "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')" = "$edited" ]
+  git -C "$BLUEPRINT_ROOT" checkout -- configs/tmux/tmux.conf
 }
 
 @test "install.sh reconcile mode: does not delete to_remove entries" {

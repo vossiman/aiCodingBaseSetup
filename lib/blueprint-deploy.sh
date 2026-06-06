@@ -91,6 +91,18 @@ manifest_remove_file() {
     | jq --arg p "$path" 'del(.files[$p])')
 }
 
+# Owned overwrite files: blueprint-managed plumbing the user is never meant to
+# hand-edit (escape hatch is ~/.bashrc.d/local-*.sh). After a home reset these
+# revert to stale base-image versions and classify as drifted_and_updating;
+# reconcile must force-restore them (with backup) rather than skip.
+_is_owned_overwrite() {
+  case "$1" in
+    "$HOME"/.bashrc.d/aicoding-*.sh) return 0 ;;
+    "$HOME"/.claude/hooks/*)         return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # classify_file <dest_path> <src_path> <mode> — echoes one of:
 #   up_to_date, will_update, drifted_but_aligned, drifted_and_updating,
 #   new_file, to_remove, merge.
@@ -539,6 +551,8 @@ classify_managed_files() {
 #   drifted_but_aligned   — refresh manifest hash, no file write.
 #   merge                 — re-merge JSON merge-mode files.
 #   drifted_and_updating  — back up current file, deploy blueprint version.
+#   will_update_owned     — like drifted_and_updating, but for owned overwrite
+#                           plumbing that must self-heal even in reconcile.
 #   to_remove             — delete file and drop from manifest.
 apply_managed_buckets() {
   local allowed=" $1 "  # space-pad for substring match
@@ -555,7 +569,7 @@ apply_managed_buckets() {
       restore|new_file|will_update)
         _apply_deploy "$mode" "$dest" "$src"
         ;;
-      drifted_and_updating)
+      drifted_and_updating|will_update_owned)
         [[ -e "$dest" ]] && _backup_file "$dest"
         _apply_deploy "$mode" "$dest" "$src"
         ;;

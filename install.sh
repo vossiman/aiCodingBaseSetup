@@ -1088,8 +1088,16 @@ reconcile_existing_install() {
   declare -gA BUCKETS FILE_MODE FILE_SOURCE
   classify_managed_files
 
+  # Owned overwrite files self-heal even in the conservative reconcile path.
+  local _d
+  for _d in "${!BUCKETS[@]}"; do
+    if [[ "${BUCKETS[$_d]}" == drifted_and_updating ]] && _is_owned_overwrite "$_d"; then
+      BUCKETS[$_d]=will_update_owned
+    fi
+  done
+
   manifest_stage_begin
-  apply_managed_buckets "restore new_file will_update drifted_but_aligned merge"
+  apply_managed_buckets "restore new_file will_update will_update_owned drifted_but_aligned merge"
   # Stamp the blueprint commit/origin we reconciled to, so the manifest's
   # recorded version matches what's actually deployed. Without this, reconcile
   # leaves blueprint_commit stale (first-deploy/adopt set it, reconcile didn't),
@@ -1111,6 +1119,7 @@ reconcile_existing_install() {
       new_file)             n_new=$((n_new+1)) ;;
       restore)              n_restored=$((n_restored+1)) ;;
       will_update)          n_updated=$((n_updated+1)) ;;
+      will_update_owned)    n_updated=$((n_updated+1)) ;;
       merge)                n_merged=$((n_merged+1)) ;;
       drifted_and_updating) n_drifted=$((n_drifted+1)) ;;
       to_remove)            n_to_review=$((n_to_review+1)) ;;
