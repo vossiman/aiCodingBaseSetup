@@ -67,6 +67,31 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   [ "$(cache | jq -r .status)" = "behind" ]
 }
 
+@test "tmux: a behind tool renders a compact badge" {
+  echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
+  run "$BIN" --tmux
+  [ "$status" -eq 0 ]
+  [ "$output" = "⬆demo" ]
+}
+
+@test "tmux: all up-to-date -> empty badge" {
+  echo 1111111111111111111111111111111111111111 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
+  run "$BIN" --tmux
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "tmux: multiple behind tools -> space-separated, alphabetical, no trailing space" {
+  mkdir -p "$AICODING_UPDATE_STATE"
+  printf '{"tool":"aicoding","status":"behind"}' > "$AICODING_UPDATE_STATE/aicoding.json"
+  printf '{"tool":"dvw","status":"behind"}'      > "$AICODING_UPDATE_STATE/dvw.json"
+  run "$BIN" --tmux
+  [ "$status" -eq 0 ]
+  [ "$output" = "⬆aicoding ⬆dvw" ]
+}
+
 @test "stale-lock: a lock older than TTL is stolen and refresh proceeds" {
   echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
   mkdir -p "$AICODING_UPDATE_STATE/.lock"
