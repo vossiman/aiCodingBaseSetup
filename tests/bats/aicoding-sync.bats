@@ -9,30 +9,42 @@ setup() {
   # Build a stand-in "blueprint" by copying the real one (skipping .git).
   mkdir -p "$AICODING_BLUEPRINT_CLONE"
   rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$AICODING_BLUEPRINT_CLONE/"
-  # Initialize a git repo there so commit lookup works.
+  # Initialize a git repo there so commit lookup works. No `origin` remote is
+  # added, so refresh_blueprint's fetch fails and it falls back to the cached
+  # clone WITHOUT hard-resetting — exactly the behaviour these tests rely on.
   (cd "$AICODING_BLUEPRINT_CLONE" && git init -q && git add -A && \
      git -c user.email=test@local -c user.name=test commit -q -m init)
+  # aicoding_sync now runs the throttled binary refresh for non-dry-run modes
+  # (--yes here). Stub the real CLIs so they no-op instead of hitting the
+  # network; assertions check file/manifest state, not this output.
+  export AICODING_UPDATE_STATE="$TMPDIR/state/updates"
+  mkdir -p "$TMPDIR/stubs"
+  for c in claude opencode agent cursor-agent npx; do
+    printf '#!/bin/sh\nexit 0\n' > "$TMPDIR/stubs/$c"
+    chmod +x "$TMPDIR/stubs/$c"
+  done
+  export PATH="$TMPDIR/stubs:$PATH"
 }
 
 teardown() {
   rm -rf "$TMPDIR"
 }
 
-@test "aicoding-update: exits with error when no manifest" {
-  run "$BLUEPRINT_ROOT/bin/aicoding-update"
+@test "aicoding-sync: exits with error when no manifest" {
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync"
   [ "$status" -ne 0 ]
   echo "$output" | grep -q "no manifest"
 }
 
-@test "aicoding-update: reads existing manifest and prints blueprint commit" {
+@test "aicoding-sync: reads existing manifest and prints blueprint commit" {
   mkdir -p "$HOME/.aicodingsetup"
   echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
-  run "$BLUEPRINT_ROOT/bin/aicoding-update" --dry-run
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "old123"
 }
 
-@test "aicoding-update --dry-run: bucket counts reflect classifications" {
+@test "aicoding-sync --dry-run: bucket counts reflect classifications" {
   mkdir -p "$HOME/.aicodingsetup"
   # Two managed files: one matches blueprint exactly, one is drifted.
   mkdir -p "$HOME/.bashrc.d"
@@ -57,13 +69,13 @@ teardown() {
   }
 }
 EOF
-  run "$BLUEPRINT_ROOT/bin/aicoding-update" --dry-run
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "up_to_date" || echo "$output" | grep -q "up to date"
   echo "$output" | grep -qE "(drifted|needs your decision)"
 }
 
-@test "aicoding-update: shows inline diff for drifted_and_updating" {
+@test "aicoding-sync: shows inline diff for drifted_and_updating" {
   mkdir -p "$HOME/.aicodingsetup"
   echo "user-line" > "$HOME/.tmux.conf"
   # Mutate blueprint so the new version differs from the user's content.
@@ -81,14 +93,14 @@ EOF
   }
 }
 EOF
-  run bash -c "echo n | $BLUEPRINT_ROOT/bin/aicoding-update"
+  run bash -c "echo n | $BLUEPRINT_ROOT/bin/aicoding-sync"
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "user-line"
   echo "$output" | grep -q "blueprint-line"
   echo "$output" | grep -q "Apply?"
 }
 
-@test "aicoding-update: 'n' answer aborts without writing" {
+@test "aicoding-sync: 'n' answer aborts without writing" {
   mkdir -p "$HOME/.aicodingsetup"
   echo "user-line" > "$HOME/.tmux.conf"
   echo "blueprint-line" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
@@ -105,12 +117,12 @@ EOF
   }
 }
 EOF
-  run bash -c "echo n | $BLUEPRINT_ROOT/bin/aicoding-update"
+  run bash -c "echo n | $BLUEPRINT_ROOT/bin/aicoding-sync"
   [ "$status" -eq 0 ]
   grep -q "^user-line$" "$HOME/.tmux.conf"
 }
 
-@test "aicoding-update --yes: applies will_update files" {
+@test "aicoding-sync --yes: applies will_update files" {
   mkdir -p "$HOME/.aicodingsetup"
   echo "old-blueprint" > "$HOME/.tmux.conf"
   echo "new-blueprint" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
@@ -127,7 +139,7 @@ EOF
   }
 }
 EOF
-  run "$BLUEPRINT_ROOT/bin/aicoding-update" --yes
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --yes
   [ "$status" -eq 0 ]
   grep -q "^new-blueprint$" "$HOME/.tmux.conf"
   # Manifest hash advanced.
@@ -136,7 +148,7 @@ EOF
   [ "$new_h" = "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')" ]
 }
 
-@test "aicoding-update --yes: saves .bak for drifted_and_updating before overwrite" {
+@test "aicoding-sync --yes: saves .bak for drifted_and_updating before overwrite" {
   mkdir -p "$HOME/.aicodingsetup"
   echo "user-edit" > "$HOME/.tmux.conf"
   echo "blueprint-version" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
@@ -153,7 +165,7 @@ EOF
   }
 }
 EOF
-  run "$BLUEPRINT_ROOT/bin/aicoding-update" --yes
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --yes
   [ "$status" -eq 0 ]
   grep -q "^blueprint-version$" "$HOME/.tmux.conf"
   # A .bak.* file exists with the user's original content.
@@ -161,7 +173,7 @@ EOF
   cat "$HOME"/.tmux.conf.bak.* | grep -q "user-edit"
 }
 
-@test "aicoding-update --yes: removes to_remove files and manifest entries" {
+@test "aicoding-sync --yes: removes to_remove files and manifest entries" {
   mkdir -p "$HOME/.aicodingsetup" "$HOME/.bashrc.d"
   echo "orphan content" > "$HOME/.bashrc.d/aicoding-old-thing.sh"
   cat > "$AICODING_MANIFEST" <<EOF
@@ -177,7 +189,7 @@ EOF
   }
 }
 EOF
-  run "$BLUEPRINT_ROOT/bin/aicoding-update" --yes
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --yes
   [ "$status" -eq 0 ]
   [ ! -e "$HOME/.bashrc.d/aicoding-old-thing.sh" ]
   jq -e '.files | has("'"$HOME"'/.bashrc.d/aicoding-old-thing.sh") | not' "$AICODING_MANIFEST"

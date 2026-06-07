@@ -10,8 +10,16 @@ setup() {
   export BASHRC_BLOCK_END_LIT='# <<< aicoding managed block <<<'
   # Stub apt etc. so install.sh's prereq steps no-op.
   export PATH="$TMPDIR/stubs:$PATH"
-  mkdir -p "$TMPDIR/stubs"
-  for cmd in apt-get sudo curl npm bash-build-tmux; do
+  mkdir -p "$TMPDIR/stubs" "$TMPDIR/.local/bin"
+  # Stub the prereq tools so install.sh's ensure_*/check_* steps no-op instead of
+  # doing real work on every test (the biggest suite cost):
+  #  - npx: check_playwright runs `npx playwright install chromium` (~22s Chromium
+  #    re-download into the fresh per-test $HOME cache).
+  #  - claude/opencode: prereq ensure_* invoke the real binaries (migration /
+  #    version calls) when present on PATH.
+  # NOT stubbed here: codex / agent / cursor-agent — dedicated ensure_codex /
+  # ensure_cursor_agent tests set up their own present/absent scenarios for those.
+  for cmd in apt-get sudo curl npm npx bash-build-tmux claude opencode; do
     cat > "$TMPDIR/stubs/$cmd" <<'STUB'
 #!/bin/sh
 exit 0
@@ -99,6 +107,13 @@ EOF
   echo "$target" | grep -q "bin/aicoding-update"
 }
 
+@test "install.sh symlinks aicoding-sync into ~/.local/bin" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ -L "$HOME/.local/bin/aicoding-sync" ]
+  [ -x "$HOME/.local/bin/aicoding-sync" ]
+  readlink "$HOME/.local/bin/aicoding-sync" | grep -q "bin/aicoding-sync"
+}
+
 @test "install.sh reconcile mode: restores missing files without touching edited ones" {
   # First-deploy populates the manifest and all managed files.
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
@@ -107,21 +122,21 @@ EOF
   [ -f "$HOME/.bashrc.d/aicoding-env.sh" ]
 
   # Simulate a rebuild: manifest persists (bind-mount), one file is wiped,
-  # another is locally edited.
-  rm -f "$HOME/.tmux.conf"
-  echo "user edit" >> "$HOME/.bashrc.d/aicoding-env.sh"
+  # another (user-editable, non-owned) is locally edited.
+  rm -f "$HOME/.bashrc.d/aicoding-env.sh"
+  echo "user edit" >> "$HOME/.tmux.conf"
   local edited_hash
-  edited_hash=$(sha256sum "$HOME/.bashrc.d/aicoding-env.sh" | awk '{print $1}')
+  edited_hash=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
 
   # Re-run install.sh — should enter reconcile mode.
   run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   [ "$status" -eq 0 ]
 
   # Missing file restored.
-  [ -f "$HOME/.tmux.conf" ]
-  # Edited file untouched.
+  [ -f "$HOME/.bashrc.d/aicoding-env.sh" ]
+  # Edited non-owned file untouched.
   local after_hash
-  after_hash=$(sha256sum "$HOME/.bashrc.d/aicoding-env.sh" | awk '{print $1}')
+  after_hash=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
   [ "$after_hash" = "$edited_hash" ]
   # Output mentions reconcile mode and restored count.
   echo "$output" | grep -q "Mode: reconcile"
@@ -184,6 +199,29 @@ EOF
 
   # Cleanup.
   printf '%s' "$original_blueprint" > "$blueprint_src"
+}
+
+@test "reconcile force-restores a drifted owned bashrc.d snippet (with backup)" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  echo "# STALE old version" > "$HOME/.bashrc.d/aicoding-env.sh"
+  printf '\n# blueprint moved\n' >> "$BLUEPRINT_ROOT/configs/bash/env.sh"
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  ! grep -q "STALE old version" "$HOME/.bashrc.d/aicoding-env.sh"
+  grep -q "blueprint moved" "$HOME/.bashrc.d/aicoding-env.sh"
+  ls "$HOME"/.bashrc.d/aicoding-env.sh.bak.* >/dev/null 2>&1
+  git -C "$BLUEPRINT_ROOT" checkout -- configs/bash/env.sh
+}
+
+@test "reconcile still preserves an edited non-owned overwrite file" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  echo "# user tweak" >> "$HOME/.tmux.conf"
+  local edited; edited=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
+  printf '\n# blueprint moved\n' >> "$BLUEPRINT_ROOT/configs/tmux/tmux.conf"
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  [ "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')" = "$edited" ]
+  git -C "$BLUEPRINT_ROOT" checkout -- configs/tmux/tmux.conf
 }
 
 @test "install.sh reconcile mode: does not delete to_remove entries" {
@@ -623,11 +661,12 @@ EOF
   [ -f "$HOME/.claude/commands/$one" ]
 }
 
-@test "install.sh first-deploy: deploys update-notify snippet and update-status symlink" {
+@test "install.sh first-deploy: deploys update-notify snippet and aicoding-status symlink" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   [ -f "$HOME/.bashrc.d/aicoding-update-notify.sh" ]
-  grep -q "update-status --banner" "$HOME/.bashrc.d/aicoding-update-notify.sh"
-  [ -x "$HOME/.local/bin/update-status" ]
+  grep -q "aicoding-status --banner" "$HOME/.bashrc.d/aicoding-update-notify.sh"
+  [ -x "$HOME/.local/bin/aicoding-status" ]
+  [ -x "$HOME/.local/bin/update-status" ]   # back-compat shim
   local h
   h=$(jq -r '.files["'"$HOME"'/.bashrc.d/aicoding-update-notify.sh"].deployed_hash' "$AICODING_MANIFEST")
   [ "$h" != "null" ] && [ -n "$h" ]

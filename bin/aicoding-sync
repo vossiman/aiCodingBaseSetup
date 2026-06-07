@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -uo pipefail
+SCRIPT_REAL=$(readlink -f "$0"); SCRIPT_DIR=$(dirname "$(dirname "$SCRIPT_REAL")")
+: "${AICODING_BLUEPRINT_CLONE:=/tmp/aicoding}"
+: "${AICODING_MANIFEST:=$HOME/.aicodingsetup/manifest.json}"
+case "${1:-}" in
+  -h|--help) echo "usage: aicoding-sync [--dry-run|--yes|--boot|--first]   (default: interactive)"; exit 0 ;;
+esac
+# Prefer the refreshed blueprint clone if present; else the install dir.
+[ -f "$AICODING_BLUEPRINT_CLONE/lib/sync.sh" ] && . "$AICODING_BLUEPRINT_CLONE/lib/sync.sh" \
+  || . "$SCRIPT_DIR/lib/sync.sh"
+aicoding_sync "$@"

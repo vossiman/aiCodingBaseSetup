@@ -3,6 +3,6 @@
 # only; fail-open.
 case $- in
   *i*)
-    command -v update-status >/dev/null 2>&1 && update-status --banner 2>/dev/null || true
+    command -v aicoding-status >/dev/null 2>&1 && aicoding-status --banner 2>/dev/null || true
     ;;
 esac

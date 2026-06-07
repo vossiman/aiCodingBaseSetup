@@ -845,12 +845,34 @@ install_aicoding_update_symlink() {
   ok "aicoding-update installed at $dest -> $src"
 }
 
+# --- aicoding-sync CLI symlink ---
+install_aicoding_sync_symlink() {
+  header "aicoding-sync CLI"
+  local src="$SCRIPT_DIR/bin/aicoding-sync"
+  local dest="$HOME/.local/bin/aicoding-sync"
+  if [[ ! -f "$src" ]]; then
+    warn "bin/aicoding-sync not found in blueprint — skipping symlink"
+    return
+  fi
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$src" "$dest"
+  chmod +x "$src"
+  ok "aicoding-sync installed at $dest -> $src"
+}
+
 install_update_status_symlink() {
-  header "update-status CLI"
-  local src="$SCRIPT_DIR/bin/update-status" dest="$HOME/.local/bin/update-status"
-  [[ -f "$src" ]] || { warn "bin/update-status not found — skipping"; return; }
+  header "aicoding-status CLI"
+  local src="$SCRIPT_DIR/bin/aicoding-status" dest="$HOME/.local/bin/aicoding-status"
+  [[ -f "$src" ]] || { warn "bin/aicoding-status not found — skipping"; return; }
   mkdir -p "$HOME/.local/bin"; chmod +x "$src"; ln -sf "$src" "$dest"
-  ok "update-status installed at $dest -> $src"
+  ok "aicoding-status installed at $dest -> $src"
+  # Back-compat shim: keep ~/.local/bin/update-status pointing at the renamed CLI.
+  # Remove after one release.
+  local shim_src="$SCRIPT_DIR/bin/update-status" shim_dest="$HOME/.local/bin/update-status"
+  if [[ -f "$shim_src" ]]; then
+    chmod +x "$shim_src"; ln -sf "$shim_src" "$shim_dest"
+    ok "update-status shim installed at $shim_dest -> $shim_src"
+  fi
 }
 
 # --- SSH agent socket self-heal watcher (container only) ---
@@ -1071,7 +1093,7 @@ adopt_existing_files() {
     for f in "${deployed[@]}"; do info "    $f"; done
   fi
   info "Adopted files were not modified. To see what diverges from the blueprint,"
-  info "run: aicoding-update --dry-run"
+  info "run: aicoding-sync --dry-run"
 }
 
 # reconcile_existing_install — manifest exists; classify each managed file
@@ -1088,8 +1110,16 @@ reconcile_existing_install() {
   declare -gA BUCKETS FILE_MODE FILE_SOURCE
   classify_managed_files
 
+  # Owned overwrite files self-heal even in the conservative reconcile path.
+  local _d
+  for _d in "${!BUCKETS[@]}"; do
+    if [[ "${BUCKETS[$_d]}" == drifted_and_updating ]] && _is_owned_overwrite "$_d"; then
+      BUCKETS[$_d]=will_update_owned
+    fi
+  done
+
   manifest_stage_begin
-  apply_managed_buckets "restore new_file will_update drifted_but_aligned merge"
+  apply_managed_buckets "restore new_file will_update will_update_owned drifted_but_aligned merge"
   # Stamp the blueprint commit/origin we reconciled to, so the manifest's
   # recorded version matches what's actually deployed. Without this, reconcile
   # leaves blueprint_commit stale (first-deploy/adopt set it, reconcile didn't),
@@ -1111,6 +1141,7 @@ reconcile_existing_install() {
       new_file)             n_new=$((n_new+1)) ;;
       restore)              n_restored=$((n_restored+1)) ;;
       will_update)          n_updated=$((n_updated+1)) ;;
+      will_update_owned)    n_updated=$((n_updated+1)) ;;
       merge)                n_merged=$((n_merged+1)) ;;
       drifted_and_updating) n_drifted=$((n_drifted+1)) ;;
       to_remove)            n_to_review=$((n_to_review+1)) ;;
@@ -1139,7 +1170,7 @@ _print_install_summary() {
   printf 'INSTALL OK  blueprint %s  new %d  restored %d  updated %d  merged %d  drifted %d  to_review %d\n' \
     "$commit_short" "$n_new" "$n_restored" "$n_updated" "$n_merged" "$n_drifted" "$n_to_review"
   if (( n_drifted > 0 || n_to_review > 0 )); then
-    printf 'NOTE: %d drifted file(s), %d file(s) to review. Run aicoding-update to address.\n' \
+    printf 'NOTE: %d drifted file(s), %d file(s) to review. Run aicoding-sync to address.\n' \
       "$n_drifted" "$n_to_review"
   fi
 }
@@ -1196,6 +1227,7 @@ main() {
   ensure_claude_onboarding_state
   install_claude_plugins
   install_aicoding_update_symlink
+  install_aicoding_sync_symlink
   install_update_status_symlink
   install_ssh_agent_watch_symlink
 
