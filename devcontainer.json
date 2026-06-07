@@ -6,6 +6,13 @@
     "BASH_FUNC_nvsudo%%": "() {  :; }",
     "BASH_FUNC_nvm%%": "() {  :; }"
   },
+  "mounts": [
+    "source=${localEnv:HOME}/devpod/aicodingsetup,target=/home/codespace/.aicodingsetup,type=bind",
+    "source=${localEnv:HOME}/devpod/claude,target=/home/codespace/.claude,type=bind",
+    "source=${localEnv:HOME}/devpod/opencode,target=/home/codespace/.local/share/opencode,type=bind",
+    "source=${localEnv:HOME}/devpod/codex,target=/home/codespace/.codex,type=bind",
+    "source=${localEnv:HOME}/devpod/cursor,target=/home/codespace/.cursor,type=bind"
+  ],
   "postCreateCommand": "git clone --quiet https://github.com/vossiman/aiCodingBaseSetup /tmp/aicoding && bash /tmp/aicoding/install.sh",
   "postStartCommand": "curl -fsSL https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/on-start.sh | bash"
 }
