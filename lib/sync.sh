@@ -130,9 +130,11 @@ _sync_reconcile() {
   fi
 
   # Nothing actionable across every apply bucket?
+  # drifted_but_aligned (on-disk already matches blueprint; only a stale manifest
+  # hash) and up_to_date are NOT actionable, so they're excluded here — otherwise
+  # a pure manifest-hash refresh would wrongly trigger an Apply? prompt.
   if (( COUNT[will_update] + COUNT[will_update_owned] + COUNT[drifted_and_updating] \
-        + COUNT[restore] + COUNT[new_file] + COUNT[to_remove] + COUNT[merge] \
-        + COUNT[drifted_but_aligned] == 0 )); then
+        + COUNT[restore] + COUNT[new_file] + COUNT[to_remove] + COUNT[merge] == 0 )); then
     echo "Nothing to do."
     return 0
   fi

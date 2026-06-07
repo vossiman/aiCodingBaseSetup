@@ -62,6 +62,17 @@ teardown() { rm -rf "$TMP"; }
   [ "$status" -eq 0 ]
 }
 
+@test "sync --boot preserves a user-edited non-owned file (conservative apply set)" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  # ~/.tmux.conf is deployed and non-owned. Editing it makes on-disk differ from
+  # both deployed_hash and blueprint -> drifted_and_updating, which boot's
+  # conservative apply set excludes, so it must NOT be reverted.
+  echo "# user edit" >> "$HOME/.tmux.conf"
+  local before; before=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
+  AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  [ "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')" = "$before" ]
+}
+
 @test "on-start.sh runs the boot path (exit 0)" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   run env AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT" AICODING_UPDATE_TTL=0 \

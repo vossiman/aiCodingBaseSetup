@@ -11,7 +11,6 @@ LOCK="$STATE/.lock"
 : "${AICODING_MANIFEST:=$HOME/.aicodingsetup/manifest.json}"
 
 _installed_aicoding() { jq -r '.blueprint_commit // empty' "$AICODING_MANIFEST" 2>/dev/null; }
-_installed_dvw()      { local f="${DVW_STATE_DIR:-$HOME/.local/state/dvw}/version"; [ -f "$f" ] && tr -d '[:space:]' < "$f"; }
 _installed_testonly() { tr -d '[:space:]' < "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE" 2>/dev/null; }
 _registry() {
   if [ -n "${AICODING_UPDATE_TESTONLY_TOOL:-}" ]; then
@@ -22,7 +21,7 @@ _registry() {
 aicoding|https://github.com/vossiman/aiCodingBaseSetup|main|_installed_aicoding
 EOF
 }
-_apply_cmd() { case "$1" in aicoding) echo "aicoding-update";; dvw) echo "dvw update";; *) echo "update";; esac; }
+_apply_cmd() { case "$1" in aicoding) echo "aicoding-sync";; *) echo "update";; esac; }
 _norm() { printf '%.12s' "${1:-}"; }
 _now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 

@@ -1093,7 +1093,7 @@ adopt_existing_files() {
     for f in "${deployed[@]}"; do info "    $f"; done
   fi
   info "Adopted files were not modified. To see what diverges from the blueprint,"
-  info "run: aicoding-update --dry-run"
+  info "run: aicoding-sync --dry-run"
 }
 
 # reconcile_existing_install — manifest exists; classify each managed file
@@ -1170,7 +1170,7 @@ _print_install_summary() {
   printf 'INSTALL OK  blueprint %s  new %d  restored %d  updated %d  merged %d  drifted %d  to_review %d\n' \
     "$commit_short" "$n_new" "$n_restored" "$n_updated" "$n_merged" "$n_drifted" "$n_to_review"
   if (( n_drifted > 0 || n_to_review > 0 )); then
-    printf 'NOTE: %d drifted file(s), %d file(s) to review. Run aicoding-update to address.\n' \
+    printf 'NOTE: %d drifted file(s), %d file(s) to review. Run aicoding-sync to address.\n' \
       "$n_drifted" "$n_to_review"
   fi
 }
