@@ -185,6 +185,16 @@ _sync_reconcile() {
   manifest_stage_set_top blueprint_origin "$origin"
 
   manifest_stage_commit
+
+  # We just advanced the installed blueprint commit, so aicoding-status's cached
+  # behind-main verdict is now stale. Drop the cache so the next tmux/login
+  # refresh re-checks (detached, ≤ one status-interval) instead of showing a
+  # phantom ⬆aicoding badge for up to the 6h TTL. Removing the JSON also busts
+  # _cache_fresh, so that refresh actually runs rather than short-circuiting.
+  # No network here; fail-open.
+  if [ "$OLD_COMMIT" != "$NEW_COMMIT" ]; then
+    rm -f "$AICODING_UPDATE_STATE"/*.json 2>/dev/null || true
+  fi
   return 0
 }
 
