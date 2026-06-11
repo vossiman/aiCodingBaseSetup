@@ -89,8 +89,11 @@ _sync_reconcile() {
 
   local OLD_COMMIT NEW_COMMIT
   OLD_COMMIT=$(jq -r '.blueprint_commit // "unknown"' "$AICODING_MANIFEST")
-  NEW_COMMIT=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse --short HEAD 2>/dev/null || echo unknown)
-  echo "Blueprint: ${OLD_COMMIT} -> ${NEW_COMMIT}"
+  # Full SHA, matching install.sh. aicoding-status compares the first 12 chars
+  # of this against `git ls-remote`'s full SHA; a 7-char `--short` would never
+  # match, leaving the ⬆ badge stuck "behind" even right after a sync.
+  NEW_COMMIT=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD 2>/dev/null || echo unknown)
+  echo "Blueprint: ${OLD_COMMIT:0:7} -> ${NEW_COMMIT:0:7}"
 
   declare -gA BUCKETS FILE_MODE FILE_SOURCE
   export AICODING_BLUEPRINT_CLONE

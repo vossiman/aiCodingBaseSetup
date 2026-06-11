@@ -185,6 +185,32 @@ EOF
   [ -e "$AICODING_UPDATE_STATE/aicoding.json" ]
 }
 
+@test "aicoding-sync --yes: records the FULL blueprint SHA (badge comparison needs >=12 chars)" {
+  mkdir -p "$HOME/.aicodingsetup"
+  echo "old-blueprint" > "$HOME/.tmux.conf"
+  echo "new-blueprint" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
+  cat > "$AICODING_MANIFEST" <<EOF
+{
+  "schema_version": 1,
+  "blueprint_commit": "old",
+  "files": {
+    "$HOME/.tmux.conf": {
+      "mode": "overwrite",
+      "source": "configs/tmux/tmux.conf",
+      "deployed_hash": "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')"
+    }
+  }
+}
+EOF
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --yes
+  [ "$status" -eq 0 ]
+  local recorded full
+  recorded=$(jq -r '.blueprint_commit' "$AICODING_MANIFEST")
+  full=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD)
+  [ "$recorded" = "$full" ]
+  [ "${#recorded}" -eq 40 ]
+}
+
 @test "aicoding-sync --yes: saves .bak for drifted_and_updating before overwrite" {
   mkdir -p "$HOME/.aicodingsetup"
   echo "user-edit" > "$HOME/.tmux.conf"
