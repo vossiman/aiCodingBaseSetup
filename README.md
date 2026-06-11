@@ -194,13 +194,13 @@ curl -fsSL https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/dev
   -o .devcontainer/devcontainer.json
 ```
 
-`postCreateCommand` runs this repo's `install.sh` once on container creation; `postStartCommand` curls `update.sh` from this repo on every container start to keep `claude` and `opencode` binaries fresh.
+`postCreateCommand` clones this repo and runs its `install.sh` once on container creation; `postStartCommand` curls `on-start.sh` from this repo on every container start, which runs the unified sync in `--boot` mode to keep `claude` and `opencode` binaries fresh.
 
 `containerEnv` overrides three `BASH_FUNC_*%%` env vars that universal:6 leaks with truncated multi-line bodies — without it bash errors on every spawn (see [vscode#3928](https://github.com/Microsoft/vscode/issues/3928), [vscode-remote-release#9457](https://github.com/microsoft/vscode-remote-release/issues/9457)). `install.sh` and `update.sh` further re-exec themselves under `env -u` to belt-and-braces the same problem.
 
 `remoteUser` must match the image's hardcoded user — `codespace` for `universal:6`, `vscode` for most others (`python`, `base`, etc.). Mismatch → mounts land at the wrong path and nothing works.
 
-Add `"mounts": [...]` for project- or host-specific bind mounts. With a DevPod-style backend (e.g. `vossisrv` hosting all containers), bind-mounting five dirs gives all four CLIs persistent state across every container the user spins up:
+The template ships with `"mounts": [...]` wired for a DevPod-style backend (e.g. `vossisrv` hosting all containers): bind-mounting five dirs gives all four CLIs persistent state across every container the user spins up:
 
 | Host source | Container target | What persists |
 |---|---|---|
@@ -212,7 +212,7 @@ Add `"mounts": [...]` for project- or host-specific bind mounts. With a DevPod-s
 
 `install.sh` re-deploys `~/.codex/config.toml` and `~/.cursor/mcp.json` on every rebuild via `reconcile`, so config drift heals automatically — auth files persist untouched.
 
-The shipped `devcontainer.json` template here has no `mounts` so it stays portable; project-specific consumers (e.g. `vossiman/devMachine`) add the bind mounts themselves.
+These `source=` paths assume a `~/devpod/...` host layout. If your host differs, edit the `source=` paths to match, or drop any mounts you don't need — the template works without them, you just lose cross-container persistence for those tools.
 
 ### Why both `.credentials.json` and `~/.claude.json` matter
 
