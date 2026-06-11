@@ -148,6 +148,69 @@ EOF
   [ "$new_h" = "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')" ]
 }
 
+@test "aicoding-sync --yes: busts stale aicoding-status cache when commit advances" {
+  mkdir -p "$HOME/.aicodingsetup"
+  echo "old-blueprint" > "$HOME/.tmux.conf"
+  echo "new-blueprint" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
+  cat > "$AICODING_MANIFEST" <<EOF
+{
+  "schema_version": 1,
+  "blueprint_commit": "old",
+  "files": {
+    "$HOME/.tmux.conf": {
+      "mode": "overwrite",
+      "source": "configs/tmux/tmux.conf",
+      "deployed_hash": "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')"
+    }
+  }
+}
+EOF
+  # Seed a stale "behind" verdict, as aicoding-status would have cached it.
+  mkdir -p "$AICODING_UPDATE_STATE"
+  echo '{"tool":"aicoding","status":"behind"}' > "$AICODING_UPDATE_STATE/aicoding.json"
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --yes
+  [ "$status" -eq 0 ]
+  # Commit advanced (old -> real HEAD), so the stale cache is dropped.
+  [ ! -e "$AICODING_UPDATE_STATE/aicoding.json" ]
+}
+
+@test "aicoding-sync --dry-run: leaves aicoding-status cache untouched" {
+  mkdir -p "$HOME/.aicodingsetup"
+  echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
+  mkdir -p "$AICODING_UPDATE_STATE"
+  echo '{"tool":"aicoding","status":"behind"}' > "$AICODING_UPDATE_STATE/aicoding.json"
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
+  [ "$status" -eq 0 ]
+  # Dry-run applies nothing, so the cache must survive.
+  [ -e "$AICODING_UPDATE_STATE/aicoding.json" ]
+}
+
+@test "aicoding-sync --yes: records the FULL blueprint SHA (badge comparison needs >=12 chars)" {
+  mkdir -p "$HOME/.aicodingsetup"
+  echo "old-blueprint" > "$HOME/.tmux.conf"
+  echo "new-blueprint" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
+  cat > "$AICODING_MANIFEST" <<EOF
+{
+  "schema_version": 1,
+  "blueprint_commit": "old",
+  "files": {
+    "$HOME/.tmux.conf": {
+      "mode": "overwrite",
+      "source": "configs/tmux/tmux.conf",
+      "deployed_hash": "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')"
+    }
+  }
+}
+EOF
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --yes
+  [ "$status" -eq 0 ]
+  local recorded full
+  recorded=$(jq -r '.blueprint_commit' "$AICODING_MANIFEST")
+  full=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD)
+  [ "$recorded" = "$full" ]
+  [ "${#recorded}" -eq 40 ]
+}
+
 @test "aicoding-sync --yes: saves .bak for drifted_and_updating before overwrite" {
   mkdir -p "$HOME/.aicodingsetup"
   echo "user-edit" > "$HOME/.tmux.conf"

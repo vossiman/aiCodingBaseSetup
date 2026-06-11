@@ -89,8 +89,11 @@ _sync_reconcile() {
 
   local OLD_COMMIT NEW_COMMIT
   OLD_COMMIT=$(jq -r '.blueprint_commit // "unknown"' "$AICODING_MANIFEST")
-  NEW_COMMIT=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse --short HEAD 2>/dev/null || echo unknown)
-  echo "Blueprint: ${OLD_COMMIT} -> ${NEW_COMMIT}"
+  # Full SHA, matching install.sh. aicoding-status compares the first 12 chars
+  # of this against `git ls-remote`'s full SHA; a 7-char `--short` would never
+  # match, leaving the ⬆ badge stuck "behind" even right after a sync.
+  NEW_COMMIT=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD 2>/dev/null || echo unknown)
+  echo "Blueprint: ${OLD_COMMIT:0:7} -> ${NEW_COMMIT:0:7}"
 
   declare -gA BUCKETS FILE_MODE FILE_SOURCE
   export AICODING_BLUEPRINT_CLONE
@@ -185,6 +188,16 @@ _sync_reconcile() {
   manifest_stage_set_top blueprint_origin "$origin"
 
   manifest_stage_commit
+
+  # We just advanced the installed blueprint commit, so aicoding-status's cached
+  # behind-main verdict is now stale. Drop the cache so the next tmux/login
+  # refresh re-checks (detached, ≤ one status-interval) instead of showing a
+  # phantom ⬆aicoding badge for up to the 6h TTL. Removing the JSON also busts
+  # _cache_fresh, so that refresh actually runs rather than short-circuiting.
+  # No network here; fail-open.
+  if [ "$OLD_COMMIT" != "$NEW_COMMIT" ]; then
+    rm -f "$AICODING_UPDATE_STATE"/*.json 2>/dev/null || true
+  fi
   return 0
 }
 
