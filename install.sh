@@ -453,8 +453,16 @@ auto_install_prereqs() {
 
 # --- Prerequisite checks ---
 check_prerequisites() {
-  # Auto-install on container mode or explicit opt-in (AICODINGSETUP_AUTO_INSTALL=1)
-  if [[ "$ENV_TYPE" == "container" ]] || [[ "${AICODINGSETUP_AUTO_INSTALL:-}" == "1" ]]; then
+  # Auto-install on container mode or explicit opt-in (AICODINGSETUP_AUTO_INSTALL=1),
+  # UNLESS network provisioning is disabled. auto_install_prereqs pulls external
+  # tooling over the network (Claude/opencode/codex installers, Go, uv, a Chromium
+  # download via `npx playwright install`). That's right for a real provision but
+  # wrong for the test suite: it makes `bash install.sh` slow and, when the
+  # devcontainer is offline or its forwarded ssh-agent has rotated stale, hang on
+  # those fetches. tests/bats/run.sh sets AICODINGSETUP_SKIP_NETWORK=1 so the suite
+  # never reaches the network. Production installs leave it unset (behaviour as before).
+  if [[ "${AICODINGSETUP_SKIP_NETWORK:-}" != "1" ]] \
+     && { [[ "$ENV_TYPE" == "container" ]] || [[ "${AICODINGSETUP_AUTO_INSTALL:-}" == "1" ]]; }; then
     auto_install_prereqs
   fi
 
@@ -909,6 +917,13 @@ install_ssh_agent_watch_symlink() {
 install_tmux_plugins() {
   header "tmux plugins (TPM)"
 
+  # Network provisioning disabled (test suite) — TPM + each plugin is a github
+  # clone, slow and hang-prone offline. See AICODINGSETUP_SKIP_NETWORK in run.sh.
+  if [[ "${AICODINGSETUP_SKIP_NETWORK:-}" == "1" ]]; then
+    info "Skipping TPM install (AICODINGSETUP_SKIP_NETWORK)"
+    return
+  fi
+
   if [[ "$ENV_TYPE" != "container" ]]; then
     info "Skipping TPM install (host manages its own tmux plugins)"
     return
@@ -945,6 +960,13 @@ install_tmux_plugins() {
 # --- bubblewrap (bw-AICode) ---
 install_bubblewrap() {
   header "bubblewrap (bw-AICode)"
+
+  # Network provisioning disabled (test suite) — this clones/pulls bw-AICode from
+  # github and runs its installer. See AICODINGSETUP_SKIP_NETWORK in run.sh.
+  if [[ "${AICODINGSETUP_SKIP_NETWORK:-}" == "1" ]]; then
+    info "Skipping bw-AICode (AICODINGSETUP_SKIP_NETWORK)"
+    return
+  fi
 
   local vendor_dir="$SCRIPT_DIR/vendor/bw-AICode"
 
