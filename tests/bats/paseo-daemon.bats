@@ -135,12 +135,11 @@ EOS
   [ "$status" -ne 0 ]
 }
 
-@test "install.sh defines ensure_paseo and wires it into the ensure list" {
-  grep -q '^ensure_paseo()' "$BLUEPRINT_ROOT/install.sh"
-  grep -qE '^\s*ensure_paseo( |$|\|)' "$BLUEPRINT_ROOT/install.sh"
-}
 
-@test "install.sh installs the paseo-daemon symlink and runs --ensure at provision end" {
-  grep -q 'install_paseo_daemon_symlink' "$BLUEPRINT_ROOT/install.sh"
-  grep -q 'aicoding-paseo-daemon --ensure' "$BLUEPRINT_ROOT/install.sh"
+@test "install.sh gates the provision-time ensure behind AICODINGSETUP_SKIP_NETWORK (incident regression)" {
+  # The --ensure call must sit inside the skip-network gate: an ungated call
+  # spawns a REAL daemon per install.sh-running test (incident 2026-06-12).
+  # Behavioral coverage lives in e2e.bats ("no paseo daemon start under test").
+  grep -A2 'AICODINGSETUP_SKIP_NETWORK:-}" != "1" ]]' "$BLUEPRINT_ROOT/install.sh" \
+    | grep -q 'aicoding-paseo-daemon" --ensure'
 }

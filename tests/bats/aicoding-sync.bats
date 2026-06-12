@@ -19,7 +19,7 @@ setup() {
   # network; assertions check file/manifest state, not this output.
   export AICODING_UPDATE_STATE="$TMPDIR/state/updates"
   mkdir -p "$TMPDIR/stubs"
-  for c in claude opencode agent cursor-agent npx; do
+  for c in claude opencode agent cursor-agent npx paseo aicoding-paseo-daemon; do
     printf '#!/bin/sh\nexit 0\n' > "$TMPDIR/stubs/$c"
     chmod +x "$TMPDIR/stubs/$c"
   done

@@ -349,16 +349,23 @@ ensure_cursor_agent() {
 ensure_paseo() {
   header "Ensuring paseo (remote-control daemon)"
   command -v npm &>/dev/null || { warn "npm not available — skipping paseo install"; return 0; }
-  if ! command -v paseo &>/dev/null; then
-    info "Installing @getpaseo/cli"
-    npm install -g @getpaseo/cli 2>&1 | tail -2 || { warn "paseo install failed (non-fatal)"; return 0; }
+  if command -v paseo &>/dev/null; then
+    ok "paseo already installed"
+    # Still ensure the symlink so non-interactive shells see it.
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$(command -v paseo)" "$HOME/.local/bin/paseo"
+    [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
+    return 0
   fi
+  info "Installing @getpaseo/cli"
+  npm install -g @getpaseo/cli 2>&1 | tail -5 || { warn "paseo install failed (non-fatal)"; return 0; }
   # Symlink into ~/.local/bin so non-interactive shells (postStartCommand,
   # ssh exec from the dvw TUI) see it without nvm PATH setup.
   if command -v paseo &>/dev/null; then
     mkdir -p "$HOME/.local/bin"
     ln -sf "$(command -v paseo)" "$HOME/.local/bin/paseo"
   fi
+  [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
 }
 
 ensure_go() {
@@ -926,8 +933,17 @@ install_ssh_agent_watch_symlink() {
 
 install_paseo_daemon_symlink() {
   # Deploy only; started by --ensure at the end of main() and by aicoding-sync.
+  header "paseo daemon launcher"
+  local src="$SCRIPT_DIR/bin/aicoding-paseo-daemon"
+  local dest="$HOME/.local/bin/aicoding-paseo-daemon"
+  if [[ ! -f "$src" ]]; then
+    warn "bin/aicoding-paseo-daemon not found in blueprint — skipping"
+    return
+  fi
   mkdir -p "$HOME/.local/bin"
-  ln -sf "$SCRIPT_DIR/bin/aicoding-paseo-daemon" "$HOME/.local/bin/aicoding-paseo-daemon"
+  chmod +x "$src"
+  ln -sf "$src" "$dest"
+  ok "aicoding-paseo-daemon installed at $dest -> $src"
 }
 
 # --- tmux plugins (TPM) ---
@@ -1313,7 +1329,12 @@ main() {
 
   # Spec: daemon must be up right after postCreate — fresh pod, one command
   # (`paseo daemon pair`), paired. Not only-on-restart.
-  "$HOME/.local/bin/aicoding-paseo-daemon" --ensure 2>/dev/null || true
+  # Gated like every other network action: the daemon dials the relay, and the
+  # bats suite (AICODINGSETUP_SKIP_NETWORK=1) runs the real install.sh — an
+  # ungated start here spawns a REAL daemon per test (incident 2026-06-12).
+  if [[ "${AICODINGSETUP_SKIP_NETWORK:-}" != "1" ]]; then
+    "$HOME/.local/bin/aicoding-paseo-daemon" --ensure 2>/dev/null || true
+  fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main "$@"; fi

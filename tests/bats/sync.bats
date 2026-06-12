@@ -18,7 +18,7 @@ setup() {
     printf '#!/bin/sh\nexit 0\n' > "$TMP/stubs/$cmd"
     chmod +x "$TMP/stubs/$cmd"
   done
-  for c in claude opencode agent; do
+  for c in claude opencode agent paseo aicoding-paseo-daemon; do
     printf '#!/bin/sh\necho "%s $*" >> "$TMP/ran.log"\n' "$c" > "$TMP/stubs/$c"
     chmod +x "$TMP/stubs/$c"
   done
