@@ -274,7 +274,7 @@ _sync_binaries() {            # throttled network refresh
   # Track-latest policy for paseo (spec decision). The running daemon is NOT
   # restarted — the new version takes effect on next container start.
   if command -v paseo >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
-    npm install -g @getpaseo/cli >/dev/null 2>&1 || true
+    npm install -g @getpaseo/cli@latest >/dev/null 2>&1 || true
   fi
 }
 
