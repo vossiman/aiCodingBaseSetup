@@ -344,6 +344,18 @@ ensure_cursor_agent() {
     ln -sf agent "$HOME/.local/bin/cursor-agent"
   fi
   [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
+
+  # cursor-agent keeps auth in ~/.config/cursor (NOT the mounted ~/.cursor).
+  # Symlink it into the shared mount so `cursor-agent login` is once-ever.
+  # If a real dir already exists (pre-existing login), adopt its contents.
+  local cc_target="$HOME/.aicodingsetup/cursor-config"
+  local cc_link="$HOME/.config/cursor"
+  mkdir -p "$cc_target" "$HOME/.config"
+  if [[ -d "$cc_link" && ! -L "$cc_link" ]]; then
+    cp -an "$cc_link/." "$cc_target/" 2>/dev/null || true
+    rm -rf "$cc_link"
+  fi
+  [[ -L "$cc_link" ]] || ln -s "$cc_target" "$cc_link"
 }
 
 ensure_paseo() {

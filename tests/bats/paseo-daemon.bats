@@ -156,3 +156,7 @@ EOS
   grep -q 'PASEO_HOME' "$BLUEPRINT_ROOT/configs/bash/env.sh"
   grep -q 'aicoding-paseo-daemon --print-home' "$BLUEPRINT_ROOT/configs/bash/env.sh"
 }
+
+@test "install.sh persists cursor-agent auth dir into the shared mount" {
+  grep -q 'aicodingsetup/cursor-config' "$BLUEPRINT_ROOT/install.sh"
+}
