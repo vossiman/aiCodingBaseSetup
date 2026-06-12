@@ -32,3 +32,107 @@ false" ]
   [ "$status" -eq 0 ]
   echo "$output" | grep -qF "$HOME/.aicodingsetup/templates/paseo-config.json|overwrite|configs/paseo/config.json"
 }
+
+_install_paseo_stub() {        # records daemon-start calls, fakes status
+  mkdir -p "$TMPDIR/stubs"
+  # The stub writes a real pid file to PASEO_HOME when "starting" or when
+  # PASEO_STUB_RUNNING is set (to simulate already-running).  This matches the
+  # production pid-file-based detection used by aicoding-paseo-daemon --ensure
+  # (necessary because the real `paseo daemon status` always exits 0).
+  cat > "$TMPDIR/stubs/paseo" <<'EOS'
+#!/bin/sh
+echo "$@" >> "${PASEO_STUB_LOG:?}"
+_write_pidfile() {
+  [ -n "${PASEO_HOME:-}" ] || return 0
+  mkdir -p "$PASEO_HOME"
+  printf '{"pid":%d,"startedAt":"2026-01-01T00:00:00.000Z"}' "$$" > "$PASEO_HOME/paseo.pid"
+}
+case "$1 $2" in
+  "daemon status")
+    if [ -f "${PASEO_STUB_RUNNING:-/nonexistent}" ]; then
+      _write_pidfile
+      exit 0
+    fi
+    exit 1 ;;
+  "daemon start")  _write_pidfile; exit 0 ;;
+  "daemon pair")   echo "QR-CODE-HERE"; echo "https://app.paseo.sh/#offer=test"; exit 0 ;;
+esac
+exit 0
+EOS
+  chmod +x "$TMPDIR/stubs/paseo"
+  export PATH="$TMPDIR/stubs:$PATH"
+  export PASEO_STUB_LOG="$TMPDIR/paseo-calls.log"
+  : > "$PASEO_STUB_LOG"
+}
+
+@test "print-home uses DEVPOD_WORKSPACE_ID when set" {
+  export DEVPOD_WORKSPACE_ID=myws
+  run "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" --print-home
+  [ "$status" -eq 0 ]
+  [ "$output" = "$HOME/.aicodingsetup/paseo/myws" ]
+}
+
+@test "print-home falls back to /workspaces basename" {
+  unset DEVPOD_WORKSPACE_ID
+  mkdir -p "$TMPDIR/workspaces/fallbackws"
+  AICODING_WORKSPACES_DIR="$TMPDIR/workspaces" \
+    run "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" --print-home
+  [ "$status" -eq 0 ]
+  [ "$output" = "$HOME/.aicodingsetup/paseo/fallbackws" ]
+}
+
+@test "print-home fails closed when workspace cannot be derived" {
+  unset DEVPOD_WORKSPACE_ID
+  AICODING_WORKSPACES_DIR="$TMPDIR/empty-nonexistent" \
+    run "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" --print-home
+  [ "$status" -ne 0 ]
+}
+
+@test "ensure seeds config from template and starts daemon" {
+  _install_paseo_stub
+  export DEVPOD_WORKSPACE_ID=myws
+  mkdir -p "$HOME/.aicodingsetup/templates"
+  cp "$BLUEPRINT_ROOT/configs/paseo/config.json" "$HOME/.aicodingsetup/templates/paseo-config.json"
+  run "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" --ensure
+  [ "$status" -eq 0 ]
+  [ -f "$HOME/.aicodingsetup/paseo/myws/config.json" ]
+  diff "$HOME/.aicodingsetup/paseo/myws/config.json" "$HOME/.aicodingsetup/templates/paseo-config.json"
+  grep -q "daemon start" "$PASEO_STUB_LOG"
+}
+
+@test "ensure is a no-op start when daemon already running" {
+  _install_paseo_stub
+  export DEVPOD_WORKSPACE_ID=myws
+  mkdir -p "$HOME/.aicodingsetup/templates"
+  cp "$BLUEPRINT_ROOT/configs/paseo/config.json" "$HOME/.aicodingsetup/templates/paseo-config.json"
+  export PASEO_STUB_RUNNING="$TMPDIR/running"; touch "$PASEO_STUB_RUNNING"
+  run "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" --ensure
+  [ "$status" -eq 0 ]
+  ! grep -q "daemon start" "$PASEO_STUB_LOG"
+}
+
+@test "ensure overwrites config when template changed, preserves otherwise" {
+  _install_paseo_stub
+  export DEVPOD_WORKSPACE_ID=myws
+  mkdir -p "$HOME/.aicodingsetup/templates"
+  cp "$BLUEPRINT_ROOT/configs/paseo/config.json" "$HOME/.aicodingsetup/templates/paseo-config.json"
+  "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" --ensure
+  echo '{"version":1,"changed":true}' > "$HOME/.aicodingsetup/templates/paseo-config.json"
+  "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" --ensure
+  grep -q changed "$HOME/.aicodingsetup/paseo/myws/config.json"
+}
+
+@test "ensure fails open when paseo binary is absent" {
+  export DEVPOD_WORKSPACE_ID=myws
+  PATH="/usr/bin:/bin" run "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" --ensure
+  [ "$status" -eq 0 ]
+}
+
+@test "pair subcommand passes through to paseo daemon pair" {
+  _install_paseo_stub
+  export DEVPOD_WORKSPACE_ID=myws
+  run "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" pair
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"QR-CODE-HERE"* ]]
+  grep -q "daemon pair" "$PASEO_STUB_LOG"
+}

@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# aicoding-paseo-daemon — manage the per-pod paseo daemon.
+#   --print-home  print PASEO_HOME for this workspace and exit
+#   --ensure      seed config + start daemon if not running (fail-open)
+#   pair          print the pairing QR/link (for dvw TUI / manual use)
+# Per-pod state: ~/.aicodingsetup/paseo/<workspace-id>/ — inside the shared
+# bind mount, so the daemon keypair (pairing identity) survives rebuilds and
+# is never shared between pods.
+set -u
+
+TEMPLATE="$HOME/.aicodingsetup/templates/paseo-config.json"
+WORKSPACES_DIR="${AICODING_WORKSPACES_DIR:-/workspaces}"
+
+_workspace_id() {
+  if [[ -n "${DEVPOD_WORKSPACE_ID:-}" ]]; then
+    printf '%s' "$DEVPOD_WORKSPACE_ID"; return 0
+  fi
+  # Fallback: the single checkout under /workspaces names the workspace.
+  local dirs=()
+  for d in "$WORKSPACES_DIR"/*/; do [[ -d "$d" ]] && dirs+=("$(basename "$d")"); done
+  if (( ${#dirs[@]} == 1 )); then printf '%s' "${dirs[0]}"; return 0; fi
+  return 1
+}
+
+_paseo_home() {
+  local id
+  id=$(_workspace_id) || return 1
+  printf '%s' "$HOME/.aicodingsetup/paseo/$id"
+}
+
+cmd_print_home() {
+  local home
+  home=$(_paseo_home) || { echo "aicoding-paseo-daemon: cannot derive workspace id" >&2; return 1; }
+  echo "$home"
+}
+
+_daemon_running() {
+  # `paseo daemon status` exits 0 whether daemon is up or down (verified against
+  # the real binary). Primary check: pid file that paseo writes at
+  # $PASEO_HOME/paseo.pid (JSON: {"pid":N,...}); send signal 0 to confirm alive.
+  # Fallback: `paseo daemon status` exit code — for stubs/future binary versions
+  # that correctly signal running state via exit code.
+  local home="$1" pidfile pid
+  pidfile="$home/paseo.pid"
+  if [[ -f "$pidfile" ]]; then
+    pid=$(grep -o '"pid":[0-9]*' "$pidfile" 2>/dev/null | grep -o '[0-9]*')
+    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && return 0
+  fi
+  # Fallback: trust non-zero exit from daemon status as "not running" signal.
+  PASEO_HOME="$home" paseo daemon status >/dev/null 2>&1
+}
+
+cmd_ensure() {
+  command -v paseo >/dev/null 2>&1 || return 0          # fail-open: not installed
+  local home
+  home=$(_paseo_home) || return 0                        # fail-open: no workspace id
+  mkdir -p "$home"
+  # Config is fully managed: copy template whenever content differs.
+  if [[ -f "$TEMPLATE" ]] && ! cmp -s "$TEMPLATE" "$home/config.json" 2>/dev/null; then
+    cp "$TEMPLATE" "$home/config.json"
+  fi
+  # Start iff not running. Real paseo daemon status always exits 0 — use pid file.
+  if ! _daemon_running "$home"; then
+    PASEO_HOME="$home" paseo daemon start >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
+cmd_pair() {
+  command -v paseo >/dev/null 2>&1 || { echo "paseo not installed in this pod" >&2; return 1; }
+  local home
+  home=$(_paseo_home) || { echo "cannot derive workspace id" >&2; return 1; }
+  PASEO_HOME="$home" exec paseo daemon pair
+}
+
+case "${1:-}" in
+  --print-home) cmd_print_home ;;
+  --ensure)     cmd_ensure ;;
+  pair)         cmd_pair ;;
+  *) echo "usage: aicoding-paseo-daemon --print-home | --ensure | pair" >&2; exit 2 ;;
+esac
