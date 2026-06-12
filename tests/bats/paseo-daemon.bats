@@ -151,3 +151,8 @@ EOS
 @test "sync binary refresh updates @getpaseo/cli" {
   grep -q '@getpaseo/cli' "$BLUEPRINT_ROOT/lib/sync.sh"
 }
+
+@test "env.sh exports PASEO_HOME via the helper" {
+  grep -q 'PASEO_HOME' "$BLUEPRINT_ROOT/configs/bash/env.sh"
+  grep -q 'aicoding-paseo-daemon --print-home' "$BLUEPRINT_ROOT/configs/bash/env.sh"
+}
