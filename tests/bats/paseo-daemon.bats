@@ -33,28 +33,13 @@ false" ]
   echo "$output" | grep -qF "$HOME/.aicodingsetup/templates/paseo-config.json|overwrite|configs/paseo/config.json"
 }
 
-_install_paseo_stub() {        # records daemon-start calls, fakes status
+_install_paseo_stub() {        # records daemon-start calls, fakes pair output
   mkdir -p "$TMPDIR/stubs"
-  # The stub writes a real pid file to PASEO_HOME when "starting" or when
-  # PASEO_STUB_RUNNING is set (to simulate already-running).  This matches the
-  # production pid-file-based detection used by aicoding-paseo-daemon --ensure
-  # (necessary because the real `paseo daemon status` always exits 0).
   cat > "$TMPDIR/stubs/paseo" <<'EOS'
 #!/bin/sh
 echo "$@" >> "${PASEO_STUB_LOG:?}"
-_write_pidfile() {
-  [ -n "${PASEO_HOME:-}" ] || return 0
-  mkdir -p "$PASEO_HOME"
-  printf '{"pid":%d,"startedAt":"2026-01-01T00:00:00.000Z"}' "$$" > "$PASEO_HOME/paseo.pid"
-}
 case "$1 $2" in
-  "daemon status")
-    if [ -f "${PASEO_STUB_RUNNING:-/nonexistent}" ]; then
-      _write_pidfile
-      exit 0
-    fi
-    exit 1 ;;
-  "daemon start")  _write_pidfile; exit 0 ;;
+  "daemon start")  exit 0 ;;
   "daemon pair")   echo "QR-CODE-HERE"; echo "https://app.paseo.sh/#offer=test"; exit 0 ;;
 esac
 exit 0
@@ -103,15 +88,16 @@ EOS
 @test "ensure is a no-op start when daemon already running" {
   _install_paseo_stub
   export DEVPOD_WORKSPACE_ID=myws
-  mkdir -p "$HOME/.aicodingsetup/templates"
+  mkdir -p "$HOME/.aicodingsetup/templates" "$HOME/.aicodingsetup/paseo/myws"
   cp "$BLUEPRINT_ROOT/configs/paseo/config.json" "$HOME/.aicodingsetup/templates/paseo-config.json"
-  export PASEO_STUB_RUNNING="$TMPDIR/running"; touch "$PASEO_STUB_RUNNING"
+  printf '{"pid":%s,"startedAt":"x"}' "$$" > "$HOME/.aicodingsetup/paseo/myws/paseo.pid"
   run "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" --ensure
   [ "$status" -eq 0 ]
-  ! grep -q "daemon start" "$PASEO_STUB_LOG"
+  run grep -q "daemon start" "$PASEO_STUB_LOG"
+  [ "$status" -ne 0 ]
 }
 
-@test "ensure overwrites config when template changed, preserves otherwise" {
+@test "ensure overwrites config when template changed" {
   _install_paseo_stub
   export DEVPOD_WORKSPACE_ID=myws
   mkdir -p "$HOME/.aicodingsetup/templates"
@@ -135,4 +121,16 @@ EOS
   [ "$status" -eq 0 ]
   [[ "$output" == *"QR-CODE-HERE"* ]]
   grep -q "daemon pair" "$PASEO_STUB_LOG"
+}
+
+@test "ensure detects a live daemon via pidfile and does not start" {
+  _install_paseo_stub
+  export DEVPOD_WORKSPACE_ID=myws
+  mkdir -p "$HOME/.aicodingsetup/templates" "$HOME/.aicodingsetup/paseo/myws"
+  cp "$BLUEPRINT_ROOT/configs/paseo/config.json" "$HOME/.aicodingsetup/templates/paseo-config.json"
+  printf '{"pid":%s,"startedAt":"x"}' "$$" > "$HOME/.aicodingsetup/paseo/myws/paseo.pid"
+  run "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" --ensure
+  [ "$status" -eq 0 ]
+  run grep -q "daemon start" "$PASEO_STUB_LOG"
+  [ "$status" -ne 0 ]
 }
