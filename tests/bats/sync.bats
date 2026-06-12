@@ -14,11 +14,11 @@ setup() {
   mkdir -p "$TMP/.local/bin"
   # Neutralise install.sh's prereq installers so install.sh no-ops them and
   # leaves our logging stubs (claude/opencode/agent) on PATH untouched.
-  for cmd in apt-get sudo curl npm npx bash-build-tmux cursor-agent; do
+  for cmd in apt-get sudo curl npm npx bash-build-tmux cursor-agent paseo aicoding-paseo-daemon; do
     printf '#!/bin/sh\nexit 0\n' > "$TMP/stubs/$cmd"
     chmod +x "$TMP/stubs/$cmd"
   done
-  for c in claude opencode agent paseo aicoding-paseo-daemon; do
+  for c in claude opencode agent; do
     printf '#!/bin/sh\necho "%s $*" >> "$TMP/ran.log"\n' "$c" > "$TMP/stubs/$c"
     chmod +x "$TMP/stubs/$c"
   done

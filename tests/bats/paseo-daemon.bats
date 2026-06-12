@@ -143,3 +143,11 @@ EOS
   grep -A2 'AICODINGSETUP_SKIP_NETWORK:-}" != "1" ]]' "$BLUEPRINT_ROOT/install.sh" \
     | grep -q 'aicoding-paseo-daemon" --ensure'
 }
+
+@test "sync plumbing ensures the paseo daemon on every boot" {
+  grep -q 'aicoding-paseo-daemon --ensure' "$BLUEPRINT_ROOT/lib/sync.sh"
+}
+
+@test "sync binary refresh updates @getpaseo/cli" {
+  grep -q '@getpaseo/cli' "$BLUEPRINT_ROOT/lib/sync.sh"
+}
