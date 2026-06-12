@@ -1313,8 +1313,7 @@ main() {
 
   # Spec: daemon must be up right after postCreate — fresh pod, one command
   # (`paseo daemon pair`), paired. Not only-on-restart.
-  # shellcheck disable=SC2086
-  $HOME/.local/bin/aicoding-paseo-daemon --ensure 2>/dev/null || true
+  "$HOME/.local/bin/aicoding-paseo-daemon" --ensure 2>/dev/null || true
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main "$@"; fi
