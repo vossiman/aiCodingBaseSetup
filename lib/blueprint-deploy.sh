@@ -270,6 +270,7 @@ $HOME/.bashrc.d/aicoding-env.sh|overwrite|configs/bash/env.sh
 $HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.sh
 $HOME/.bashrc.d/aicoding-update-notify.sh|overwrite|configs/bash/update-notify.sh
 $HOME/.codex/config.toml|overwrite|configs/codex/config.toml
+$HOME/.aicodingsetup/templates/paseo-config.json|overwrite|configs/paseo/config.json
 EOF
 }
 
