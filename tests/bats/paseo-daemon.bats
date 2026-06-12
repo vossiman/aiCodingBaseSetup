@@ -29,5 +29,6 @@ false" ]
 @test "managed inventory deploys paseo template to fixed path" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run managed_inventory_overwrite
-  [[ "$output" == *"$HOME/.aicodingsetup/templates/paseo-config.json|overwrite|configs/paseo/config.json"* ]]
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qF "$HOME/.aicodingsetup/templates/paseo-config.json|overwrite|configs/paseo/config.json"
 }
