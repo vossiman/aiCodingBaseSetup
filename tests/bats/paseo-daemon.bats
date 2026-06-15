@@ -160,3 +160,8 @@ EOS
 @test "install.sh persists cursor-agent auth dir into the shared mount" {
   grep -q 'aicodingsetup/cursor-config' "$BLUEPRINT_ROOT/install.sh"
 }
+
+@test "run.sh injects a global paseo no-op stub so the suite never starts a real daemon" {
+  grep -q '_PASEO_STUB_DIR' "$BLUEPRINT_ROOT/tests/bats/run.sh"
+  grep -q 'exit 0' "$BLUEPRINT_ROOT/tests/bats/run.sh"
+}
