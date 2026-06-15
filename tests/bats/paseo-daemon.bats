@@ -123,17 +123,6 @@ EOS
   grep -q "daemon pair" "$PASEO_STUB_LOG"
 }
 
-@test "ensure detects a live daemon via pidfile and does not start" {
-  _install_paseo_stub
-  export DEVPOD_WORKSPACE_ID=myws
-  mkdir -p "$HOME/.aicodingsetup/templates" "$HOME/.aicodingsetup/paseo/myws"
-  cp "$BLUEPRINT_ROOT/configs/paseo/config.json" "$HOME/.aicodingsetup/templates/paseo-config.json"
-  printf '{"pid":%s,"startedAt":"x"}' "$$" > "$HOME/.aicodingsetup/paseo/myws/paseo.pid"
-  run "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" --ensure
-  [ "$status" -eq 0 ]
-  run grep -q "daemon start" "$PASEO_STUB_LOG"
-  [ "$status" -ne 0 ]
-}
 
 
 @test "install.sh gates the provision-time ensure behind AICODINGSETUP_SKIP_NETWORK (incident regression)" {

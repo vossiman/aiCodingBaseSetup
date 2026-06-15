@@ -370,7 +370,7 @@ ensure_paseo() {
     return 0
   fi
   info "Installing @getpaseo/cli"
-  npm install -g @getpaseo/cli 2>&1 | tail -5 || { warn "paseo install failed (non-fatal)"; return 0; }
+  npm install -g @getpaseo/cli@latest 2>&1 | tail -5 || { warn "paseo install failed (non-fatal)"; return 0; }
   # Symlink into ~/.local/bin so non-interactive shells (postStartCommand,
   # ssh exec from the dvw TUI) see it without nvm PATH setup.
   if command -v paseo &>/dev/null; then
