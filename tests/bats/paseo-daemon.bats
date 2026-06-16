@@ -39,8 +39,10 @@ _install_paseo_stub() {        # records daemon-start calls, fakes pair output
 #!/bin/sh
 echo "$@" >> "${PASEO_STUB_LOG:?}"
 case "$1 $2" in
-  "daemon start")  exit 0 ;;
-  "daemon pair")   echo "QR-CODE-HERE"; echo "https://app.paseo.sh/#offer=test"; exit 0 ;;
+  "daemon start")    exit 0 ;;
+  "daemon pair")     echo "QR-CODE-HERE"; echo "https://app.paseo.sh/#offer=test"; exit 0 ;;
+  "terminal ls")     printf '%s' "${PASEO_STUB_TERMINALS:-[]}"; exit 0 ;;
+  "terminal create") exit 0 ;;
 esac
 exit 0
 EOS
@@ -153,4 +155,39 @@ EOS
 @test "run.sh injects a global paseo no-op stub so the suite never starts a real daemon" {
   grep -q '_PASEO_STUB_DIR' "$BLUEPRINT_ROOT/tests/bats/run.sh"
   grep -q 'exit 0' "$BLUEPRINT_ROOT/tests/bats/run.sh"
+}
+
+@test "ensure wires project registration via the openProject helper" {
+  grep -q '_register_project' "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon"
+  grep -q 'aicoding-paseo-open-project.mjs' "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon"
+}
+
+@test "open-project helper calls the daemon openProject primitive" {
+  grep -q 'openProject' "$BLUEPRINT_ROOT/bin/aicoding-paseo-open-project.mjs"
+  grep -q 'connectToDaemon' "$BLUEPRINT_ROOT/bin/aicoding-paseo-open-project.mjs"
+}
+
+@test "open-project helper is fail-open with no args" {
+  run node "$BLUEPRINT_ROOT/bin/aicoding-paseo-open-project.mjs"
+  [ "$status" -eq 0 ]
+}
+
+@test "open-project helper is fail-open when the bundled CLI client is absent" {
+  # Point npm root at an empty dir so the client path doesn't resolve.
+  mkdir -p "$TMPDIR/fakeroot/bin"
+  printf '#!/bin/sh\necho %s\n' "$TMPDIR/fakeroot" > "$TMPDIR/fakeroot/bin/npm"
+  chmod +x "$TMPDIR/fakeroot/bin/npm"
+  PATH="$TMPDIR/fakeroot/bin:$PATH" run node "$BLUEPRINT_ROOT/bin/aicoding-paseo-open-project.mjs" "$TMPDIR"
+  [ "$status" -eq 0 ]
+}
+
+@test "scaffold ships a starter paseo.json with a dev service" {
+  [ -f "$BLUEPRINT_ROOT/templates/project/paseo.json" ]
+  run jq -e '.scripts.dev.type == "service" and (.scripts.dev.command|length>0) and (.scripts.dev.port|type=="number")' \
+    "$BLUEPRINT_ROOT/templates/project/paseo.json"
+  [ "$status" -eq 0 ]
+}
+
+@test "scaffold-project lists paseo.json in its created files" {
+  grep -q 'paseo.json' "$BLUEPRINT_ROOT/commands/scaffold-project.md"
 }
