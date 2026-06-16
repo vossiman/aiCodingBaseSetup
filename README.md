@@ -195,6 +195,12 @@ tablet / desktop apps.
   auto-starts declared `scripts` of `type: "service"` and gives each a preview
   URL reachable from the app over the relay. Keeps paseo and tmux separate —
   this is paseo's own service supervision, not a tmux attach.
+  - **`paseo.json` lives in the git repo, like `devcontainer.json`** — it's a
+    per-repo file committed at the repo root, *not* a managed dotfile deployed
+    into `~/` by `install.sh`/`aicoding-update`. New repos get it via
+    `/scaffold-project`; for an existing repo, copy the starter from
+    `~/.aicodingsetup/templates/project/paseo.json` into the repo root and edit
+    it. (Claude Code only — `/scaffold-project` isn't wired into opencode.)
 - **Habit:** agents started in plain tmux do **not** appear in paseo. Start
   through paseo (`paseo run …`) when you may want phone access, or adopt an
   existing session later with `paseo import <session-id>`.
