@@ -193,9 +193,9 @@ tablet / desktop apps.
   (see `docs/superpowers/notes/2026-06-15-paseo-followups.md` in
   [devMachine](https://github.com/vossiman/devMachine)).
 
-> Container hostnames still show as the docker id in the app (rename hosts
-> there). Meaningful hostnames via `runArgs` are a deferred follow-up — see the
-> notes file above.
+> The container's hostname is set to the workspace name via
+> `runArgs: ["--hostname", "${containerWorkspaceFolderBasename}"]`, so the paseo
+> app labels each pod by name (e.g. `devmachine`) instead of the docker id.
 
 ## Windows
 
