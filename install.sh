@@ -344,6 +344,40 @@ ensure_cursor_agent() {
     ln -sf agent "$HOME/.local/bin/cursor-agent"
   fi
   [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
+
+  # cursor-agent keeps auth in ~/.config/cursor (NOT the mounted ~/.cursor).
+  # Symlink it into the shared mount so `cursor-agent login` is once-ever.
+  # If a real dir already exists (pre-existing login), adopt its contents.
+  local cc_target="$HOME/.aicodingsetup/cursor-config"
+  local cc_link="$HOME/.config/cursor"
+  mkdir -p "$cc_target" "$HOME/.config"
+  if [[ -d "$cc_link" && ! -L "$cc_link" ]]; then
+    cp -an "$cc_link/." "$cc_target/" 2>/dev/null || true
+    rm -rf "$cc_link"
+  fi
+  [[ -L "$cc_link" ]] || ln -s "$cc_target" "$cc_link"
+}
+
+ensure_paseo() {
+  header "Ensuring paseo (remote-control daemon)"
+  command -v npm &>/dev/null || { warn "npm not available — skipping paseo install"; return 0; }
+  if command -v paseo &>/dev/null; then
+    ok "paseo already installed"
+    # Still ensure the symlink so non-interactive shells see it.
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$(command -v paseo)" "$HOME/.local/bin/paseo"
+    [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
+    return 0
+  fi
+  info "Installing @getpaseo/cli"
+  npm install -g @getpaseo/cli@latest 2>&1 | tail -5 || { warn "paseo install failed (non-fatal)"; return 0; }
+  # Symlink into ~/.local/bin so non-interactive shells (postStartCommand,
+  # ssh exec from the dvw TUI) see it without nvm PATH setup.
+  if command -v paseo &>/dev/null; then
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$(command -v paseo)" "$HOME/.local/bin/paseo"
+  fi
+  [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
 }
 
 ensure_go() {
@@ -445,6 +479,7 @@ auto_install_prereqs() {
   ensure_opencode
   ensure_codex
   ensure_cursor_agent
+  ensure_paseo
   ensure_go
   ensure_uv
   ensure_locales
@@ -908,6 +943,21 @@ install_ssh_agent_watch_symlink() {
   ok "aicoding-ssh-agent-watch installed at $dest -> $src (started by update.sh)"
 }
 
+install_paseo_daemon_symlink() {
+  # Deploy only; started by --ensure at the end of main() and by aicoding-sync.
+  header "paseo daemon launcher"
+  local src="$SCRIPT_DIR/bin/aicoding-paseo-daemon"
+  local dest="$HOME/.local/bin/aicoding-paseo-daemon"
+  if [[ ! -f "$src" ]]; then
+    warn "bin/aicoding-paseo-daemon not found in blueprint — skipping"
+    return
+  fi
+  mkdir -p "$HOME/.local/bin"
+  chmod +x "$src"
+  ln -sf "$src" "$dest"
+  ok "aicoding-paseo-daemon installed at $dest -> $src"
+}
+
 # --- tmux plugins (TPM) ---
 # Container-only: bootstraps Tmux Plugin Manager and installs every plugin
 # declared in configs/tmux/tmux.conf (resurrect, continuum, catppuccin, fzf,
@@ -1252,6 +1302,7 @@ main() {
   install_aicoding_sync_symlink
   install_update_status_symlink
   install_ssh_agent_watch_symlink
+  install_paseo_daemon_symlink
 
   local mode
   if [[ $force_reinstall -eq 1 ]]; then
@@ -1287,6 +1338,15 @@ main() {
   info "Claude Code: $CLAUDE_DIR"
 
   _print_install_summary
+
+  # Spec: daemon must be up right after postCreate — fresh pod, one command
+  # (`paseo daemon pair`), paired. Not only-on-restart.
+  # Gated like every other network action: the daemon dials the relay, and the
+  # bats suite (AICODINGSETUP_SKIP_NETWORK=1) runs the real install.sh — an
+  # ungated start here spawns a REAL daemon per test (incident 2026-06-12).
+  if [[ "${AICODINGSETUP_SKIP_NETWORK:-}" != "1" ]]; then
+    "$HOME/.local/bin/aicoding-paseo-daemon" --ensure 2>/dev/null || true
+  fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main "$@"; fi

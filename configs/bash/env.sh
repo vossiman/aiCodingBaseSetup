@@ -14,3 +14,12 @@ if [ -f "$HOME/.aicodingsetup/.secrets.env" ]; then
   . "$HOME/.aicodingsetup/.secrets.env"
   set +a
 fi
+
+# paseo: point the CLI at this pod's daemon state (per-workspace home inside
+# the shared ~/.aicodingsetup mount). Derivation lives in one place —
+# aicoding-paseo-daemon — so interactive shells and the boot hook agree.
+if command -v aicoding-paseo-daemon >/dev/null 2>&1; then
+  _aicoding_paseo_home=$(aicoding-paseo-daemon --print-home 2>/dev/null) \
+    && export PASEO_HOME="$_aicoding_paseo_home"
+  unset _aicoding_paseo_home
+fi

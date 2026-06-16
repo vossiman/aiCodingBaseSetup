@@ -21,6 +21,17 @@ exit 0
 STUB
     chmod +x "$TMPDIR/stubs/$cmd"
   done
+  # paseo stub RECORDS calls: install.sh must never start a daemon under
+  # SKIP_NETWORK (real-daemon-per-test incident, 2026-06-12). Shadows the
+  # real binary which IS installed in dev pods.
+  export PASEO_STUB_LOG="$TMPDIR/paseo-calls.log"
+  : > "$PASEO_STUB_LOG"
+  cat > "$TMPDIR/stubs/paseo" <<'STUB'
+#!/bin/sh
+echo "$@" >> "${PASEO_STUB_LOG:?}"
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/paseo"
   # Build a writable blueprint clone.
   mkdir -p "$AICODING_BLUEPRINT_CLONE"
   rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$AICODING_BLUEPRINT_CLONE/"
@@ -38,6 +49,10 @@ teardown() {
   [ -f "$AICODING_MANIFEST" ]
   [ -f "$HOME/.tmux.conf" ]
   [ -L "$HOME/.local/bin/aicoding-update" ]
+
+  # Incident regression: no daemon may be started by install.sh under test.
+  run grep -q "daemon start" "$PASEO_STUB_LOG"
+  [ "$status" -ne 0 ]
 
   # User modifies a managed file by hand.
   echo "user-customisation" > "$HOME/.tmux.conf"

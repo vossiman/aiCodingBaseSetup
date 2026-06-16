@@ -114,6 +114,22 @@ EOF
   readlink "$HOME/.local/bin/aicoding-sync" | grep -q "bin/aicoding-sync"
 }
 
+@test "install.sh defines ensure_paseo and wires it into the ensure list" {
+  grep -q '^ensure_paseo()' "$BLUEPRINT_ROOT/install.sh"
+  grep -qE '^\s*ensure_paseo( |$|\|)' "$BLUEPRINT_ROOT/install.sh"
+}
+
+@test "install.sh installs the paseo-daemon symlink and runs --ensure at provision end" {
+  grep -q 'install_paseo_daemon_symlink' "$BLUEPRINT_ROOT/install.sh"
+  grep -q 'aicoding-paseo-daemon.*--ensure' "$BLUEPRINT_ROOT/install.sh"
+}
+
+@test "symlinks aicoding-paseo-daemon into ~/.local/bin" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ -L "$HOME/.local/bin/aicoding-paseo-daemon" ]
+  [ "$(readlink "$HOME/.local/bin/aicoding-paseo-daemon")" = "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" ]
+}
+
 @test "install.sh reconcile mode: restores missing files without touching edited ones" {
   # First-deploy populates the manifest and all managed files.
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null

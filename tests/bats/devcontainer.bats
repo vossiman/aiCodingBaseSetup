@@ -50,3 +50,9 @@ DEVCONTAINER="$BLUEPRINT_ROOT/devcontainer.json"
   [[ "$post_create" == *"aiCodingBaseSetup"* ]]
   [[ "$post_create" == *"install.sh"* ]]
 }
+
+@test "devcontainer.json: sets the workspace-name hostname via runArgs (paseo host labels)" {
+  run jq -r '.runArgs | join(" ")' "$DEVCONTAINER"
+  [ "$status" -eq 0 ]
+  [ "$output" = '--hostname ${containerWorkspaceFolderBasename}' ]
+}

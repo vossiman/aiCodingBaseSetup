@@ -26,4 +26,17 @@ export AICODINGSETUP_SKIP_NETWORK=1
 export GIT_TERMINAL_PROMPT=0
 export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1}"
 
-exec bats tests/bats/*.bats
+#  3. A real paseo daemon must NEVER start during the suite. On 2026-06-12 an
+#     ungated daemon start in install.sh spawned a real daemon per test and
+#     exhausted host memory. The fix is gated per call site, but this is the
+#     systemic backstop: prepend a no-op `paseo` stub to PATH for the WHOLE
+#     suite, so even a future ungated path can only ever hit the stub. Tests
+#     needing recording/behavioral stubs prepend their own dir (which wins);
+#     tests asserting "paseo absent" set their own restricted PATH (also wins).
+_PASEO_STUB_DIR="$(mktemp -d)"
+printf '#!/bin/sh\nexit 0\n' > "$_PASEO_STUB_DIR/paseo"
+chmod +x "$_PASEO_STUB_DIR/paseo"
+trap 'rm -rf "$_PASEO_STUB_DIR"' EXIT
+export PATH="$_PASEO_STUB_DIR:$PATH"
+
+bats tests/bats/*.bats

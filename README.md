@@ -23,7 +23,7 @@ The installer ensures four AI coding CLIs are present and configured:
 | Claude Code | `claude` | `claude` (browser OAuth) | `~/.claude/.credentials.json` |
 | opencode | `opencode` | `opencode auth login <provider>` | `~/.local/share/opencode/auth.json` |
 | OpenAI Codex | `codex` | `codex` (first run — ChatGPT sign-in or `OPENAI_API_KEY`) | `~/.codex/auth.json` |
-| Cursor Agent | `agent` (or `cursor-agent` on older releases) | `agent login` (or `CURSOR_API_KEY`) | `~/.cursor/` (exact filename varies; whole dir is bind-mounted in DevPod setups) |
+| Cursor Agent | `agent` (or `cursor-agent` on older releases) | `agent login` (or `CURSOR_API_KEY`) | `~/.config/cursor/auth.json` — `install.sh` symlinks `~/.config/cursor` into the bind-mounted `~/.aicodingsetup/cursor-config` so login is once-ever across pods (the mounted `~/.cursor` holds only MCP config, not credentials) |
 
 All four read the same 4 MCP servers; auth state persists across containers via bind-mounted home directories (DevPod setup — see "Devcontainers" below).
 
@@ -160,6 +160,42 @@ The `~/.bashrc.d/` convention for user additions: anything matching `local-*.sh`
 ### Why the model
 
 The pre-manifest installer would silently clobber any file you'd hand-edited on every re-run. The manifest + drift detection lets the installer guarantee "your changes are never overwritten without a prompt." See `docs/superpowers/specs/2026-05-16-blueprint-sync-design.md` in the parent [devMachine](https://github.com/vossiman/devMachine) repo for the full design.
+
+## Remote control (paseo)
+
+Every pod runs a [paseo](https://paseo.sh) daemon so you can drive the coding
+agents (Claude Code, Codex, Cursor via ACP, OpenCode) from the paseo phone /
+tablet / desktop apps.
+
+- **State:** `~/.aicodingsetup/paseo/<workspace-id>/` (exported as `PASEO_HOME`
+  in shells). It lives inside the shared `~/.aicodingsetup` bind mount, so the
+  daemon's keypair — its pairing identity — survives rebuilds. Per-workspace
+  subdir means each pod has its own identity (no relay collision).
+- **Pairing (once per pod; the same QR pairs every device):** run
+  `paseo daemon pair` in the pod — or use the dvw TUI's *pair remote (paseo)*
+  action — and scan from the app. Re-pairing is only needed if `~/.aicodingsetup`
+  is wiped.
+- **Lifecycle:** started at the end of `install.sh` (provision) and re-ensured
+  on every container start via `aicoding-paseo-daemon --ensure` in the boot
+  sync. It is **never auto-restarted** — a restart kills in-flight agents and
+  orphans their processes. Version tracks latest (`@getpaseo/cli@latest` in the
+  throttled binary refresh); the new version takes effect on the next container
+  start, not mid-session.
+- **Config** (`configs/paseo/config.json`, deployed per pod): voice/dictation
+  off, relay on, Cursor registered as an ACP provider. Fully managed —
+  per-pod edits are not preserved.
+- **Habit:** agents started in plain tmux do **not** appear in paseo. Start
+  through paseo (`paseo run …`) when you may want phone access, or adopt an
+  existing session later with `paseo import <session-id>`.
+- **Transport:** the vendor E2E-encrypted relay (the daemon dials out — no
+  inbound ports). Direct connection needs the daemon's container port reachable
+  from the device; a self-hosted relay on the host is a documented future option
+  (see `docs/superpowers/notes/2026-06-15-paseo-followups.md` in
+  [devMachine](https://github.com/vossiman/devMachine)).
+
+> The container's hostname is set to the workspace name via
+> `runArgs: ["--hostname", "${containerWorkspaceFolderBasename}"]`, so the paseo
+> app labels each pod by name (e.g. `devmachine`) instead of the docker id.
 
 ## Windows
 
