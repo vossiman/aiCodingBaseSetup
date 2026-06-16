@@ -184,11 +184,17 @@ tablet / desktop apps.
 - **Config** (`configs/paseo/config.json`, deployed per pod): voice/dictation
   off, relay on, Cursor registered as an ACP provider. Fully managed —
   per-pod edits are not preserved.
-- **Auto-workspace:** `--ensure` registers the pod's project dir
-  (`/workspaces/<id>`) as a paseo workspace by ensuring one terminal in it, so
-  the project shows up in the app without manual setup. Idempotent (deduped by
-  cwd) and fail-open. It's a plain shell — paseo and tmux stay separate; this
-  only aligns the project/workdir.
+- **Auto-project:** `--ensure` registers the pod's project dir
+  (`/workspaces/<id>`) with the daemon via its `openProject` primitive (the
+  `aicoding-paseo-open-project.mjs` helper), so the project shows up in the app
+  sidebar automatically. Idempotent (the daemon dedups by directory), no agent
+  started, fail-open (relies on the bundled paseo CLI client; no-ops if that
+  moves in a future version — you can still add the project from the app).
+- **Dev-server preview URLs:** `/scaffold-project` drops a starter `paseo.json`
+  with a `dev` service (`npm run dev`, port 3000 — edit per stack). paseo
+  auto-starts declared `scripts` of `type: "service"` and gives each a preview
+  URL reachable from the app over the relay. Keeps paseo and tmux separate —
+  this is paseo's own service supervision, not a tmux attach.
 - **Habit:** agents started in plain tmux do **not** appear in paseo. Start
   through paseo (`paseo run …`) when you may want phone access, or adopt an
   existing session later with `paseo import <session-id>`.

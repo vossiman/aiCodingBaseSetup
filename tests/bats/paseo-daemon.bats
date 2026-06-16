@@ -157,39 +157,37 @@ EOS
   grep -q 'exit 0' "$BLUEPRINT_ROOT/tests/bats/run.sh"
 }
 
-@test "ensure registers a workspace terminal when none exists" {
-  _install_paseo_stub
-  export DEVPOD_WORKSPACE_ID=myws
-  export AICODING_WORKSPACES_DIR="$TMPDIR/ws"
-  mkdir -p "$AICODING_WORKSPACES_DIR/myws" "$HOME/.aicodingsetup/templates"
-  cp "$BLUEPRINT_ROOT/configs/paseo/config.json" "$HOME/.aicodingsetup/templates/paseo-config.json"
-  export PASEO_STUB_TERMINALS='[]'
-  run "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" --ensure
-  [ "$status" -eq 0 ]
-  grep -q "terminal create --cwd $AICODING_WORKSPACES_DIR/myws" "$PASEO_STUB_LOG"
+@test "ensure wires project registration via the openProject helper" {
+  grep -q '_register_project' "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon"
+  grep -q 'aicoding-paseo-open-project.mjs' "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon"
 }
 
-@test "ensure does NOT duplicate a terminal already registered for the workspace dir" {
-  _install_paseo_stub
-  export DEVPOD_WORKSPACE_ID=myws
-  export AICODING_WORKSPACES_DIR="$TMPDIR/ws"
-  mkdir -p "$AICODING_WORKSPACES_DIR/myws" "$HOME/.aicodingsetup/templates"
-  cp "$BLUEPRINT_ROOT/configs/paseo/config.json" "$HOME/.aicodingsetup/templates/paseo-config.json"
-  export PASEO_STUB_TERMINALS="[{\"id\":\"abc\",\"cwd\":\"$AICODING_WORKSPACES_DIR/myws\"}]"
-  run "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" --ensure
-  [ "$status" -eq 0 ]
-  run grep -q "terminal create" "$PASEO_STUB_LOG"
-  [ "$status" -ne 0 ]
+@test "open-project helper calls the daemon openProject primitive" {
+  grep -q 'openProject' "$BLUEPRINT_ROOT/bin/aicoding-paseo-open-project.mjs"
+  grep -q 'connectToDaemon' "$BLUEPRINT_ROOT/bin/aicoding-paseo-open-project.mjs"
 }
 
-@test "ensure skips workspace registration when the project dir is absent" {
-  _install_paseo_stub
-  export DEVPOD_WORKSPACE_ID=myws
-  export AICODING_WORKSPACES_DIR="$TMPDIR/ws"   # note: myws subdir NOT created
-  mkdir -p "$HOME/.aicodingsetup/templates"
-  cp "$BLUEPRINT_ROOT/configs/paseo/config.json" "$HOME/.aicodingsetup/templates/paseo-config.json"
-  run "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" --ensure
+@test "open-project helper is fail-open with no args" {
+  run node "$BLUEPRINT_ROOT/bin/aicoding-paseo-open-project.mjs"
   [ "$status" -eq 0 ]
-  run grep -q "terminal create" "$PASEO_STUB_LOG"
-  [ "$status" -ne 0 ]
+}
+
+@test "open-project helper is fail-open when the bundled CLI client is absent" {
+  # Point npm root at an empty dir so the client path doesn't resolve.
+  mkdir -p "$TMPDIR/fakeroot/bin"
+  printf '#!/bin/sh\necho %s\n' "$TMPDIR/fakeroot" > "$TMPDIR/fakeroot/bin/npm"
+  chmod +x "$TMPDIR/fakeroot/bin/npm"
+  PATH="$TMPDIR/fakeroot/bin:$PATH" run node "$BLUEPRINT_ROOT/bin/aicoding-paseo-open-project.mjs" "$TMPDIR"
+  [ "$status" -eq 0 ]
+}
+
+@test "scaffold ships a starter paseo.json with a dev service" {
+  [ -f "$BLUEPRINT_ROOT/templates/project/paseo.json" ]
+  run jq -e '.scripts.dev.type == "service" and (.scripts.dev.command|length>0) and (.scripts.dev.port|type=="number")' \
+    "$BLUEPRINT_ROOT/templates/project/paseo.json"
+  [ "$status" -eq 0 ]
+}
+
+@test "scaffold-project lists paseo.json in its created files" {
+  grep -q 'paseo.json' "$BLUEPRINT_ROOT/commands/scaffold-project.md"
 }
