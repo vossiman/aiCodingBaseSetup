@@ -39,8 +39,10 @@ _install_paseo_stub() {        # records daemon-start calls, fakes pair output
 #!/bin/sh
 echo "$@" >> "${PASEO_STUB_LOG:?}"
 case "$1 $2" in
-  "daemon start")  exit 0 ;;
-  "daemon pair")   echo "QR-CODE-HERE"; echo "https://app.paseo.sh/#offer=test"; exit 0 ;;
+  "daemon start")    exit 0 ;;
+  "daemon pair")     echo "QR-CODE-HERE"; echo "https://app.paseo.sh/#offer=test"; exit 0 ;;
+  "terminal ls")     printf '%s' "${PASEO_STUB_TERMINALS:-[]}"; exit 0 ;;
+  "terminal create") exit 0 ;;
 esac
 exit 0
 EOS
@@ -153,4 +155,41 @@ EOS
 @test "run.sh injects a global paseo no-op stub so the suite never starts a real daemon" {
   grep -q '_PASEO_STUB_DIR' "$BLUEPRINT_ROOT/tests/bats/run.sh"
   grep -q 'exit 0' "$BLUEPRINT_ROOT/tests/bats/run.sh"
+}
+
+@test "ensure registers a workspace terminal when none exists" {
+  _install_paseo_stub
+  export DEVPOD_WORKSPACE_ID=myws
+  export AICODING_WORKSPACES_DIR="$TMPDIR/ws"
+  mkdir -p "$AICODING_WORKSPACES_DIR/myws" "$HOME/.aicodingsetup/templates"
+  cp "$BLUEPRINT_ROOT/configs/paseo/config.json" "$HOME/.aicodingsetup/templates/paseo-config.json"
+  export PASEO_STUB_TERMINALS='[]'
+  run "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" --ensure
+  [ "$status" -eq 0 ]
+  grep -q "terminal create --cwd $AICODING_WORKSPACES_DIR/myws" "$PASEO_STUB_LOG"
+}
+
+@test "ensure does NOT duplicate a terminal already registered for the workspace dir" {
+  _install_paseo_stub
+  export DEVPOD_WORKSPACE_ID=myws
+  export AICODING_WORKSPACES_DIR="$TMPDIR/ws"
+  mkdir -p "$AICODING_WORKSPACES_DIR/myws" "$HOME/.aicodingsetup/templates"
+  cp "$BLUEPRINT_ROOT/configs/paseo/config.json" "$HOME/.aicodingsetup/templates/paseo-config.json"
+  export PASEO_STUB_TERMINALS="[{\"id\":\"abc\",\"cwd\":\"$AICODING_WORKSPACES_DIR/myws\"}]"
+  run "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" --ensure
+  [ "$status" -eq 0 ]
+  run grep -q "terminal create" "$PASEO_STUB_LOG"
+  [ "$status" -ne 0 ]
+}
+
+@test "ensure skips workspace registration when the project dir is absent" {
+  _install_paseo_stub
+  export DEVPOD_WORKSPACE_ID=myws
+  export AICODING_WORKSPACES_DIR="$TMPDIR/ws"   # note: myws subdir NOT created
+  mkdir -p "$HOME/.aicodingsetup/templates"
+  cp "$BLUEPRINT_ROOT/configs/paseo/config.json" "$HOME/.aicodingsetup/templates/paseo-config.json"
+  run "$BLUEPRINT_ROOT/bin/aicoding-paseo-daemon" --ensure
+  [ "$status" -eq 0 ]
+  run grep -q "terminal create" "$PASEO_STUB_LOG"
+  [ "$status" -ne 0 ]
 }

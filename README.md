@@ -184,6 +184,11 @@ tablet / desktop apps.
 - **Config** (`configs/paseo/config.json`, deployed per pod): voice/dictation
   off, relay on, Cursor registered as an ACP provider. Fully managed —
   per-pod edits are not preserved.
+- **Auto-workspace:** `--ensure` registers the pod's project dir
+  (`/workspaces/<id>`) as a paseo workspace by ensuring one terminal in it, so
+  the project shows up in the app without manual setup. Idempotent (deduped by
+  cwd) and fail-open. It's a plain shell — paseo and tmux stay separate; this
+  only aligns the project/workdir.
 - **Habit:** agents started in plain tmux do **not** appear in paseo. Start
   through paseo (`paseo run …`) when you may want phone access, or adopt an
   existing session later with `paseo import <session-id>`.
