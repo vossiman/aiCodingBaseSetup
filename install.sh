@@ -769,6 +769,21 @@ install_aicoding_sync_symlink() {
   ok "aicoding-sync installed at $dest -> $src"
 }
 
+# --- aicoding-install CLI symlink ---
+install_aicoding_install_symlink() {
+  header "aicoding-install CLI"
+  local src="$SCRIPT_DIR/bin/aicoding-install"
+  local dest="$HOME/.local/bin/aicoding-install"
+  if [[ ! -f "$src" ]]; then
+    warn "bin/aicoding-install not found in blueprint — skipping symlink"
+    return
+  fi
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$src" "$dest"
+  chmod +x "$src"
+  ok "aicoding-install installed at $dest -> $src"
+}
+
 install_update_status_symlink() {
   header "aicoding-status CLI"
   local src="$SCRIPT_DIR/bin/aicoding-status" dest="$HOME/.local/bin/aicoding-status"
@@ -1143,6 +1158,7 @@ main() {
   ensure_claude_onboarding_state
   install_claude_plugins
   install_aicoding_sync_symlink
+  install_aicoding_install_symlink
   install_update_status_symlink
   remove_deprecated_shims
   install_ssh_agent_watch_symlink

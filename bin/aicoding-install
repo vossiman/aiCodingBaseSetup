@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# aicoding-install — pull the latest released blueprint and re-run the full
+# installer. Complements aicoding-sync: sync reconciles what install already
+# provisioned; this re-runs provisioning itself (apt prereqs, tool bootstrap
+# incl. codex, templates, tmux plugins, playwright, secrets prompt) — and
+# --force-reinstall nukes drift by deleting the manifest first.
+set -uo pipefail
+SCRIPT_REAL=$(readlink -f "$0"); SCRIPT_DIR=$(dirname "$(dirname "$SCRIPT_REAL")")
+: "${AICODING_BLUEPRINT_CLONE:=/tmp/aicoding}"
+case "${1:-}" in
+  -h|--help)
+    echo "usage: aicoding-install [--force-reinstall]"
+    echo "Pulls the latest blueprint main into $AICODING_BLUEPRINT_CLONE and re-runs install.sh."
+    exit 0
+    ;;
+esac
+# Bring the tracking clone current (fail-open: offline falls back to the
+# cached clone). refresh_blueprint lives in lib/sync.sh; prefer the clone's
+# copy, fall back to the install dir's.
+if [ -f "$AICODING_BLUEPRINT_CLONE/lib/sync.sh" ]; then
+  . "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"
+elif [ -f "$SCRIPT_DIR/lib/sync.sh" ]; then
+  . "$SCRIPT_DIR/lib/sync.sh"
+fi
+command -v refresh_blueprint >/dev/null 2>&1 && refresh_blueprint
+if [ -f "$AICODING_BLUEPRINT_CLONE/install.sh" ]; then
+  exec bash "$AICODING_BLUEPRINT_CLONE/install.sh" "$@"
+fi
+exec bash "$SCRIPT_DIR/install.sh" "$@"

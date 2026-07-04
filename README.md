@@ -113,13 +113,14 @@ aicoding-sync --yes        # scripted — auto-confirms; backs up anything drift
 
 The manifest at `~/.aicodingsetup/manifest.json` records the blueprint commit and a per-file hash for every overwrite-mode file, plus a block-hash for the marker-guarded section of `~/.bashrc`.
 
-### `./install.sh` — reconciles on every rebuild
-
-Re-running `install.sh` on an initialized container (manifest exists) re-runs the apt/build/locale prereq steps (idempotent) **and** then runs **reconcile mode**, which automatically applies the conservative buckets without any prompts. If you genuinely want to nuke local drift and re-deploy from scratch, use the escape hatch:
+### `aicoding-install` — pull latest and re-run the installer
 
 ```bash
-./install.sh --force-reinstall   # deletes manifest, falls through to first-deploy
+aicoding-install                     # refresh /tmp/aicoding to origin/main, re-run install.sh
+aicoding-install --force-reinstall   # same, but deletes the manifest first (nuke drift, first-deploy)
 ```
+
+Re-running the installer on an initialized container (manifest exists) re-runs the apt/build/locale prereq steps (idempotent) **and** then runs **reconcile mode**, which automatically applies the conservative buckets without any prompts. Use it when provisioning-only pieces broke or changed (tool bootstrap incl. codex, templates, tmux plugins, Playwright browser) — `aicoding-sync` deliberately doesn't touch those. Running `./install.sh` from a checkout does the same against that checkout's version.
 
 ### Per-CLI update behavior
 

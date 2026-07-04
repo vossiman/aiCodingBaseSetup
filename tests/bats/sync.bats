@@ -119,6 +119,22 @@ teardown() { rm -rf "$TMP"; }
   [ "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')" = "$before" ]
 }
 
+@test "aicoding-install: pulls the blueprint and re-runs the installer (reconcile)" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  run env AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT" \
+      "$BLUEPRINT_ROOT/bin/aicoding-install" </dev/null
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "Mode: reconcile"
+}
+
+@test "aicoding-install: passes --force-reinstall through (first-deploy)" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  run env AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT" \
+      "$BLUEPRINT_ROOT/bin/aicoding-install" --force-reinstall </dev/null
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "Mode: first"
+}
+
 @test "on-start.sh runs the boot path (exit 0)" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   run env AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT" AICODING_UPDATE_TTL=0 \
