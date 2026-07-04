@@ -377,7 +377,9 @@ EOF
   grep -E "mcp add .*logfire" "$TMPDIR/claude-calls" | grep -q "https://logfire-eu.pydantic.dev/mcp"
 }
 
-@test "install_claude_plugins: installs the logfire marketplace plugin" {
+@test "install_claude_plugins: does not install the logfire plugin, uninstalls it if present" {
+  # The plugin's bundled MCP server hardcodes the US URL (no repoint, no
+  # per-server disable) — we run the EU hosted MCP at user scope instead.
   cat > "$TMPDIR/stubs/claude" <<EOF
 #!/bin/sh
 echo "\$@" >> '$TMPDIR/claude-calls'
@@ -387,7 +389,8 @@ EOF
 
   _run_install_fn "$(_isolated_path)" install_claude_plugins
   [ "$status" -eq 0 ]
-  grep -q "plugin install logfire@claude-plugins-official" "$TMPDIR/claude-calls"
+  ! grep -q "plugin install logfire@claude-plugins-official" "$TMPDIR/claude-calls"
+  grep -q "plugin uninstall logfire@claude-plugins-official" "$TMPDIR/claude-calls"
 }
 
 @test "ensure_cursor_agent: warns and skips (non-fatal) when curl is unavailable" {

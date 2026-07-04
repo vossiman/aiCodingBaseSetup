@@ -16,6 +16,14 @@ MANAGED_PLUGINS=(
   "claude-code-setup@claude-plugins-official"
   "pyright-lsp@claude-plugins-official"
   "context7@claude-plugins-official"
+)
+
+# Plugins we used to manage and now actively remove. The logfire plugin's
+# bundled MCP server hardcodes the US-region URL with no way to repoint or
+# individually disable it — useless against our EU-only Logfire account, and
+# it nags "needs authentication" forever. The EU hosted MCP is registered at
+# user scope in install_claude_mcps instead.
+RETIRED_PLUGINS=(
   "logfire@claude-plugins-official"
 )
 
@@ -132,6 +140,12 @@ install_claude_plugins() {
     else
       # Already installed and up to date, or install failed
       ok "$plugin (already installed)"
+    fi
+  done
+
+  for plugin in "${RETIRED_PLUGINS[@]}"; do
+    if claude plugin uninstall "$plugin" 2>/dev/null; then
+      ok "Removed retired plugin $plugin"
     fi
   done
 }
