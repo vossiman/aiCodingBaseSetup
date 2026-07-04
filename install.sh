@@ -111,7 +111,7 @@ deploy_all_managed_files() {
 }
 
 # Managed component lists (used for unmanaged component detection)
-MANAGED_MCPS=("firecrawl" "brave-search" "context7" "playwright")
+MANAGED_MCPS=("firecrawl" "brave-search" "context7" "playwright" "logfire")
 MANAGED_HOOKS=("custom-statusline.js" "bw-deny-files.sh" "check-archived-docs.sh")
 MANAGED_SKILLS=("cloudflare-browser")
 MANAGED_PLUGINS=(
@@ -124,6 +124,7 @@ MANAGED_PLUGINS=(
   "claude-code-setup@claude-plugins-official"
   "pyright-lsp@claude-plugins-official"
   "context7@claude-plugins-official"
+  "logfire@claude-plugins-official"
 )
 
 # Colors for output
@@ -783,6 +784,18 @@ install_claude_mcps() {
   # playwright — provided by the playwright plugin, not as a standalone MCP
   # The plugin install (install_claude_plugins) handles this
   ok "playwright MCP provided by playwright plugin"
+
+  # logfire — hosted MCP, EU region. The logfire plugin hardcodes the US URL
+  # in its bundled .mcp.json (no env override); its README tells EU users to
+  # register a user-scope entry at the EU endpoint instead. The plugin's US
+  # server stays unauthenticated. Auth: run /mcp once (OAuth).
+  if claude mcp add --transport http -s user logfire https://logfire-eu.pydantic.dev/mcp 2>/dev/null; then
+    ok "logfire MCP configured (EU)"
+  elif claude mcp get logfire &>/dev/null; then
+    ok "logfire MCP already configured"
+  else
+    warn "logfire MCP may need manual setup"
+  fi
 }
 
 # --- Claude onboarding state ---
