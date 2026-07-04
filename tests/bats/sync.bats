@@ -55,6 +55,24 @@ teardown() { rm -rf "$TMP"; }
       "$BLUEPRINT_ROOT/bin/aicoding-sync" --boot
   [ "$status" -eq 0 ]
 }
+@test "clean sync still advances the manifest blueprint_commit stamp" {
+  # Regression: "Nothing to do." returned before stamping, so a sync with no
+  # file changes left blueprint_commit stale and aicoding-status stuck on
+  # "behind" until some file actually changed.
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  # Simulate an older recorded commit (blueprint advanced, no file deltas).
+  local tmp; tmp=$(mktemp)
+  jq '.blueprint_commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"' "$AICODING_MANIFEST" > "$tmp"
+  mv "$tmp" "$AICODING_MANIFEST"
+  run bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_sync --yes'
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "Nothing to do."
+  local stamped head
+  stamped=$(jq -r '.blueprint_commit' "$AICODING_MANIFEST")
+  head=$(git -C "$BLUEPRINT_ROOT" rev-parse HEAD)
+  [ "$stamped" = "$head" ]
+}
+
 @test "sync --yes reconciles MCPs and plugins (provision step)" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   : > "$TMP/ran.log"
