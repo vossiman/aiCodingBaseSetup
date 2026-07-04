@@ -367,6 +367,33 @@ EOF
   [ "$(cat "$TMPDIR/codex-noninteractive")" = "1" ]
 }
 
+@test "install_claude_mcps: registers logfire at the EU endpoint, user scope" {
+  # Recording stub: capture every claude invocation's args.
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  grep -E "mcp add .*logfire" "$TMPDIR/claude-calls" | grep -q "https://logfire-eu.pydantic.dev/mcp"
+}
+
+@test "install_claude_plugins: installs the logfire marketplace plugin" {
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+
+  _run_install_fn "$(_isolated_path)" install_claude_plugins
+  [ "$status" -eq 0 ]
+  grep -q "plugin install logfire@claude-plugins-official" "$TMPDIR/claude-calls"
+}
+
 @test "ensure_cursor_agent: warns and skips (non-fatal) when curl is unavailable" {
   _run_install_fn "$(_curl_less_path)" ensure_cursor_agent
   [ "$status" -eq 0 ]
