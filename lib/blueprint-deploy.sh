@@ -421,7 +421,7 @@ manifest_check_schema() {
   local manifest_schema
   manifest_schema=$(jq -r '.schema_version // 1' "$AICODING_MANIFEST" 2>/dev/null || echo 1)
   if [[ "$manifest_schema" =~ ^[0-9]+$ ]] && (( manifest_schema > current )); then
-    echo "aicoding-update: manifest schema_version $manifest_schema is newer than this tool (knows up to $current)." >&2
+    echo "aicoding-sync: manifest schema_version $manifest_schema is newer than this tool (knows up to $current)." >&2
     echo "Update aiCodingBaseSetup before running this." >&2
     exit 3
   fi

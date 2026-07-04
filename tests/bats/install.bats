@@ -97,14 +97,10 @@ EOF
   grep -qF 'export PATH="/usr/local/go/bin:$PATH"' "$HOME/.bashrc"
 }
 
-@test "install.sh: symlinks aicoding-update into ~/.local/bin" {
+@test "install.sh: does not install the removed shims (aicoding-update, update-status)" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  [ -L "$HOME/.local/bin/aicoding-update" ]
-  [ -x "$HOME/.local/bin/aicoding-update" ]
-  # Target points back to bin/aicoding-update in the blueprint.
-  local target
-  target=$(readlink "$HOME/.local/bin/aicoding-update")
-  echo "$target" | grep -q "bin/aicoding-update"
+  [ ! -e "$HOME/.local/bin/aicoding-update" ]
+  [ ! -e "$HOME/.local/bin/update-status" ]
 }
 
 @test "install.sh symlinks aicoding-sync into ~/.local/bin" {
@@ -712,7 +708,6 @@ EOF
   [ -f "$HOME/.bashrc.d/aicoding-update-notify.sh" ]
   grep -q "aicoding-status --banner" "$HOME/.bashrc.d/aicoding-update-notify.sh"
   [ -x "$HOME/.local/bin/aicoding-status" ]
-  [ -x "$HOME/.local/bin/update-status" ]   # back-compat shim
   local h
   h=$(jq -r '.files["'"$HOME"'/.bashrc.d/aicoding-update-notify.sh"].deployed_hash' "$AICODING_MANIFEST")
   [ "$h" != "null" ] && [ -n "$h" ]

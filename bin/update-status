@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-# Back-compat shim: update-status -> aicoding-status. Remove after one release.
-exec "$(dirname "$(readlink -f "$0")")/aicoding-status" "$@"

@@ -107,8 +107,3 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   run "$BIN" --print
   ! echo "$output" | grep -qi dvw
 }
-
-@test "update-status shim still works" {
-  run "$BLUEPRINT_ROOT/bin/update-status" --tmux
-  [ "$status" -eq 0 ]
-}
