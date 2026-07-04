@@ -62,6 +62,16 @@ teardown() { rm -rf "$TMP"; }
   [ "$status" -eq 0 ]
 }
 
+@test "sync right after install reports Nothing to do (no phantom drift)" {
+  # Regression: substituted files (raw-source hash compare) and merge targets
+  # (unconditional re-merge bucket) used to classify as actionable on every
+  # run, so back-to-back syncs never converged to "Nothing to do."
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  run bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_sync --yes'
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "Nothing to do."
+}
+
 @test "sync --boot preserves a user-edited non-owned file (conservative apply set)" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   # ~/.tmux.conf is deployed and non-owned. Editing it makes on-disk differ from

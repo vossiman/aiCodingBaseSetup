@@ -110,6 +110,29 @@ classify_file() {
   local dest=$1 src=$2 mode=$3
 
   if [ "$mode" = "merge" ]; then
+    # Actionable only if a re-merge would change the target SEMANTICALLY.
+    # Simulate on a temp copy (substituted source, same as the deploy path)
+    # and compare canonicalized JSON — _json_merge_into's key ordering is not
+    # byte-stable across applications (first merge copies nested subtrees
+    # verbatim, later merges recurse and sort), so a byte compare would flag
+    # phantom drift. Missing targets and failed simulations (e.g. non-JSON
+    # target) stay "merge" — apply is idempotent, so fail-open is safe.
+    if [ -e "$dest" ]; then
+      local sim_src sim_dest canon_sim canon_dest
+      sim_src=$(mktemp) sim_dest=$(mktemp)
+      _substitute_file_to "$src" "$sim_src" 2>/dev/null
+      cp "$dest" "$sim_dest"
+      if _json_merge_into "$sim_dest" "$sim_src" 2>/dev/null; then
+        canon_sim=$(jq -S . "$sim_dest" 2>/dev/null)
+        canon_dest=$(jq -S . "$dest" 2>/dev/null)
+        if [ -n "$canon_dest" ] && [ "$canon_sim" = "$canon_dest" ]; then
+          rm -f "$sim_src" "$sim_dest"
+          echo "up_to_date"
+          return 0
+        fi
+      fi
+      rm -f "$sim_src" "$sim_dest"
+    fi
     echo "merge"
     return 0
   fi
@@ -138,7 +161,14 @@ classify_file() {
 
   local current new deployed
   current=$(compute_hash "$dest")
-  new=$(compute_hash "$src")
+  # Hash the SUBSTITUTED source — that's what the deploy path writes to disk
+  # and records as deployed_hash. Hashing the raw source leaves any file with
+  # a {{PLACEHOLDER}} permanently classified will_update (phantom drift).
+  local subst_tmp
+  subst_tmp=$(mktemp)
+  _substitute_file_to "$src" "$subst_tmp" 2>/dev/null
+  new=$(compute_hash "$subst_tmp")
+  rm -f "$subst_tmp"
   deployed=$(printf '%s' "$entry" | jq -r '.deployed_hash // empty')
 
   if [ "$current" = "$deployed" ] && [ "$current" = "$new" ]; then
@@ -176,6 +206,9 @@ _json_merge_into() {
     cp "$source" "$target"
     return
   fi
+  # If jq can't parse either side, fail WITHOUT touching the target — the
+  # fallthrough used to overwrite it with an empty line (data loss on a
+  # hand-broken user config) in sync's non-set-e context.
   local merged
   merged=$(jq -s '
     def deep_merge(key):
@@ -196,7 +229,7 @@ _json_merge_into() {
         end
       else .[0] end;
     [.[0],.[1]] | deep_merge("")
-  ' "$target" "$source")
+  ' "$target" "$source") || return 1
   printf '%s\n' "$merged" > "$target"
 }
 

@@ -226,13 +226,78 @@ EOF
   [ "$output" = "to_remove" ]
 }
 
-@test "classify_file: merge mode always returns merge" {
+@test "classify_file: merge mode fail-open — non-JSON target still returns merge" {
   echo "current" > "$TMPDIR/dest"
   echo "new" > "$TMPDIR/src"
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run classify_file "$TMPDIR/dest" "$TMPDIR/src" "merge"
   [ "$status" -eq 0 ]
   [ "$output" = "merge" ]
+}
+
+@test "_json_merge_into: leaves a non-JSON target untouched (no clobber)" {
+  echo "definitely-not-json" > "$TMPDIR/target"
+  echo '{"a":1}' > "$TMPDIR/source"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run _json_merge_into "$TMPDIR/target" "$TMPDIR/source"
+  [ "$status" -ne 0 ]
+  [ "$(cat "$TMPDIR/target")" = "definitely-not-json" ]
+}
+
+@test "classify_file: merge target is up_to_date when re-merge is a no-op" {
+  echo '{"blueprint":{"a":1}}' > "$TMPDIR/src"
+  echo '{"user":2}' > "$TMPDIR/dest"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  # Produce dest exactly as a prior sync would have left it.
+  _json_merge_into "$TMPDIR/dest" "$TMPDIR/src"
+  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "merge"
+  [ "$status" -eq 0 ]
+  [ "$output" = "up_to_date" ]
+}
+
+@test "classify_file: merge target stays merge when blueprint adds a key" {
+  echo '{"blueprint":{"a":1}}' > "$TMPDIR/src"
+  echo '{"user":2}' > "$TMPDIR/dest"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  _json_merge_into "$TMPDIR/dest" "$TMPDIR/src"
+  echo '{"blueprint":{"a":1,"b":2}}' > "$TMPDIR/src"
+  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "merge"
+  [ "$status" -eq 0 ]
+  [ "$output" = "merge" ]
+}
+
+@test "classify_file: merge target with missing dest returns merge" {
+  echo '{"blueprint":{"a":1}}' > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run classify_file "$TMPDIR/absent-dest" "$TMPDIR/src" "merge"
+  [ "$status" -eq 0 ]
+  [ "$output" = "merge" ]
+}
+
+@test "classify_file: substituted overwrite file is up_to_date after substituted deploy" {
+  printf 'key = "{{FIRECRAWL_API_KEY}}"\n' > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  export FIRECRAWL_API_KEY="sekret-value"
+  manifest_stage_begin
+  deploy_overwrite_file_substituted "$TMPDIR/src" "$TMPDIR/dest" "configs/x"
+  manifest_stage_commit
+  # Nothing changed since deploy: must NOT be perpetually will_update.
+  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
+  [ "$status" -eq 0 ]
+  [ "$output" = "up_to_date" ]
+}
+
+@test "classify_file: substituted overwrite file is will_update when blueprint changes" {
+  printf 'key = "{{FIRECRAWL_API_KEY}}"\n' > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  export FIRECRAWL_API_KEY="sekret-value"
+  manifest_stage_begin
+  deploy_overwrite_file_substituted "$TMPDIR/src" "$TMPDIR/dest" "configs/x"
+  manifest_stage_commit
+  printf 'key = "{{FIRECRAWL_API_KEY}}"\nextra = true\n' > "$TMPDIR/src"
+  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
+  [ "$status" -eq 0 ]
+  [ "$output" = "will_update" ]
 }
 
 @test "deploy_overwrite_file: writes file and records hash in pending manifest" {
