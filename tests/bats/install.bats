@@ -348,6 +348,25 @@ EOF
   [ -x "$HOME/.local/bin/codex" ]
 }
 
+@test "ensure_codex: pipes the installer into a non-interactive sh (CODEX_NON_INTERACTIVE=1)" {
+  # Upstream install.sh grew y/N prompts (reads /dev/tty, so piping alone
+  # doesn't suppress them). Stub curl to emit a script that records what the
+  # piped sh sees in CODEX_NON_INTERACTIVE.
+  # The quoted inner heredoc keeps \$CODEX_NON_INTERACTIVE unexpanded in the
+  # stub's output, so the piped sh (not the stub) resolves it.
+  cat > "$TMPDIR/stubs/curl" <<EOF
+#!/bin/sh
+cat <<'SCRIPT'
+echo "\$CODEX_NON_INTERACTIVE" > '$TMPDIR/codex-noninteractive'
+SCRIPT
+EOF
+  chmod +x "$TMPDIR/stubs/curl"
+
+  _run_install_fn "$(_isolated_path)" ensure_codex
+  [ -f "$TMPDIR/codex-noninteractive" ]
+  [ "$(cat "$TMPDIR/codex-noninteractive")" = "1" ]
+}
+
 @test "ensure_cursor_agent: warns and skips (non-fatal) when curl is unavailable" {
   _run_install_fn "$(_curl_less_path)" ensure_cursor_agent
   [ "$status" -eq 0 ]
