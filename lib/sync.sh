@@ -139,6 +139,18 @@ _sync_reconcile() {
   if (( COUNT[will_update] + COUNT[will_update_owned] + COUNT[drifted_and_updating] \
         + COUNT[restore] + COUNT[new_file] + COUNT[to_remove] + COUNT[merge] == 0 )); then
     echo "Nothing to do."
+    # Still advance the blueprint_commit stamp: the blueprint may have moved
+    # without touching any managed file (lib/tests/bin-only changes). Leaving
+    # the old commit recorded keeps aicoding-status on "behind" forever.
+    if [ "$OLD_COMMIT" != "$NEW_COMMIT" ] && [ "$NEW_COMMIT" != unknown ]; then
+      manifest_stage_begin
+      manifest_stage_set_top blueprint_commit "$NEW_COMMIT"
+      local origin
+      origin=$(git -C "$AICODING_BLUEPRINT_CLONE" remote get-url origin 2>/dev/null || echo unknown)
+      manifest_stage_set_top blueprint_origin "$origin"
+      manifest_stage_commit
+      rm -f "$AICODING_UPDATE_STATE"/*.json 2>/dev/null || true
+    fi
     return 0
   fi
 
