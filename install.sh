@@ -296,7 +296,9 @@ ensure_codex() {
   command -v codex &>/dev/null && { ok "codex already installed"; return 0; }
   command -v curl  &>/dev/null || { warn "curl not available — skipping codex install"; return 0; }
   info "Installing OpenAI Codex CLI"
-  curl -fsSL https://chatgpt.com/codex/install.sh | sh 2>&1 | tail -5 \
+  # CODEX_NON_INTERACTIVE=1: upstream grew y/N prompts that read /dev/tty
+  # directly, so piping into sh alone no longer keeps this unattended.
+  curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh 2>&1 | tail -5 \
     || warn "codex install failed (non-fatal)"
   # Upstream installer's drop-path isn't formally documented. Probe two
   # likely locations and symlink into ~/.local/bin so non-interactive
