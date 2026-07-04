@@ -55,11 +55,29 @@ teardown() { rm -rf "$TMP"; }
       "$BLUEPRINT_ROOT/bin/aicoding-sync" --boot
   [ "$status" -eq 0 ]
 }
-@test "aicoding-update shim still works (delegates to aicoding-sync)" {
+@test "sync --yes reconciles MCPs and plugins (provision step)" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  run env AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT" AICODING_UPDATE_TTL=0 \
-      "$BLUEPRINT_ROOT/bin/aicoding-update" --yes
+  : > "$TMP/ran.log"
+  run bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_sync --yes'
   [ "$status" -eq 0 ]
+  grep -q "claude mcp add" "$TMP/ran.log"
+  grep -q "claude plugin install" "$TMP/ran.log"
+}
+
+@test "sync --boot runs provision when the throttle is stale" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  : > "$TMP/ran.log"
+  AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  grep -q "claude mcp add" "$TMP/ran.log"
+}
+
+@test "sync removes the retired shim symlinks (aicoding-update, update-status)" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  ln -sf /bin/true "$HOME/.local/bin/aicoding-update"
+  ln -sf /bin/true "$HOME/.local/bin/update-status"
+  AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  [ ! -e "$HOME/.local/bin/aicoding-update" ]
+  [ ! -e "$HOME/.local/bin/update-status" ]
 }
 
 @test "sync right after install reports Nothing to do (no phantom drift)" {

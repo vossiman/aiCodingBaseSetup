@@ -272,6 +272,27 @@ _sync_binaries() {            # throttled network refresh
   elif command -v cursor-agent >/dev/null 2>&1; then cursor-agent update || true; fi
 }
 
+# Reconcile machine state that isn't a managed file: MCP registrations,
+# marketplace plugins, npm MCP packages, retired-shim cleanup. Shares
+# lib/provision.sh with install.sh so both converge the same set; prefers
+# the refreshed clone's copy so a manual sync runs the latest definitions.
+# Fail-open throughout — every provision function warns instead of failing.
+_sync_provision() {
+  if [ -f "$AICODING_BLUEPRINT_CLONE/lib/provision.sh" ]; then
+    . "$AICODING_BLUEPRINT_CLONE/lib/provision.sh"
+  elif [ -n "${SCRIPT_DIR:-}" ] && [ -f "$SCRIPT_DIR/lib/provision.sh" ]; then
+    . "$SCRIPT_DIR/lib/provision.sh"
+  else
+    return 0
+  fi
+  command -v load_secrets_env >/dev/null 2>&1 && load_secrets_env || true
+  install_mcp_packages   || true
+  install_claude_mcps    || true
+  install_claude_plugins || true
+  remove_deprecated_shims || true
+  return 0
+}
+
 # Returns 0 if the binary-refresh throttle window is still fresh.
 _sync_binaries_fresh() {
   [ -n "$(find "$AICODING_UPDATE_STATE/.binaries.stamp" -newermt "-${AICODING_UPDATE_TTL} seconds" 2>/dev/null)" ]
@@ -299,10 +320,15 @@ aicoding_sync() {
   #    error is the only nonzero return.
   _sync_reconcile "$mode" || return $?
 
-  # 3. Binaries — never under --dry-run. Only --boot throttles (it's the only
-  #    path that runs unattended on every container start).
+  # 3. Binaries + machine-state provision (MCPs/plugins) — never under
+  #    --dry-run. Only --boot throttles (it's the only path that runs
+  #    unattended on every container start); both share one stamp.
   if [ "$mode" != dry-run ]; then
-    if [ "$mode" = boot ] && _sync_binaries_fresh; then :; else _sync_binaries; _sync_binaries_stamp; fi
+    if [ "$mode" = boot ] && _sync_binaries_fresh; then :; else
+      _sync_binaries
+      _sync_provision
+      _sync_binaries_stamp
+    fi
   fi
   return 0
 }

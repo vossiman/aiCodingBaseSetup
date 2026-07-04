@@ -99,15 +99,17 @@ Secrets are stored at `~/.aicodingsetup/.secrets.env` (outside the repo).
 
 Two distinct flows after the initial install:
 
-### `aicoding-update` — for blueprint file changes (recommended)
+### `aicoding-sync` — day-2 reconciliation (recommended)
 
 ```bash
-aicoding-update --dry-run    # show what would change vs your environment
-aicoding-update              # interactive — single y/N confirm, inline diff for drift
-aicoding-update --yes        # scripted — auto-confirms; backs up anything drifted
+aicoding-sync --dry-run    # show what would change vs your environment
+aicoding-sync              # interactive — single y/N confirm, inline diff for drift
+aicoding-sync --yes        # scripted — auto-confirms; backs up anything drifted
 ```
 
-`aicoding-update` is installed into `~/.local/bin/` by `install.sh`. It compares three hashes per managed file (currently on disk, last-deployed per the manifest, current blueprint source) and classifies each file into one of seven outcomes. Drifted files (you modified them) are surfaced with full inline `diff -u` output and backed up to `<file>.bak.<YYYYMMDD-HHMMSS>` before being overwritten. Missing-on-disk managed files are classified as `restore` and silently re-deployed.
+`aicoding-sync` is installed into `~/.local/bin/` by `install.sh`. It compares three hashes per managed file (currently on disk, last-deployed per the manifest, current blueprint source) and classifies each file into one of seven outcomes. Drifted files (you modified them) are surfaced with full inline `diff -u` output and backed up to `<file>.bak.<YYYYMMDD-HHMMSS>` before being overwritten. Missing-on-disk managed files are classified as `restore` and silently re-deployed. It also reconciles machine state shared with `install.sh` via `lib/provision.sh` — MCP registrations, marketplace plugins, and the npm packages backing stdio MCPs (throttled on `--boot`, always on manual runs).
+
+(The former `aicoding-update` and `update-status` names were back-compat shims and have been removed; use `aicoding-sync` and `aicoding-status`.)
 
 The manifest at `~/.aicodingsetup/manifest.json` records the blueprint commit and a per-file hash for every overwrite-mode file, plus a block-hash for the marker-guarded section of `~/.bashrc`.
 
@@ -139,7 +141,7 @@ Failures on any of the in-place updates are non-fatal and surface as `WARN:` lin
 | State on disk | Mode | Behaviour |
 |---|---|---|
 | No manifest, no managed files exist | `first` | Deploys everything; writes initial manifest. |
-| No manifest, but managed files already on disk (older install) | `adopt` | Captures current file hashes into the manifest without overwriting. Surfaces accumulated drift on the next `aicoding-update --dry-run`. |
+| No manifest, but managed files already on disk (older install) | `adopt` | Captures current file hashes into the manifest without overwriting. Surfaces accumulated drift on the next `aicoding-sync --dry-run`. |
 | Manifest exists | `reconcile` | Re-runs prereqs, then auto-applies the conservative buckets (see below). |
 
 **Reconcile mode** runs every time `install.sh` is invoked on a container that already has a manifest (e.g., every devcontainer rebuild). It classifies each managed file and automatically applies the conservative buckets:
@@ -150,10 +152,10 @@ Failures on any of the in-place updates are non-fatal and surface as `WARN:` lin
 - `merge` (settings.json / opencode.json → deep-merge blueprint over local)
 
 It deliberately does **not** auto-apply two buckets:
-- `drifted_and_updating` (you edited AND blueprint changed differently) — reported, left for `aicoding-update`.
+- `drifted_and_updating` (you edited AND blueprint changed differently) — reported, left for `aicoding-sync`.
 - `to_remove` (file dropped from blueprint inventory) — reported, never auto-deleted.
 
-This is strictly more conservative than `aicoding-update --yes`, which DOES auto-resolve drift (with backup) and DOES auto-remove. The automatic provisioning path is intentionally more cautious about touching files the user has edited.
+This is strictly more conservative than `aicoding-sync --yes`, which DOES auto-resolve drift (with backup) and DOES auto-remove. The automatic provisioning path is intentionally more cautious about touching files the user has edited.
 
 The `~/.bashrc.d/` convention for user additions: anything matching `local-*.sh` (or any name *not* prefixed `aicoding-`) is sourced by the managed block but never touched by the blueprint. Personal aliases, env vars, and shell tweaks belong there.
 
@@ -245,7 +247,7 @@ install.sh
   4. Report unmanaged components (leave untouched)
   5. Configure Claude Code MCPs (claude mcp add)
   6. Install Claude Code marketplace plugins
-  7. Install aicoding-update symlink → ~/.local/bin/aicoding-update
+  7. Install aicoding-sync symlink → ~/.local/bin/aicoding-sync
   8. Detect install mode (first / adopt / reconcile) — see Update section
   9. Deploy managed files (first mode) OR adopt existing hashes (adopt mode) OR
      auto-apply conservative buckets (reconcile mode). Writes / updates the manifest.
@@ -253,7 +255,7 @@ install.sh
      check Playwright
 ```
 
-File deployment is centralised in `lib/blueprint-deploy.sh`. Every managed file flows through one of three deploy modes (`overwrite`, `merge`, `marker_block`), captured in the manifest at `~/.aicodingsetup/manifest.json` so subsequent `aicoding-update` runs can detect and surface drift.
+File deployment is centralised in `lib/blueprint-deploy.sh`. Every managed file flows through one of three deploy modes (`overwrite`, `merge`, `marker_block`), captured in the manifest at `~/.aicodingsetup/manifest.json` so subsequent `aicoding-sync` runs can detect and surface drift.
 
 The same persist-once-share-everywhere property applies to all four CLIs once their bind mounts are wired: `claude`, `opencode`, `codex`, and `agent` each persist their auth into their respective bind-mounted home directories, so a single login in any container is reusable from every other.
 

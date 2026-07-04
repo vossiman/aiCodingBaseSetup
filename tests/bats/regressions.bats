@@ -2,10 +2,10 @@
 
 # Regression coverage for three bugs the final review of blueprint-sync
 # surfaced:
-#   1. aicoding-update was sweeping ~/.bashrc into to_remove and deleting it.
-#   2. aicoding-update wrote raw {{HOME}}/{{*_API_KEY}} placeholders into
+#   1. the sync CLI (then aicoding-update) was sweeping ~/.bashrc into to_remove and deleting it.
+#   2. it wrote raw {{HOME}}/{{*_API_KEY}} placeholders into
 #      ~/.claude/settings.json and skill SKILL.md files (no substitution).
-#   3. aicoding-update didn't refuse manifests with a newer schema_version.
+#   3. it didn't refuse manifests with a newer schema_version.
 
 setup() {
   : "${BLUEPRINT_ROOT:?unset — run via tests/bats/run.sh; refusing to default to / and copy the whole filesystem}"
@@ -34,8 +34,8 @@ teardown() {
   rm -rf "$TMPDIR"
 }
 
-# Bug 1 regression: ~/.bashrc must survive aicoding-update --yes.
-@test "regression: aicoding-update does not delete ~/.bashrc" {
+# Bug 1 regression: ~/.bashrc must survive aicoding-sync --yes.
+@test "regression: aicoding-sync does not delete ~/.bashrc" {
   # Bootstrap via install.sh.
   bash "$AICODING_BLUEPRINT_CLONE/install.sh" </dev/null
   [ -f "$HOME/.bashrc" ]
@@ -55,10 +55,10 @@ teardown() {
   # Add some user content so we can sanity-check it survives too.
   echo "# user-added line below the managed block" >> "$HOME/.bashrc"
 
-  # Run aicoding-update --yes twice (idempotency check).
-  run "$HOME/.local/bin/aicoding-update" --yes
+  # Run aicoding-sync --yes twice (idempotency check).
+  run "$HOME/.local/bin/aicoding-sync" --yes
   [ "$status" -eq 0 ]
-  run "$HOME/.local/bin/aicoding-update" --yes
+  run "$HOME/.local/bin/aicoding-sync" --yes
   [ "$status" -eq 0 ]
 
   # File must still exist with the marker block intact.
@@ -82,12 +82,12 @@ teardown() {
   jq -e '.files["'"$HOME"'/.bashrc"].mode == "marker_block"' "$AICODING_MANIFEST"
 }
 
-# Bug 2 regression: substitute_secrets must apply on aicoding-update too.
+# Bug 2 regression: substitute_secrets must apply on aicoding-sync too.
 # After install.sh, ~/.claude/settings.json contains the actual $HOME path
-# (no literal {{HOME}}). Running aicoding-update against an advanced
+# (no literal {{HOME}}). Running aicoding-sync against an advanced
 # blueprint must NOT regress this — the deployed file must still be free
 # of {{HOME}}.
-@test "regression: aicoding-update preserves placeholder substitutions" {
+@test "regression: aicoding-sync preserves placeholder substitutions" {
   bash "$AICODING_BLUEPRINT_CLONE/install.sh" </dev/null
   [ -f "$HOME/.claude/settings.json" ]
 
@@ -100,7 +100,7 @@ teardown() {
   ' "$HOME/.claude/settings.json"
 
   # Advance the blueprint: add a benign field via the blueprint's source
-  # JSON, commit, then run aicoding-update.
+  # JSON, commit, then run aicoding-sync.
   jq '. + {"_blueprintAdvance":"v2"}' \
     "$AICODING_BLUEPRINT_CLONE/configs/claude/settings.json" \
     > "$AICODING_BLUEPRINT_CLONE/configs/claude/settings.json.tmp"
@@ -109,7 +109,7 @@ teardown() {
   (cd "$AICODING_BLUEPRINT_CLONE" && git add -A && \
     git -c user.email=t@t -c user.name=t commit -q -m advance)
 
-  run "$HOME/.local/bin/aicoding-update" --yes
+  run "$HOME/.local/bin/aicoding-sync" --yes
   [ "$status" -eq 0 ]
 
   # settings.json must still have substituted values — NO literal {{HOME}}.
@@ -148,7 +148,7 @@ teardown() {
   # Sanity: ~/.bashrc is present and marker block is intact pre-update.
   [ -f "$HOME/.bashrc" ]
 
-  run "$HOME/.local/bin/aicoding-update" --yes
+  run "$HOME/.local/bin/aicoding-sync" --yes
   [ "$status" -eq 0 ]
 
   # Orphan removed, manifest entry gone.
@@ -166,13 +166,13 @@ teardown() {
 # must be cleanly restored — no `diff: ... No such file` stderr, no
 # "updated (with backup)" misleading line, no silent cp failures inside
 # backup_drifted. Should classify as `restore` and re-deploy.
-@test "regression: aicoding-update restores missing managed file cleanly" {
+@test "regression: aicoding-sync restores missing managed file cleanly" {
   bash "$AICODING_BLUEPRINT_CLONE/install.sh" </dev/null
   rm -f "$HOME/.bashrc.d/aicoding-env.sh"
   [ ! -e "$HOME/.bashrc.d/aicoding-env.sh" ]
 
-  # aicoding-update should classify as restore, deploy without trying to diff.
-  run "$HOME/.local/bin/aicoding-update" --yes
+  # aicoding-sync should classify as restore, deploy without trying to diff.
+  run "$HOME/.local/bin/aicoding-sync" --yes
   [ "$status" -eq 0 ]
 
   # File is restored.
@@ -190,12 +190,12 @@ teardown() {
 }
 
 # Bug 3 regression: manifest schema_version higher than supported aborts.
-@test "regression: aicoding-update refuses newer manifest schema_version" {
+@test "regression: aicoding-sync refuses newer manifest schema_version" {
   mkdir -p "$HOME/.aicodingsetup"
   cat > "$AICODING_MANIFEST" <<'EOF'
 {"schema_version":99,"blueprint_commit":"old","files":{}}
 EOF
-  run "$BLUEPRINT_ROOT/bin/aicoding-update" --dry-run
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
   [ "$status" -ne 0 ]
   # The error must mention schema_version so the user knows what to fix.
   echo "$output" | grep -q "schema_version"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 
 # End-to-end: install on a tmp HOME, modify a managed file by hand,
-# bump the "blueprint" version of that file, run aicoding-update --yes,
+# bump the "blueprint" version of that file, run aicoding-sync --yes,
 # verify the user's change is backed up and the blueprint version is live.
 
 setup() {
@@ -32,12 +32,12 @@ teardown() {
   rm -rf "$TMPDIR"
 }
 
-@test "e2e: first install -> modify -> blueprint changes -> aicoding-update applies" {
+@test "e2e: first install -> modify -> blueprint changes -> aicoding-sync applies" {
   # First install (use the cloned blueprint as the install source).
   bash "$AICODING_BLUEPRINT_CLONE/install.sh" </dev/null
   [ -f "$AICODING_MANIFEST" ]
   [ -f "$HOME/.tmux.conf" ]
-  [ -L "$HOME/.local/bin/aicoding-update" ]
+  [ -L "$HOME/.local/bin/aicoding-sync" ]
 
   # User modifies a managed file by hand.
   echo "user-customisation" > "$HOME/.tmux.conf"
@@ -47,8 +47,8 @@ teardown() {
   (cd "$AICODING_BLUEPRINT_CLONE" && git add -A && \
     git -c user.email=t@t -c user.name=t commit -q -m advance)
 
-  # Run aicoding-update --yes.
-  run "$HOME/.local/bin/aicoding-update" --yes
+  # Run aicoding-sync --yes.
+  run "$HOME/.local/bin/aicoding-sync" --yes
   [ "$status" -eq 0 ]
 
   # User's edit is in a .bak.* file; blueprint content is now live.

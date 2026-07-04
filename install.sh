@@ -30,7 +30,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Shared deployment library — used by both install.sh and aicoding-update.
+# Shared deployment library — used by both install.sh and aicoding-sync.
 . "$SCRIPT_DIR/lib/blueprint-deploy.sh"
 
 # Managed file inventory + marker-block content live in lib/blueprint-deploy.sh
@@ -110,22 +110,12 @@ deploy_all_managed_files() {
   manifest_stage_commit
 }
 
-# Managed component lists (used for unmanaged component detection)
-MANAGED_MCPS=("firecrawl" "brave-search" "context7" "playwright" "logfire")
+# Managed component lists (used for unmanaged component detection).
+# MANAGED_MCPS / MANAGED_PLUGINS live in lib/provision.sh (sourced below,
+# after the colored loggers are defined) — shared with aicoding-sync so both
+# reconcile the same MCP/plugin set.
 MANAGED_HOOKS=("custom-statusline.js" "bw-deny-files.sh" "check-archived-docs.sh")
 MANAGED_SKILLS=("cloudflare-browser")
-MANAGED_PLUGINS=(
-  "superpowers@claude-plugins-official"
-  "frontend-design@claude-plugins-official"
-  "playwright@claude-plugins-official"
-  "code-simplifier@claude-plugins-official"
-  "skill-creator@claude-plugins-official"
-  "code-review@claude-plugins-official"
-  "claude-code-setup@claude-plugins-official"
-  "pyright-lsp@claude-plugins-official"
-  "context7@claude-plugins-official"
-  "logfire@claude-plugins-official"
-)
 
 # Colors for output
 RED='\033[0;31m'
@@ -142,6 +132,10 @@ header(){
   _CURRENT_STEP="$*"
   echo -e "\n${GREEN}=== $* ===${NC}"
 }
+
+# MCP/plugin provisioning — shared with aicoding-sync. Sourced after the
+# colored loggers so its plain-echo fallbacks don't kick in here.
+. "$SCRIPT_DIR/lib/provision.sh"
 
 # --- Environment Detection ---
 detect_environment() {
@@ -712,91 +706,8 @@ report_unmanaged() {
   fi
 }
 
-# --- MCP npm packages ---
-# Install MCP server binaries that aren't run via npx
-install_mcp_packages() {
-  header "MCP npm packages"
-
-  if ! command -v npm &>/dev/null; then
-    warn "npm not found — skipping MCP package installation"
-    return
-  fi
-
-  local packages=("firecrawl-mcp" "@brave/brave-search-mcp-server")
-  for pkg in "${packages[@]}"; do
-    if npm list -g "$pkg" &>/dev/null; then
-      ok "$pkg already installed"
-    else
-      if npm install -g "$pkg" 2>/dev/null; then
-        ok "$pkg installed"
-      else
-        warn "Failed to install $pkg — install manually with: npm install -g $pkg"
-      fi
-    fi
-  done
-}
-
-# --- Claude Code MCPs ---
-install_claude_mcps() {
-  header "Claude Code MCPs"
-
-  if ! command -v claude &>/dev/null; then
-    warn "Claude Code CLI not found — skipping MCP installation"
-    return
-  fi
-
-  # firecrawl
-  if [[ -n "${FIRECRAWL_API_KEY:-}" ]]; then
-    if claude mcp add firecrawl -s user -e "FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}" -- firecrawl-mcp 2>/dev/null; then
-      ok "firecrawl MCP configured"
-    elif claude mcp get firecrawl &>/dev/null; then
-      ok "firecrawl MCP already configured"
-    else
-      warn "firecrawl MCP may need manual setup"
-    fi
-  else
-    warn "Skipping firecrawl MCP — no API key"
-  fi
-
-  # brave-search
-  if [[ -n "${BRAVE_API_KEY:-}" ]]; then
-    if claude mcp add brave-search -s user -e "BRAVE_API_KEY=${BRAVE_API_KEY}" -- brave-search-mcp-server 2>/dev/null; then
-      ok "brave-search MCP configured"
-    elif claude mcp get brave-search &>/dev/null; then
-      ok "brave-search MCP already configured"
-    else
-      warn "brave-search MCP may need manual setup"
-    fi
-  else
-    warn "Skipping brave-search MCP — no API key"
-  fi
-
-  # context7 — register at user scope explicitly. The plugin reports
-  # "installed" but doesn't always surface the MCP, so we don't rely on it.
-  if claude mcp add context7 -s user -- npx -y @upstash/context7-mcp 2>/dev/null; then
-    ok "context7 MCP configured"
-  elif claude mcp get context7 &>/dev/null; then
-    ok "context7 MCP already configured"
-  else
-    warn "context7 MCP may need manual setup"
-  fi
-
-  # playwright — provided by the playwright plugin, not as a standalone MCP
-  # The plugin install (install_claude_plugins) handles this
-  ok "playwright MCP provided by playwright plugin"
-
-  # logfire — hosted MCP, EU region. The logfire plugin hardcodes the US URL
-  # in its bundled .mcp.json (no env override); its README tells EU users to
-  # register a user-scope entry at the EU endpoint instead. The plugin's US
-  # server stays unauthenticated. Auth: run /mcp once (OAuth).
-  if claude mcp add --transport http -s user logfire https://logfire-eu.pydantic.dev/mcp 2>/dev/null; then
-    ok "logfire MCP configured (EU)"
-  elif claude mcp get logfire &>/dev/null; then
-    ok "logfire MCP already configured"
-  else
-    warn "logfire MCP may need manual setup"
-  fi
-}
+# install_mcp_packages / install_claude_mcps / install_claude_plugins live in
+# lib/provision.sh (shared with aicoding-sync).
 
 # --- Claude onboarding state ---
 # Without these flags ~/.claude.json, the CLI treats every session as a fresh
@@ -843,43 +754,6 @@ seed_github_known_host() {
   rm -f "$tmp"
 }
 
-# --- Claude Code marketplace plugins ---
-install_claude_plugins() {
-  header "Claude Code Plugins"
-
-  if ! command -v claude &>/dev/null; then
-    warn "Claude Code CLI not found — skipping plugin installation"
-    return
-  fi
-
-  for plugin in "${MANAGED_PLUGINS[@]}"; do
-    # Try install first; if already installed, try update
-    if claude plugin install "$plugin" 2>/dev/null; then
-      ok "Installed $plugin"
-    elif claude plugin update "$plugin" 2>/dev/null; then
-      ok "Updated $plugin"
-    else
-      # Already installed and up to date, or install failed
-      ok "$plugin (already installed)"
-    fi
-  done
-}
-
-# --- aicoding-update CLI symlink ---
-install_aicoding_update_symlink() {
-  header "aicoding-update CLI"
-  local src="$SCRIPT_DIR/bin/aicoding-update"
-  local dest="$HOME/.local/bin/aicoding-update"
-  if [[ ! -f "$src" ]]; then
-    warn "bin/aicoding-update not found in blueprint — skipping symlink"
-    return
-  fi
-  mkdir -p "$HOME/.local/bin"
-  ln -sf "$src" "$dest"
-  chmod +x "$src"
-  ok "aicoding-update installed at $dest -> $src"
-}
-
 # --- aicoding-sync CLI symlink ---
 install_aicoding_sync_symlink() {
   header "aicoding-sync CLI"
@@ -901,13 +775,6 @@ install_update_status_symlink() {
   [[ -f "$src" ]] || { warn "bin/aicoding-status not found — skipping"; return; }
   mkdir -p "$HOME/.local/bin"; chmod +x "$src"; ln -sf "$src" "$dest"
   ok "aicoding-status installed at $dest -> $src"
-  # Back-compat shim: keep ~/.local/bin/update-status pointing at the renamed CLI.
-  # Remove after one release.
-  local shim_src="$SCRIPT_DIR/bin/update-status" shim_dest="$HOME/.local/bin/update-status"
-  if [[ -f "$shim_src" ]]; then
-    chmod +x "$shim_src"; ln -sf "$shim_src" "$shim_dest"
-    ok "update-status shim installed at $shim_dest -> $shim_src"
-  fi
 }
 
 # --- SSH agent socket self-heal watcher (container only) ---
@@ -1275,9 +1142,9 @@ main() {
   install_claude_mcps
   ensure_claude_onboarding_state
   install_claude_plugins
-  install_aicoding_update_symlink
   install_aicoding_sync_symlink
   install_update_status_symlink
+  remove_deprecated_shims
   install_ssh_agent_watch_symlink
 
   local mode
