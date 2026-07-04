@@ -34,7 +34,6 @@ seed_github_known_host() {
 
 _sync_plumbing() {            # never throttled — must be correct now
   command -v aicoding-ssh-agent-watch >/dev/null 2>&1 && aicoding-ssh-agent-watch --ensure 2>/dev/null || true
-  command -v aicoding-paseo-daemon >/dev/null 2>&1 && aicoding-paseo-daemon --ensure 2>/dev/null || true
   command -v seed_github_known_host >/dev/null 2>&1 && seed_github_known_host || true
 }
 
@@ -271,11 +270,6 @@ _sync_binaries() {            # throttled network refresh
   command -v opencode >/dev/null 2>&1 && { opencode upgrade || true; }
   if command -v agent >/dev/null 2>&1; then agent update || true
   elif command -v cursor-agent >/dev/null 2>&1; then cursor-agent update || true; fi
-  # Track-latest policy for paseo (spec decision). The running daemon is NOT
-  # restarted — the new version takes effect on next container start.
-  if command -v paseo >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
-    npm install -g @getpaseo/cli@latest >/dev/null 2>&1 || true
-  fi
 }
 
 # Returns 0 if the binary-refresh throttle window is still fresh.

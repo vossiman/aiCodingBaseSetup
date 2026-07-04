@@ -1,9 +1,0 @@
-{
-  "scripts": {
-    "dev": {
-      "type": "service",
-      "command": "npm run dev",
-      "port": 3000
-    }
-  }
-}

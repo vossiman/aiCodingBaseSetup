@@ -14,7 +14,6 @@ Inspect the current working directory (do not run a tool yet — just reason abo
 - `CLAUDE.md`
 - `README.md`
 - `TODO.md`
-- `paseo.json`
 - `.claude/settings.json`
 - `docs/specs/{active,archive}/.gitkeep`
 - `docs/plans/{active,archive}/.gitkeep`
@@ -69,7 +68,5 @@ If not a git repo, run `git init`. Do not make a commit — leave that to the us
 Print a concise summary: how many files created, how many skipped, path to the new `CLAUDE.md`, and a one-line pointer:
 
 > Next: fill in `TODO.md` and run `/housekeep` when you start marking docs `status: done`.
-
-Also mention once: `paseo.json` ships a starter `dev` service (`npm run dev`, port 3000) — edit its command/port to your stack; paseo gives it a preview URL reachable from the paseo app.
 
 Do not elaborate further. The user can read `CLAUDE.md` for the conventions.

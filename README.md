@@ -161,58 +161,9 @@ The `~/.bashrc.d/` convention for user additions: anything matching `local-*.sh`
 
 The pre-manifest installer would silently clobber any file you'd hand-edited on every re-run. The manifest + drift detection lets the installer guarantee "your changes are never overwritten without a prompt." See `docs/superpowers/specs/2026-05-16-blueprint-sync-design.md` in the parent [devMachine](https://github.com/vossiman/devMachine) repo for the full design.
 
-## Remote control (paseo)
-
-Every pod runs a [paseo](https://paseo.sh) daemon so you can drive the coding
-agents (Claude Code, Codex, Cursor via ACP, OpenCode) from the paseo phone /
-tablet / desktop apps.
-
-- **State:** `~/.aicodingsetup/paseo/<workspace-id>/` (exported as `PASEO_HOME`
-  in shells). It lives inside the shared `~/.aicodingsetup` bind mount, so the
-  daemon's keypair — its pairing identity — survives rebuilds. Per-workspace
-  subdir means each pod has its own identity (no relay collision).
-- **Pairing (once per pod; the same QR pairs every device):** run
-  `paseo daemon pair` in the pod — or use the dvw TUI's *pair remote (paseo)*
-  action — and scan from the app. Re-pairing is only needed if `~/.aicodingsetup`
-  is wiped.
-- **Lifecycle:** started at the end of `install.sh` (provision) and re-ensured
-  on every container start via `aicoding-paseo-daemon --ensure` in the boot
-  sync. It is **never auto-restarted** — a restart kills in-flight agents and
-  orphans their processes. Version tracks latest (`@getpaseo/cli@latest` in the
-  throttled binary refresh); the new version takes effect on the next container
-  start, not mid-session.
-- **Config** (`configs/paseo/config.json`, deployed per pod): voice/dictation
-  off, relay on, Cursor registered as an ACP provider. Fully managed —
-  per-pod edits are not preserved.
-- **Auto-project:** `--ensure` registers the pod's project dir
-  (`/workspaces/<id>`) with the daemon via its `openProject` primitive (the
-  `aicoding-paseo-open-project.mjs` helper), so the project shows up in the app
-  sidebar automatically. Idempotent (the daemon dedups by directory), no agent
-  started, fail-open (relies on the bundled paseo CLI client; no-ops if that
-  moves in a future version — you can still add the project from the app).
-- **Dev-server preview URLs:** `/scaffold-project` drops a starter `paseo.json`
-  with a `dev` service (`npm run dev`, port 3000 — edit per stack). paseo
-  auto-starts declared `scripts` of `type: "service"` and gives each a preview
-  URL reachable from the app over the relay. Keeps paseo and tmux separate —
-  this is paseo's own service supervision, not a tmux attach.
-  - **`paseo.json` lives in the git repo, like `devcontainer.json`** — it's a
-    per-repo file committed at the repo root, *not* a managed dotfile deployed
-    into `~/` by `install.sh`/`aicoding-update`. New repos get it via
-    `/scaffold-project`; for an existing repo, copy the starter from
-    `~/.aicodingsetup/templates/project/paseo.json` into the repo root and edit
-    it. (Claude Code only — `/scaffold-project` isn't wired into opencode.)
-- **Habit:** agents started in plain tmux do **not** appear in paseo. Start
-  through paseo (`paseo run …`) when you may want phone access, or adopt an
-  existing session later with `paseo import <session-id>`.
-- **Transport:** the vendor E2E-encrypted relay (the daemon dials out — no
-  inbound ports). Direct connection needs the daemon's container port reachable
-  from the device; a self-hosted relay on the host is a documented future option
-  (see `docs/superpowers/notes/2026-06-15-paseo-followups.md` in
-  [devMachine](https://github.com/vossiman/devMachine)).
-
-> The container's hostname is set to the workspace name via
-> `runArgs: ["--hostname", "${containerWorkspaceFolderBasename}"]`, so the paseo
-> app labels each pod by name (e.g. `devmachine`) instead of the docker id.
+> The container hostname is set to the workspace name via runArgs:
+> `["--hostname", "${containerWorkspaceFolderBasename}"]`, so shells and logs
+> show e.g. `devmachine` instead of a docker id.
 
 ## Windows
 
