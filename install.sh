@@ -383,12 +383,18 @@ ensure_uv() {
 }
 
 ensure_tmux() {
-  # Need tmux 3.3+ for our tmux.conf (allow-passthrough, display-popup).
-  # Universal:2 is focal-based and apt only ships 3.0a, so we build from source.
-  local minver="3.3"
+  # Need tmux 3.8+ (2026-07-05): every release up to 3.7b leaves stale
+  # fragments on the outer terminal when TUIs emit DEC 2026 synchronized
+  # output (Claude Code does since 2.1.200) — tmux#5307/#5322,
+  # claude-code#74122. The fixes are only on master until 3.8 ships, so we
+  # build a pinned master commit; drop the pin for the release tarball once
+  # tmux 3.8 is out.
+  local minver="3.8"
   if command -v tmux &>/dev/null; then
     local current
-    current="$(tmux -V 2>/dev/null | awk '{print $2}' | sed 's/[a-z]//g')"
+    current="$(tmux -V 2>/dev/null | awk '{print $2}')"
+    current="${current#next-}"                # master builds report "next-3.8"
+    current="$(printf '%s' "$current" | sed 's/[a-z]//g')"
     if awk "BEGIN{exit !(${current:-0} >= ${minver})}" 2>/dev/null; then
       ok "tmux $current already installed"
       return 0
@@ -399,26 +405,29 @@ ensure_tmux() {
   fi
 
   command -v curl &>/dev/null || { warn "curl not available — skipping tmux build"; return 0; }
-  apt_install build-essential libevent-dev libncurses-dev pkg-config bison || {
+  apt_install build-essential libevent-dev libncurses-dev pkg-config bison autoconf automake || {
     warn "Could not install tmux build deps — falling back to apt's tmux"
     apt_install tmux || warn "apt tmux install also failed — tmux may be missing (non-fatal)"
     return 0
   }
 
-  local tmux_version="3.5a"
+  # Pinned master commit (2026-07-04, verified to fix the artifacts; contains
+  # the sync-end dirty-tracking + ED-2 dirty fixes).
+  local tmux_commit="5356c62eadf8650ad1ffc95f52755d6f66029a20"
   local build_dir="/tmp/tmux-build-$$"
   rm -rf "$build_dir" && mkdir -p "$build_dir"
   (
     cd "$build_dir"
-    curl -fsSL "https://github.com/tmux/tmux/releases/download/${tmux_version}/tmux-${tmux_version}.tar.gz" \
+    curl -fsSL "https://github.com/tmux/tmux/archive/${tmux_commit}.tar.gz" \
       | tar xz --strip-components=1
+    sh autogen.sh &>/dev/null            # git snapshot has no ./configure yet
     ./configure --prefix=/usr/local &>/dev/null
     make -j"$(nproc)" &>/dev/null
     $SUDO make install &>/dev/null
   ) || { warn "tmux build failed — falling back to apt's tmux"; apt_install tmux || warn "apt tmux install also failed — tmux may be missing (non-fatal)"; rm -rf "$build_dir"; return 0; }
   rm -rf "$build_dir"
   hash -r
-  ok "tmux ${tmux_version} built and installed to /usr/local/bin/tmux"
+  ok "tmux $(tmux -V 2>/dev/null | awk '{print $2}') (master ${tmux_commit:0:7}) built and installed to /usr/local/bin/tmux"
 }
 
 ensure_playwright_browsers() {
