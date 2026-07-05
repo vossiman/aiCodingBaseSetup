@@ -32,6 +32,19 @@ teardown() {
   rm -rf "$TMPDIR"
 }
 
+# For tests that MUTATE blueprint sources (simulating "blueprint changed
+# upstream"): work on a per-test copy, never on $BLUEPRINT_ROOT itself. The
+# suite runs in parallel — an in-place edit of the real checkout is visible to
+# every concurrently running test (deploys pick up the marker line → flaky
+# hash mismatches), and a killed run leaks the edit into the working tree.
+# Sets $BP; run install as `bash "$BP/install.sh"` for every run in the test.
+blueprint_copy() {
+  BP="$TMPDIR/blueprint"
+  rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$BP/"
+  (cd "$BP" && git init -q && git add -A && \
+    git -c user.email=t@t -c user.name=t commit -q -m test-copy)
+}
+
 @test "install.sh mode: first-deploy when no manifest and no managed files" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   [ -f "$AICODING_MANIFEST" ]
@@ -147,19 +160,20 @@ EOF
 }
 
 @test "install.sh reconcile mode: applies will_update for unedited file" {
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  blueprint_copy
+  bash "$BP/install.sh" </dev/null
   # Snapshot the deployed tmux.conf hash and overwrite the blueprint source
-  # to simulate a blueprint update (test-only — does not commit upstream).
+  # to simulate a blueprint update.
   local deployed_hash
   deployed_hash=$(jq -r '.files["'"$HOME"'/.tmux.conf"].deployed_hash' "$AICODING_MANIFEST")
-  local blueprint_src="$BLUEPRINT_ROOT/configs/tmux/tmux.conf"
+  local blueprint_src="$BP/configs/tmux/tmux.conf"
   local original_blueprint
   original_blueprint=$(cat "$blueprint_src")
   echo "${original_blueprint}
 # new blueprint addition" > "$blueprint_src"
 
   # Re-run; should auto-update since user hasn't touched ~/.tmux.conf.
-  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  run bash "$BP/install.sh" </dev/null
   [ "$status" -eq 0 ]
 
   # File now matches new blueprint, not old deployed_hash.
@@ -171,26 +185,21 @@ EOF
   local manifest_hash
   manifest_hash=$(jq -r '.files["'"$HOME"'/.tmux.conf"].deployed_hash' "$AICODING_MANIFEST")
   [ "$manifest_hash" = "$new_hash" ]
-
-  # Restore blueprint source so other tests don't see the modified file.
-  printf '%s' "$original_blueprint" > "$blueprint_src"
 }
 
 @test "install.sh reconcile mode: does not auto-resolve drifted_and_updating" {
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  blueprint_copy
+  bash "$BP/install.sh" </dev/null
   # Edit the deployed file (user drift).
   echo "user local change" >> "$HOME/.tmux.conf"
   local edited_hash
   edited_hash=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
 
   # Also change the blueprint so the bucket is drifted_and_updating, not drifted_but_aligned.
-  local blueprint_src="$BLUEPRINT_ROOT/configs/tmux/tmux.conf"
-  local original_blueprint
-  original_blueprint=$(cat "$blueprint_src")
-  echo "${original_blueprint}
-# blueprint also changed" > "$blueprint_src"
+  echo "
+# blueprint also changed" >> "$BP/configs/tmux/tmux.conf"
 
-  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  run bash "$BP/install.sh" </dev/null
   [ "$status" -eq 0 ]
 
   # User's edit must be preserved byte-for-byte.
@@ -199,32 +208,29 @@ EOF
   [ "$after_hash" = "$edited_hash" ]
   # No .bak.* file created (reconcile didn't back up + overwrite).
   [ -z "$(ls "$HOME"/.tmux.conf.bak.* 2>/dev/null)" ]
-
-  # Cleanup.
-  printf '%s' "$original_blueprint" > "$blueprint_src"
 }
 
 @test "reconcile force-restores a drifted owned bashrc.d snippet (with backup)" {
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  blueprint_copy
+  bash "$BP/install.sh" </dev/null
   echo "# STALE old version" > "$HOME/.bashrc.d/aicoding-env.sh"
-  printf '\n# blueprint moved\n' >> "$BLUEPRINT_ROOT/configs/bash/env.sh"
-  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  printf '\n# blueprint moved\n' >> "$BP/configs/bash/env.sh"
+  run bash "$BP/install.sh" </dev/null
   [ "$status" -eq 0 ]
   ! grep -q "STALE old version" "$HOME/.bashrc.d/aicoding-env.sh"
   grep -q "blueprint moved" "$HOME/.bashrc.d/aicoding-env.sh"
   ls "$HOME"/.bashrc.d/aicoding-env.sh.bak.* >/dev/null 2>&1
-  git -C "$BLUEPRINT_ROOT" checkout -- configs/bash/env.sh
 }
 
 @test "reconcile still preserves an edited non-owned overwrite file" {
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  blueprint_copy
+  bash "$BP/install.sh" </dev/null
   echo "# user tweak" >> "$HOME/.tmux.conf"
   local edited; edited=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
-  printf '\n# blueprint moved\n' >> "$BLUEPRINT_ROOT/configs/tmux/tmux.conf"
-  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  printf '\n# blueprint moved\n' >> "$BP/configs/tmux/tmux.conf"
+  run bash "$BP/install.sh" </dev/null
   [ "$status" -eq 0 ]
   [ "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')" = "$edited" ]
-  git -C "$BLUEPRINT_ROOT" checkout -- configs/tmux/tmux.conf
 }
 
 @test "install.sh reconcile mode: does not delete to_remove entries" {
@@ -253,20 +259,16 @@ EOF
 }
 
 @test "install.sh: prints NOTE follow-up when drifted or to_review > 0" {
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  blueprint_copy
+  bash "$BP/install.sh" </dev/null
   # Force a drifted_and_updating bucket.
   echo "user local change" >> "$HOME/.tmux.conf"
-  local blueprint_src="$BLUEPRINT_ROOT/configs/tmux/tmux.conf"
-  local original_blueprint
-  original_blueprint=$(cat "$blueprint_src")
-  echo "${original_blueprint}
-# blueprint also changed" > "$blueprint_src"
+  echo "
+# blueprint also changed" >> "$BP/configs/tmux/tmux.conf"
 
-  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  run bash "$BP/install.sh" </dev/null
   [ "$status" -eq 0 ]
   echo "$output" | grep -qE '^NOTE: [0-9]+ drifted file\(s\), [0-9]+ file\(s\) to review'
-
-  printf '%s' "$original_blueprint" > "$blueprint_src"
 }
 
 @test "install.sh: ERR trap announces step name on failure" {
@@ -626,7 +628,8 @@ BRAVE_API_KEY=fake-brave-456
 CLOUDFLARE_API_TOKEN=
 CLOUDFLARE_ACCOUNT_ID=
 EOF
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  blueprint_copy
+  bash "$BP/install.sh" </dev/null
 
   # User edits the file (drift).
   echo "# user-added line" >> "$HOME/.codex/config.toml"
@@ -635,11 +638,9 @@ EOF
 
   # Also change the blueprint source so the bucket is drifted_and_updating
   # (not drifted_but_aligned), which is the conservatism case we care about.
-  local original_blueprint
-  original_blueprint=$(cat "$BLUEPRINT_ROOT/configs/codex/config.toml")
-  echo "# blueprint also changed" >> "$BLUEPRINT_ROOT/configs/codex/config.toml"
+  echo "# blueprint also changed" >> "$BP/configs/codex/config.toml"
 
-  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  run bash "$BP/install.sh" </dev/null
   [ "$status" -eq 0 ]
   # User's edit preserved byte-for-byte (reconcile excludes drifted_and_updating).
   local after_hash
@@ -649,11 +650,6 @@ EOF
   echo "$output" | grep -qE 'drifted [1-9][0-9]* '
   # NOTE line surfaces.
   echo "$output" | grep -qE '^NOTE: [0-9]+ drifted file'
-
-  # Restore blueprint so other tests don't see the modification. The
-  # source codex/config.toml ends with a trailing newline; preserve it
-  # with `printf '%s\n'` (a bare `printf '%s'` would silently strip it).
-  printf '%s\n' "$original_blueprint" > "$BLUEPRINT_ROOT/configs/codex/config.toml"
 }
 
 @test "install.sh first-deploy: installs slash commands and tracks them in the manifest" {

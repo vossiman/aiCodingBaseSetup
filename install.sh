@@ -485,6 +485,11 @@ auto_install_prereqs() {
   command -v git    &>/dev/null || { info "Installing git";    apt_install git; }
   command -v jq     &>/dev/null || { info "Installing jq";     apt_install jq; }
   command -v bwrap  &>/dev/null || { info "Installing bubblewrap"; apt_install bubblewrap; }
+  # GNU parallel lets tests/bats/run.sh fan the suite across all cores. The
+  # universal image only ships moreutils' incompatible parallel, which bats
+  # can't use; the parallel package diverts it.
+  parallel --version 2>/dev/null | head -1 | grep -q "GNU parallel" \
+    || { info "Installing GNU parallel"; apt_install parallel; }
   ensure_tmux
   # Modern terminal terminfos so tmux works for kitty/alacritty/wezterm users.
   # Check for the xterm-kitty terminfo file directly — `infocmp` returns
