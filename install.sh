@@ -441,12 +441,55 @@ ensure_playwright_browsers() {
   npx -y playwright install chromium 2>&1 | tail -5 || warn "Playwright browser install failed"
 }
 
+# The universal devcontainer images bake in the git-lfs feature with autoPull
+# hardcoded on: /usr/local/share/pull-git-lfs-artifacts.sh runs
+# `git lfs install && git lfs pull` as a lifecycle hook AFTER install.sh and
+# hard-fails the whole `devcontainer up` (set -e, exit 2) when the workspace's
+# .git/hooks/pre-push is owned by another tool (e.g. pre-commit's push-stage
+# hook). git-lfs only accepts hook files it wrote itself — even a hook that
+# contains `git lfs pre-push "$@"` is rejected — so merging hooks can't fix it.
+# Instead: dry-run `git lfs install` here; if it can't take ownership, flip the
+# baked-in AUTO_PULL flag off and run the pull ourselves (a plain
+# `git lfs pull` needs no hooks). Repos whose hooks are free stay on the
+# feature's own auto-pull path, untouched.
+ensure_lfs_autopull_safe() {
+  local script="${AICODINGSETUP_LFS_PULL_SCRIPT:-/usr/local/share/pull-git-lfs-artifacts.sh}"
+  [[ -f "$script" ]] || return 0
+  git lfs version &>/dev/null || return 0
+  # Same gate the feature script uses before it reaches `git lfs install`:
+  # fails outside a git work tree, succeeds (even with no lfs files) inside one.
+  git lfs ls-files &>/dev/null || return 0
+  if git lfs install &>/dev/null; then
+    ok "git lfs hooks install cleanly — baked-in lfs auto-pull can run"
+    return 0
+  fi
+  info "pre-push hook owned by another tool — disabling baked-in git-lfs auto-pull"
+  if [[ -w "$script" ]]; then
+    sed -i 's/^AUTO_PULL=true$/AUTO_PULL=false/' "$script" || warn "could not patch $script"
+  else
+    $SUDO sed -i 's/^AUTO_PULL=true$/AUTO_PULL=false/' "$script" || warn "could not patch $script"
+  fi
+  if [[ "${AICODINGSETUP_SKIP_NETWORK:-}" == "1" ]]; then
+    info "Skipping git lfs pull (AICODINGSETUP_SKIP_NETWORK)"
+    return 0
+  fi
+  if git lfs ls-files --name-only 2>/dev/null | grep -q .; then
+    info "Fetching git lfs artifacts directly"
+    git lfs pull || warn "git lfs pull failed — run it manually in the workspace"
+  fi
+}
+
 auto_install_prereqs() {
   header "Auto-installing prerequisites"
   ensure_login_shells_clean
   command -v git    &>/dev/null || { info "Installing git";    apt_install git; }
   command -v jq     &>/dev/null || { info "Installing jq";     apt_install jq; }
   command -v bwrap  &>/dev/null || { info "Installing bubblewrap"; apt_install bubblewrap; }
+  # GNU parallel lets tests/bats/run.sh fan the suite across all cores. The
+  # universal image only ships moreutils' incompatible parallel, which bats
+  # can't use; the parallel package diverts it.
+  parallel --version 2>/dev/null | head -1 | grep -q "GNU parallel" \
+    || { info "Installing GNU parallel"; apt_install parallel; }
   ensure_tmux
   # Modern terminal terminfos so tmux works for kitty/alacritty/wezterm users.
   # Check for the xterm-kitty terminfo file directly — `infocmp` returns
@@ -1199,6 +1242,7 @@ main() {
   install_bubblewrap
   install_infra_audit
   check_playwright
+  ensure_lfs_autopull_safe
 
   header "Done!"
   info "Mode: $mode"
