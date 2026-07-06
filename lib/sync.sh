@@ -32,9 +32,30 @@ seed_github_known_host() {
   rm -f "$tmp"
 }
 
+# Register gh as git's credential helper for github.com so HTTPS git auth
+# works without prompting. The helper lives in the container-local ~/.gitconfig,
+# which every rebuild wipes — until 2026-07 it had only ever been set by hand
+# (2026-06-16 HTTPS switch), so rebuilt containers prompted "Username for
+# 'https://github.com'". Boot shells are non-interactive and never source
+# ~/.bashrc.d/aicoding-env.sh, so GH_TOKEN is absent and `gh auth setup-git`
+# would refuse (no authenticated host) — source the secrets file first.
+# Idempotent, fail-open.
+ensure_gh_credential_helper() {
+  command -v gh >/dev/null 2>&1 || return 0
+  git config --global --get-all credential.https://github.com.helper 2>/dev/null \
+    | grep -q 'gh auth git-credential' && return 0
+  (
+    if [[ -z "${GH_TOKEN:-}" && -r "$HOME/.aicodingsetup/.secrets.env" ]]; then
+      set -a; . "$HOME/.aicodingsetup/.secrets.env"; set +a
+    fi
+    gh auth setup-git
+  ) 2>/dev/null || printf 'WARN: %s\n' "gh auth setup-git failed — git over HTTPS may prompt for credentials" >&2
+}
+
 _sync_plumbing() {            # never throttled — must be correct now
   command -v aicoding-ssh-agent-watch >/dev/null 2>&1 && aicoding-ssh-agent-watch --ensure 2>/dev/null || true
   command -v seed_github_known_host >/dev/null 2>&1 && seed_github_known_host || true
+  command -v ensure_gh_credential_helper >/dev/null 2>&1 && ensure_gh_credential_helper || true
 }
 
 # Bring the blueprint clone current. Clone if absent; otherwise fetch and
