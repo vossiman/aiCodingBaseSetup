@@ -141,3 +141,38 @@ teardown() { rm -rf "$TMP"; }
       bash "$BLUEPRINT_ROOT/on-start.sh"
   [ "$status" -eq 0 ]
 }
+
+# --- gh credential helper plumbing -------------------------------------------
+# Rebuilt containers lose the container-local ~/.gitconfig, and with it the gh
+# credential helper — HTTPS git then prompts "Username for 'https://github.com'".
+# _sync_plumbing must (re)register it on every boot. 2026-07-06 dataenv incident.
+
+@test "plumbing registers gh as git credential helper when missing" {
+  printf '#!/bin/sh\necho "gh $*" >> "$TMP/ran.log"\n' > "$TMP/stubs/gh"; chmod +x "$TMP/stubs/gh"
+  _sync_plumbing
+  grep -q "gh auth setup-git" "$TMP/ran.log"
+}
+
+@test "plumbing skips gh auth setup-git when the helper is already configured" {
+  printf '#!/bin/sh\necho "gh $*" >> "$TMP/ran.log"\n' > "$TMP/stubs/gh"; chmod +x "$TMP/stubs/gh"
+  git config --global credential.https://github.com.helper '!/usr/bin/gh auth git-credential'
+  _sync_plumbing
+  ! grep -q "gh auth setup-git" "$TMP/ran.log" 2>/dev/null
+}
+
+@test "plumbing sources the secrets file so gh sees GH_TOKEN in non-interactive boot" {
+  # postStart shells never source ~/.bashrc.d/aicoding-env.sh, so GH_TOKEN is
+  # absent — and `gh auth setup-git` refuses without an authenticated host.
+  printf '#!/bin/sh\necho "token=${GH_TOKEN:-unset}" >> "$TMP/ran.log"\n' > "$TMP/stubs/gh"; chmod +x "$TMP/stubs/gh"
+  mkdir -p "$TMP/.aicodingsetup"
+  echo 'GH_TOKEN=test-token-123' > "$TMP/.aicodingsetup/.secrets.env"
+  run env GH_TOKEN= bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; ensure_gh_credential_helper'
+  [ "$status" -eq 0 ]
+  grep -q "token=test-token-123" "$TMP/ran.log"
+}
+
+@test "plumbing is fail-open when gh auth setup-git fails" {
+  printf '#!/bin/sh\nexit 1\n' > "$TMP/stubs/gh"; chmod +x "$TMP/stubs/gh"
+  run bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; ensure_gh_credential_helper'
+  [ "$status" -eq 0 ]
+}
