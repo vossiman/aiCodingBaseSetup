@@ -95,6 +95,18 @@ Secrets are stored at `~/.aicodingsetup/.secrets.env` (outside the repo).
 - MCP keys are injected into MCP config blocks
 - Skill keys are substituted directly into SKILL.md files
 
+In devcontainers the file is bind-mounted **read-only** (a single-file mount
+stacked over the rw `~/.aicodingsetup` mount) so no in-container tooling or
+agent can rewrite or delete the host-side source of truth. Two consequences:
+
+- The file must **exist on the host before provisioning** (`touch
+  ~/devpod/aicodingsetup/.secrets.env` on a fresh host) — Docker creates a
+  *directory* in place of a missing single-file bind source.
+- A single-file bind pins the file's inode: after editing on the host with a
+  rename-on-save editor (vim, `sed -i`), running containers keep seeing the
+  old content until restarted. Edit in place (`nano`, `echo >>`) or restart
+  the container after rotating tokens.
+
 ## Update
 
 Two distinct flows after the initial install:
@@ -212,6 +224,7 @@ The template ships with `"mounts": [...]` wired for a DevPod-style backend (e.g.
 | Host source | Container target | What persists |
 |---|---|---|
 | `…/aicodingsetup/` | `~/.aicodingsetup/` | `.secrets.env`, `manifest.json` |
+| `…/aicodingsetup/.secrets.env` | `~/.aicodingsetup/.secrets.env` (**read-only**) | overlay on the row above — see "Secrets" |
 | `…/claude/` | `~/.claude/` | Claude credentials, settings, plugins |
 | `…/opencode/` | `~/.local/share/opencode/` | opencode `auth.json` (per-provider tokens) |
 | `…/codex/` | `~/.codex/` | codex `auth.json` + `config.toml` |

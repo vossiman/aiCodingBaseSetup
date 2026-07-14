@@ -9,6 +9,7 @@
   },
   "mounts": [
     "source=${localEnv:HOME}/devpod/aicodingsetup,target=/home/codespace/.aicodingsetup,type=bind",
+    "source=${localEnv:HOME}/devpod/aicodingsetup/.secrets.env,target=/home/codespace/.aicodingsetup/.secrets.env,type=bind,readonly",
     "source=${localEnv:HOME}/devpod/claude,target=/home/codespace/.claude,type=bind",
     "source=${localEnv:HOME}/devpod/opencode,target=/home/codespace/.local/share/opencode,type=bind",
     "source=${localEnv:HOME}/devpod/codex,target=/home/codespace/.codex,type=bind",

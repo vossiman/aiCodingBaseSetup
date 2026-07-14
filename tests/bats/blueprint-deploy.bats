@@ -345,6 +345,17 @@ EOF
   jq -e '.permissions.allow | sort == ["a","b","c"]' "$TMPDIR/dest"
 }
 
+@test "deploy_merge_file: unions 'deny' arrays (sync must not drop user deny rules)" {
+  echo '{"permissions":{"deny":["Shell(rm)"],"allow":["a"]}}' > "$TMPDIR/dest"
+  echo '{"permissions":{"deny":["Read(**/.aicodingsetup/**)"]}}' > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_merge_file "$TMPDIR/src" "$TMPDIR/dest" "configs/example.json"
+  manifest_stage_commit
+  jq -e '.permissions.deny | sort == ["Read(**/.aicodingsetup/**)","Shell(rm)"]' "$TMPDIR/dest"
+  jq -e '.permissions.allow == ["a"]' "$TMPDIR/dest"
+}
+
 @test "deploy_merge_file: records mode=merge in manifest, no hash" {
   echo '{}' > "$TMPDIR/dest"
   echo '{}' > "$TMPDIR/src"
@@ -549,6 +560,20 @@ EOF
   run managed_inventory_merge
   [ "$status" -eq 0 ]
   echo "$output" | grep -qF "$HOME/.cursor/mcp.json|merge|configs/cursor/mcp.json"
+}
+
+@test "managed_inventory_merge: includes cursor cli-config.json (deny rules)" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run managed_inventory_merge
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qF "$HOME/.cursor/cli-config.json|merge|configs/cursor/cli-config.json"
+}
+
+@test "managed_inventory_overwrite: includes bash aliases" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run managed_inventory_overwrite
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qF "$HOME/.bashrc.d/aicoding-aliases.sh|overwrite|configs/bash/aliases.sh"
 }
 
 @test "managed_inventory_merge: opencode.json row is unchanged" {
