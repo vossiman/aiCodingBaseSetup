@@ -576,6 +576,13 @@ EOF
   echo "$output" | grep -qF "$HOME/.bashrc.d/aicoding-aliases.sh|overwrite|configs/bash/aliases.sh"
 }
 
+@test "managed_inventory_overwrite: includes git credential fallback helper" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run managed_inventory_overwrite
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qF "$HOME/.local/bin/git-credential-aicoding|overwrite|configs/git/git-credential-aicoding"
+}
+
 @test "managed_inventory_merge: opencode.json row is unchanged" {
   # Defensive: opencode.json row is still the existing $HOME/.config/opencode
   # path with merge mode — Task 5 widened the source content but did not

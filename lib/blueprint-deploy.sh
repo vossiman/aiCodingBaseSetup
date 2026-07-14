@@ -305,6 +305,7 @@ $HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.s
 $HOME/.bashrc.d/aicoding-update-notify.sh|overwrite|configs/bash/update-notify.sh
 $HOME/.codex/config.toml|overwrite|configs/codex/config.toml
 $HOME/.bashrc.d/aicoding-aliases.sh|overwrite|configs/bash/aliases.sh
+$HOME/.local/bin/git-credential-aicoding|overwrite|configs/git/git-credential-aicoding
 EOF
 }
 
