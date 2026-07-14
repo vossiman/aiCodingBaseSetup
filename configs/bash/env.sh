@@ -1,7 +1,7 @@
 # aiCodingBaseSetup — container-wide environment variables.
 # Sourced from ~/.bashrc via the aicoding managed block in ~/.bashrc.
 # Add export lines here; they apply to every container deployed from
-# this blueprint after running install.sh or aicoding-update.
+# this blueprint after running install.sh or aicoding-sync.
 
 # Export the secrets file into every interactive shell so tools that read
 # their token from the environment pick it up. In particular GH_TOKEN: it

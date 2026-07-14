@@ -1,5 +1,5 @@
 # aiCodingBaseSetup — managed by install.sh. Do not edit directly; your
-# edits will be classified as "drifted" by aicoding-update.
+# edits will be classified as "drifted" by aicoding-sync.
 #
 # {{HOME}} / {{*_API_KEY}} placeholders are substituted at deploy time by
 # lib/blueprint-deploy.sh's deploy_overwrite_file_substituted pipeline.
@@ -9,7 +9,7 @@ model = "gpt-5.5"
 # Setting BOTH of these explicitly suppresses codex's per-project trust screen,
 # so codex stops writing [projects."<path>"].trust_level into this file. That
 # write is what made config.toml drift and get clobbered (with a .bak) on every
-# `aicoding-update`. Spike-verified: with both set, no trust_level is written.
+# `aicoding-sync`. Spike-verified: with both set, no trust_level is written.
 # Tune to taste — approval_policy: untrusted|on-request|never;
 # sandbox_mode: read-only|workspace-write|danger-full-access.
 approval_policy = "on-request"

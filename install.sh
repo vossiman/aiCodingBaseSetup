@@ -1082,9 +1082,9 @@ adopt_existing_files() {
 # reconcile_existing_install — manifest exists; classify each managed file
 # and auto-apply only the conservative bucket set (restore, will_update,
 # drifted_but_aligned, merge). new_file and to_remove are skipped — they stay
-# for the human-driven `aicoding-update`.
+# for the human-driven `aicoding-sync`.
 #
-# Strictly more conservative than `aicoding-update --yes`: never auto-applies
+# Strictly more conservative than `aicoding-sync --yes`: never auto-applies
 # drifted_and_updating or to_remove, because automatic provisioning should
 # never silently overwrite or delete files the user has touched.
 reconcile_existing_install() {
