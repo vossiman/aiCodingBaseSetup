@@ -537,6 +537,13 @@ EOF
   echo "$output" | grep -qF "$HOME/.codex/config.toml|overwrite|configs/codex/config.toml"
 }
 
+@test "managed_inventory_overwrite: includes global claude CLAUDE.md" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run managed_inventory_overwrite
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qF "$HOME/.claude/CLAUDE.md|overwrite|configs/claude/CLAUDE.md"
+}
+
 @test "managed_inventory_merge: includes cursor mcp.json" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run managed_inventory_merge

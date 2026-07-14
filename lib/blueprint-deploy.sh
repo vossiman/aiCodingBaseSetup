@@ -299,6 +299,7 @@ managed_inventory_overwrite() {
 $HOME/.tmux.conf|overwrite|configs/tmux/tmux.conf
 $HOME/.claude/hooks/custom-statusline.js|overwrite|configs/claude/hooks/custom-statusline.js
 $HOME/.claude/hooks/check-archived-docs.sh|overwrite|configs/claude/hooks/check-archived-docs.sh
+$HOME/.claude/CLAUDE.md|overwrite|configs/claude/CLAUDE.md
 $HOME/.bashrc.d/aicoding-env.sh|overwrite|configs/bash/env.sh
 $HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.sh
 $HOME/.bashrc.d/aicoding-update-notify.sh|overwrite|configs/bash/update-notify.sh
