@@ -9,6 +9,17 @@ the next `aicoding-update` overwrites it.
 - Be concise. Short, direct answers; no padding, no tradeoff essays unless
   asked.
 - Lead with the outcome, then only the detail that changes a decision.
+- Plain language. No jargon when an everyday word works, and no long,
+  winding sentences — one idea per sentence.
+
+## Ground claims in evidence
+
+- Base answers on the actual code and command output, not on what you
+  remember or assume about the project.
+- Produce receipts: cite `file:line` for code claims, and show the command
+  and its output for behavior claims (tests, builds, runtime).
+- If you haven't verified something, say so plainly instead of stating it
+  as fact.
 
 ## The repo is the source of truth
 
