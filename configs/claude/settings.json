@@ -8,6 +8,7 @@
     "CLAUDE_CODE_NO_FLICKER": "1"
   },
   "effortLevel": "medium",
+  "autoMemoryEnabled": false,
   "skipDangerousModePermissionPrompt": true,
   "hooks": {
     "PreToolUse": [
