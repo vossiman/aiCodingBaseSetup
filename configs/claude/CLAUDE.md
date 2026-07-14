@@ -1,7 +1,7 @@
 # Global instructions (all projects)
 
 Managed by the aiCodingBaseSetup blueprint (`configs/claude/CLAUDE.md`);
-`aicoding-update` overwrites local edits — change it there, via PR.
+`aicoding-sync` overwrites local edits — change it there, via PR.
 
 - Be concise: lead with the outcome, add only detail that changes a decision.
 - Plain language: no jargon, one idea per sentence.
