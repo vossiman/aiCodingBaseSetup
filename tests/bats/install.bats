@@ -248,7 +248,7 @@ EOF
 
   # File must still exist (to_remove is report-only in reconcile).
   [ -f "$HOME/.obsolete" ]
-  # Manifest entry should still be there too — removal is aicoding-update's job.
+  # Manifest entry should still be there too — removal is aicoding-sync's job.
   jq -e '.files["'"$HOME"'/.obsolete"]' "$AICODING_MANIFEST"
 }
 

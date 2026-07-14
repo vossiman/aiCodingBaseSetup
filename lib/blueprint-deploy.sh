@@ -1,5 +1,5 @@
 # aiCodingBaseSetup — blueprint deployment primitives.
-# Sourced by install.sh and bin/aicoding-update. Pure shell functions only;
+# Sourced by install.sh and bin/aicoding-sync. Pure shell functions only;
 # no top-level side effects. Caller is responsible for `set -euo pipefail`.
 
 : "${AICODING_MANIFEST:=$HOME/.aicodingsetup/manifest.json}"
@@ -286,7 +286,7 @@ remove_managed_file() {
 
 # ----------------------------------------------------------------------------
 # Managed inventory — single source of truth for both install.sh and
-# bin/aicoding-update. Each emitter prints pipe-delimited rows of the form
+# bin/aicoding-sync. Each emitter prints pipe-delimited rows of the form
 # <dest_abs_path>|<mode>|<source_rel_to_blueprint>. Callers consume with
 #   while IFS= read -r entry; do ... done < <(managed_inventory_overwrite)
 # (Do NOT read into a bash array via $() — the dest paths interpolate $HOME
@@ -442,7 +442,7 @@ classify_marker_block() {
 
   if [ "$entry" = "null" ]; then
     # Not tracked yet. If the user happens to have an existing block, the
-    # caller (aicoding-update) shouldn't be classifying this — adopt is
+    # caller (aicoding-sync) shouldn't be classifying this — adopt is
     # install.sh's job. Treat as new_file so the apply step writes it.
     echo "new_file"
     return 0
@@ -507,7 +507,7 @@ classify_marker_block() {
 #   - set AICODING_BLUEPRINT_CLONE to the blueprint working tree
 #   - set AICODING_MANIFEST to the manifest path (read for to_remove sweep)
 #
-# Used by bin/aicoding-update and by install.sh's reconcile mode.
+# Used by bin/aicoding-sync and by install.sh's reconcile mode.
 classify_managed_files() {
   local dest mode source
   # Overwrite-mode files from the blueprint inventory.

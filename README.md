@@ -268,7 +268,10 @@ aiCodingBaseSetup/
 ├── install.ps1                    # Windows installer (stub)
 ├── update.sh                      # postStartCommand: refresh claude + opencode binaries
 ├── bin/
-│   └── aicoding-update            # CLI for applying blueprint changes to a live container
+│   ├── aicoding-install           # pull latest blueprint and re-run the installer
+│   ├── aicoding-sync              # CLI for applying blueprint changes to a live container
+│   ├── aicoding-status            # update-notifier status (banner/tmux/print)
+│   └── aicoding-ssh-agent-watch   # legacy ssh-agent socket watcher
 ├── lib/
 │   └── blueprint-deploy.sh        # Shared library: hash, manifest, classify, deploy primitives
 ├── .secrets.env.example           # Template for required API keys
