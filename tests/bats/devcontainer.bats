@@ -38,6 +38,25 @@ DEVCONTAINER="$BLUEPRINT_ROOT/devcontainer.json"
   done
 }
 
+@test "devcontainer.json: overlays .secrets.env read-only on top of the rw dir mount" {
+  local mounts
+  mounts=$(jq -r '.mounts[]' "$DEVCONTAINER")
+  local overlay='source=${localEnv:HOME}/devpod/aicodingsetup/.secrets.env,target=/home/codespace/.aicodingsetup/.secrets.env,type=bind,readonly'
+  [[ "$mounts" == *"$overlay"* ]] || {
+    echo "missing read-only overlay mount for .secrets.env"
+    echo "actual mounts:"
+    echo "$mounts"
+    return 1
+  }
+
+  # Docker applies mounts in order: the single-file readonly bind must come
+  # AFTER the directory bind to stack on top of it.
+  local dir_idx overlay_idx
+  dir_idx=$(jq -r '.mounts | to_entries[] | select(.value | contains("/devpod/aicodingsetup,")) | .key' "$DEVCONTAINER")
+  overlay_idx=$(jq -r '.mounts | to_entries[] | select(.value | contains(".secrets.env")) | .key' "$DEVCONTAINER")
+  [ -n "$dir_idx" ] && [ -n "$overlay_idx" ] && [ "$overlay_idx" -gt "$dir_idx" ]
+}
+
 @test "devcontainer.json: mounts use generic HOME, not a hardcoded host path" {
   run grep -q "/home/vossi/devpod" "$DEVCONTAINER"
   [ "$status" -ne 0 ]

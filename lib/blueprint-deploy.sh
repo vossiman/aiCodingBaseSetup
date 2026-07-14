@@ -198,8 +198,8 @@ deploy_overwrite_file() {
 }
 
 # _json_merge_into <target_path> <source_path> — deep-merge source into
-# target; source wins for scalars; "allow" arrays are unioned; other arrays:
-# source wins.
+# target; source wins for scalars; "allow"/"deny" arrays are unioned (a sync
+# must never drop a user-added permission rule); other arrays: source wins.
 _json_merge_into() {
   local target=$1 source=$2
   if [ ! -f "$target" ]; then
@@ -223,7 +223,7 @@ _json_merge_into() {
               else {($k): $a[$k]} end)
           | add // {}
         elif ($a|type)=="array" and ($b|type)=="array" then
-          if key == "allow" then ($a + $b) | unique else $b end
+          if key == "allow" or key == "deny" then ($a + $b) | unique else $b end
         else
           if ($b == null or $b == "") then $a else $b end
         end
@@ -304,6 +304,7 @@ $HOME/.bashrc.d/aicoding-env.sh|overwrite|configs/bash/env.sh
 $HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.sh
 $HOME/.bashrc.d/aicoding-update-notify.sh|overwrite|configs/bash/update-notify.sh
 $HOME/.codex/config.toml|overwrite|configs/codex/config.toml
+$HOME/.bashrc.d/aicoding-aliases.sh|overwrite|configs/bash/aliases.sh
 EOF
 }
 
@@ -313,6 +314,7 @@ managed_inventory_merge() {
 $HOME/.claude/settings.json|merge|configs/claude/settings.json
 $HOME/.config/opencode/opencode.json|merge|configs/opencode/opencode.json
 $HOME/.cursor/mcp.json|merge|configs/cursor/mcp.json
+$HOME/.cursor/cli-config.json|merge|configs/cursor/cli-config.json
 EOF
 }
 

@@ -10,10 +10,21 @@ model = "gpt-5.5"
 # so codex stops writing [projects."<path>"].trust_level into this file. That
 # write is what made config.toml drift and get clobbered (with a .bak) on every
 # `aicoding-sync`. Spike-verified: with both set, no trust_level is written.
-# Tune to taste — approval_policy: untrusted|on-request|never;
+#
+# Automode (2026-07-14): the devpod container is the isolation boundary, so no
+# prompts and no codex sandbox — same posture as claude's skip-permissions.
+# Dial back to sandbox_mode = "workspace-write" for a write fence (then also
+# set [sandbox_workspace_write] network_access = true or sandboxed commands
+# lose network). Values — approval_policy: untrusted|on-request|never;
 # sandbox_mode: read-only|workspace-write|danger-full-access.
-approval_policy = "on-request"
-sandbox_mode = "workspace-write"
+#
+# Secrets: codex's default shell_environment_policy strips env vars whose
+# names contain KEY/SECRET/TOKEN from commands it runs. Keep that default
+# (never set ignore_default_excludes = true). Side effect: `git push` from
+# inside codex may fail because the gh credential helper reads GH_TOKEN from
+# the (stripped) environment.
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
 
 [mcp_servers.firecrawl]
 command = "firecrawl-mcp"
