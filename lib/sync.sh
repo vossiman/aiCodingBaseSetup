@@ -67,11 +67,28 @@ ensure_git_credential_file_fallback() {
     || printf 'WARN: %s\n' "could not register git-credential-aicoding fallback" >&2
 }
 
+# Expose Claude skills to codex via the Agent Skills standard location.
+# Cursor already scans ~/.claude/skills for compatibility, but codex only
+# reads ~/.agents/skills (plus repo-level .agents/skills) — one symlink
+# makes ~/.claude/skills the single source of truth for all three CLIs.
+# ~/.agents is container-local (not a bind mount), so this must be
+# re-ensured on every boot. A real (non-symlink) ~/.agents/skills dir is
+# the user's own adoption of the standard — leave it untouched.
+ensure_agents_skills_symlink() {
+  local link="$HOME/.agents/skills" target="$HOME/.claude/skills"
+  [ -L "$link" ] && return 0
+  [ -e "$link" ] && return 0
+  mkdir -p "$HOME/.agents" 2>/dev/null || return 0
+  ln -s "$target" "$link" 2>/dev/null \
+    || printf 'WARN: %s\n' "could not create ~/.agents/skills symlink" >&2
+}
+
 _sync_plumbing() {            # never throttled — must be correct now
   command -v aicoding-ssh-agent-watch >/dev/null 2>&1 && aicoding-ssh-agent-watch --ensure 2>/dev/null || true
   command -v seed_github_known_host >/dev/null 2>&1 && seed_github_known_host || true
   command -v ensure_gh_credential_helper >/dev/null 2>&1 && ensure_gh_credential_helper || true
   command -v ensure_git_credential_file_fallback >/dev/null 2>&1 && ensure_git_credential_file_fallback || true
+  command -v ensure_agents_skills_symlink >/dev/null 2>&1 && ensure_agents_skills_symlink || true
 }
 
 # Bring the blueprint clone current. Clone if absent; otherwise fetch and
