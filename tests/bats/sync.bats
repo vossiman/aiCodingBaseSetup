@@ -176,3 +176,39 @@ teardown() { rm -rf "$TMP"; }
   run bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; ensure_gh_credential_helper'
   [ "$status" -eq 0 ]
 }
+
+# --- file-based GH_TOKEN credential fallback ----------------------------------
+# codex strips *TOKEN* env vars from spawned commands, so the gh helper fails
+# inside codex sessions; git must fall through to the file-based helper.
+
+@test "plumbing registers the file-fallback credential helper (idempotent)" {
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/stubs/gh"; chmod +x "$TMP/stubs/gh"
+  _sync_plumbing
+  _sync_plumbing
+  run bash -c 'git config --global --get-all credential.https://github.com.helper | grep -c git-credential-aicoding'
+  [ "$output" = "1" ]
+}
+
+@test "credential helper: answers get for https/github.com from the secrets file" {
+  mkdir -p "$TMP/.aicodingsetup"
+  echo 'GH_TOKEN=file-token-456' > "$TMP/.aicodingsetup/.secrets.env"
+  run bash -c 'printf "protocol=https\nhost=github.com\n\n" | bash "$BLUEPRINT_ROOT/configs/git/git-credential-aicoding" get'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"username=x-access-token"* ]]
+  [[ "$output" == *"password=file-token-456"* ]]
+}
+
+@test "credential helper: silent for other hosts, other actions, empty/missing token" {
+  mkdir -p "$TMP/.aicodingsetup"
+  echo 'GH_TOKEN=file-token-456' > "$TMP/.aicodingsetup/.secrets.env"
+  run bash -c 'printf "protocol=https\nhost=gitlab.com\n\n" | bash "$BLUEPRINT_ROOT/configs/git/git-credential-aicoding" get'
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  run bash -c 'printf "protocol=https\nhost=github.com\n\n" | bash "$BLUEPRINT_ROOT/configs/git/git-credential-aicoding" store'
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  echo 'GH_TOKEN=' > "$TMP/.aicodingsetup/.secrets.env"
+  run bash -c 'printf "protocol=https\nhost=github.com\n\n" | bash "$BLUEPRINT_ROOT/configs/git/git-credential-aicoding" get'
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  rm "$TMP/.aicodingsetup/.secrets.env"
+  run bash -c 'printf "protocol=https\nhost=github.com\n\n" | bash "$BLUEPRINT_ROOT/configs/git/git-credential-aicoding" get'
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+}

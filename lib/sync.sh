@@ -52,10 +52,26 @@ ensure_gh_credential_helper() {
   ) 2>/dev/null || printf 'WARN: %s\n' "gh auth setup-git failed — git over HTTPS may prompt for credentials" >&2
 }
 
+# Register the file-based GH_TOKEN fallback AFTER the gh helper: agent CLIs
+# (codex) strip *TOKEN* env vars from spawned commands, so gh's env-based
+# helper fails inside those sessions and git falls through to this one,
+# which reads the token from ~/.aicodingsetup/.secrets.env. `!bash <path>`
+# avoids depending on an executable bit the deploy pipeline doesn't set.
+# Idempotent, fail-open. Must run after ensure_gh_credential_helper: `gh
+# auth setup-git` resets the helper list, which would drop this entry.
+ensure_git_credential_file_fallback() {
+  git config --global --get-all credential.https://github.com.helper 2>/dev/null \
+    | grep -q 'git-credential-aicoding' && return 0
+  git config --global --add credential.https://github.com.helper \
+    '!bash "$HOME/.local/bin/git-credential-aicoding"' 2>/dev/null \
+    || printf 'WARN: %s\n' "could not register git-credential-aicoding fallback" >&2
+}
+
 _sync_plumbing() {            # never throttled — must be correct now
   command -v aicoding-ssh-agent-watch >/dev/null 2>&1 && aicoding-ssh-agent-watch --ensure 2>/dev/null || true
   command -v seed_github_known_host >/dev/null 2>&1 && seed_github_known_host || true
   command -v ensure_gh_credential_helper >/dev/null 2>&1 && ensure_gh_credential_helper || true
+  command -v ensure_git_credential_file_fallback >/dev/null 2>&1 && ensure_git_credential_file_fallback || true
 }
 
 # Bring the blueprint clone current. Clone if absent; otherwise fetch and
