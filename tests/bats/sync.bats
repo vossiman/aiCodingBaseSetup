@@ -198,6 +198,22 @@ teardown() { rm -rf "$TMP"; }
   [[ "$output" == *"password=file-token-456"* ]]
 }
 
+@test "plumbing symlinks ~/.agents/skills to ~/.claude/skills (idempotent)" {
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/stubs/gh"; chmod +x "$TMP/stubs/gh"
+  _sync_plumbing
+  _sync_plumbing
+  [ -L "$TMP/.agents/skills" ]
+  [ "$(readlink "$TMP/.agents/skills")" = "$TMP/.claude/skills" ]
+}
+
+@test "plumbing leaves a real ~/.agents/skills dir untouched (user's own adoption)" {
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/stubs/gh"; chmod +x "$TMP/stubs/gh"
+  mkdir -p "$TMP/.agents/skills/my-skill"
+  _sync_plumbing
+  [ ! -L "$TMP/.agents/skills" ]
+  [ -d "$TMP/.agents/skills/my-skill" ]
+}
+
 @test "credential helper: silent for other hosts, other actions, empty/missing token" {
   mkdir -p "$TMP/.aicodingsetup"
   echo 'GH_TOKEN=file-token-456' > "$TMP/.aicodingsetup/.secrets.env"
