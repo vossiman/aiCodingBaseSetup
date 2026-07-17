@@ -50,11 +50,12 @@ and a gentle session-start reminder.
 > to `configs/claude/hooks/` and is tracked in `managed_inventory_overwrite` +
 > `MANAGED_HOOKS`; slash commands deploy dynamically inside
 > `deploy_all_managed_files` **and** `classify_managed_files` (so reconcile
-> restores them); `install_templates()` mirrors the template tree. There is no
-> standalone `install_commands` function any more. A later fix (`12bf21b`)
-> preserves the hook's executable bit through substituted deploys. Full bats
-> suite is green (81/81) and the harness was verified end-to-end against a real
-> `$HOME` in a container.
+> restores them); `install_templates()` mirrors the template tree **outside the
+> manifest** (intentional scaffold material — rsync `--delete`, not classify).
+> There is no standalone `install_commands` function any more. A later fix
+> (`12bf21b`) preserves the hook's executable bit through substituted deploys.
+> `bw-deny-files.sh` is inventory-owned under `configs/claude/hooks/` (vendored
+> from bw-AICode; reconcile/sync deploy it like other hooks).
 
 > **Cross-agent conventions** (AGENTS.md): the scaffold now writes `AGENTS.md` as
 > the canonical, agent-agnostic conventions file (read natively by Codex,

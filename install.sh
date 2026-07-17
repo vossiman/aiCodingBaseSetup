@@ -7,7 +7,7 @@ trap '_rc=$?; printf "INSTALL FAILED  step=%s  line=%s\n" "$_CURRENT_STEP" "$LIN
 # ============================================================================
 # AI Coding Base Setup — Installer/Updater
 # Configures Claude Code and opencode with shared MCPs, skills, hooks, plugins
-# Supports: Linux, WSL (bash only — run install.ps1 on Windows)
+# Supports: Linux, WSL (bash). Windows is unsupported (see contrib/windows/).
 # ============================================================================
 
 # Microsoft's devcontainer universal images ship `/etc/profile` sourcing
@@ -334,7 +334,7 @@ ensure_cursor_agent() {
   fi
 
   # Establish a canonical name regardless of whether we just installed or
-  # it was already present. update.sh and downstream tooling expect either
+  # it was already present. on-start.sh and downstream tooling expect either
   # `agent` or `cursor-agent` to resolve; symlink whichever is present so
   # both names work. Idempotent across re-runs.
   if [[ -x "$HOME/.local/bin/cursor-agent" ]] && [[ ! -e "$HOME/.local/bin/agent" ]]; then
@@ -771,7 +771,7 @@ install_update_status_symlink() {
 
 # --- SSH agent socket self-heal watcher (container only) ---
 # Deploys the watcher onto PATH. We only DEPLOY here (a pure symlink); the
-# daemon is *started* by update.sh on each container start — that keeps full
+  # daemon is *started* by on-start.sh on each container start — that keeps full
 # install.sh runs (and the bats suite, which run install.sh end-to-end) free of
 # a lingering background process. The watcher keeps ~/.ssh/agent.sock pointed at
 # the live forwarded ssh-agent for non-interactive processes; the bashrc snippet
@@ -791,7 +791,7 @@ install_ssh_agent_watch_symlink() {
   mkdir -p "$HOME/.local/bin"
   chmod +x "$src"
   ln -sf "$src" "$dest"
-  ok "aicoding-ssh-agent-watch installed at $dest -> $src (started by update.sh)"
+  ok "aicoding-ssh-agent-watch installed at $dest -> $src (started by on-start.sh)"
 }
 
 # --- tmux plugins (TPM) ---
@@ -867,7 +867,9 @@ install_bubblewrap() {
       ok "bw-AICode cloned" || { err "Failed to clone bw-AICode"; return; }
   fi
 
-  # Run bw-AICode's own installer
+  # Run bw-AICode's own installer (bw CLI / sandbox tooling). The
+  # bw-deny-files PreToolUse hook is owned by managed_inventory_overwrite
+  # (configs/claude/hooks/bw-deny-files.sh); bw's copy is the same content.
   if [[ -f "$vendor_dir/install.sh" ]]; then
     info "Running bw-AICode installer..."
     bash "$vendor_dir/install.sh" && \
@@ -1084,10 +1086,9 @@ _print_install_summary() {
 }
 
 # install_templates — mirror the project-scaffold templates into
-# ~/.aicodingsetup/templates/project. These are scaffolding source material
-# consumed by /scaffold-project, not user-managed dotfiles, so they live
-# outside the manifest: the repo is the source of truth and every run mirrors
-# the latest tree over (rsync --delete, cp -r fallback for minimal containers).
+# ~/.aicodingsetup/templates/project. INTENTIONAL: outside the manifest.
+# Scaffold source for /scaffold-project (not user-edited managed dotfiles), so
+# every run mirrors the repo tree over (rsync --delete; cp -r fallback).
 install_templates() {
   header "Project Templates"
 

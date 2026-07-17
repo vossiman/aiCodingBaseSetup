@@ -555,6 +555,13 @@ EOF
   echo "$output" | grep -qF "$HOME/.claude/CLAUDE.md|overwrite|configs/claude/CLAUDE.md"
 }
 
+@test "managed_inventory_overwrite: includes bw-deny-files hook" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run managed_inventory_overwrite
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qF "$HOME/.claude/hooks/bw-deny-files.sh|overwrite|configs/claude/hooks/bw-deny-files.sh"
+}
+
 @test "managed_inventory_merge: includes cursor mcp.json" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run managed_inventory_merge

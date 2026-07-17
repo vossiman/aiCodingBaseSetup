@@ -58,7 +58,7 @@ Configured for **all four CLIs**: `claude mcp add` for Claude Code (existing), `
 ### Hooks
 
 - **custom-statusline.js** — Powerline-style status bar with context window, rate limits, git branch
-- **bw-deny-files.sh** — Blocks AI access to sensitive files (from [bw-AICode](https://github.com/vossiman/bw-AICode))
+- **bw-deny-files.sh** — Blocks AI access to sensitive files (vendored into `configs/claude/hooks/`; origin [bw-AICode](https://github.com/vossiman/bw-AICode))
 - **check-archived-docs.sh** — SessionStart hook. Emits a one-line banner when a scaffolded project has docs with `status: done` in any `docs/*/active/` folder. Fail-open.
 
 ### Slash commands
@@ -68,7 +68,7 @@ Configured for **all four CLIs**: `claude mcp add` for Claude Code (existing), `
 
 ### Project templates
 
-Installed to `~/.aicodingsetup/templates/project/`. Used by `/scaffold-project` to materialize a new project. The repo is the source of truth — re-running `install.sh` mirrors the latest templates over.
+Installed to `~/.aicodingsetup/templates/project/`. Used by `/scaffold-project` to materialize a new project. **Intentional scaffold material outside the manifest:** `install_templates()` rsyncs with `--delete` every run — the repo tree is always SoT; these are not user-edited managed dotfiles, so they skip classify/hash tracking.
 
 ### Container-side helpers
 
@@ -147,7 +147,6 @@ CLI binaries on a throttle. Behaviour per CLI:
 | Cursor Agent | `agent update` (or `cursor-agent update` on older releases) | ✅ (throttled) |
 | OpenAI Codex | None — no in-place subcommand exists upstream | ❌ — pinned at install-time. Re-run the installer when you want a newer version, OR use `./install.sh --force-reinstall` which re-invokes `ensure_codex`. |
 
-(`update.sh` is a one-line legacy shim that execs `on-start.sh`; prefer `on-start.sh` / `aicoding-sync --boot`.)
 
 Failures on any of the in-place updates are non-fatal and surface as `WARN:` lines so a transient network blip doesn't block container start.
 
@@ -186,11 +185,7 @@ The pre-manifest installer would silently clobber any file you'd hand-edited on 
 
 ## Windows
 
-```powershell
-.\install.ps1
-```
-
-> **Note:** Windows support is a stub. MCPs, plugins, hooks, and skills work. Settings merge and opencode config are deferred until Windows config paths are verified.
+Unsupported. A quarantined PowerShell stub lives at `contrib/windows/install.ps1` for archaeology only — use Linux/WSL `install.sh`.
 
 ## Devcontainers (DevPod / Codespaces / VS Code Dev Containers)
 
@@ -219,7 +214,7 @@ curl -fsSL https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/dev
 
 `postCreateCommand` clones this repo and runs its `install.sh` once on container creation; `postStartCommand` curls `on-start.sh` from this repo on every container start, which runs the unified sync in `--boot` mode to keep `claude` and `opencode` binaries fresh.
 
-`containerEnv` overrides three `BASH_FUNC_*%%` env vars that universal:6 leaks with truncated multi-line bodies — without it bash errors on every spawn (see [vscode#3928](https://github.com/Microsoft/vscode/issues/3928), [vscode-remote-release#9457](https://github.com/microsoft/vscode-remote-release/issues/9457)). `install.sh` and `update.sh` further re-exec themselves under `env -u` to belt-and-braces the same problem.
+`containerEnv` overrides three `BASH_FUNC_*%%` env vars that universal:6 leaks with truncated multi-line bodies — without it bash errors on every spawn (see [vscode#3928](https://github.com/Microsoft/vscode/issues/3928), [vscode-remote-release#9457](https://github.com/microsoft/vscode-remote-release/issues/9457)). `install.sh` and `on-start.sh` further re-exec themselves under `env -u` to belt-and-braces the same problem.
 
 `remoteUser` must match the image's hardcoded user — `codespace` for `universal:6`, `vscode` for most others (`python`, `base`, etc.). Mismatch → mounts land at the wrong path and nothing works.
 
@@ -282,9 +277,8 @@ The same persist-once-share-everywhere property applies to all four CLIs once th
 ```
 aiCodingBaseSetup/
 ├── install.sh                     # Linux/WSL installer (three-mode dispatch)
-├── install.ps1                    # Windows installer (stub / unsupported)
 ├── on-start.sh                    # postStartCommand entry → aicoding-sync --boot
-├── update.sh                      # legacy one-line shim → on-start.sh
+├── contrib/windows/               # quarantined Windows stub (unsupported)
 ├── bin/
 │   ├── aicoding-install           # refresh /tmp/aicoding to origin/main, re-run install
 │   ├── aicoding-sync              # day-2 reconcile + boot sync
