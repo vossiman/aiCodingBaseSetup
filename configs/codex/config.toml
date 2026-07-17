@@ -33,6 +33,11 @@ sandbox_mode = "danger-full-access"
 # that back into this file, which aicoding-sync will classify as drift).
 [tui]
 status_line = ["run-state", "context-used", "five-hour-limit", "weekly-limit", "branch-changes", "pull-request-number"]
+# Inline rendering instead of the alternate screen: in tmux the alt screen
+# swallows output into codex's internal viewport, so pane scrollback
+# (prefix+[ / mouse) sees nothing. "never" keeps output in the terminal
+# where tmux history works. Same effect as the --no-alt-screen flag.
+alternate_screen = "never"
 
 [mcp_servers.firecrawl]
 command = "firecrawl-mcp"

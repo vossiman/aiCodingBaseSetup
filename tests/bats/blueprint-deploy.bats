@@ -580,6 +580,10 @@ EOF
   grep -q 'context-used' "$BLUEPRINT_ROOT/configs/codex/config.toml"
 }
 
+@test "codex config fragment: disables the alternate screen (tmux scrollback)" {
+  grep -qE '^alternate_screen = "never"' "$BLUEPRINT_ROOT/configs/codex/config.toml"
+}
+
 @test "managed_inventory_overwrite: includes bash aliases" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run managed_inventory_overwrite
