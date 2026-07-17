@@ -96,7 +96,7 @@ Flipping to `status: done` is the trigger; `/housekeep` does the move.
 |---|---|
 | `install.sh` passes `bash -n` | automated ✓ |
 | `configs/claude/settings.json` valid JSON | automated ✓ |
-| `json_merge` preserves existing `PreToolUse`, adds `SessionStart` cleanly | automated ✓ |
+| `_json_merge_into` preserves existing `PreToolUse`, adds `SessionStart` cleanly | automated ✓ |
 | `install_commands` + `install_templates` deploy correctly into sandbox `$HOME` | automated ✓ |
 | `check-archived-docs.sh` — 4 scenarios (2 done / 0 / non-scaffolded / 1 done) | automated ✓ |
 | `check-archived-docs.sh` — fail-open under syntax error | automated ✓ |

@@ -134,16 +134,20 @@ aicoding-install --force-reinstall   # same, but deletes the manifest first (nuk
 
 Re-running the installer on an initialized container (manifest exists) re-runs the apt/build/locale prereq steps (idempotent) **and** then runs **reconcile mode**, which automatically applies the conservative buckets without any prompts. Use it when provisioning-only pieces broke or changed (tool bootstrap incl. codex, templates, tmux plugins, Playwright browser) — `aicoding-sync` deliberately doesn't touch those. Running `./install.sh` from a checkout does the same against that checkout's version.
 
-### Per-CLI update behavior
+### Per-CLI binary refresh (`aicoding-sync --boot`)
 
-Different CLIs have different in-place update stories. `update.sh` (run by `postStartCommand` on every container start) handles each according to its upstream:
+Different CLIs have different in-place update stories. Container `postStartCommand`
+runs `on-start.sh` → `aicoding-sync --boot`, which (among other things) refreshes
+CLI binaries on a throttle. Behaviour per CLI:
 
 | CLI | Update path | Run on every start? |
 |-----|-------------|---------------------|
-| Claude Code | `claude update` | ✅ |
-| opencode | `opencode upgrade` | ✅ |
-| Cursor Agent | `agent update` (or `cursor-agent update` on older releases) | ✅ — `update.sh` probes both binary names |
-| OpenAI Codex | None — no in-place subcommand exists upstream | ❌ — pinned at install-time. Re-run the installer manually when you want a newer version, OR use `./install.sh --force-reinstall` which re-invokes `ensure_codex`. |
+| Claude Code | `claude update` | ✅ (throttled) |
+| opencode | `opencode upgrade` | ✅ (throttled) |
+| Cursor Agent | `agent update` (or `cursor-agent update` on older releases) | ✅ (throttled) |
+| OpenAI Codex | None — no in-place subcommand exists upstream | ❌ — pinned at install-time. Re-run the installer when you want a newer version, OR use `./install.sh --force-reinstall` which re-invokes `ensure_codex`. |
+
+(`update.sh` is a one-line legacy shim that execs `on-start.sh`; prefer `on-start.sh` / `aicoding-sync --boot`.)
 
 Failures on any of the in-place updates are non-fatal and surface as `WARN:` lines so a transient network blip doesn't block container start.
 
@@ -277,52 +281,51 @@ The same persist-once-share-everywhere property applies to all four CLIs once th
 
 ```
 aiCodingBaseSetup/
-├── install.sh                     # Linux/WSL installer with three-mode dispatch
-├── install.ps1                    # Windows installer (stub)
-├── update.sh                      # postStartCommand: refresh claude + opencode binaries
+├── install.sh                     # Linux/WSL installer (three-mode dispatch)
+├── install.ps1                    # Windows installer (stub / unsupported)
+├── on-start.sh                    # postStartCommand entry → aicoding-sync --boot
+├── update.sh                      # legacy one-line shim → on-start.sh
 ├── bin/
-│   ├── aicoding-install           # pull latest blueprint and re-run the installer
-│   ├── aicoding-sync              # CLI for applying blueprint changes to a live container
+│   ├── aicoding-install           # refresh /tmp/aicoding to origin/main, re-run install
+│   ├── aicoding-sync              # day-2 reconcile + boot sync
 │   ├── aicoding-status            # update-notifier status (banner/tmux/print)
 │   └── aicoding-ssh-agent-watch   # legacy ssh-agent socket watcher
 ├── lib/
-│   └── blueprint-deploy.sh        # Shared library: hash, manifest, classify, deploy primitives
+│   ├── blueprint-deploy.sh        # hash, manifest, classify, deploy primitives
+│   ├── provision.sh               # MCPs, plugins, npm packages (shared w/ sync)
+│   └── sync.sh                    # auth plumbing + aicoding-sync core
 ├── .secrets.env.example           # Template for required API keys
 ├── configs/
-│   ├── bash/
-│   │   ├── env.sh                 # Empty — container-wide env vars go here
-│   │   └── ssh-auth-sock.sh       # SSH_AUTH_SOCK stabilizer across reconnects
-│   ├── claude/
-│   │   ├── settings.json          # Base Claude Code settings
-│   │   └── hooks/
-│   │       └── custom-statusline.js
-│   ├── opencode/
-│   │   └── opencode.json          # Base opencode config
-│   └── mcps.json                  # Shared MCP definitions
-├── commands/                      # Slash commands deployed to ~/.claude/commands
-│   ├── scaffold-project.md
-│   └── housekeep.md
-├── hooks/                         # Hooks deployed to ~/.claude/hooks
-│   └── check-archived-docs.sh
-├── templates/
-│   └── project/                   # Mirrored to ~/.aicodingsetup/templates/project
-│       ├── CLAUDE.md.tpl
-│       ├── README.md.tpl
-│       ├── TODO.md.tpl
-│       ├── dot-claude/
-│       │   └── settings.json.tpl
-│       └── docs/
-│           ├── specs/{active,archive}/.gitkeep
-│           ├── plans/{active,archive}/.gitkeep
-│           └── notes/{active,archive}/.gitkeep
-├── skills/
-│   └── cloudflare-browser/
-│       └── SKILL.md
-├── tests/
-│   └── bats/                      # bats-core unit + integration + regression tests
-└── vendor/                        # External repos (gitignored)
-    └── bw-AICode/
+│   ├── bash/                      # env, aliases, ssh-auth-sock, update-notify
+│   ├── claude/                    # settings, CLAUDE.md, hooks/
+│   ├── codex/                     # config.toml (overwrite-managed MCPs)
+│   ├── cursor/                    # mcp.json + cli-config.json
+│   ├── git/                       # git-credential-aicoding
+│   ├── opencode/                  # opencode.json
+│   └── tmux/                      # tmux.conf
+├── commands/                      # Slash commands → ~/.claude/commands
+├── skills/                        # Shared skills → ~/.claude/skills
+├── templates/project/             # Mirrored to ~/.aicodingsetup/templates/project
+├── tests/bats/                    # bats-core suite (run via tests/bats/run.sh)
+├── tools/render-debug/            # Optional tmux/statusline debug harness
+└── vendor/                        # External clones (gitignored), e.g. bw-AICode
 ```
+
+Per-CLI MCP configs live under `configs/{codex,cursor,opencode}/` plus Claude
+registration via `lib/provision.sh` (`MANAGED_MCPS`). There is no shared
+`mcps.json` generator yet — keep those lists in sync by hand when adding an MCP.
+
+## Two delivery channels (dev vs runtime)
+
+| Channel | What | When |
+|---------|------|------|
+| **Parent submodule** (`devMachine` → `devpod/aicoding`) | Editable checkout pinned to a SHA | Developing / reviewing this repo |
+| **Runtime tracking clone** (`/tmp/aicoding` → GitHub `main`) | What containers install & sync from | `postCreate`, `aicoding-install`, `aicoding-sync` refresh |
+
+Edits in the submodule do **not** affect a running container until they land on
+`main` (or you point `AICODING_BLUEPRINT_CLONE` / `AICODING_BLUEPRINT_REMOTE` at
+your checkout). `dvw new` seeds `devcontainer.json` from tip-of-`main` by default
+(`DVW_BLUEPRINT_DEVCONTAINER_URL`).
 
 ## Test Your Setup
 

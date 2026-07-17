@@ -14,20 +14,35 @@
 # dies with "Host key verification failed" before auth. install.sh seeds this on
 # create; doing it here too means already-running containers self-heal on their
 # next start without a rebuild. Fingerprint-verified (not TOFU), idempotent.
+# Uses header/ok/warn when install.sh has defined them; plain stderr otherwise.
 seed_github_known_host() {
   local expected="SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"  # GitHub's published ed25519 fingerprint
   local kh="$HOME/.ssh/known_hosts" tmp scanned
+  declare -F header >/dev/null && header "GitHub SSH host key"
   mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"; touch "$kh"
-  ssh-keygen -F github.com -f "$kh" >/dev/null 2>&1 && return 0
+  if ssh-keygen -F github.com -f "$kh" >/dev/null 2>&1; then
+    declare -F ok >/dev/null && ok "github.com already in known_hosts"
+    return 0
+  fi
   tmp="$(mktemp)"
   if ! ssh-keyscan -t ed25519 github.com >"$tmp" 2>/dev/null || [[ ! -s "$tmp" ]]; then
-    printf 'WARN: %s\n' "ssh-keyscan github.com failed (offline?) — git over SSH may prompt" >&2; rm -f "$tmp"; return 0
+    if declare -F warn >/dev/null; then
+      warn "ssh-keyscan github.com failed (offline?) — skipping; git over SSH may prompt"
+    else
+      printf 'WARN: %s\n' "ssh-keyscan github.com failed (offline?) — git over SSH may prompt" >&2
+    fi
+    rm -f "$tmp"; return 0
   fi
   scanned="$(ssh-keygen -lf "$tmp" | awk '{print $2}')"
   if [[ "$scanned" == "$expected" ]]; then
     cat "$tmp" >>"$kh"
+    declare -F ok >/dev/null && ok "Seeded github.com ed25519 host key (fingerprint verified)"
   else
-    printf 'WARN: %s\n' "github.com host-key fingerprint mismatch ($scanned) — NOT seeding" >&2
+    if declare -F warn >/dev/null; then
+      warn "github.com host-key fingerprint mismatch ($scanned) — NOT seeding"
+    else
+      printf 'WARN: %s\n' "github.com host-key fingerprint mismatch ($scanned) — NOT seeding" >&2
+    fi
   fi
   rm -f "$tmp"
 }

@@ -32,6 +32,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Shared deployment library — used by both install.sh and aicoding-sync.
 . "$SCRIPT_DIR/lib/blueprint-deploy.sh"
+# Auth plumbing helpers (seed_github_known_host, credential helpers, …).
+. "$SCRIPT_DIR/lib/sync.sh"
 
 # Managed file inventory + marker-block content live in lib/blueprint-deploy.sh
 # (managed_inventory_overwrite, managed_inventory_merge, managed_bashrc_*).
@@ -641,58 +643,8 @@ load_or_prompt_secrets() {
   done
 }
 
-# --- JSON merge helper ---
-# Deep merges $2 into $1, writing result to $1
-# Arrays in "allow" keys are unioned; objects are recursively merged
-# Keys in $1 that don't exist in $2 are preserved
-json_merge() {
-  local target="$1"
-  local source="$2"
-
-  if [[ ! -f "$target" ]]; then
-    cp "$source" "$target"
-    return
-  fi
-
-  # Strategy: use jq recursive merge (.*) for objects, but handle arrays specially
-  # For hooks arrays: concatenate and deduplicate by command string
-  # For permissions.allow: union arrays
-  # For enabledPlugins: merge objects (union keys)
-  # For everything else: source wins for scalars, recursive merge for objects
-
-  local merged
-  merged="$(jq -s '
-    # Deep merge: source values override target, objects merge recursively
-    # "allow" arrays are unioned; all other arrays: source wins (preserves order)
-    def deep_merge(key):
-      if length == 2 then
-        .[0] as $a | .[1] as $b |
-        if ($a | type) == "object" and ($b | type) == "object" then
-          ($a | keys_unsorted) + ($b | keys_unsorted) | unique |
-          map(. as $k |
-            if ($a | has($k)) and ($b | has($k)) then
-              {($k): ([$a[$k], $b[$k]] | deep_merge($k))}
-            elif ($b | has($k)) then
-              {($k): $b[$k]}
-            else
-              {($k): $a[$k]}
-            end
-          ) | add // {}
-        elif ($a | type) == "array" and ($b | type) == "array" then
-          if key == "allow" then ($a + $b) | unique
-          else $b
-          end
-        else
-          if ($b == null or $b == "") then $a else $b end
-        end
-      else
-        .[0]
-      end;
-    [.[0], .[1]] | deep_merge("")
-  ' "$target" "$source")"
-
-  echo "$merged" > "$target"
-}
+# JSON merge lives in lib/blueprint-deploy.sh as _json_merge_into (unions both
+# permissions.allow and permissions.deny). Do not reintroduce a local merger.
 
 # --- Report unmanaged components ---
 report_unmanaged() {
@@ -777,34 +729,7 @@ ensure_claude_onboarding_state() {
 
 # --- GitHub SSH host key ---
 # Containers start with an empty ~/.ssh/known_hosts, so the first git-over-SSH to
-# GitHub (riding the forwarded agent) dies with "Host key verification failed"
-# *before* auth — the key is never even offered. Seed GitHub's published ed25519
-# host key, fingerprint-verified (not trust-on-first-use), so git pull/push/submodule
-# work non-interactively. Idempotent.
-seed_github_known_host() {
-  header "GitHub SSH host key"
-  local expected="SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"  # GitHub's published ed25519 fingerprint
-  local kh="$HOME/.ssh/known_hosts"
-  mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"; touch "$kh"
-  if ssh-keygen -F github.com -f "$kh" >/dev/null 2>&1; then
-    ok "github.com already in known_hosts"
-    return
-  fi
-  local tmp scanned
-  tmp="$(mktemp)"
-  if ! ssh-keyscan -t ed25519 github.com >"$tmp" 2>/dev/null || [[ ! -s "$tmp" ]]; then
-    warn "ssh-keyscan github.com failed (offline?) — skipping; git over SSH may prompt"
-    rm -f "$tmp"; return
-  fi
-  scanned="$(ssh-keygen -lf "$tmp" | awk '{print $2}')"
-  if [[ "$scanned" == "$expected" ]]; then
-    cat "$tmp" >>"$kh"
-    ok "Seeded github.com ed25519 host key (fingerprint verified)"
-  else
-    warn "github.com host-key fingerprint mismatch ($scanned) — NOT seeding"
-  fi
-  rm -f "$tmp"
-}
+# seed_github_known_host lives in lib/sync.sh (canonical; also used on boot).
 
 # --- aicoding-sync CLI symlink ---
 install_aicoding_sync_symlink() {
