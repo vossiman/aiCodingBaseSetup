@@ -10,3 +10,11 @@
 # which come from the blueprint's own cursor/mcp.json anyway.
 alias cursor-agent='cursor-agent --force --approve-mcps'
 alias agent='agent --force --approve-mcps'
+
+# Bare `cursor` is an IDE-launcher shim; with no IDE in a container it execs
+# whatever other `cursor` is on PATH (universal:6 ships an unrelated
+# /usr/local/jupyter/cursor) and hangs. Interactive shells should get the
+# agent instead — bash chains alias expansion, so this also picks up the
+# automode flags above. Shell-level only: the system binaries and script
+# PATH resolution are untouched.
+alias cursor='cursor-agent'
