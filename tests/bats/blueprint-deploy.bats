@@ -569,6 +569,21 @@ EOF
   echo "$output" | grep -qF "$HOME/.cursor/cli-config.json|merge|configs/cursor/cli-config.json"
 }
 
+@test "cursor cli-config fragment: valid JSON, statusLine reuses the claude script" {
+  jq -e '.statusLine.type == "command"' "$BLUEPRINT_ROOT/configs/cursor/cli-config.json"
+  jq -re '.statusLine.command' "$BLUEPRINT_ROOT/configs/cursor/cli-config.json" \
+    | grep -qF '{{HOME}}/.claude/hooks/custom-statusline.js'
+}
+
+@test "codex config fragment: carries a [tui] status_line item list" {
+  grep -qE '^status_line = \[' "$BLUEPRINT_ROOT/configs/codex/config.toml"
+  grep -q 'context-used' "$BLUEPRINT_ROOT/configs/codex/config.toml"
+}
+
+@test "codex config fragment: disables the alternate screen (tmux scrollback)" {
+  grep -qE '^alternate_screen = "never"' "$BLUEPRINT_ROOT/configs/codex/config.toml"
+}
+
 @test "managed_inventory_overwrite: includes bash aliases" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run managed_inventory_overwrite
