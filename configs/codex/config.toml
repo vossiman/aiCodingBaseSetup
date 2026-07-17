@@ -26,6 +26,14 @@ model = "gpt-5.5"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 
+# Codex has no custom-command statusline (openai/codex#17827) — these
+# built-in items approximate the claude/cursor powerline script (context
+# bar + limits + branch/PR). Item names spike-verified against the 0.144
+# binary. Reconfigure interactively via /statusline (note: codex persists
+# that back into this file, which aicoding-sync will classify as drift).
+[tui]
+status_line = ["run-state", "context-used", "five-hour-limit", "weekly-limit", "branch-changes", "pull-request-number"]
+
 [mcp_servers.firecrawl]
 command = "firecrawl-mcp"
 env = { FIRECRAWL_API_KEY = "{{FIRECRAWL_API_KEY}}" }
