@@ -350,6 +350,9 @@ auto_install_prereqs() {
   command -v git    &>/dev/null || { info "Installing git";    apt_install git; }
   command -v jq     &>/dev/null || { info "Installing jq";     apt_install jq; }
   command -v bwrap  &>/dev/null || { info "Installing bubblewrap"; apt_install bubblewrap; }
+  # Agent CLIs (codex, opencode) expect a real ripgrep binary on PATH; Claude
+  # Code only shims `rg` as a shell function inside its own sessions.
+  command -v rg     &>/dev/null || { info "Installing ripgrep"; apt_install ripgrep; }
   # GNU parallel lets tests/bats/run.sh fan the suite across all cores. The
   # universal image only ships moreutils' incompatible parallel, which bats
   # can't use; the parallel package diverts it.
