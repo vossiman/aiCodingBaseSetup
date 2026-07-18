@@ -9,9 +9,11 @@ merging; delete merged branches.
 - **Dev / parent submodule** — editable checkout (e.g. `devMachine` →
   `devpod/aicoding`), pinned to a SHA.
 - **Runtime** — containers clone/sync from GitHub `main` into `/tmp/aicoding`
-  (`postCreate`, `aicoding-install`, `aicoding-sync` refresh). Submodule edits
-  do not affect running containers until merged to `main` (or you override
-  `AICODING_BLUEPRINT_CLONE` / `AICODING_BLUEPRINT_REMOTE`).
+  (`postCreate`, `aicoding-install`, `aicoding-sync` refresh).
+- **Local iteration** — pass `--blueprint /path/to/checkout` to
+  `aicoding-sync` or `aicoding-install`. The selected working tree is used
+  verbatim, including uncommitted edits; local mode never fetches or resets it.
+  Start with `aicoding-sync --blueprint "$PWD" --dry-run`.
 
 ## Tests
 

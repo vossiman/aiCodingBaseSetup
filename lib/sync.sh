@@ -6,6 +6,7 @@
 
 : "${AICODING_BLUEPRINT_CLONE:=/tmp/aicoding}"
 : "${AICODING_BLUEPRINT_REMOTE:=https://github.com/vossiman/aiCodingBaseSetup}"
+: "${AICODING_BLUEPRINT_LOCAL:=0}"
 : "${AICODING_UPDATE_TTL:=21600}"
 : "${AICODING_UPDATE_STATE:=$HOME/.aicodingsetup/state/updates}"
 
@@ -106,7 +107,31 @@ _sync_plumbing() {            # never throttled — must be correct now
   command -v ensure_agents_skills_symlink >/dev/null 2>&1 && ensure_agents_skills_symlink || true
 }
 
-# Bring the blueprint clone current. Clone if absent; otherwise fetch and
+# Return the provenance stored in manifest.json. A local source is deliberately
+# distinguishable from a released remote blueprint even when both share HEAD.
+blueprint_origin() {
+  local path=${1:-$AICODING_BLUEPRINT_CLONE}
+  if [[ "$AICODING_BLUEPRINT_LOCAL" == 1 ]]; then
+    printf 'local:%s\n' "$path"
+  else
+    git -C "$path" remote get-url origin 2>/dev/null || echo unknown
+  fi
+}
+
+# Report enough local-checkout identity to make an accidental source selection
+# obvious. Read-only: no fetch, checkout, reset, or index mutation.
+report_local_blueprint() {
+  local branch commit dirty=""
+  branch=$(git -C "$AICODING_BLUEPRINT_CLONE" symbolic-ref --quiet --short HEAD 2>/dev/null || echo detached)
+  commit=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse --short HEAD 2>/dev/null || echo unknown)
+  [[ -n "$(git -C "$AICODING_BLUEPRINT_CLONE" status --porcelain 2>/dev/null)" ]] && dirty=", dirty"
+  printf 'Blueprint source: local %s (branch %s, commit %s%s)\n' \
+    "$AICODING_BLUEPRINT_CLONE" "$branch" "$commit" "$dirty"
+}
+
+# Bring the blueprint clone current. An explicit --blueprint local source is
+# used verbatim and NEVER reaches the tracking-clone fetch/reset path. Otherwise
+# clone if absent; fetch and
 # hard-reset to origin/main — but ONLY for a throwaway tracking clone that's
 # actually on `main`. The dev repo (used in tests and during development)
 # lives on a feature branch and may be ahead of origin/main; resetting it
@@ -114,6 +139,14 @@ _sync_plumbing() {            # never throttled — must be correct now
 # Fetch failure (e.g. no origin remote in test fixtures) falls back to the
 # cached clone — never resets. Fail-open throughout.
 refresh_blueprint() {
+  if [[ "$AICODING_BLUEPRINT_LOCAL" == 1 ]]; then
+    if [[ ! -f "$AICODING_BLUEPRINT_CLONE/lib/blueprint-deploy.sh" ]]; then
+      echo "invalid local blueprint: $AICODING_BLUEPRINT_CLONE" >&2
+      return 2
+    fi
+    report_local_blueprint
+    return 0
+  fi
   if [[ -d "$AICODING_BLUEPRINT_CLONE/.git" ]]; then
     if git -C "$AICODING_BLUEPRINT_CLONE" fetch --quiet origin 2>/dev/null; then
       local branch
@@ -137,7 +170,7 @@ refresh_blueprint() {
 _sync_reconcile() {
   local mode=$1
 
-  refresh_blueprint
+  refresh_blueprint || return $?
 
   [ -f "$AICODING_BLUEPRINT_CLONE/lib/blueprint-deploy.sh" ] || return 0
   . "$AICODING_BLUEPRINT_CLONE/lib/blueprint-deploy.sh"
@@ -215,7 +248,7 @@ _sync_reconcile() {
       manifest_stage_begin
       manifest_stage_set_top blueprint_commit "$NEW_COMMIT"
       local origin
-      origin=$(git -C "$AICODING_BLUEPRINT_CLONE" remote get-url origin 2>/dev/null || echo unknown)
+      origin=$(blueprint_origin "$AICODING_BLUEPRINT_CLONE")
       manifest_stage_set_top blueprint_origin "$origin"
       manifest_stage_commit
       rm -f "$AICODING_UPDATE_STATE"/*.json 2>/dev/null || true
@@ -265,7 +298,7 @@ _sync_reconcile() {
 
   manifest_stage_set_top blueprint_commit "$NEW_COMMIT"
   local origin
-  origin=$(git -C "$AICODING_BLUEPRINT_CLONE" remote get-url origin 2>/dev/null || echo unknown)
+  origin=$(blueprint_origin "$AICODING_BLUEPRINT_CLONE")
   manifest_stage_set_top blueprint_origin "$origin"
 
   manifest_stage_commit

@@ -61,7 +61,7 @@ deploy_all_managed_files() {
   # Record blueprint origin/commit metadata at the top of the manifest.
   local commit origin
   commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
-  origin=$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo unknown)
+  origin=$(blueprint_origin "$SCRIPT_DIR")
   manifest_stage_set_top blueprint_commit "$commit"
   manifest_stage_set_top blueprint_origin "$origin"
 
@@ -228,7 +228,7 @@ adopt_existing_files() {
 
   local commit origin
   commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
-  origin=$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo unknown)
+  origin=$(blueprint_origin "$SCRIPT_DIR")
   manifest_stage_set_top blueprint_commit "$commit"
   manifest_stage_set_top blueprint_origin "$origin"
 
@@ -275,7 +275,7 @@ reconcile_existing_install() {
   # which makes anything reading it — e.g. the update notifier — report wrongly.
   local rc_commit rc_origin
   rc_commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
-  rc_origin=$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo unknown)
+  rc_origin=$(blueprint_origin "$SCRIPT_DIR")
   manifest_stage_set_top blueprint_commit "$rc_commit"
   manifest_stage_set_top blueprint_origin "$rc_origin"
   manifest_stage_commit

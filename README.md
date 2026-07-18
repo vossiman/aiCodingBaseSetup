@@ -117,6 +117,7 @@ Two distinct flows after the initial install:
 aicoding-sync --dry-run    # show what would change vs your environment
 aicoding-sync              # interactive — single y/N confirm, inline diff for drift
 aicoding-sync --yes        # scripted — auto-confirms; backs up anything drifted
+aicoding-sync --blueprint /path/to/aiCodingBaseSetup --dry-run  # test a local checkout verbatim
 ```
 
 `aicoding-sync` is installed into `~/.local/bin/` by `install.sh`. It compares three hashes per managed file (currently on disk, last-deployed per the manifest, current blueprint source) and classifies each file into one of seven outcomes. Drifted files (you modified them) are surfaced with full inline `diff -u` output and backed up to `<file>.bak.<YYYYMMDD-HHMMSS>` before being overwritten. Missing-on-disk managed files are classified as `restore` and silently re-deployed. It also reconciles machine state shared with `install.sh` via `lib/provision.sh` — MCP registrations, marketplace plugins, and the npm packages backing stdio MCPs (throttled on `--boot`, always on manual runs).
@@ -130,6 +131,7 @@ The manifest at `~/.aicodingsetup/manifest.json` records the blueprint commit an
 ```bash
 aicoding-install                     # refresh /tmp/aicoding to origin/main, re-run install.sh
 aicoding-install --force-reinstall   # same, but deletes the manifest first (nuke drift, first-deploy)
+aicoding-install --blueprint /path/to/aiCodingBaseSetup  # provision from a local checkout
 ```
 
 Re-running the installer on an initialized container (manifest exists) re-runs the apt/build/locale prereq steps (idempotent) **and** then runs **reconcile mode**, which automatically applies the conservative buckets without any prompts. Use it when provisioning-only pieces broke or changed (tool bootstrap incl. codex, templates, tmux plugins, Playwright browser) — `aicoding-sync` deliberately doesn't touch those. Running `./install.sh` from a checkout does the same against that checkout's version.
@@ -286,7 +288,12 @@ aiCodingBaseSetup/
 │   └── aicoding-ssh-agent-watch   # legacy ssh-agent socket watcher
 ├── lib/
 │   ├── blueprint-deploy.sh        # hash, manifest, classify, deploy primitives
+│   ├── blueprint-source.sh        # --blueprint PATH parsing + validation
 │   ├── provision.sh               # MCPs, plugins, npm packages (shared w/ sync)
+│   ├── provision-system.sh        # environment, tool bootstrap, prerequisites
+│   ├── provision-secrets.sh       # secrets loading and prompting
+│   ├── provision-managed-files.sh # first/adopt/reconcile managed-file paths
+│   ├── provision-integrations.sh  # CLI links, TPM, bubblewrap, Playwright
 │   └── sync.sh                    # auth plumbing + aicoding-sync core
 ├── .secrets.env.example           # Template for required API keys
 ├── configs/
@@ -317,9 +324,24 @@ registration via `lib/provision.sh` (`MANAGED_MCPS`). There is no shared
 | **Runtime tracking clone** (`/tmp/aicoding` → GitHub `main`) | What containers install & sync from | `postCreate`, `aicoding-install`, `aicoding-sync` refresh |
 
 Edits in the submodule do **not** affect a running container until they land on
-`main` (or you point `AICODING_BLUEPRINT_CLONE` / `AICODING_BLUEPRINT_REMOTE` at
-your checkout). `dvw new` seeds `devcontainer.json` from tip-of-`main` by default
-(`DVW_BLUEPRINT_DEVCONTAINER_URL`).
+`main` unless you explicitly select it with `--blueprint`. Local mode resolves
+and validates the path, reports its branch/commit/dirty state, and performs no
+fetch or reset—the working tree, including uncommitted edits, is the source of
+truth for that command:
+
+```bash
+aicoding-sync --blueprint "$PWD/devpod/aicoding" --dry-run
+aicoding-sync --blueprint "$PWD/devpod/aicoding"       # review, then apply
+
+# For installer/provisioning changes rather than day-2 config sync:
+aicoding-install --blueprint "$PWD/devpod/aicoding"
+```
+
+The option is per invocation; normal boot sync continues to use the released
+`/tmp/aicoding` tracking clone. `AICODING_BLUEPRINT_CLONE` and
+`AICODING_BLUEPRINT_REMOTE` remain internal tracking-clone controls, not the
+safe local-checkout interface. `dvw new` separately seeds `devcontainer.json`
+from tip-of-`main` by default (`DVW_BLUEPRINT_DEVCONTAINER_URL`).
 
 ## Test Your Setup
 

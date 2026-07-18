@@ -47,6 +47,48 @@ teardown() {
   echo "$output" | grep -q "old123"
 }
 
+@test "aicoding-sync --blueprint uses a dirty local checkout without fetch or reset" {
+  mkdir -p "$HOME/.aicodingsetup"
+  echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
+  echo "uncommitted local blueprint edit" >> "$AICODING_BLUEPRINT_CLONE/README.md"
+
+  local real_git git_log git_stubs
+  real_git=$(command -v git)
+  git_log="$TMPDIR/git-mutations.log"
+  git_stubs="$TMPDIR/git-stubs"
+  mkdir -p "$git_stubs"
+  cat > "$git_stubs/git" <<EOF
+#!/bin/sh
+if [ "\${1:-}" = -C ] && { [ "\${3:-}" = fetch ] || [ "\${3:-}" = reset ]; }; then
+  echo "\${3}" >> "$git_log"
+  exit 97
+fi
+exec "$real_git" "\$@"
+EOF
+  chmod +x "$git_stubs/git"
+
+  run env PATH="$git_stubs:$PATH" \
+      "$BLUEPRINT_ROOT/bin/aicoding-sync" --blueprint "$AICODING_BLUEPRINT_CLONE" --dry-run
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -Fq "Blueprint source: local $AICODING_BLUEPRINT_CLONE"
+  echo "$output" | grep -q "dirty"
+  [ ! -e "$git_log" ]
+  grep -q "uncommitted local blueprint edit" "$AICODING_BLUEPRINT_CLONE/README.md"
+}
+
+@test "aicoding-sync --blueprint rejects a missing checkout" {
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --blueprint "$TMPDIR/absent" --dry-run
+  [ "$status" -eq 2 ]
+  echo "$output" | grep -q "local blueprint is not a directory"
+}
+
+@test "aicoding-sync help documents the local blueprint option" {
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --help
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q -- "--blueprint PATH"
+  echo "$output" | grep -q "never fetch or reset"
+}
+
 @test "aicoding-sync: 'n' answer aborts without writing" {
   mkdir -p "$HOME/.aicodingsetup"
   echo "user-line" > "$HOME/.tmux.conf"
