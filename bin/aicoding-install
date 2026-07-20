@@ -7,13 +7,17 @@
 set -uo pipefail
 SCRIPT_REAL=$(readlink -f "$0"); SCRIPT_DIR=$(dirname "$(dirname "$SCRIPT_REAL")")
 : "${AICODING_BLUEPRINT_CLONE:=/tmp/aicoding}"
-case "${1:-}" in
-  -h|--help)
-    echo "usage: aicoding-install [--force-reinstall]"
-    echo "Pulls the latest blueprint main into $AICODING_BLUEPRINT_CLONE and re-runs install.sh."
-    exit 0
-    ;;
-esac
+. "$SCRIPT_DIR/lib/blueprint-source.sh"
+aicoding_parse_blueprint_args aicoding-install "$@" || exit $?
+for arg in "${AICODING_REMAINING_ARGS[@]}"; do
+  case "$arg" in
+    -h|--help)
+      echo "usage: aicoding-install [--blueprint PATH] [--force-reinstall]"
+      echo "  --blueprint PATH  install from this local Git checkout verbatim (never fetch or reset it)"
+      exit 0
+      ;;
+  esac
+done
 # Bring the tracking clone current (fail-open: offline falls back to the
 # cached clone). refresh_blueprint lives in lib/sync.sh; prefer the clone's
 # copy, fall back to the install dir's.
@@ -22,8 +26,10 @@ if [ -f "$AICODING_BLUEPRINT_CLONE/lib/sync.sh" ]; then
 elif [ -f "$SCRIPT_DIR/lib/sync.sh" ]; then
   . "$SCRIPT_DIR/lib/sync.sh"
 fi
-command -v refresh_blueprint >/dev/null 2>&1 && refresh_blueprint
-if [ -f "$AICODING_BLUEPRINT_CLONE/install.sh" ]; then
-  exec bash "$AICODING_BLUEPRINT_CLONE/install.sh" "$@"
+if command -v refresh_blueprint >/dev/null 2>&1; then
+  refresh_blueprint || exit $?
 fi
-exec bash "$SCRIPT_DIR/install.sh" "$@"
+if [ -f "$AICODING_BLUEPRINT_CLONE/install.sh" ]; then
+  exec bash "$AICODING_BLUEPRINT_CLONE/install.sh" "${AICODING_REMAINING_ARGS[@]}"
+fi
+exec bash "$SCRIPT_DIR/install.sh" "${AICODING_REMAINING_ARGS[@]}"

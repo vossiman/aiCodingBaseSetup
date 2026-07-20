@@ -121,18 +121,26 @@ teardown() { rm -rf "$TMP"; }
 
 @test "aicoding-install: pulls the blueprint and re-runs the installer (reconcile)" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  run env AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT" \
-      "$BLUEPRINT_ROOT/bin/aicoding-install" </dev/null
+  run "$BLUEPRINT_ROOT/bin/aicoding-install" --blueprint "$BLUEPRINT_ROOT" </dev/null
   [ "$status" -eq 0 ]
+  echo "$output" | grep -Fq "Blueprint source: local $BLUEPRINT_ROOT"
   echo "$output" | grep -q "Mode: reconcile"
+  [ "$(jq -r '.blueprint_origin' "$AICODING_MANIFEST")" = "local:$BLUEPRINT_ROOT" ]
 }
 
 @test "aicoding-install: passes --force-reinstall through (first-deploy)" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  run env AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT" \
-      "$BLUEPRINT_ROOT/bin/aicoding-install" --force-reinstall </dev/null
+  run "$BLUEPRINT_ROOT/bin/aicoding-install" --force-reinstall \
+      --blueprint="$BLUEPRINT_ROOT" </dev/null
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "Mode: first"
+}
+
+@test "aicoding-install --blueprint rejects a non-checkout directory" {
+  mkdir -p "$TMP/not-a-blueprint"
+  run "$BLUEPRINT_ROOT/bin/aicoding-install" --blueprint "$TMP/not-a-blueprint"
+  [ "$status" -eq 2 ]
+  echo "$output" | grep -q "invalid local blueprint"
 }
 
 @test "on-start.sh runs the boot path (exit 0)" {

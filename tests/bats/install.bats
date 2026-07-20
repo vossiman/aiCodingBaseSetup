@@ -422,7 +422,7 @@ EOF
   chmod +x "$TMPDIR/stubs/curl"
 
   _run_install_fn "$(_isolated_path)" ensure_cursor_agent
-  # Both names must resolve so downstream tooling (update.sh) can call either.
+  # Both names must resolve so downstream tooling (on-start.sh) can call either.
   [ -x "$HOME/.local/bin/cursor-agent" ]
   [ -L "$HOME/.local/bin/agent" ] || [ -x "$HOME/.local/bin/agent" ]
 }

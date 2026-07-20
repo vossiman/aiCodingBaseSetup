@@ -4,6 +4,17 @@ Devbox blueprint: machine provisioning (`install.sh`, `lib/`) plus the configs
 it deploys (`configs/`). `main` is protected — integrate via PR; ask before
 merging; delete merged branches.
 
+## Delivery channels
+
+- **Dev / parent submodule** — editable checkout (e.g. `devMachine` →
+  `devpod/aicoding`), pinned to a SHA.
+- **Runtime** — containers clone/sync from GitHub `main` into `/tmp/aicoding`
+  (`postCreate`, `aicoding-install`, `aicoding-sync` refresh).
+- **Local iteration** — pass `--blueprint /path/to/checkout` to
+  `aicoding-sync` or `aicoding-install`. The selected working tree is used
+  verbatim, including uncommitted edits; local mode never fetches or resets it.
+  Start with `aicoding-sync --blueprint "$PWD" --dry-run`.
+
 ## Tests
 
 - ALWAYS run the suite via `bash tests/bats/run.sh`, never bare `bats`. run.sh
