@@ -36,6 +36,7 @@ merging; delete merged branches.
 ## tmux artifact regression
 
 If stale-fragment artifacts return on some box: check the running SERVER
-version (`tmux display -p '#{version}'`), not just `tmux -V` — a pre-3.8
-server keeps the bug alive. Re-run `ensure_tmux`, then `tmux kill-server`.
-Background: `install.sh` `ensure_tmux` comments.
+version (`tmux display -p '#{version}'`), not just `tmux -V`, and compare
+`/usr/local/share/aicoding/tmux-commit` with the pin in `ensure_tmux`. Master
+snapshots before tmux#5330's scroll-region fix also report `next-3.8`. Re-run
+`ensure_tmux`, then restart the tmux server. Background: `ensure_tmux` comments.

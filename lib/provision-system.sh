@@ -248,25 +248,41 @@ ensure_uv() {
 }
 
 ensure_tmux() {
-  # Need tmux 3.8+ (2026-07-05): every release up to 3.7b leaves stale
-  # fragments on the outer terminal when TUIs emit DEC 2026 synchronized
-  # output (Claude Code does since 2.1.200) — tmux#5307/#5322,
-  # claude-code#74122. The fixes are only on master until 3.8 ships, so we
-  # build a pinned master commit; drop the pin for the release tarball once
-  # tmux 3.8 is out.
+  # Need tmux 3.8+ with the synchronized-output dirty-region fixes. The
+  # version string is not sufficient for master snapshots: both the broken
+  # 2026-07-04 build and fixed builds report "next-3.8". Keep a commit marker
+  # so changing the pin actually rebuilds existing containers.
   local minver="3.8"
+  # 2026-07-06: mark the complete scroll region dirty after scrolling during
+  # a DEC 2026 synchronized update (tmux#5330). Without this, Codex output is
+  # present in capture-pane but remains invisible until a forced redraw.
+  # b074242 is the portable-tree merge containing OpenBSD commit d33d5b7;
+  # pinning d33d5b7 directly would fetch the non-autoconf OpenBSD source tree.
+  local tmux_commit="b07424224b88fcc02bcb9b58d8655f00b97909c6"
+  local tmux_commit_file="${AICODING_TMUX_COMMIT_FILE:-/usr/local/share/aicoding/tmux-commit}"
   if command -v tmux &>/dev/null; then
-    local current
+    local current installed_commit=""
     current="$(tmux -V 2>/dev/null | awk '{print $2}')"
     current="${current#next-}"                # master builds report "next-3.8"
     current="$(printf '%s' "$current" | sed 's/[a-z]//g')"
-    if awk "BEGIN{exit !(${current:-0} >= ${minver})}" 2>/dev/null; then
-      ok "tmux $current already installed"
+    [[ -r "$tmux_commit_file" ]] && read -r installed_commit < "$tmux_commit_file"
+    if awk "BEGIN{exit !(${current:-0} >= ${minver})}" 2>/dev/null \
+       && [[ "$installed_commit" == "$tmux_commit" ]]; then
+      ok "tmux $current (${tmux_commit:0:7}) already installed"
       return 0
     fi
-    info "tmux ${current:-?} is older than $minver — building newer from source"
+    if awk "BEGIN{exit !(${current:-0} >= ${minver})}" 2>/dev/null; then
+      info "tmux $current is not pinned commit ${tmux_commit:0:7} — rebuilding"
+    else
+      info "tmux ${current:-?} is older than $minver — building newer from source"
+    fi
   else
     info "tmux not installed — building from source"
+  fi
+
+  if [[ -n "${AICODINGSETUP_SKIP_NETWORK:-}" ]]; then
+    warn "Skipping tmux rebuild while network operations are disabled"
+    return 0
   fi
 
   command -v curl &>/dev/null || { warn "curl not available — skipping tmux build"; return 0; }
@@ -276,20 +292,26 @@ ensure_tmux() {
     return 0
   }
 
-  # Pinned master commit (2026-07-04, verified to fix the artifacts; contains
-  # the sync-end dirty-tracking + ED-2 dirty fixes).
-  local tmux_commit="5356c62eadf8650ad1ffc95f52755d6f66029a20"
   local build_dir="/tmp/tmux-build-$$"
+  local install_tmp="/usr/local/bin/.tmux-${tmux_commit:0:7}-$$"
   rm -rf "$build_dir" && mkdir -p "$build_dir"
   (
     cd "$build_dir"
+    # Replacing an executing tmux in place can fail with ETXTBSY. Install to
+    # a sibling and rename atomically so the current server keeps its old
+    # inode while newly started servers use the fixed binary.
     curl -fsSL "https://github.com/tmux/tmux/archive/${tmux_commit}.tar.gz" \
-      | tar xz --strip-components=1
-    sh autogen.sh &>/dev/null            # git snapshot has no ./configure yet
-    ./configure --prefix=/usr/local &>/dev/null
-    make -j"$(nproc)" &>/dev/null
-    $SUDO make install &>/dev/null
-  ) || { warn "tmux build failed — falling back to apt's tmux"; apt_install tmux || warn "apt tmux install also failed — tmux may be missing (non-fatal)"; rm -rf "$build_dir"; return 0; }
+      | tar xz --strip-components=1 \
+      && sh autogen.sh &>/dev/null \
+      && ./configure --prefix=/usr/local &>/dev/null \
+      && make -j"$(nproc)" &>/dev/null \
+      && $SUDO install -d -m 0755 /usr/local/bin /usr/local/share/man/man1 \
+      && $SUDO install -m 0644 tmux.1 /usr/local/share/man/man1/tmux.1 \
+      && $SUDO install -m 0755 tmux "$install_tmp" \
+      && $SUDO mv -f "$install_tmp" /usr/local/bin/tmux \
+      && $SUDO install -d -m 0755 "$(dirname "$tmux_commit_file")" \
+      && printf '%s\n' "$tmux_commit" | $SUDO tee "$tmux_commit_file" >/dev/null
+  ) || { warn "tmux build failed — falling back to apt's tmux"; $SUDO rm -f "$install_tmp"; apt_install tmux || warn "apt tmux install also failed — tmux may be missing (non-fatal)"; rm -rf "$build_dir"; return 0; }
   rm -rf "$build_dir"
   hash -r
   ok "tmux $(tmux -V 2>/dev/null | awk '{print $2}') (master ${tmux_commit:0:7}) built and installed to /usr/local/bin/tmux"
