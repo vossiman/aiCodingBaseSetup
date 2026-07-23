@@ -6,6 +6,7 @@ setup() {
   export HOME="$TMPDIR"
   export AICODING_MANIFEST="$TMPDIR/.aicodingsetup/manifest.json"
   export AICODINGSETUP_NONINTERACTIVE=1
+  export AICODING_TMUX_COMMIT_FILE="$TMPDIR/tmux-commit"
   export BASHRC_BLOCK_START_LIT='# >>> aicoding managed block — do not edit between markers >>>'
   export BASHRC_BLOCK_END_LIT='# <<< aicoding managed block <<<'
   # Stub apt etc. so install.sh's prereq steps no-op.
@@ -26,6 +27,17 @@ exit 0
 STUB
     chmod +x "$TMPDIR/stubs/$cmd"
   done
+  # The real test host may have any tmux build. Keep installer tests offline
+  # by presenting the exact pinned build through the test-owned marker.
+  cat > "$TMPDIR/stubs/tmux" <<'STUB'
+#!/bin/sh
+if [ "${1:-}" = "-V" ]; then
+  echo "tmux next-3.8"
+fi
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/tmux"
+  printf '%s\n' 'b07424224b88fcc02bcb9b58d8655f00b97909c6' > "$AICODING_TMUX_COMMIT_FILE"
 }
 
 teardown() {
@@ -71,6 +83,14 @@ blueprint_copy() {
   [ "$status" -eq 0 ]
   # Output announces reconcile mode (replaces the old "Container already initialized" line).
   echo "$output" | grep -q "Mode: reconcile"
+}
+
+@test "install.sh detects a stale next-3.8 tmux commit marker" {
+  printf '%s\n' '5356c62eadf8650ad1ffc95f52755d6f66029a20' > "$AICODING_TMUX_COMMIT_FILE"
+  _run_install_fn "$(_isolated_path)" ensure_tmux
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "tmux 3.8 is not pinned commit b074242"
+  echo "$output" | grep -q "Skipping tmux rebuild while network operations are disabled"
 }
 
 @test "install.sh --force-reinstall: deletes manifest and re-deploys" {
