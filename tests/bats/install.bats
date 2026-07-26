@@ -755,3 +755,83 @@ EOF
   stamped=$(jq -r '.blueprint_commit' "$AICODING_MANIFEST")
   [ "$stamped" = "$head" ]
 }
+
+# ---------------------------------------------------------------------------
+# ensure_playwright_browsers — system-library provisioning.
+#
+# `npx playwright install chromium` downloads browser binaries only; the shared
+# libraries they link against (libatk, libgbm, libasound, …) are not in the
+# universal devcontainer image. These tests pin the two halves: the browser
+# download and the system-dep install are decided independently, so a container
+# that already has the browser cached still gets its libs.
+# ---------------------------------------------------------------------------
+
+# Fake an installed chromium plus recording stubs for npx/sudo/ldd.
+# $1: what the ldd stub reports — "missing" or "resolved".
+_playwright_fixture() {
+  local libs="$1"
+  export PLAYWRIGHT_BROWSERS_PATH="$TMPDIR/ms-playwright"
+  mkdir -p "$PLAYWRIGHT_BROWSERS_PATH/chromium-1234/chrome-linux64"
+  printf '#!/bin/sh\nexit 0\n' > "$PLAYWRIGHT_BROWSERS_PATH/chromium-1234/chrome-linux64/chrome"
+  chmod +x "$PLAYWRIGHT_BROWSERS_PATH/chromium-1234/chrome-linux64/chrome"
+
+  cat > "$TMPDIR/stubs/npx" <<NPX
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/npx-calls'
+exit 0
+NPX
+  # \$SUDO must not swallow the recorded call — pass through to the real command.
+  printf '#!/bin/sh\nexec "$@"\n' > "$TMPDIR/stubs/sudo"
+  if [ "$libs" = "missing" ]; then
+    cat > "$TMPDIR/stubs/ldd" <<'LDD'
+#!/bin/sh
+echo "	libatk-1.0.so.0 => not found"
+echo "	libgbm.so.1 => not found"
+LDD
+  else
+    cat > "$TMPDIR/stubs/ldd" <<'LDD'
+#!/bin/sh
+echo "	libgbm.so.1 => /lib/x86_64-linux-gnu/libgbm.so.1"
+LDD
+  fi
+  chmod +x "$TMPDIR/stubs/npx" "$TMPDIR/stubs/sudo" "$TMPDIR/stubs/ldd"
+}
+
+@test "ensure_playwright_browsers: installs system deps when the cached chromium has unresolved libs" {
+  _playwright_fixture missing
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+  [ "$status" -eq 0 ]
+  # Browser download is skipped (cache populated) but install-deps still runs.
+  grep -q "install-deps chromium" "$TMPDIR/npx-calls"
+  ! grep -qE "^-y playwright install chromium$" "$TMPDIR/npx-calls"
+}
+
+@test "ensure_playwright_browsers: warns with the manual command when install-deps does not fix the libs" {
+  _playwright_fixture missing   # ldd keeps reporting "not found" after the install
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "libatk-1.0.so.0"
+  echo "$output" | grep -q "playwright install-deps chromium"
+}
+
+@test "ensure_playwright_browsers: no install-deps when the chromium libs already resolve" {
+  _playwright_fixture resolved
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+  [ "$status" -eq 0 ]
+  [ ! -f "$TMPDIR/npx-calls" ] || ! grep -q "install-deps" "$TMPDIR/npx-calls"
+}
+
+@test "ensure_playwright_browsers: downloads chromium when the cache is empty" {
+  _playwright_fixture missing
+  rm -rf "$PLAYWRIGHT_BROWSERS_PATH"
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+  [ "$status" -eq 0 ]
+  grep -q "playwright install chromium" "$TMPDIR/npx-calls"
+}
+
+@test "check_playwright: reports missing system libraries instead of a bare OK" {
+  _playwright_fixture missing
+  _run_install_fn "$(_isolated_path)" check_playwright
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "libatk-1.0.so.0"
+}
