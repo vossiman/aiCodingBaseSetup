@@ -2,7 +2,12 @@
 set -uo pipefail
 SCRIPT_REAL=$(readlink -f "$0"); SCRIPT_DIR=$(dirname "$(dirname "$SCRIPT_REAL")")
 : "${AICODING_BLUEPRINT_CLONE:=/tmp/aicoding}"
-: "${AICODING_MANIFEST:=$HOME/.aicodingsetup/manifest.json}"
+# NO AICODING_MANIFEST default here. lib/blueprint-deploy.sh owns it, and it is
+# sourced (lib/sync.sh:179) before the first use (lib/sync.sh:182). A duplicate
+# default here silently won — `:=` in the library is a no-op once this set it —
+# so sync wrote the old shared ~/.aicodingsetup manifest while aicoding-status
+# read the container-local one. They never agreed again, and the update badge
+# stayed lit no matter how often you synced.
 . "$SCRIPT_DIR/lib/blueprint-source.sh"
 aicoding_parse_blueprint_args aicoding-sync "$@" || exit $?
 for arg in "${AICODING_REMAINING_ARGS[@]}"; do

@@ -146,3 +146,23 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   [ "$(jq -r .blueprint_commit "$local_manifest")" = "abc123" ]
   [ -f "$HOME/.aicodingsetup/manifest.json" ]
 }
+
+@test "no shipped entrypoint re-defaults manifest/update-state to the shared mount" {
+  # Files in bin/ have NO extension, so a `--include='*.sh'` grep misses them —
+  # exactly how bin/aicoding-sync kept the old shared default while everything
+  # else moved container-local. An entrypoint that pre-sets the var silently
+  # wins, because `:=` in the library is then a no-op: sync wrote the shared
+  # manifest, aicoding-status read the container-local one, and the update
+  # badge could never clear. Scan by path, never by extension.
+  local hits
+  hits=$(grep -rn \
+    -e 'AICODING_MANIFEST:=' -e 'AICODING_MANIFEST:-' \
+    -e 'AICODING_UPDATE_STATE:=' -e 'AICODING_UPDATE_STATE:-' \
+    "$BLUEPRINT_ROOT/bin" "$BLUEPRINT_ROOT/lib" 2>/dev/null \
+    | grep 'aicodingsetup' || true)
+  if [ -n "$hits" ]; then
+    echo "shared-mount default(s) still shipped:"
+    echo "$hits"
+    return 1
+  fi
+}
