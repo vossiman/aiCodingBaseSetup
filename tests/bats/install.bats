@@ -331,6 +331,18 @@ _run_install_fn() {
     _ "$BLUEPRINT_ROOT/install.sh" "$@"
 }
 
+# Like _run_install_fn but runs the function under install.sh's REAL shell
+# options (`set -euo pipefail`, install.sh:2). _run_install_fn deliberately
+# disables them, which is fine for most assertions but blind to the whole class
+# of bug where a helper's failing pipeline aborts provisioning instead of
+# warning. Use this whenever a function must degrade gracefully.
+_run_install_fn_strict() {
+  local fn_path="$1"; shift
+  run env _AICODINGSETUP_NVS_STRIPPED=1 PATH="$fn_path" \
+    bash -c 'source "$1"; trap - ERR; shift; set -euo pipefail; "$@"' \
+    _ "$BLUEPRINT_ROOT/install.sh" "$@"
+}
+
 # A PATH with only the tools install.sh touches before the curl check — and
 # deliberately NO curl — so `command -v curl` genuinely fails. (curl shares
 # /usr/bin with coreutils, so we curate a dir rather than drop one.) It also
@@ -782,7 +794,15 @@ exit 0
 NPX
   # \$SUDO must not swallow the recorded call — pass through to the real command.
   printf '#!/bin/sh\nexec "$@"\n' > "$TMPDIR/stubs/sudo"
-  if [ "$libs" = "missing" ]; then
+  if [ "$libs" = "unreadable" ]; then
+    # ldd exits NON-ZERO on a truncated/partially-extracted download. install.sh
+    # runs under `set -euo pipefail`, so this must not fail a pipeline.
+    cat > "$TMPDIR/stubs/ldd" <<'LDD'
+#!/bin/sh
+echo "	not a dynamic executable" >&2
+exit 1
+LDD
+  elif [ "$libs" = "missing" ]; then
     cat > "$TMPDIR/stubs/ldd" <<'LDD'
 #!/bin/sh
 echo "	libatk-1.0.so.0 => not found"
@@ -834,4 +854,28 @@ LDD
   _run_install_fn "$(_isolated_path)" check_playwright
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "libatk-1.0.so.0"
+}
+
+# A truncated / partially-extracted chromium makes `ldd` exit non-zero ("not a
+# dynamic executable"). install.sh runs under `set -euo pipefail`, so piping
+# ldd straight into awk|sort aborted the whole provisioning run instead of
+# warning — and install-deps cannot fix a bad download anyway, so the CTA has
+# to be a re-download.
+
+@test "ensure_playwright_browsers: survives an ldd failure instead of aborting the run" {
+  _playwright_fixture unreadable
+  _run_install_fn_strict "$(_isolated_path)" ensure_playwright_browsers
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qi "ldd"
+  # install-deps cannot repair a truncated download — must not be attempted.
+  [ ! -f "$TMPDIR/npx-calls" ] || ! grep -q "install-deps" "$TMPDIR/npx-calls"
+  # The actionable fix is re-downloading the browser.
+  echo "$output" | grep -q "playwright install --force chromium"
+}
+
+@test "check_playwright: survives an ldd failure instead of aborting the run" {
+  _playwright_fixture unreadable
+  _run_install_fn_strict "$(_isolated_path)" check_playwright
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qi "ldd"
 }
