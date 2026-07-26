@@ -50,13 +50,25 @@ Record a workload from a live pane (raw bytes the app writes):
     tmux pipe-pane -t %0                                # disarm
 
 Build a test config from the real one, neutering anything that touches real
-daemons or saved state (resurrect restores, continuum saves — hard lesson,
-see tests/bats/run.sh for the same philosophy):
+daemons or saved state (see tests/bats/run.sh for the same philosophy):
 
-    cp ~/.tmux.conf test.conf   # then, BEFORE the tpm run line, add:
+    cp ~/.tmux.conf test.conf
+
+The shipped config dropped resurrect/continuum on 2026-07-26, but if you test a
+config that still declares them, disable them BEFORE the tpm run line — an
+auto-restore will otherwise replay a stale saved layout mid-run:
+
     # set -g @continuum-restore 'off'
     # set -g @continuum-save-interval '0'
     # set -g @resurrect-dir '/tmp/somewhere-disposable'
+
+Gotcha: `--config` alone does NOT isolate plugins. TPM ignores `tmux -f` —
+_get_user_tmux_conf() (scripts/helpers/plugin_functions.sh) reads
+$XDG_CONFIG_HOME/tmux/tmux.conf, else ~/.tmux.conf, and greps *that* for
+@plugin lines. harness.py compensates by staging --config into
+out/<label>/xdg/tmux/tmux.conf and pointing XDG_CONFIG_HOME there, so what you
+pass is what gets loaded. Driving tmux by hand? Do the same, or you will be
+testing your live config and not notice.
 
 Run (match --width/--client-height to the recording's pane geometry, client
 height = pane height + status/border lines):

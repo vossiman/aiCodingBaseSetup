@@ -85,10 +85,12 @@ install_ssh_agent_watch_symlink() {
 
 # --- tmux plugins (TPM) ---
 # Container-only: bootstraps Tmux Plugin Manager and installs every plugin
-# declared in configs/tmux/tmux.conf (resurrect, continuum, catppuccin, fzf,
-# thumbs). Without this, the trailing `run '~/.tmux/plugins/tpm/tpm'` in
-# tmux.conf exits 127 and the theme + session save/restore + fzf binding
-# are all dead. Idempotent: re-running just updates clones in place.
+# declared in configs/tmux/tmux.conf (sensible, catppuccin, fzf, thumbs).
+# Without this, the trailing `run '~/.tmux/plugins/tpm/tpm'` in tmux.conf
+# exits 127 and the theme + fzf/thumbs bindings are all dead. Idempotent:
+# re-running just updates clones in place. Note TPM sources only *declared*
+# plugins, so dropping a @plugin line is enough to disable it — an orphaned
+# ~/.tmux/plugins dir is inert (prune it with prefix + Alt-u).
 install_tmux_plugins() {
   header "tmux plugins (TPM)"
 
