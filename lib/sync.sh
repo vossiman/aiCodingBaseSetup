@@ -8,7 +8,10 @@
 : "${AICODING_BLUEPRINT_REMOTE:=https://github.com/vossiman/aiCodingBaseSetup}"
 : "${AICODING_BLUEPRINT_LOCAL:=0}"
 : "${AICODING_UPDATE_TTL:=21600}"
-: "${AICODING_UPDATE_STATE:=$HOME/.aicodingsetup/state/updates}"
+# Container-local — must match bin/aicoding-status. ~/.aicodingsetup is a host
+# bind mount shared by every container; keeping this cache there let one
+# container's sync silence the update CTA in all the others.
+: "${AICODING_UPDATE_STATE:=$HOME/.local/state/aicoding/updates}"
 
 # Seed GitHub's SSH host key so git-over-SSH (forwarded agent) works on this
 # start. Fresh containers have an empty ~/.ssh/known_hosts, so the first push/pull

@@ -4,13 +4,30 @@
 # cache; network checks are throttled, timeout-bounded, and fail-open.
 set -uo pipefail
 
-STATE="${AICODING_UPDATE_STATE:-$HOME/.aicodingsetup/state/updates}"
+# Container-local, NOT ~/.aicodingsetup: that path is a host bind mount shared
+# by every devpod container. Sharing this cache (and the manifest below) meant
+# one container syncing stamped the global blueprint_commit to the new value,
+# so every OTHER container computed installed == latest and went quiet while
+# still running stale files — the CTA never fired where it was actually needed.
+STATE="${AICODING_UPDATE_STATE:-$HOME/.local/state/aicoding/updates}"
 TTL="${AICODING_UPDATE_TTL:-21600}"             # 6h
 NET_TIMEOUT="${AICODING_UPDATE_NET_TIMEOUT:-8}"
 LOCK="$STATE/.lock"
-: "${AICODING_MANIFEST:=$HOME/.aicodingsetup/manifest.json}"
+: "${AICODING_MANIFEST:=$HOME/.local/state/aicoding/manifest.json}"
 
-_installed_aicoding() { jq -r '.blueprint_commit // empty' "$AICODING_MANIFEST" 2>/dev/null; }
+# Mirror of blueprint-deploy.sh's manifest_adopt_shared. Duplicated rather than
+# sourced: this CLI runs on every tmux status-interval and must stay cheap, so
+# it does not pull in the full deploy library for six lines.
+_adopt_shared_manifest() {
+  local shared="$HOME/.aicodingsetup/manifest.json"
+  if [ -f "$AICODING_MANIFEST" ] || [ ! -f "$shared" ]; then return 0; fi
+  if [ "$shared" = "$AICODING_MANIFEST" ]; then return 0; fi
+  mkdir -p "$(dirname "$AICODING_MANIFEST")" 2>/dev/null || return 0
+  cp "$shared" "$AICODING_MANIFEST" 2>/dev/null || true
+  return 0
+}
+
+_installed_aicoding() { _adopt_shared_manifest; jq -r '.blueprint_commit // empty' "$AICODING_MANIFEST" 2>/dev/null; }
 _installed_testonly() { tr -d '[:space:]' < "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE" 2>/dev/null; }
 _registry() {
   if [ -n "${AICODING_UPDATE_TESTONLY_TOOL:-}" ]; then

@@ -614,3 +614,21 @@ EOF
   [ "$status" -eq 0 ]
   echo "$output" | grep -qF "$HOME/.config/opencode/opencode.json|merge|configs/opencode/opencode.json"
 }
+
+# --- container-local manifest (see: shared-manifest defect) ---------------
+# ~/.aicodingsetup is a HOST BIND MOUNT shared by every devpod container, but
+# the manifest describes container-local paths (~/.bashrc, ~/.tmux.conf, ...)
+# with per-file deployed_hash values. Keeping it there let whichever container
+# synced last speak for all of them — which silenced aicoding-status' CTA in
+# every other container. The manifest must live on the container filesystem.
+
+@test "manifest default is container-local, not the shared aicodingsetup mount" {
+  unset AICODING_MANIFEST
+  run bash -c ". '$BLUEPRINT_ROOT/lib/blueprint-deploy.sh'; printf '%s' \"\$AICODING_MANIFEST\""
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+  case "$output" in
+    */.aicodingsetup/*) echo "manifest still on the shared mount: $output"; return 1 ;;
+  esac
+  [ "$output" = "$HOME/.local/state/aicoding/manifest.json" ]
+}
