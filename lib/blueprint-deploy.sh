@@ -8,6 +8,9 @@
 # Sharing it meant whichever container synced last spoke for all of them.
 : "${AICODING_MANIFEST:=$HOME/.local/state/aicoding/manifest.json}"
 : "${AICODING_BLUEPRINT_CLONE:=/tmp/aicoding}"
+# Must match bin/aicoding-status's default — this library invalidates that
+# CLI's cache whenever it advances the recorded blueprint commit.
+: "${AICODING_UPDATE_STATE:=$HOME/.local/state/aicoding/updates}"
 
 # compute_hash <path> — echo the sha256 hex of file content; empty if missing.
 compute_hash() {
@@ -90,6 +93,29 @@ manifest_stage_set_top() {
   local key=$1 val=$2
   _aicoding_pending_manifest=$(printf '%s' "$_aicoding_pending_manifest" \
     | jq --arg k "$key" --arg v "$val" '.[$k] = $v')
+}
+
+# manifest_stage_set_blueprint <commit> <origin> — stamp the blueprint this
+# manifest now describes AND drop aicoding-status's cached behind-main verdict
+# when the commit actually moved. The two MUST happen together: a writer that
+# stamps without invalidating leaves the cache asserting the pre-run commit,
+# and _cache_fresh then short-circuits every re-check for the full TTL — so an
+# already-current container shows a phantom ⬆aicoding badge for hours, and
+# `aicoding-status --refresh` can't clear it either (same TTL throttle).
+# That was live for install.sh's three stamp sites until 2026-07-26; going
+# through one helper is what stops a fourth writer reintroducing it.
+# Call between manifest_stage_begin and manifest_stage_commit. No network;
+# fail-open.
+manifest_stage_set_blueprint() {
+  local commit=$1 origin=$2 prev
+  prev=$(printf '%s' "$_aicoding_pending_manifest" \
+    | jq -r '.blueprint_commit // empty' 2>/dev/null || true)
+  manifest_stage_set_top blueprint_commit "$commit"
+  manifest_stage_set_top blueprint_origin "$origin"
+  if [ "$prev" != "$commit" ]; then
+    rm -f "$AICODING_UPDATE_STATE"/*.json 2>/dev/null || true
+  fi
+  return 0
 }
 
 # manifest_get_file <path> — echo the per-file JSON object, or "null".

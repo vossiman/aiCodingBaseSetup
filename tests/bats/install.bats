@@ -85,6 +85,30 @@ blueprint_copy() {
   echo "$output" | grep -q "Mode: reconcile"
 }
 
+# A provisioning run that advances blueprint_commit must invalidate the
+# aicoding-status cache, exactly as the two sync paths do (lib/sync.sh). Without
+# it the badge keeps the pre-run verdict and _cache_fresh suppresses any
+# re-check for the full 6h TTL, so an already-current container shows a phantom
+# ⬆aicoding until the TTL lapses. Hit for real 2026-07-26.
+@test "install.sh reconcile: advancing blueprint_commit drops the stale aicoding-status cache" {
+  export AICODING_UPDATE_STATE="$TMPDIR/state/updates"
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  # Rewind the recorded commit so the reconcile run genuinely advances it.
+  local tmp
+  tmp=$(mktemp)
+  jq '.blueprint_commit = "old"' "$AICODING_MANIFEST" > "$tmp"
+  mv "$tmp" "$AICODING_MANIFEST"
+  # Seed a stale "behind" verdict, as aicoding-status would have cached it.
+  mkdir -p "$AICODING_UPDATE_STATE"
+  echo '{"tool":"aicoding","status":"behind"}' > "$AICODING_UPDATE_STATE/aicoding.json"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+
+  [ "$(jq -r .blueprint_commit "$AICODING_MANIFEST")" != "old" ]
+  [ ! -e "$AICODING_UPDATE_STATE/aicoding.json" ]
+}
+
 @test "install.sh detects a stale next-3.8 tmux commit marker" {
   printf '%s\n' '5356c62eadf8650ad1ffc95f52755d6f66029a20' > "$AICODING_TMUX_COMMIT_FILE"
   _run_install_fn "$(_isolated_path)" ensure_tmux

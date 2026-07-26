@@ -249,12 +249,11 @@ _sync_reconcile() {
     # the old commit recorded keeps aicoding-status on "behind" forever.
     if [ "$OLD_COMMIT" != "$NEW_COMMIT" ] && [ "$NEW_COMMIT" != unknown ]; then
       manifest_stage_begin
-      manifest_stage_set_top blueprint_commit "$NEW_COMMIT"
       local origin
       origin=$(blueprint_origin "$AICODING_BLUEPRINT_CLONE")
-      manifest_stage_set_top blueprint_origin "$origin"
+      # Stamps and drops the now-stale aicoding-status verdict together.
+      manifest_stage_set_blueprint "$NEW_COMMIT" "$origin"
       manifest_stage_commit
-      rm -f "$AICODING_UPDATE_STATE"/*.json 2>/dev/null || true
     fi
     return 0
   fi
@@ -299,22 +298,16 @@ _sync_reconcile() {
     esac
   done
 
-  manifest_stage_set_top blueprint_commit "$NEW_COMMIT"
   local origin
   origin=$(blueprint_origin "$AICODING_BLUEPRINT_CLONE")
-  manifest_stage_set_top blueprint_origin "$origin"
-
-  manifest_stage_commit
-
   # We just advanced the installed blueprint commit, so aicoding-status's cached
-  # behind-main verdict is now stale. Drop the cache so the next tmux/login
+  # behind-main verdict is now stale. The helper drops it, so the next tmux/login
   # refresh re-checks (detached, ≤ one status-interval) instead of showing a
   # phantom ⬆aicoding badge for up to the 6h TTL. Removing the JSON also busts
   # _cache_fresh, so that refresh actually runs rather than short-circuiting.
-  # No network here; fail-open.
-  if [ "$OLD_COMMIT" != "$NEW_COMMIT" ]; then
-    rm -f "$AICODING_UPDATE_STATE"/*.json 2>/dev/null || true
-  fi
+  manifest_stage_set_blueprint "$NEW_COMMIT" "$origin"
+
+  manifest_stage_commit
   return 0
 }
 
