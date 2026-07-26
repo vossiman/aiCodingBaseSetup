@@ -334,10 +334,19 @@ playwright_chromium_bin() {
 # Shared libraries the installed chromium links against but cannot resolve.
 # Empty output means "nothing missing" — including on macOS, where there is no
 # ldd and Playwright's browsers are self-contained.
+#
+# Exit 2 means the check could NOT be performed: ldd itself failed, which is
+# what a truncated or partially-extracted download looks like ("not a dynamic
+# executable"). Capture ldd separately rather than piping it straight into
+# awk — install.sh runs under `set -euo pipefail` (install.sh:2), so a failing
+# pipeline here aborted the entire provisioning run instead of warning, and it
+# did so precisely in the broken-browser case this helper exists to detect.
+# Callers MUST handle exit 2 explicitly.
 playwright_missing_libs() {
-  local bin="$1"
+  local bin="$1" out
   command -v ldd &>/dev/null || return 0
-  ldd "$bin" 2>/dev/null | awk '/not found/ {print $1}' | sort -u
+  out=$(ldd "$bin" 2>/dev/null) || return 2
+  printf '%s\n' "$out" | awk '/not found/ {print $1}' | sort -u
 }
 
 # `playwright install` downloads browser binaries ONLY — the shared libraries
@@ -356,7 +365,14 @@ ensure_playwright_system_deps() {
     info "No chromium binary found — skipping Playwright system libraries"
     return 0
   }
-  missing="$(playwright_missing_libs "$bin")"
+  local rc=0
+  missing="$(playwright_missing_libs "$bin")" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    # install-deps cannot repair a bad download — the fix is re-fetching it.
+    warn "Could not inspect $bin — ldd failed (truncated or partial download?)"
+    info "Run: npx playwright install --force chromium"
+    return 0
+  fi
   if [[ -z "$missing" ]]; then
     ok "Playwright system libraries present"
     return 0

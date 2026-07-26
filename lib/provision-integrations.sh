@@ -197,10 +197,13 @@ check_playwright() {
   # A downloaded browser is not a working browser — report unresolved system
   # libraries here too, so a Chromium that can't launch can't pass as a green
   # check (helpers live in lib/provision-system.sh).
-  local bin missing
+  local bin missing rc=0
   bin="$(playwright_chromium_bin)" || return 0
-  missing="$(playwright_missing_libs "$bin")"
-  if [[ -n "$missing" ]]; then
+  missing="$(playwright_missing_libs "$bin")" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    warn "Playwright chromium present but unreadable — ldd failed (truncated download?)"
+    info "Run: npx playwright install --force chromium"
+  elif [[ -n "$missing" ]]; then
     warn "Playwright system libraries missing: $(tr '\n' ' ' <<<"$missing")"
     info "Run: sudo npx playwright install-deps chromium"
   else
