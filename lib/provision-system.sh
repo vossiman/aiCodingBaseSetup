@@ -317,15 +317,74 @@ ensure_tmux() {
   ok "tmux $(tmux -V 2>/dev/null | awk '{print $2}') (master ${tmux_commit:0:7}) built and installed to /usr/local/bin/tmux"
 }
 
-ensure_playwright_browsers() {
-  command -v npx &>/dev/null || return 0
-  local cache_dir="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
-  if [[ -d "$cache_dir" ]] && [[ -n "$(ls -A "$cache_dir" 2>/dev/null)" ]]; then
-    ok "Playwright browsers already installed"
+playwright_cache_dir() {
+  printf '%s' "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+}
+
+# Path of an installed chromium binary, or non-zero if none. The layout changed
+# across Playwright versions (chrome-linux → chrome-linux64), so glob both.
+playwright_chromium_bin() {
+  local bin
+  for bin in "$(playwright_cache_dir)"/chromium-*/chrome-linux*/chrome; do
+    if [[ -x "$bin" ]]; then printf '%s' "$bin"; return 0; fi
+  done
+  return 1
+}
+
+# Shared libraries the installed chromium links against but cannot resolve.
+# Empty output means "nothing missing" — including on macOS, where there is no
+# ldd and Playwright's browsers are self-contained.
+playwright_missing_libs() {
+  local bin="$1"
+  command -v ldd &>/dev/null || return 0
+  ldd "$bin" 2>/dev/null | awk '/not found/ {print $1}' | sort -u
+}
+
+# `playwright install` downloads browser binaries ONLY — the shared libraries
+# they link against (libatk, libgbm, libasound, libcups, …) are separate system
+# packages, and the universal devcontainer image does not carry them. Without
+# this step Chromium is present but unlaunchable: every run dies with
+# `libatk-1.0.so.0: cannot open shared object file`, and each rebuild loses the
+# manual `sudo npx playwright install-deps chromium` that papered over it.
+#
+# The dep check is deliberately independent of the download: a container whose
+# browser cache is already populated (restored volume, earlier provision) still
+# needs its libs checked.
+ensure_playwright_system_deps() {
+  local bin missing
+  bin="$(playwright_chromium_bin)" || {
+    info "No chromium binary found — skipping Playwright system libraries"
+    return 0
+  }
+  missing="$(playwright_missing_libs "$bin")"
+  if [[ -z "$missing" ]]; then
+    ok "Playwright system libraries present"
     return 0
   fi
-  info "Installing Playwright browsers (chromium)"
-  npx -y playwright install chromium 2>&1 | tail -5 || warn "Playwright browser install failed"
+  info "Installing Playwright system libraries (missing: $(tr '\n' ' ' <<<"$missing"))"
+  # install-deps needs root; `env PATH=` because npx is usually nvm-managed and
+  # sudo's secure_path would not find it.
+  $SUDO env PATH="$PATH" npx -y playwright install-deps chromium 2>&1 | tail -5 \
+    || warn "playwright install-deps failed"
+  missing="$(playwright_missing_libs "$bin")"
+  if [[ -n "$missing" ]]; then
+    warn "Playwright system libraries still missing: $(tr '\n' ' ' <<<"$missing")"
+    info "Run: sudo npx playwright install-deps chromium"
+  else
+    ok "Playwright system libraries installed"
+  fi
+}
+
+ensure_playwright_browsers() {
+  command -v npx &>/dev/null || return 0
+  local cache_dir; cache_dir="$(playwright_cache_dir)"
+  if [[ -d "$cache_dir" ]] && [[ -n "$(ls -A "$cache_dir" 2>/dev/null)" ]]; then
+    ok "Playwright browsers already installed"
+  else
+    info "Installing Playwright browsers (chromium)"
+    npx -y playwright install chromium 2>&1 | tail -5 || warn "Playwright browser install failed"
+  fi
+  ensure_playwright_system_deps
 }
 
 # The universal devcontainer images bake in the git-lfs feature with autoPull

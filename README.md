@@ -136,7 +136,7 @@ aicoding-install --force-reinstall   # same, but deletes the manifest first (nuk
 aicoding-install --blueprint /path/to/aiCodingBaseSetup  # provision from a local checkout
 ```
 
-Re-running the installer on an initialized container (manifest exists) re-runs the apt/build/locale prereq steps (idempotent) **and** then runs **reconcile mode**, which automatically applies the conservative buckets without any prompts. Use it when provisioning-only pieces broke or changed (tool bootstrap incl. codex, templates, tmux plugins, Playwright browser) — `aicoding-sync` deliberately doesn't touch those. Running `./install.sh` from a checkout does the same against that checkout's version.
+Re-running the installer on an initialized container (manifest exists) re-runs the apt/build/locale prereq steps (idempotent) **and** then runs **reconcile mode**, which automatically applies the conservative buckets without any prompts. Use it when provisioning-only pieces broke or changed (tool bootstrap incl. codex, templates, tmux plugins, Playwright browser + system libs) — `aicoding-sync` deliberately doesn't touch those. Running `./install.sh` from a checkout does the same against that checkout's version.
 
 ### Per-CLI binary refresh (`aicoding-sync --boot`)
 

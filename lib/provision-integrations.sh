@@ -187,10 +187,23 @@ install_infra_audit() {
 check_playwright() {
   header "Playwright"
 
-  if [[ -d "$HOME/.cache/ms-playwright" ]] || [[ -d "$HOME/Library/Caches/ms-playwright" ]]; then
-    ok "Playwright browsers installed"
-  else
+  if [[ ! -d "$(playwright_cache_dir)" ]] && [[ ! -d "$HOME/Library/Caches/ms-playwright" ]]; then
     warn "Playwright browsers not found"
     info "Run: npx playwright install"
+    return 0
+  fi
+  ok "Playwright browsers installed"
+
+  # A downloaded browser is not a working browser — report unresolved system
+  # libraries here too, so a Chromium that can't launch can't pass as a green
+  # check (helpers live in lib/provision-system.sh).
+  local bin missing
+  bin="$(playwright_chromium_bin)" || return 0
+  missing="$(playwright_missing_libs "$bin")"
+  if [[ -n "$missing" ]]; then
+    warn "Playwright system libraries missing: $(tr '\n' ' ' <<<"$missing")"
+    info "Run: sudo npx playwright install-deps chromium"
+  else
+    ok "Playwright system libraries present"
   fi
 }
