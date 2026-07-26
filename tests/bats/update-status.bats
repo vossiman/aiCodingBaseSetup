@@ -26,11 +26,11 @@ teardown() { rm -rf "$TMP"; }
 
 cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
 
-@test "behind: installed != latest -> status behind, banner shows CTA" {
+@test "behind: installed != latest -> banner shows CTA" {
   echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
   FAKE_LATEST=1111111111111111111111111111111111111111 run "$BIN" --refresh
   [ "$status" -eq 0 ]
-  [ "$(cache | jq -r .status)" = "behind" ]
+  [ "$(cache | jq -r .latest | cut -c1-7)" = "1111111" ]
   run "$BIN" --banner
   echo "$output" | grep -q "demo"
   echo "$output" | grep -q "behind"
@@ -39,7 +39,6 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
 @test "up_to_date: installed == latest -> banner silent" {
   echo 1111111111111111111111111111111111111111 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
   FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
-  [ "$(cache | jq -r .status)" = "up_to_date" ]
   run "$BIN" --banner
   [ -z "$output" ]
 }
@@ -51,20 +50,26 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   [ "$(cache | jq -r .latest | cut -c1-7)" = "1111111" ]
 }
 
-@test "fail-open: ls-remote failure on cold cache -> unknown, exit 0" {
+@test "fail-open: ls-remote failure on cold cache -> no badge, throttled, exit 0" {
   echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
   AICODING_UPDATE_TTL=0 FAKE_LSREMOTE_FAIL=1 run "$BIN" --refresh
   [ "$status" -eq 0 ]
-  [ "$(cache | jq -r .status)" = "unknown" ]
+  # An entry with empty latest is still written: no badge without a known
+  # latest, and the fresh file throttles retry attempts via _cache_fresh.
+  [ -f "$AICODING_UPDATE_STATE/demo.json" ]
+  [ -z "$(cache | jq -r '.latest // empty')" ]
+  run "$BIN" --tmux
+  [ -z "$output" ]
 }
 
-@test "fail-open: ls-remote failure preserves a prior good status (no clobber)" {
+@test "fail-open: ls-remote failure preserves the prior known latest (no clobber)" {
   echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
   FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
-  [ "$(cache | jq -r .status)" = "behind" ]
   AICODING_UPDATE_TTL=0 FAKE_LSREMOTE_FAIL=1 run "$BIN" --refresh
   [ "$status" -eq 0 ]
-  [ "$(cache | jq -r .status)" = "behind" ]
+  [ "$(cache | jq -r .latest | cut -c1-7)" = "1111111" ]
+  run "$BIN" --tmux
+  [[ "$output" == *"⬆demo"* ]]
 }
 
 # The segment is APPENDED to status-right, straight after the clock, so it must
@@ -88,10 +93,11 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   [ -z "$output" ]
 }
 
-@test "tmux: multiple behind tools -> space-separated, alphabetical, no trailing space" {
-  mkdir -p "$AICODING_UPDATE_STATE"
-  printf '{"tool":"aicoding","status":"behind"}' > "$AICODING_UPDATE_STATE/aicoding.json"
-  printf '{"tool":"dvw","status":"behind"}'      > "$AICODING_UPDATE_STATE/dvw.json"
+@test "tmux: multiple behind tools -> space-separated, registry order, no trailing space" {
+  export AICODING_UPDATE_TESTONLY_TOOL="aicoding dvw"
+  echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE.aicoding"
+  echo 3333333333333333333333333333333333333333 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE.dvw"
+  FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
   run "$BIN" --tmux
   [ "$status" -eq 0 ]
   [ "$output" = " #[fg=#89b4fa]│ #[fg=#f9e2af]⬆aicoding ⬆dvw" ]
@@ -103,7 +109,7 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   touch -d '2000-01-01' "$AICODING_UPDATE_STATE/.lock"
   AICODING_UPDATE_TTL=0 FAKE_LATEST=1111111111111111111111111111111111111111 run "$BIN" --refresh
   [ "$status" -eq 0 ]
-  [ "$(cache | jq -r .status)" = "behind" ]
+  [ "$(cache | jq -r .latest | cut -c1-7)" = "1111111" ]
 }
 
 @test "registry is aicoding-only (no dvw entry) in-container" {
@@ -150,6 +156,60 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   [ -f "$local_manifest" ]
   [ "$(jq -r .blueprint_commit "$local_manifest")" = "abc123" ]
   [ -f "$HOME/.aicodingsetup/manifest.json" ]
+}
+
+# --- print-time verdict (see: six stranded-cache fixes) ---------------------
+# The cache used to freeze `installed` and the derived `status` alongside
+# `latest`. That made every manifest writer responsible for invalidating the
+# cache — an invariant that failed six times (44a9d42 25deb8f d6ee59b 43795ff
+# 4f621bc 178f776), because new writers appear and self-updating sync executes
+# the previous library. The verdict is now computed at print time from a FRESH
+# installed read vs the cached latest, so there is no stored verdict left for
+# any writer to strand.
+
+@test "stale cache self-heals: a manifest stamp clears the badge at print time, no refresh" {
+  echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
+  run "$BIN" --tmux
+  [[ "$output" == *"⬆demo"* ]]
+  # A writer stamps installed to latest but does NOT invalidate the cache —
+  # the recurring bug class. The badge must clear anyway, within the TTL.
+  echo 1111111111111111111111111111111111111111 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  run "$BIN" --tmux
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "banner self-heals the same way as the tmux badge" {
+  echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
+  run "$BIN" --print
+  echo "$output" | grep -q demo
+  echo 1111111111111111111111111111111111111111 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  run "$BIN" --print
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "badge appears at print time when installed regresses against a fresh latest" {
+  echo 1111111111111111111111111111111111111111 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
+  run "$BIN" --tmux
+  [ -z "$output" ]
+  # e.g. a fresh container adopts an older shared-mount manifest after the
+  # cache was already warm — behind must show without waiting out the TTL.
+  echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  run "$BIN" --tmux
+  [[ "$output" == *"⬆demo"* ]]
+}
+
+@test "cache stores no frozen verdict: neither installed nor status fields" {
+  # Structural guard for the six-times-fixed defect: if either field returns,
+  # some future code can read a stale verdict again and the writer-invalidation
+  # treadmill restarts.
+  echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
+  [ "$(cache | jq 'has("installed") or has("status")')" = "false" ]
 }
 
 @test "no writer stamps blueprint_commit outside manifest_stage_set_blueprint" {
