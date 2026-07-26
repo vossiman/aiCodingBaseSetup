@@ -99,6 +99,15 @@ _print_banner() {
 # per behind tool (space-joined), empty when all current/unknown. Like --banner
 # it kicks a throttled detached refresh, then only reads the cache, so it stays
 # fast enough to run on every tmux status-interval and never blocks the bar.
+#
+# The segment is APPENDED to status-right, immediately after the clock, so it
+# emits its OWN leading gap and divider. They cannot live in tmux.conf: a static
+# separator there would render a dangling "│" on every up-to-date container,
+# which is most of them most of the time. Styling ships here for the same
+# reason — the divider takes the bar's blue and the badge CTA yellow, and only
+# this code knows whether anything follows the divider at all.
+SEP_STYLE='#[fg=#89b4fa]'   # catppuccin mocha blue — matches the `#H │ %H:%M` divider
+CTA_STYLE='#[fg=#f9e2af]'   # catppuccin mocha yellow — reads as a call to action
 _print_tmux() {
   local f st tool out=""
   for f in "$STATE"/*.json; do
@@ -108,7 +117,7 @@ _print_tmux() {
     tool=$(jq -r '.tool' "$f" 2>/dev/null)
     out="${out:+$out }⬆$tool"
   done
-  [ -n "$out" ] && printf '%s' "$out"
+  [ -n "$out" ] && printf ' %s│ %s%s' "$SEP_STYLE" "$CTA_STYLE" "$out"
 }
 
 case "${1:-}" in

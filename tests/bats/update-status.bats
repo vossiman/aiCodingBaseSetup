@@ -67,15 +67,20 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   [ "$(cache | jq -r .status)" = "behind" ]
 }
 
-@test "tmux: a behind tool renders a compact badge" {
+# The segment is APPENDED to status-right, straight after the clock, so it must
+# carry its own leading gap and divider — the config can't add them, since a
+# static separator would leave a dangling "│" on every up-to-date container.
+# Divider styled in the bar's blue, badge in CTA yellow; the config no longer
+# colours the segment.
+@test "tmux: a behind tool renders a compact badge behind a styled divider" {
   echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
   FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
   run "$BIN" --tmux
   [ "$status" -eq 0 ]
-  [ "$output" = "⬆demo" ]
+  [ "$output" = " #[fg=#89b4fa]│ #[fg=#f9e2af]⬆demo" ]
 }
 
-@test "tmux: all up-to-date -> empty badge" {
+@test "tmux: all up-to-date -> nothing at all, not a bare divider" {
   echo 1111111111111111111111111111111111111111 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
   FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
   run "$BIN" --tmux
@@ -89,7 +94,7 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   printf '{"tool":"dvw","status":"behind"}'      > "$AICODING_UPDATE_STATE/dvw.json"
   run "$BIN" --tmux
   [ "$status" -eq 0 ]
-  [ "$output" = "⬆aicoding ⬆dvw" ]
+  [ "$output" = " #[fg=#89b4fa]│ #[fg=#f9e2af]⬆aicoding ⬆dvw" ]
 }
 
 @test "stale-lock: a lock older than TTL is stolen and refresh proceeds" {
