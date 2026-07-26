@@ -81,6 +81,16 @@ def main():
     env.pop("TMUX", None)
     env["TERM"] = args.term
 
+    # TPM ignores `tmux -f`. Its _get_user_tmux_conf() (scripts/helpers/
+    # plugin_functions.sh) hardcodes $XDG_CONFIG_HOME/tmux/tmux.conf, falling
+    # back to ~/.tmux.conf — so without this the isolated server sources the
+    # plugins declared in the REAL ~/.tmux.conf and you silently benchmark your
+    # live config instead of --config. Stage --config where TPM actually looks.
+    xdg = outdir / "xdg"
+    (xdg / "tmux").mkdir(parents=True, exist_ok=True)
+    (xdg / "tmux" / "tmux.conf").write_bytes(pathlib.Path(args.config).read_bytes())
+    env["XDG_CONFIG_HOME"] = str(xdg)
+
     # Start server + detached session.
     subprocess.run(["tmux", "-L", sock, "-f", args.config, "new-session",
                     "-d", "-s", "repro", "-x", str(args.width),
