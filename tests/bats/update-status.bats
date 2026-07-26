@@ -147,6 +147,24 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   [ -f "$HOME/.aicodingsetup/manifest.json" ]
 }
 
+@test "no writer stamps blueprint_commit outside manifest_stage_set_blueprint" {
+  # Stamping the commit and invalidating this cache must never drift apart: a
+  # site that does the first without the second leaves the badge asserting the
+  # pre-run commit, and _cache_fresh then suppresses re-checks for the whole
+  # TTL. install.sh's three provision sites did exactly that (2026-07-26).
+  # manifest_stage_set_blueprint does both, so it is the only legal writer —
+  # the helper's own set_top call in blueprint-deploy.sh is the sole exception.
+  local hits
+  hits=$(grep -rn 'manifest_stage_set_top blueprint_commit' \
+    "$BLUEPRINT_ROOT/bin" "$BLUEPRINT_ROOT/lib" "$BLUEPRINT_ROOT/install.sh" 2>/dev/null \
+    | grep -v '/lib/blueprint-deploy.sh:' || true)
+  if [ -n "$hits" ]; then
+    echo "blueprint_commit stamped without cache invalidation:"
+    echo "$hits"
+    return 1
+  fi
+}
+
 @test "no shipped entrypoint re-defaults manifest/update-state to the shared mount" {
   # Files in bin/ have NO extension, so a `--include='*.sh'` grep misses them —
   # exactly how bin/aicoding-sync kept the old shared default while everything

@@ -62,8 +62,7 @@ deploy_all_managed_files() {
   local commit origin
   commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
   origin=$(blueprint_origin "$SCRIPT_DIR")
-  manifest_stage_set_top blueprint_commit "$commit"
-  manifest_stage_set_top blueprint_origin "$origin"
+  manifest_stage_set_blueprint "$commit" "$origin"
 
   manifest_stage_commit
 }
@@ -229,8 +228,7 @@ adopt_existing_files() {
   local commit origin
   commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
   origin=$(blueprint_origin "$SCRIPT_DIR")
-  manifest_stage_set_top blueprint_commit "$commit"
-  manifest_stage_set_top blueprint_origin "$origin"
+  manifest_stage_set_blueprint "$commit" "$origin"
 
   manifest_stage_commit
 
@@ -276,8 +274,7 @@ reconcile_existing_install() {
   local rc_commit rc_origin
   rc_commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
   rc_origin=$(blueprint_origin "$SCRIPT_DIR")
-  manifest_stage_set_top blueprint_commit "$rc_commit"
-  manifest_stage_set_top blueprint_origin "$rc_origin"
+  manifest_stage_set_blueprint "$rc_commit" "$rc_origin"
   manifest_stage_commit
 
   # Counts for the end-of-run summary. drifted_but_aligned is auto-handled
