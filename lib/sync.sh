@@ -300,11 +300,9 @@ _sync_reconcile() {
 
   local origin
   origin=$(blueprint_origin "$AICODING_BLUEPRINT_CLONE")
-  # We just advanced the installed blueprint commit, so aicoding-status's cached
-  # behind-main verdict is now stale. The helper drops it, so the next tmux/login
-  # refresh re-checks (detached, ≤ one status-interval) instead of showing a
-  # phantom ⬆aicoding badge for up to the 6h TTL. Removing the JSON also busts
-  # _cache_fresh, so that refresh actually runs rather than short-circuiting.
+  # Stamps the new commit and drops aicoding-status's cached `latest`, so the
+  # next tick re-fetches instead of comparing against a pre-sync remote SHA
+  # (see the helper's comment for why that drop still matters).
   manifest_stage_set_blueprint "$NEW_COMMIT" "$origin"
 
   manifest_stage_commit

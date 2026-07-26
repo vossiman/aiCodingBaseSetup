@@ -96,14 +96,14 @@ manifest_stage_set_top() {
 }
 
 # manifest_stage_set_blueprint <commit> <origin> — stamp the blueprint this
-# manifest now describes AND drop aicoding-status's cached behind-main verdict
-# when the commit actually moved. The two MUST happen together: a writer that
-# stamps without invalidating leaves the cache asserting the pre-run commit,
-# and _cache_fresh then short-circuits every re-check for the full TTL — so an
-# already-current container shows a phantom ⬆aicoding badge for hours, and
-# `aicoding-status --refresh` can't clear it either (same TTL throttle).
-# That was live for install.sh's three stamp sites until 2026-07-26; going
-# through one helper is what stops a fourth writer reintroducing it.
+# manifest now describes and, when the commit actually moved, drop
+# aicoding-status's cache. Since the print-time-verdict change the cache holds
+# only the remote `latest` SHA (aicoding-status compares a fresh manifest read
+# against it when printing), so a stamp can no longer strand a wrong verdict.
+# The drop remains as defense in depth for one residual window: stamping a
+# commit NEWER than the cached latest (sync just pulled a main the cache hasn't
+# seen) would read as "behind" until the TTL; deleting the cache also un-
+# throttles _cache_fresh, so the next tick re-checks immediately instead.
 # Call between manifest_stage_begin and manifest_stage_commit. No network;
 # fail-open.
 manifest_stage_set_blueprint() {

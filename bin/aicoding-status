@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 # aicoding-status — detect whether managed tools are behind their main branch and
-# print a CTA. CTA-ONLY: never applies an update. Reads/writes a per-tool JSON
-# cache; network checks are throttled, timeout-bounded, and fail-open.
+# print a CTA. CTA-ONLY: never applies an update. Network checks are throttled,
+# timeout-bounded, and fail-open.
+#
+# INVARIANT: the per-tool JSON cache stores ONLY network-derived facts (the
+# remote `latest` SHA). The installed commit is read fresh from the manifest at
+# print time and compared against the cached latest there. The cache must never
+# hold `installed` or a precomputed `status`: a frozen verdict makes every
+# manifest writer responsible for invalidating this cache, and that invariant
+# failed six times (44a9d42 25deb8f d6ee59b 43795ff 4f621bc 178f776) — new
+# writers kept appearing, and self-updating sync executes the previous library,
+# so even a fixed writer stamps once with pre-fix code. Do not reintroduce a
+# stored verdict.
 set -uo pipefail
 
 # Container-local, NOT ~/.aicodingsetup: that path is a host bind mount shared
@@ -27,11 +37,22 @@ _adopt_shared_manifest() {
   return 0
 }
 
+# Installed-fns receive the tool name as $1 (most ignore it).
 _installed_aicoding() { _adopt_shared_manifest; jq -r '.blueprint_commit // empty' "$AICODING_MANIFEST" 2>/dev/null; }
-_installed_testonly() { tr -d '[:space:]' < "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE" 2>/dev/null; }
+# Test seam. AICODING_UPDATE_TESTONLY_TOOL may hold a space-separated list;
+# with several tools each reads <INSTALLED_FILE>.<tool>, a single tool reads
+# the plain file.
+_installed_testonly() {
+  local f="$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  case "$AICODING_UPDATE_TESTONLY_TOOL" in *' '*) f="$f.$1" ;; esac
+  tr -d '[:space:]' < "$f" 2>/dev/null
+}
 _registry() {
   if [ -n "${AICODING_UPDATE_TESTONLY_TOOL:-}" ]; then
-    printf '%s|%s|main|_installed_testonly\n' "$AICODING_UPDATE_TESTONLY_TOOL" "$AICODING_UPDATE_TESTONLY_REMOTE"
+    local t
+    for t in $AICODING_UPDATE_TESTONLY_TOOL; do
+      printf '%s|%s|main|_installed_testonly\n' "$t" "$AICODING_UPDATE_TESTONLY_REMOTE"
+    done
     return
   fi
   cat <<EOF
@@ -42,25 +63,25 @@ _apply_cmd() { case "$1" in aicoding) echo "aicoding-sync";; *) echo "update";; 
 _norm() { printf '%.12s' "${1:-}"; }
 _now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# Fetch each tool's remote latest and cache it — nothing else (see the header
+# invariant). The installed side is deliberately NOT read here.
 _refresh_all() {
   mkdir -p "$STATE"
-  local name remote branch ifn installed latest status tmp
+  local name remote branch ifn latest tmp
   while IFS='|' read -r name remote branch ifn; do
     [ -z "$name" ] && continue
-    installed=$("$ifn" 2>/dev/null || true)
     latest=$(timeout "$NET_TIMEOUT" git ls-remote "$remote" "$branch" 2>/dev/null | awk 'NR==1{print $1}')
-    # Transient fetch failure (no latest) — keep the prior entry rather than
-    # clobbering a known status with "unknown" and hiding the CTA.
+    # Transient fetch failure — keep the prior known latest rather than
+    # clobbering it and hiding the CTA.
     if [ -z "$latest" ] && [ -f "$STATE/$name.json" ]; then
       continue
     fi
-    if [ -z "$installed" ] || [ -z "$latest" ]; then status=unknown
-    elif [ "$(_norm "$installed")" = "$(_norm "$latest")" ]; then status=up_to_date
-    else status=behind; fi
+    # Cold cache + failure still writes (empty latest → no badge): the fresh
+    # file makes _cache_fresh throttle retries instead of hammering the remote.
     tmp=$(mktemp "$STATE/.${name}.XXXXXX")
-    jq -n --arg t "$name" --arg i "${installed:-}" --arg l "${latest:-}" \
-          --arg s "$status" --arg c "$(_now_iso)" --arg a "$(_apply_cmd "$name")" \
-      '{tool:$t,installed:$i,latest:$l,status:$s,checked_at:$c,apply_cmd:$a}' > "$tmp"
+    jq -n --arg t "$name" --arg l "${latest:-}" \
+          --arg c "$(_now_iso)" --arg a "$(_apply_cmd "$name")" \
+      '{tool:$t,latest:$l,checked_at:$c,apply_cmd:$a}' > "$tmp"
     mv "$tmp" "$STATE/$name.json"
   done < <(_registry)
 }
@@ -84,21 +105,38 @@ _maybe_refresh() {
 
 _refresh_detached() { ( _maybe_refresh >/dev/null 2>&1 & ) ; }
 
+# _behind_tools — one behind tool name per line, registry order. The verdict is
+# computed HERE, at print time: cached latest vs a fresh installed read. No
+# network; either side missing/empty → no badge for that tool (fail-open). This
+# is what lets a stuck badge self-heal on the next tick after any manifest
+# write, whether or not the writer invalidated the cache.
+_behind_tools() {
+  local name remote branch ifn latest installed
+  while IFS='|' read -r name remote branch ifn; do
+    [ -z "$name" ] && continue
+    [ -f "$STATE/$name.json" ] || continue
+    latest=$(jq -r '.latest // empty' "$STATE/$name.json" 2>/dev/null)
+    [ -n "$latest" ] || continue
+    installed=$("$ifn" "$name" 2>/dev/null)
+    [ -n "$installed" ] || continue
+    [ "$(_norm "$installed")" = "$(_norm "$latest")" ] && continue
+    printf '%s\n' "$name"
+  done < <(_registry)
+}
+
 _print_banner() {
-  local f st tool apply
-  for f in "$STATE"/*.json; do
-    [ -f "$f" ] || continue
-    st=$(jq -r '.status' "$f" 2>/dev/null)
-    [ "$st" = "behind" ] || continue
-    tool=$(jq -r '.tool' "$f" 2>/dev/null); apply=$(jq -r '.apply_cmd' "$f" 2>/dev/null)
-    printf '⬆ %s behind main — run: %s\n' "$tool" "$apply"
-  done
+  local tool
+  while read -r tool; do
+    [ -n "$tool" ] || continue
+    printf '⬆ %s behind main — run: %s\n' "$tool" "$(_apply_cmd "$tool")"
+  done < <(_behind_tools)
 }
 
 # --tmux: a compact, no-newline segment for the tmux status line — one `⬆<tool>`
 # per behind tool (space-joined), empty when all current/unknown. Like --banner
-# it kicks a throttled detached refresh, then only reads the cache, so it stays
-# fast enough to run on every tmux status-interval and never blocks the bar.
+# it kicks a throttled detached refresh, then reads only the cache and the
+# local manifest — no network — so it stays fast enough to run on every tmux
+# status-interval and never blocks the bar.
 #
 # The segment is APPENDED to status-right, immediately after the clock, so it
 # emits its OWN leading gap and divider. They cannot live in tmux.conf: a static
@@ -109,14 +147,11 @@ _print_banner() {
 SEP_STYLE='#[fg=#89b4fa]'   # catppuccin mocha blue — matches the `#H │ %H:%M` divider
 CTA_STYLE='#[fg=#f9e2af]'   # catppuccin mocha yellow — reads as a call to action
 _print_tmux() {
-  local f st tool out=""
-  for f in "$STATE"/*.json; do
-    [ -f "$f" ] || continue
-    st=$(jq -r '.status' "$f" 2>/dev/null)
-    [ "$st" = "behind" ] || continue
-    tool=$(jq -r '.tool' "$f" 2>/dev/null)
+  local tool out=""
+  while read -r tool; do
+    [ -n "$tool" ] || continue
     out="${out:+$out }⬆$tool"
-  done
+  done < <(_behind_tools)
   [ -n "$out" ] && printf ' %s│ %s%s' "$SEP_STYLE" "$CTA_STYLE" "$out"
 }
 
