@@ -2,7 +2,11 @@
 # Sourced by install.sh and bin/aicoding-sync. Pure shell functions only;
 # no top-level side effects. Caller is responsible for `set -euo pipefail`.
 
-: "${AICODING_MANIFEST:=$HOME/.aicodingsetup/manifest.json}"
+# Container-local, NOT ~/.aicodingsetup: that path is a host bind mount shared
+# by every devpod container, while this manifest describes container-local
+# paths (~/.bashrc, ~/.tmux.conf, ...) with per-file deployed_hash values.
+# Sharing it meant whichever container synced last spoke for all of them.
+: "${AICODING_MANIFEST:=$HOME/.local/state/aicoding/manifest.json}"
 : "${AICODING_BLUEPRINT_CLONE:=/tmp/aicoding}"
 
 # compute_hash <path> — echo the sha256 hex of file content; empty if missing.
@@ -28,8 +32,25 @@ compute_block_hash() {
   ' "$path" | sha256sum | awk '{print $1}'
 }
 
+# manifest_adopt_shared — one-time adoption of a manifest left on the shared
+# host mount by an install that predates the container-local path. COPY rather
+# than move: sibling containers still need the shared file for their own
+# adoption, and the mount is shared, so removing it would strand them. The
+# copied commit stamp is only a prior — the next sync re-hashes the real files
+# on disk and replaces it with the truth for THIS container. No-op once the
+# container-local manifest exists.
+manifest_adopt_shared() {
+  local shared="$HOME/.aicodingsetup/manifest.json"
+  if [ -f "$AICODING_MANIFEST" ] || [ ! -f "$shared" ]; then return 0; fi
+  if [ "$shared" = "$AICODING_MANIFEST" ]; then return 0; fi
+  mkdir -p "$(dirname "$AICODING_MANIFEST")" 2>/dev/null || return 0
+  cp "$shared" "$AICODING_MANIFEST" 2>/dev/null || true
+  return 0
+}
+
 # read_manifest — echo the manifest JSON; empty manifest if missing.
 read_manifest() {
+  manifest_adopt_shared
   if [ -f "$AICODING_MANIFEST" ]; then
     cat "$AICODING_MANIFEST"
   else

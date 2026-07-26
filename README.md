@@ -124,7 +124,9 @@ aicoding-sync --blueprint /path/to/aiCodingBaseSetup --dry-run  # test a local c
 
 (The former `aicoding-update` and `update-status` names were back-compat shims and have been removed; use `aicoding-sync` and `aicoding-status`.)
 
-The manifest at `~/.aicodingsetup/manifest.json` records the blueprint commit and a per-file hash for every overwrite-mode file, plus a block-hash for the marker-guarded section of `~/.bashrc`.
+The manifest at `~/.local/state/aicoding/manifest.json` records the blueprint commit and a per-file hash for every overwrite-mode file, plus a block-hash for the marker-guarded section of `~/.bashrc`.
+
+It is deliberately **container-local**, not under `~/.aicodingsetup`: that directory is a host bind mount shared by every devpod container, whereas the manifest describes container-local paths (`~/.bashrc`, `~/.tmux.conf`, …). While it was shared, whichever container synced last stamped the global `blueprint_commit`, so every other container computed `installed == latest` and its `aicoding-status` CTA went quiet while it was still running stale files. The update-status cache (`~/.local/state/aicoding/updates/`) is container-local for the same reason. A manifest left on the shared mount by an older install is adopted once, on first read; the shared copy is left in place so sibling containers can adopt it too.
 
 ### `aicoding-install` — pull latest and re-run the installer
 
@@ -270,7 +272,7 @@ install.sh
      check Playwright
 ```
 
-File deployment is centralised in `lib/blueprint-deploy.sh`. Every managed file flows through one of three deploy modes (`overwrite`, `merge`, `marker_block`), captured in the manifest at `~/.aicodingsetup/manifest.json` so subsequent `aicoding-sync` runs can detect and surface drift.
+File deployment is centralised in `lib/blueprint-deploy.sh`. Every managed file flows through one of three deploy modes (`overwrite`, `merge`, `marker_block`), captured in the manifest at `~/.local/state/aicoding/manifest.json` so subsequent `aicoding-sync` runs can detect and surface drift.
 
 The same persist-once-share-everywhere property applies to all four CLIs once their bind mounts are wired: `claude`, `opencode`, `codex`, and `agent` each persist their auth into their respective bind-mounted home directories, so a single login in any container is reusable from every other.
 

@@ -107,3 +107,42 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   run "$BIN" --print
   ! echo "$output" | grep -qi dvw
 }
+
+# --- container-local state (see: shared-manifest defect) ------------------
+# Both the status cache and the manifest used to live under ~/.aicodingsetup,
+# a host bind mount shared by every container. One container syncing stamped
+# the global manifest to the new commit, so every OTHER container computed
+# installed == latest and went quiet while still running stale files.
+
+@test "status cache default is container-local, not the shared aicodingsetup mount" {
+  unset AICODING_UPDATE_STATE
+  echo 1111111111111111111111111111111111111111 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  run "$BIN" --refresh
+  [ "$status" -eq 0 ]
+  [ ! -e "$HOME/.aicodingsetup/state/updates/demo.json" ]
+  [ -f "$HOME/.local/state/aicoding/updates/demo.json" ]
+}
+
+@test "manifest: adopts a shared-mount manifest once, leaving the shared copy intact" {
+  unset AICODING_MANIFEST
+  mkdir -p "$HOME/.aicodingsetup"
+  echo '{"schema_version":1,"blueprint_commit":"abc123","files":{}}' \
+    > "$HOME/.aicodingsetup/manifest.json"
+
+  # Sourcing alone must NOT migrate — the library documents "no top-level side
+  # effects". Adoption happens on the first manifest read.
+  run bash -c ". '$BLUEPRINT_ROOT/lib/blueprint-deploy.sh'; printf '%s' \"\$AICODING_MANIFEST\""
+  [ "$status" -eq 0 ]
+  local local_manifest="$HOME/.local/state/aicoding/manifest.json"
+  [ "$output" = "$local_manifest" ]
+  [ ! -e "$local_manifest" ]
+
+  run bash -c ". '$BLUEPRINT_ROOT/lib/blueprint-deploy.sh'; read_manifest >/dev/null"
+  [ "$status" -eq 0 ]
+
+  # migrated into the container, and the shared original is NOT removed:
+  # other containers still need it for their own one-time adoption.
+  [ -f "$local_manifest" ]
+  [ "$(jq -r .blueprint_commit "$local_manifest")" = "abc123" ]
+  [ -f "$HOME/.aicodingsetup/manifest.json" ]
+}
