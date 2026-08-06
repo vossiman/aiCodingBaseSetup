@@ -86,8 +86,12 @@ RUN curl -fsSL https://opencode.ai/install | bash \
  && cp "$(readlink -f ~/.opencode/bin/opencode)" ~/.local/bin/opencode
 RUN curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh \
  && mkdir -p ~/.local/bin \
- && { [ -x ~/.local/bin/codex ] || cp "$(readlink -f ~/.codex/bin/codex)" ~/.local/bin/codex; } \
- && rm -rf ~/.codex
+ && codex_real="$(readlink -f ~/.local/bin/codex)" \
+ && rm -f ~/.local/bin/codex \
+ && cp "$codex_real" ~/.local/bin/codex \
+ && chmod +x ~/.local/bin/codex \
+ && rm -rf ~/.codex \
+ && [ -x ~/.local/bin/codex ]
 RUN curl -fsSL https://cursor.com/install | bash \
  && cd ~/.local/bin \
  && { [ -e agent ] || ln -s cursor-agent agent; } \
