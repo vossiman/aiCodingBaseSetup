@@ -36,7 +36,7 @@ three answers — this is the design's core invariant:
 |---|---|---|
 | Container **restart** | nothing is wiped | container fs persists across stop/start |
 | Container **recreate** | logins/config/state survive | host bind mounts: `~/devpod/{aicodingsetup,claude,codex,cursor,opencode}` → container homes |
-| **Daily CLI updates** (claude, codex, cursor-agent, opencode) | image staleness is irrelevant | CLIs live/self-update in user-writable `~/.local/bin`; `aicoding-sync --boot` does the throttled refresh on every start; `~/.local/bin` precedes any image path in PATH |
+| **Daily CLI updates** (claude, codex, cursor-agent, opencode) | image staleness is irrelevant | CLIs live/self-update in user-writable `~/.local/bin`; `aicoding-sync --boot` does the throttled refresh on every start; `~/.local/bin` precedes any image path in PATH (codex is the exception: `_sync_binaries` in `lib/sync.sh` has no codex self-updater today, so codex's staleness bound is the image digest age until a throttled codex refresh is added — rollout follow-up) |
 
 **Image = stable substrate. Agent CLIs = self-updating user space. State =
 host mounts.** Baked-in CLI copies are a fast starting point only — never the
@@ -75,7 +75,11 @@ sudo, locale hooks) without the toolchain zoo. Target final size: **2–3GB**.
   (driven by `aicoding-sync --boot`'s `_sync_binaries`) update them in place,
   and `ensure_*` provisioning short-circuits on their presence; nothing is
   seeded into mount-shadowed paths (`~/.claude`, `~/.codex`, `~/.cursor`,
-  `~/.local/share/opencode`).
+  `~/.local/share/opencode`). Caveat: `_sync_binaries` only self-updates
+  claude, opencode, and cursor-agent — codex has no self-updater there, so a
+  baked codex seed stays at the pinned digest's build date until the digest
+  is bumped; adding a throttled codex refresh to `_sync_binaries` is a
+  rollout follow-up (see Rollout).
 - NOT baked: Playwright's Chromium (~1GB; keep `ensure_playwright_browsers`
   at provision time — it caches into the container fs once per recreate).
 

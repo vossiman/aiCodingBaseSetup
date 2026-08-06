@@ -28,6 +28,11 @@ Local build (needs ~15GB free docker disk):
 under the workspace folder by default, but `image/devcontainer.json` lives
 directly in `image/`.
 
+`image/devcontainer-lock.json` is committed: it pins the docker-in-docker
+feature's resolved version so weekly builds don't silently float; feature
+bumps become reviewable diffs when you run a local build and commit the
+updated lock file.
+
 **dind check caveat:** `smoke-test.sh`'s "nested dockerd" check boots a
 privileged nested `dockerd` and runs a container inside it. From inside an
 already-nested devbox session (this container's own root fs is already
@@ -49,6 +54,8 @@ inconclusive, not a regression, and confirm via CI instead.
 3. Recreate rides: dataenv first, then financepdfs. Verify dind, CLI boot
    refresh, and surviving logins per the spec's acceptance criteria.
 4. Digest bumps = ordinary PRs editing the ref.
+5. Follow-up: add throttled codex refresh to `_sync_binaries` (`lib/sync.sh`)
+   — until then codex staleness = digest age.
 
 ## Cross-file pins (enforced by tests/bats/image.bats)
 

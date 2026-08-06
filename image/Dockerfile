@@ -83,13 +83,16 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
  && [ -x ~/.local/bin/claude ]
 RUN curl -fsSL https://opencode.ai/install | bash \
  && mkdir -p ~/.local/bin \
- && cp "$(readlink -f ~/.opencode/bin/opencode)" ~/.local/bin/opencode
+ && ln -sf "$HOME/.opencode/bin/opencode" ~/.local/bin/opencode \
+ && [ -x "$(readlink -f ~/.local/bin/opencode)" ]
 RUN curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh \
  && mkdir -p ~/.local/bin \
- && codex_real="$(readlink -f ~/.local/bin/codex)" \
- && rm -f ~/.local/bin/codex \
- && cp "$codex_real" ~/.local/bin/codex \
- && chmod +x ~/.local/bin/codex \
+ && if [ -L ~/.local/bin/codex ]; then \
+      codex_real="$(readlink -f ~/.local/bin/codex)" \
+      && rm -f ~/.local/bin/codex \
+      && cp "$codex_real" ~/.local/bin/codex \
+      && chmod +x ~/.local/bin/codex; \
+    fi \
  && rm -rf ~/.codex \
  && [ -x ~/.local/bin/codex ]
 RUN curl -fsSL https://cursor.com/install | bash \

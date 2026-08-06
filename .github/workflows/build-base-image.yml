@@ -22,6 +22,10 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: build-base-image
+  cancel-in-progress: false
+
 env:
   IMAGE: ghcr.io/vossiman/devbox-base
 
@@ -45,6 +49,7 @@ jobs:
           echo "DATE_TAG=$DATE_TAG" >> "$GITHUB_ENV"
           npx -y @devcontainers/cli@0.88.0 build \
             --workspace-folder image \
+            --config image/devcontainer.json \
             --platform linux/amd64 \
             --image-name "$IMAGE:$DATE_TAG" \
             --image-name "$IMAGE:latest"

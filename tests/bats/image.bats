@@ -20,9 +20,8 @@ IMAGE_DIR="$BLUEPRINT_ROOT/image"
 }
 
 @test "image: build devcontainer.json uses the official docker-in-docker feature" {
-  run jq -r '.features | keys[]' "$IMAGE_DIR/devcontainer.json"
+  run jq -e '.features["ghcr.io/devcontainers/features/docker-in-docker:2"]' "$IMAGE_DIR/devcontainer.json"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"ghcr.io/devcontainers/features/docker-in-docker"* ]]
 }
 
 @test "image: build devcontainer.json keeps user codespace (mount contract)" {
@@ -98,4 +97,9 @@ IMAGE_DIR="$BLUEPRINT_ROOT/image"
 @test "image workflow: PR builds never push" {
   WORKFLOW="$BLUEPRINT_ROOT/.github/workflows/build-base-image.yml"
   grep -qE "github.event_name != 'pull_request'" "$WORKFLOW"
+}
+
+@test "image workflow: build step passes --config image/devcontainer.json" {
+  WORKFLOW="$BLUEPRINT_ROOT/.github/workflows/build-base-image.yml"
+  grep -qF -- '--config image/devcontainer.json' "$WORKFLOW"
 }
