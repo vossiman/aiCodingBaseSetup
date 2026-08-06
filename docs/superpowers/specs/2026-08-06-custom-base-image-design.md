@@ -1,7 +1,7 @@
 # Custom devcontainer base image (replace universal:6)
 
 **Date:** 2026-08-06
-**Status:** design — draft, for review.
+**Status:** accepted — implementation on this branch (see docs/superpowers/plans/2026-08-06-custom-base-image.md).
 **Scope:** a purpose-built, digest-pinned base image for all devbox workspaces,
 replacing `mcr.microsoft.com/devcontainers/universal:6`. Covers image contents,
 build/release pipeline, blueprint integration, and what it removes from
@@ -53,19 +53,29 @@ sudo, locale hooks) without the toolchain zoo. Target final size: **2–3GB**.
 `~/devpod/*` mount pairing for zero benefit.
 
 **Contents (build-time layers):**
-- docker-in-docker: docker-ce + the moby dind init script (same
-  `/usr/local/share/docker-init.sh` contract the blueprint's entrypoint
-  expects), **with `/etc/docker/daemon.json` log rotation (20m × 3) baked in**
-  — supersedes the runtime fix from PR #47 on this image.
+- docker-in-docker: the official devcontainers docker-in-docker feature (the
+  exact mechanism universal:6 uses), applied at build time via `devcontainer
+  build` — same `/usr/local/share/docker-init.sh` entrypoint, privileged
+  flag, and per-workspace `/var/lib/docker` volumes via the image's
+  `devcontainer.metadata` label. Built with `moby: false` (docker-ce engine):
+  the current `devcontainers/base:ubuntu` resolves to Ubuntu 26.04
+  "resolute", which has no moby packages available yet; universal:6 used the
+  same feature with `moby: true`, but the entrypoint/privileged/volume
+  metadata contract is identical and engine-independent, **with
+  `/etc/docker/daemon.json` log rotation (20m × 3) baked in** — supersedes
+  the runtime fix from PR #47 on this image.
 - Runtimes: Node LTS, Python 3 + uv, Go (decide: keep or drop — see open
   questions).
 - CLI staples currently apt-installed by `auto_install_prereqs`: git, gh, jq,
   ripgrep, GNU parallel, bubblewrap, kitty-terminfo, locales (de_AT + en_US),
   **tmux from the pinned commit** (`ensure_tmux`'s build, baked so no
   per-container compile).
-- Agent CLIs (claude, codex, opencode, cursor-agent) preinstalled to a
-  system path as seed copies; first `aicoding-sync --boot` refresh shadows
-  them in `~/.local/bin` per the invariant above.
+- Agent CLIs (claude, codex, opencode, cursor-agent) preinstalled as seed
+  copies directly in user-owned `~/.local/bin` — the CLIs' self-updaters
+  (driven by `aicoding-sync --boot`'s `_sync_binaries`) update them in place,
+  and `ensure_*` provisioning short-circuits on their presence; nothing is
+  seeded into mount-shadowed paths (`~/.claude`, `~/.codex`, `~/.cursor`,
+  `~/.local/share/opencode`).
 - NOT baked: Playwright's Chromium (~1GB; keep `ensure_playwright_browsers`
   at provision time — it caches into the container fs once per recreate).
 
@@ -99,15 +109,13 @@ universal-based workspace is gone, then delete in one sweep.
 4. As remaining workspaces recreate naturally, universal digests age out;
    final `docker image prune -a` on the host.
 
-## Open questions
+## Resolved questions (2026-08-06)
 
-- **Go**: only needed if some workspace actually builds Go — audit before
-  baking (~300MB).
-- **Seed-CLI staleness**: weekly builds mean seeds are ≤7 days old; is that
-  worth the workflow noise, or build monthly and lean fully on boot refresh?
-- **Image repo**: this repo (`image/` + workflow) vs. a dedicated repo.
-  Leaning this repo — the image and the provisioning it simplifies should
-  version together.
+- **Go**: not baked; `ensure_go` stays provision-time (~30s curl+tar).
+  Revisit only if a workspace's inner loop compiles Go.
+- **Seed-CLI staleness / cadence**: weekly (Mon 05:17 UTC) + on-change +
+  manual dispatch; seeds ≤7 days stale.
+- **Image repo**: this repo, `image/` + `.github/workflows/build-base-image.yml`.
 
 ## Acceptance criteria
 
