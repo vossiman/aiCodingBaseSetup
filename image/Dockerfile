@@ -1,0 +1,99 @@
+# devbox-base — purpose-built replacement for devcontainers/universal:6.
+# Built by .github/workflows/build-base-image.yml via `devcontainer build`
+# (see image/devcontainer.json: docker-in-docker feature layers on top of this).
+# Spec: docs/superpowers/specs/2026-08-06-custom-base-image-design.md
+#
+# Invariant: image = stable substrate; agent CLIs baked here are SEED copies
+# in user-owned ~/.local/bin — aicoding-sync --boot self-updates them in place.
+
+# --- Stage 1: build tmux from the pinned commit -----------------------------
+# Pin MUST match tmux_commit in lib/provision-system.sh (ensure_tmux);
+# tests/bats/image.bats enforces it.
+FROM mcr.microsoft.com/devcontainers/base:ubuntu AS tmux-build
+ARG TMUX_COMMIT=b07424224b88fcc02bcb9b58d8655f00b97909c6
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      build-essential libevent-dev libncurses-dev pkg-config bison autoconf automake \
+ && mkdir /tmp/tmux-src \
+ && curl -fsSL "https://github.com/tmux/tmux/archive/${TMUX_COMMIT}.tar.gz" \
+      | tar xz --strip-components=1 -C /tmp/tmux-src \
+ && cd /tmp/tmux-src \
+ && sh autogen.sh && ./configure --prefix=/usr/local \
+ && make -j"$(nproc)" && make install DESTDIR=/tmp/tmux-out
+
+# --- Stage 2: the image -----------------------------------------------------
+FROM mcr.microsoft.com/devcontainers/base:ubuntu
+ARG TMUX_COMMIT=b07424224b88fcc02bcb9b58d8655f00b97909c6
+
+# Keep uid 1000 named codespace: every blueprint mount targets /home/codespace.
+RUN usermod -l codespace vscode \
+ && groupmod -n codespace vscode \
+ && usermod -d /home/codespace -m codespace \
+ && printf 'codespace ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/codespace \
+ && chmod 0440 /etc/sudoers.d/codespace \
+ && rm -f /etc/sudoers.d/vscode
+
+# CLI staples auto_install_prereqs otherwise apt-installs per-container, plus
+# gh (universal shipped it via feature) and tmux runtime libs.
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      git jq ripgrep parallel bubblewrap kitty-terminfo locales \
+      python3 python3-venv libevent-core-2.1-7t64 libncurses6 \
+ && mkdir -p /etc/apt/keyrings \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && printf 'deb [arch=amd64 signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\n' \
+      > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/*
+
+# Node LTS via NodeSource apt — intentionally using apt instead of node version managers
+# (alternative version managers' shell exports are problematic in non-interactive contexts).
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+# Locales ensure_locales otherwise generates per-container.
+RUN sed -i 's/^# *de_AT.UTF-8/de_AT.UTF-8/; s/^# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen \
+ && locale-gen
+
+# tmux from the pinned build; commit marker makes ensure_tmux a no-op.
+COPY --from=tmux-build /tmp/tmux-out/usr/local/ /usr/local/
+RUN mkdir -p /usr/local/share/aicoding \
+ && printf '%s\n' "${TMUX_COMMIT}" > /usr/local/share/aicoding/tmux-commit
+
+# dind log rotation baked (supersedes ensure_dind_log_rotation's runtime write
+# on this image; PR #47). The docker-in-docker feature layers after this
+# Dockerfile and does not touch daemon.json (verified against feature v4.0.0).
+COPY daemon.json /etc/docker/daemon.json
+
+# --- Agent CLI seeds --------------------------------------------------------
+# Seeds live in user-owned ~/.local/bin so `aicoding-sync --boot` can
+# self-update them in place, and ensure_* provisioning short-circuits.
+# NEVER seed into ~/.claude ~/.codex ~/.cursor ~/.local/share/opencode —
+# those are host bind mounts at runtime; baked content there is invisible.
+USER codespace
+ENV HOME=/home/codespace
+WORKDIR /home/codespace
+
+RUN curl -fsSL https://claude.ai/install.sh | bash
+RUN curl -fsSL https://opencode.ai/install | bash \
+ && mkdir -p ~/.local/bin \
+ && cp "$(readlink -f ~/.opencode/bin/opencode)" ~/.local/bin/opencode
+RUN curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh \
+ && mkdir -p ~/.local/bin \
+ && { [ -x ~/.local/bin/codex ] || cp "$(readlink -f ~/.codex/bin/codex)" ~/.local/bin/codex; } \
+ && rm -rf ~/.codex
+RUN curl -fsSL https://cursor.com/install | bash \
+ && cd ~/.local/bin \
+ && { [ -e agent ] || ln -s cursor-agent agent; } \
+ && { [ -e cursor-agent ] || ln -s agent cursor-agent; }
+
+# uv (Python package manager) — installs to ~/.local/bin.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+USER root
+# Surface the seeds for non-interactive shells (postCreate/postStart run
+# before the managed ~/.bashrc exists).
+ENV PATH=/home/codespace/.local/bin:$PATH
+USER codespace
