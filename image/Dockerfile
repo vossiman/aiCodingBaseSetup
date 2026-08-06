@@ -10,6 +10,7 @@
 # Pin MUST match tmux_commit in lib/provision-system.sh (ensure_tmux);
 # tests/bats/image.bats enforces it.
 FROM mcr.microsoft.com/devcontainers/base:ubuntu AS tmux-build
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG TMUX_COMMIT=b07424224b88fcc02bcb9b58d8655f00b97909c6
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -23,6 +24,7 @@ RUN apt-get update \
 
 # --- Stage 2: the image -----------------------------------------------------
 FROM mcr.microsoft.com/devcontainers/base:ubuntu
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG TMUX_COMMIT=b07424224b88fcc02bcb9b58d8655f00b97909c6
 
 # Keep uid 1000 named codespace: every blueprint mount targets /home/codespace.
@@ -51,6 +53,7 @@ RUN apt-get update \
 # (alternative version managers' shell exports are problematic in non-interactive contexts).
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nodejs \
+ && node --version \
  && rm -rf /var/lib/apt/lists/*
 
 # Locales ensure_locales otherwise generates per-container.
@@ -76,7 +79,8 @@ USER codespace
 ENV HOME=/home/codespace
 WORKDIR /home/codespace
 
-RUN curl -fsSL https://claude.ai/install.sh | bash
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+ && [ -x ~/.local/bin/claude ]
 RUN curl -fsSL https://opencode.ai/install | bash \
  && mkdir -p ~/.local/bin \
  && cp "$(readlink -f ~/.opencode/bin/opencode)" ~/.local/bin/opencode
@@ -87,10 +91,12 @@ RUN curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh
 RUN curl -fsSL https://cursor.com/install | bash \
  && cd ~/.local/bin \
  && { [ -e agent ] || ln -s cursor-agent agent; } \
- && { [ -e cursor-agent ] || ln -s agent cursor-agent; }
+ && { [ -e cursor-agent ] || ln -s agent cursor-agent; } \
+ && [ -x "$(readlink -f ~/.local/bin/cursor-agent)" ]
 
 # uv (Python package manager) — installs to ~/.local/bin.
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+ && [ -x ~/.local/bin/uv ]
 
 USER root
 # Surface the seeds for non-interactive shells (postCreate/postStart run
