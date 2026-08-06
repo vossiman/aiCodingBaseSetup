@@ -75,6 +75,50 @@ EOF
   fi
 }
 
+# Universal's docker-in-docker daemon runs with unbounded json-file logs — one
+# chatty nested container can eat gigabytes (2026-08-05: a crash-looping app
+# plus a 2G prefect log helped fill the host disk to 0 bytes free). Write a
+# daemon.json with rotation caps so every nested container created in this
+# workspace gets bounded logs. Rotation only applies to containers created
+# after dockerd (re)starts with the config, so restart it when that's safe:
+# dockerd up with zero nested containers, which is exactly the postCreate
+# situation. An existing daemon.json is left alone — blind JSON merging is
+# riskier than living with its settings. Idempotent, fail-open.
+ensure_dind_log_rotation() {
+  [[ "$ENV_TYPE" == "container" ]] || return 0
+  command -v dockerd &>/dev/null || return 0
+  if [[ -f /etc/docker/daemon.json ]]; then
+    grep -q '"log-opts"' /etc/docker/daemon.json 2>/dev/null \
+      || warn "/etc/docker/daemon.json exists without log-opts — leaving it; add log rotation manually"
+    return 0
+  fi
+  info "Writing /etc/docker/daemon.json with log rotation (20m x 3)"
+  $SUDO mkdir -p /etc/docker
+  $SUDO tee /etc/docker/daemon.json >/dev/null <<'EOF'
+{
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "20m", "max-file": "3" }
+}
+EOF
+  # Never (re)start daemons under the test suite (see CLAUDE.md: an ungated
+  # daemon start under bats once took the host down — and pkill dockerd here
+  # would hit the devcontainer's own nested daemon).
+  [[ "${AICODINGSETUP_SKIP_NETWORK:-}" == "1" ]] && return 0
+  if docker info >/dev/null 2>&1 && [[ -z "$(docker ps -aq 2>/dev/null)" ]] \
+     && [[ -x /usr/local/share/docker-init.sh ]]; then
+    info "Restarting nested dockerd to apply log rotation"
+    $SUDO pkill dockerd 2>/dev/null || true
+    $SUDO pkill containerd 2>/dev/null || true
+    sleep 2
+    # docker-init.sh cleans stale pid files, starts dockerd (sudo-ing
+    # internally), waits until `docker info` responds, then execs our no-op.
+    bash /usr/local/share/docker-init.sh true >/dev/null 2>&1 \
+      || warn "dockerd restart failed — log rotation applies on next dockerd start"
+  else
+    info "Nested containers present or dockerd down — log rotation applies on next dockerd start"
+  fi
+}
+
 ensure_node() {
   command -v npm &>/dev/null && return 0
 
@@ -444,6 +488,7 @@ ensure_lfs_autopull_safe() {
 auto_install_prereqs() {
   header "Auto-installing prerequisites"
   ensure_login_shells_clean
+  ensure_dind_log_rotation
   command -v git    &>/dev/null || { info "Installing git";    apt_install git; }
   command -v jq     &>/dev/null || { info "Installing jq";     apt_install jq; }
   command -v bwrap  &>/dev/null || { info "Installing bubblewrap"; apt_install bubblewrap; }
