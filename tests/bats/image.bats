@@ -79,3 +79,23 @@ IMAGE_DIR="$BLUEPRINT_ROOT/image"
   run grep -c -E 'tmux-commit|daemon\.json|docker-init\.sh|codespace' "$IMAGE_DIR/smoke-test.sh"
   [ "$status" -eq 0 ]
 }
+
+@test "image workflow: weekly cron + manual dispatch + image-path triggers" {
+  WORKFLOW="$BLUEPRINT_ROOT/.github/workflows/build-base-image.yml"
+  [ -f "$WORKFLOW" ]
+  grep -qE 'cron:' "$WORKFLOW"
+  grep -q 'workflow_dispatch' "$WORKFLOW"
+  grep -q 'image/' "$WORKFLOW"
+}
+
+@test "image workflow: pushes ghcr.io/vossiman/devbox-base and runs the smoke test" {
+  WORKFLOW="$BLUEPRINT_ROOT/.github/workflows/build-base-image.yml"
+  grep -q 'ghcr.io/vossiman/devbox-base' "$WORKFLOW"
+  grep -q 'smoke-test.sh' "$WORKFLOW"
+  grep -q 'packages: write' "$WORKFLOW"
+}
+
+@test "image workflow: PR builds never push" {
+  WORKFLOW="$BLUEPRINT_ROOT/.github/workflows/build-base-image.yml"
+  grep -qE "github.event_name != 'pull_request'" "$WORKFLOW"
+}
