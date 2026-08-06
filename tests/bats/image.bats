@@ -73,3 +73,9 @@ IMAGE_DIR="$BLUEPRINT_ROOT/image"
     grep -qE 'rm -rf .*\.codex' "$IMAGE_DIR/Dockerfile"
   fi
 }
+
+@test "image: smoke-test.sh exists, is executable, and checks the core contract" {
+  [ -x "$IMAGE_DIR/smoke-test.sh" ]
+  run grep -c -E 'tmux-commit|daemon\.json|docker-init\.sh|codespace' "$IMAGE_DIR/smoke-test.sh"
+  [ "$status" -eq 0 ]
+}
