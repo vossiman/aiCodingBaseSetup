@@ -1,0 +1,73 @@
+# Build & publish ghcr.io/vossiman/devbox-base — the custom devcontainer base
+# image (spec: docs/superpowers/specs/2026-08-06-custom-base-image-design.md).
+# Weekly so the baked CLI seeds stay <=7 days stale; on-change for image/ PRs
+# (build+smoke only, no push); manual dispatch for out-of-band rebuilds.
+name: build-base-image
+
+on:
+  schedule:
+    - cron: "17 5 * * 1" # Mondays 05:17 UTC
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "image/**"
+      - ".github/workflows/build-base-image.yml"
+  pull_request:
+    paths:
+      - "image/**"
+      - ".github/workflows/build-base-image.yml"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-base-image
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/vossiman/devbox-base
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image (Dockerfile + devcontainer features)
+        run: |
+          DATE_TAG="$(date -u +%Y-%m-%d)"
+          echo "DATE_TAG=$DATE_TAG" >> "$GITHUB_ENV"
+          npx -y @devcontainers/cli@0.88.0 build \
+            --workspace-folder image \
+            --config image/devcontainer.json \
+            --platform linux/amd64 \
+            --image-name "$IMAGE:$DATE_TAG" \
+            --image-name "$IMAGE:latest"
+
+      - name: Smoke test
+        run: bash image/smoke-test.sh "$IMAGE:$DATE_TAG"
+
+      - name: Push
+        if: github.event_name != 'pull_request'
+        run: |
+          docker push "$IMAGE:$DATE_TAG"
+          docker push "$IMAGE:latest"
+          DIGEST="$(docker buildx imagetools inspect "$IMAGE:$DATE_TAG" --format '{{json .Manifest}}' | jq -r .digest)"
+          {
+            echo "## devbox-base published"
+            echo '```'
+            echo "$IMAGE:$DATE_TAG"
+            echo "$IMAGE@$DIGEST"
+            echo '```'
+            echo "Pin the blueprint with the digest ref above (rollout step 2)."
+          } >> "$GITHUB_STEP_SUMMARY"
