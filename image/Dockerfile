@@ -60,6 +60,12 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 RUN sed -i 's/^# *de_AT.UTF-8/de_AT.UTF-8/; s/^# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen \
  && locale-gen
 
+# Vienna time everywhere (tmux clock, logs, cron-ish tooling) — universal ran
+# UTC. TZ env covers processes that read it; /etc/localtime covers the rest.
+ENV TZ=Europe/Vienna
+RUN ln -sf /usr/share/zoneinfo/Europe/Vienna /etc/localtime \
+ && echo Europe/Vienna > /etc/timezone
+
 # tmux from the pinned build; commit marker makes ensure_tmux a no-op.
 COPY --from=tmux-build /tmp/tmux-out/usr/local/ /usr/local/
 RUN mkdir -p /usr/local/share/aicoding \
@@ -109,4 +115,9 @@ USER root
 # Surface the seeds for non-interactive shells (postCreate/postStart run
 # before the managed ~/.bashrc exists).
 ENV PATH=/home/codespace/.local/bin:$PATH
+# NodeSource npm's global prefix is root-owned /usr/lib — unlike universal's
+# version-manager-based node, whose prefix was user-writable. Point npm -g at
+# user space so install_mcp_packages (and agents) install without sudo;
+# binaries land in ~/.local/bin, which is already first on PATH.
+ENV NPM_CONFIG_PREFIX=/home/codespace/.local
 USER codespace

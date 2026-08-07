@@ -50,8 +50,13 @@ install_mcp_packages() {
     if npm list -g "$pkg" &>/dev/null; then
       ok "$pkg already installed"
     else
+      # Unprivileged first (user-writable prefix: nvm on universal,
+      # NPM_CONFIG_PREFIX=~/.local on devbox-base), sudo as fallback for
+      # root-owned prefixes. sudo -n: never hang on a password prompt.
       if npm install -g "$pkg" 2>/dev/null; then
         ok "$pkg installed"
+      elif command -v sudo &>/dev/null && sudo -n env "PATH=$PATH" npm install -g "$pkg" 2>/dev/null; then
+        ok "$pkg installed (sudo)"
       else
         warn "Failed to install $pkg — install manually with: npm install -g $pkg"
       fi
