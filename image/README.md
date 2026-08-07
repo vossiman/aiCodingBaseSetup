@@ -64,6 +64,15 @@ regression, not an artifact of local nesting depth.
 4. Digest bumps = ordinary PRs editing the ref.
 5. Follow-up: add throttled codex refresh to `_sync_binaries` (`lib/sync.sh`)
    — until then codex staleness = digest age.
+6. Follow-up: bake Playwright's *system libraries* (the stable apt set
+   `ensure_playwright_system_deps` installs per container: libatk, libgbm,
+   libasound, …) into a future image rev. The Chromium *browser* stays
+   provision-time on purpose: its build must match each project's pinned
+   Playwright version (a baked copy goes stale and the matching build
+   downloads anyway), and at ~1GB it's the most churn-prone artifact —
+   exactly what the stranded-digest-copy problem punishes. The libs are
+   version-insensitive and would cut most of the Playwright postCreate
+   time.
 
 ## Cross-file pins (enforced by tests/bats/image.bats)
 
