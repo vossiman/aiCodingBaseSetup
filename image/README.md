@@ -33,16 +33,24 @@ feature's resolved version so weekly builds don't silently float; feature
 bumps become reviewable diffs when you run a local build and commit the
 updated lock file.
 
-**dind check caveat:** `smoke-test.sh`'s "nested dockerd" check boots a
-privileged nested `dockerd` and runs a container inside it. From inside an
-already-nested devbox session (this container's own root fs is already
-`overlay`), that check adds a 4th level of overlayfs nesting and fails on a
-docker-ce/containerd overlay-snapshotter limitation unrelated to this image
-(reproduces identically on vanilla Ubuntu + docker-ce at the same depth). The
-check is authoritative only on a non-nested host, e.g. a CI runner — the
-workflow's `pull_request` build runs it at the correct (3-level) depth and is
-the real gate. Treat a local `FAIL: nested dockerd` from inside a devbox as
-inconclusive, not a regression, and confirm via CI instead.
+**dind check:** `smoke-test.sh`'s "nested dockerd" check boots a privileged
+nested `dockerd` and runs a container inside it, backed by anonymous volumes
+at `/var/lib/docker` and `/var/lib/containerd` (see the comment in
+`smoke-test.sh`). Those volumes matter: without them, the nested dockerd's
+`/var/lib/docker` is the container's own overlayfs upper layer, and while
+`docker info` still succeeds, actually running a container fails to mount an
+overlay filesystem on top of overlayfs (`failed to mount ...: fstype:
+overlay ... invalid argument`). In real workspaces this never comes up — the
+docker-in-docker feature's `devcontainer.metadata` mounts named volumes at
+both paths. An earlier theory blamed nested-devbox depth instead (a 4th
+level of overlayfs nesting hitting a docker-ce/containerd limitation), based
+on a confounded control: `docker:dind` "worked" without an explicit volume
+only because its Dockerfile declares `VOLUME /var/lib/docker`, so plain
+`docker run` auto-created an anonymous volume for it, while vanilla
+ubuntu+docker-ce (which "failed") got none. Confirmed 2026-08-07: with the
+volumes, the check passes locally too, including from inside this
+already-nested devbox session — a local `FAIL: nested dockerd` is a real
+regression, not an artifact of local nesting depth.
 
 ## Rollout (per spec)
 

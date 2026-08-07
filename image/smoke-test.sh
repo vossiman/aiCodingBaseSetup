@@ -42,13 +42,34 @@ check "locales de_AT + en_US"          'locale -a | grep -qi de_AT.utf8 && local
 check "no nvs/nvm land mines"          '! ls /usr/local/nvs 2>/dev/null && ! ls /usr/local/share/nvs 2>/dev/null'
 
 echo "-- dind boot (privileged) --"
-if docker run --rm --privileged "$IMG" \
-     /usr/local/share/docker-init.sh bash -c 'timeout 90 docker info >/dev/null && docker run --rm hello-world >/dev/null' \
-     >/dev/null 2>&1; then
+# -v /var/lib/docker -v /var/lib/containerd: anonymous volumes (auto-removed
+# with --rm). In real workspaces the docker-in-docker feature's
+# devcontainer.metadata mounts named volumes at these paths; without a real
+# filesystem there, `docker info` still succeeds (dockerd starts fine on the
+# containerd overlayfs snapshotter over overlayfs), but running an actual
+# container fails when it tries to mount the container rootfs:
+#   failed to mount /tmp/containerd-mountNNN: mount source: "overlay",
+#   ... fstype: overlay ... err: invalid argument
+# — overlay-on-overlayfs isn't mountable. This is NOT the nested-devbox-depth
+# theory floated earlier: that theory's control experiment (docker:dind
+# "worked" without an explicit volume) was confounded — docker:dind's
+# Dockerfile declares `VOLUME /var/lib/docker`, so plain `docker run`
+# auto-creates an anonymous volume for it, while vanilla ubuntu+docker-ce
+# (which "failed") gets none. Confirmed 2026-08-07 on devbox-base:local: the
+# same command without these volumes fails with the mount error above; with
+# them, the full check (dockerd boot + `docker run hello-world`) passes at
+# any nesting depth, including from inside an already-nested devbox session.
+dind_log="$(mktemp)"
+if docker run --rm --privileged -v /var/lib/docker -v /var/lib/containerd "$IMG" \
+     /usr/local/share/docker-init.sh bash -c 'timeout 90 docker info && docker run --rm hello-world' \
+     >"$dind_log" 2>&1; then
   echo "ok:   nested dockerd boots and runs a container"
 else
-  echo "FAIL: nested dockerd" >&2; fail=1
+  echo "FAIL: nested dockerd" >&2
+  tail -n 30 "$dind_log" >&2
+  fail=1
 fi
+rm -f "$dind_log"
 
 size_bytes=$(docker image inspect "$IMG" --format '{{.Size}}')
 echo "image size: $((size_bytes / 1024 / 1024)) MB"
