@@ -103,3 +103,15 @@ IMAGE_DIR="$BLUEPRINT_ROOT/image"
   WORKFLOW="$BLUEPRINT_ROOT/.github/workflows/build-base-image.yml"
   grep -qF -- '--config image/devcontainer.json' "$WORKFLOW"
 }
+
+@test "image: Dockerfile points npm's global prefix at user space" {
+  # NodeSource npm defaults to root-owned /usr/lib; without this,
+  # install_mcp_packages' unprivileged npm -g fails on every container.
+  run grep -E '^ENV NPM_CONFIG_PREFIX=/home/codespace/\.local$' "$IMAGE_DIR/Dockerfile"
+  [ "$status" -eq 0 ]
+}
+
+@test "image: Dockerfile sets Vienna timezone" {
+  grep -qE '^ENV TZ=Europe/Vienna$' "$IMAGE_DIR/Dockerfile"
+  grep -qF '/usr/share/zoneinfo/Europe/Vienna /etc/localtime' "$IMAGE_DIR/Dockerfile"
+}
