@@ -1,5 +1,5 @@
 {
-  "image": "mcr.microsoft.com/devcontainers/universal:6",
+  "image": "ghcr.io/vossiman/devbox-base@sha256:d912113cbe86ec1a137adc936e7f11924d7ce4ae4c759aeb14f0e2e4f4a2d8af",
   "remoteUser": "codespace",
   "runArgs": ["--hostname", "${containerWorkspaceFolderBasename}"],
   "containerEnv": {
