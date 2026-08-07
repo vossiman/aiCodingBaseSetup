@@ -62,6 +62,17 @@ DEVCONTAINER="$BLUEPRINT_ROOT/devcontainer.json"
   [ "$status" -ne 0 ]
 }
 
+@test "devcontainer.json: pins devbox-base by digest (not a floating tag, not universal)" {
+  local image
+  image=$(jq -r '.image' "$DEVCONTAINER")
+  [[ "$image" == ghcr.io/vossiman/devbox-base@sha256:* ]] || {
+    echo "image is not a digest-pinned devbox-base ref: $image"
+    return 1
+  }
+  # 64 hex chars after sha256: — a truncated digest would fail the pull.
+  [[ "$image" =~ @sha256:[0-9a-f]{64}$ ]]
+}
+
 @test "devcontainer.json: provisions by cloning aiCodingBaseSetup (clone-based, not submodule)" {
   local post_create
   post_create=$(jq -r '.postCreateCommand' "$DEVCONTAINER")
