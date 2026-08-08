@@ -198,6 +198,11 @@ _print_tmux() {
 
 case "${1:-}" in
   --refresh)  _maybe_refresh ;;
+  # --refresh-attach: tmux client-attached hook. Force a check past the idle
+  # TTL, but keep a short min-interval so reconnect storms (5 attaches in 4
+  # minutes, 2026-08-08) cost one network call, not five. Foreground here;
+  # the tmux hook backgrounds it with run-shell -b.
+  --refresh-attach) TTL="${AICODING_UPDATE_ATTACH_MIN:-300}" _maybe_refresh ;;
   # --banner: kick a throttled refresh in the background and print the CURRENT
   # cache. The first shell after an update may show stale state until the async
   # refresh lands; subsequent shells reflect it. Keeps shell startup non-blocking.

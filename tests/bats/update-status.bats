@@ -333,3 +333,18 @@ _mk_clone() {  # fixture: commit A (stamp point), then commit B touching $1
   run "$BIN" --tmux
   [[ "$output" != *"⬆rebuild"* ]]
 }
+
+@test "refresh-attach: bypasses the 6h TTL" {
+  echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
+  sleep 1
+  FAKE_LATEST=3333333333333333333333333333333333333333 AICODING_UPDATE_ATTACH_MIN=0 "$BIN" --refresh-attach
+  [ "$(cache | jq -r .latest | cut -c1-7)" = "3333333" ]
+}
+
+@test "refresh-attach: still throttled by its own min-interval" {
+  echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
+  FAKE_LATEST=3333333333333333333333333333333333333333 AICODING_UPDATE_ATTACH_MIN=3600 "$BIN" --refresh-attach
+  [ "$(cache | jq -r .latest | cut -c1-7)" = "1111111" ]
+}
