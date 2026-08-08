@@ -41,6 +41,13 @@ export PATH="$HOME/.local/bin:$PATH"
 
 : "${AICODING_BLUEPRINT_CLONE:=/tmp/aicoding}"
 
+# Keep the homelab-wiki clone fresh if one exists (cloning is the agent's job
+# per the global CLAUDE.md). Gated like every other network call; fail-open.
+if [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ] && [ -d "$HOME/homelab-wiki/.git" ]; then
+  git -C "$HOME/homelab-wiki" pull --ff-only --quiet 2>/dev/null \
+    || echo "WARN: homelab-wiki pull failed (non-fatal)" >&2
+fi
+
 # Plumbing (ssh-agent watcher, GitHub host key), config reconcile and throttled
 # binary refresh all live in aicoding_sync now — let it own the work. Fail-open:
 # a transient sync error must never block container start.
