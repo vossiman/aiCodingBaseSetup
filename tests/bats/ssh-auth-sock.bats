@@ -32,7 +32,9 @@ STUB
   export PATH="$TMPDIR/stubs:$PATH"
 }
 
-teardown() { rm -rf "$TMPDIR"; }
+# Refuse to remove anything but a mktemp sandbox: if setup ever aborts before
+# assigning TMPDIR, the inherited value is /tmp itself (bats exports it).
+teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
 
 # Create a real AF_UNIX socket node at $1 (left on disk after the process exits).
 mksock() { python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$1"; }

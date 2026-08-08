@@ -29,9 +29,9 @@ setup() {
   export PATH="$TMPDIR/stubs:$PATH"
 }
 
-teardown() {
-  rm -rf "$TMPDIR"
-}
+# Refuse to remove anything but a mktemp sandbox: if setup ever aborts before
+# assigning TMPDIR, the inherited value is /tmp itself (bats exports it).
+teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
 
 @test "aicoding-sync: exits with error when no manifest" {
   run "$BLUEPRINT_ROOT/bin/aicoding-sync"

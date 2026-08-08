@@ -102,12 +102,65 @@ ensure_agents_skills_symlink() {
     || printf 'WARN: %s\n' "could not create ~/.agents/skills symlink" >&2
 }
 
+# Scope Claude Code's agent/daemon runtime state per container. $HOME is a
+# volume shared by every devpod container, so Claude Code's runtime registries
+# (~/.claude/{jobs,sessions,daemon}) are visible machine-wide: the agents view
+# (left arrow) lists every container's background agents — unswitchable, since
+# their attach sockets live in the other container's /tmp — and concurrent
+# daemons clobber each other's roster.json (anthropics/claude-code#15334).
+# Redirect the three dirs through symlinks into a container-local base: all
+# containers share the symlink, each resolves it to its own private storage.
+# Root-level daemon.* files (daemon.lock etc.) stay shared BY DESIGN: the
+# daemon rewrites them via rename, which silently replaces a file symlink with
+# a regular shared file (verified on 2.1.226, 2026-08-08) — dir symlinks
+# survive because writes land inside them. First conversion moves an existing
+# real dir aside to <dir>.premigrate in the shared home; every container then
+# adopts its own entries from that backup (a job is "ours" when its recorded
+# cwd exists locally). The base dies with a container rebuild — correct, those
+# agents' processes die too; transcripts stay in shared ~/.claude/projects.
+ensure_claude_runtime_scope() {
+  local base="${AICODING_CLAUDE_RUNTIME_DIR:-/var/local/claude-runtime}"
+  local d link backup entry cwd
+  if [ ! -d "$base" ]; then
+    mkdir -p "$base" 2>/dev/null || sudo -n mkdir -p "$base" 2>/dev/null || true
+  fi
+  [ -d "$base" ] || return 0
+  [ -w "$base" ] || sudo -n chown "$(id -un):" "$base" 2>/dev/null || true
+  [ -w "$base" ] || return 0
+  mkdir -p "$HOME/.claude" 2>/dev/null || return 0
+  for d in jobs sessions daemon; do
+    link="$HOME/.claude/$d"
+    mkdir -p "$base/$d" 2>/dev/null || continue
+    [ -L "$link" ] && continue          # already scoped (this or another container)
+    if [ -d "$link" ]; then             # first conversion on this shared home
+      mv -T "$link" "$link.premigrate" 2>/dev/null || continue
+    fi
+    ln -sfn "$base/$d" "$link" 2>/dev/null \
+      || printf 'WARN: %s\n' "could not symlink ~/.claude/$d to $base/$d" >&2
+  done
+  backup="$HOME/.claude/jobs.premigrate"
+  if [ -d "$backup" ] && [ -d "$base/jobs" ] && command -v jq >/dev/null 2>&1; then
+    for entry in "$backup"/*/; do
+      [ -f "${entry}state.json" ] || continue
+      cwd=$(jq -r '.cwd // empty' "${entry}state.json" 2>/dev/null)
+      [ -n "$cwd" ] && [ -d "$cwd" ] || continue
+      [ -e "$base/jobs/$(basename "$entry")" ] && continue
+      mv "$entry" "$base/jobs/" 2>/dev/null || true
+    done
+    if [ -f "$backup/pins.json" ] && [ ! -e "$base/jobs/pins.json" ]; then
+      cp "$backup/pins.json" "$base/jobs/" 2>/dev/null || true
+    fi
+  fi
+  return 0
+}
+
 _sync_plumbing() {            # never throttled — must be correct now
   command -v aicoding-ssh-agent-watch >/dev/null 2>&1 && aicoding-ssh-agent-watch --ensure 2>/dev/null || true
   command -v seed_github_known_host >/dev/null 2>&1 && seed_github_known_host || true
   command -v ensure_gh_credential_helper >/dev/null 2>&1 && ensure_gh_credential_helper || true
   command -v ensure_git_credential_file_fallback >/dev/null 2>&1 && ensure_git_credential_file_fallback || true
   command -v ensure_agents_skills_symlink >/dev/null 2>&1 && ensure_agents_skills_symlink || true
+  command -v ensure_claude_runtime_scope >/dev/null 2>&1 && ensure_claude_runtime_scope || true
 }
 
 # Return the provenance stored in manifest.json. A local source is deliberately

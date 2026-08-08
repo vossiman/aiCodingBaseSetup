@@ -42,6 +42,11 @@ export GIT_TERMINAL_PROMPT=0
 # hooks into the real repo checkout (cwd during tests is BLUEPRINT_ROOT).
 # lfs-autopull.bats overrides this per-test with its own fixture.
 export AICODINGSETUP_LFS_PULL_SCRIPT=/nonexistent-lfs-pull-script
+# ensure_claude_runtime_scope defaults to /var/local/claude-runtime; point it
+# at a throwaway dir so suite runs never touch the host's real runtime scope.
+# Tests that assert on the scope override this per-test with their own $TMP.
+AICODING_CLAUDE_RUNTIME_DIR="$(mktemp -d)"
+export AICODING_CLAUDE_RUNTIME_DIR
 export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1}"
 
 # --- bats discovery ----------------------------------------------------------

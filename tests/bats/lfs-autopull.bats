@@ -9,9 +9,13 @@
 
 setup() {
   : "${BLUEPRINT_ROOT:?unset — run via tests/bats/run.sh}"
-  git lfs version &>/dev/null || skip "git-lfs not installed"
+  # mktemp MUST precede the skip: `skip` aborts setup but teardown still runs,
+  # and bats exports TMPDIR=/tmp — an unassigned TMPDIR would hand /tmp to
+  # teardown's rm -rf, wiping every user-owned file there (2026-08-08 incident:
+  # the devbox image dropped git-lfs, arming exactly that path on every run).
   TMPDIR=$(mktemp -d)
   export HOME="$TMPDIR"
+  git lfs version &>/dev/null || skip "git-lfs not installed"
   export AICODINGSETUP_SKIP_NETWORK=1
   export AICODINGSETUP_LFS_PULL_SCRIPT="$TMPDIR/pull-git-lfs-artifacts.sh"
 
@@ -30,9 +34,9 @@ git lfs pull
 EOF
 }
 
-teardown() {
-  rm -rf "$TMPDIR"
-}
+# Refuse to remove anything but a mktemp sandbox: if setup ever aborts before
+# assigning TMPDIR, the inherited value is /tmp itself (bats exports it).
+teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
 
 # Source install.sh (guards keep main/check_prerequisites from running) and
 # invoke the function from inside the workspace repo, as postCreate would.
