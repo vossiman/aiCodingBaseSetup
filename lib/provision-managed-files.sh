@@ -71,7 +71,7 @@ deploy_all_managed_files() {
 # MANAGED_MCPS / MANAGED_PLUGINS live in lib/provision.sh (sourced below,
 # after the colored loggers are defined) — shared with aicoding-sync so both
 # reconcile the same MCP/plugin set.
-MANAGED_HOOKS=("custom-statusline.js" "bw-deny-files.sh" "check-archived-docs.sh")
+MANAGED_HOOKS=("custom-statusline.js" "bw-deny-files.sh" "check-archived-docs.sh" "llmwiki-nudge.sh")
 MANAGED_SKILLS=("cloudflare-browser")
 # JSON merge lives in lib/blueprint-deploy.sh as _json_merge_into (unions both
 # permissions.allow and permissions.deny). Do not reintroduce a local merger.
