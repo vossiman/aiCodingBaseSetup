@@ -236,3 +236,48 @@ teardown() { rm -rf "$TMP"; }
   run bash -c 'printf "protocol=https\nhost=github.com\n\n" | bash "$BLUEPRINT_ROOT/configs/git/git-credential-aicoding" get'
   [ "$status" -eq 0 ]; [ -z "$output" ]
 }
+
+# ensure_claude_runtime_scope: ~/.claude/{jobs,sessions,daemon} must become
+# symlinks into a container-local base so a home dir shared across devpod
+# containers stops leaking background agents between agents views (and stops
+# daemons clobbering each other's roster). See the function comment in sync.sh.
+@test "plumbing scopes claude runtime dirs into the container-local base" {
+  export AICODING_CLAUDE_RUNTIME_DIR="$TMP/runtime"
+  _sync_plumbing
+  for d in jobs sessions daemon; do
+    [ -L "$TMP/.claude/$d" ]
+    [ "$(readlink "$TMP/.claude/$d")" = "$TMP/runtime/$d" ]
+    [ -d "$TMP/runtime/$d" ]
+  done
+  _sync_plumbing                                   # idempotent re-run
+  [ "$(readlink "$TMP/.claude/jobs")" = "$TMP/runtime/jobs" ]
+}
+
+@test "claude runtime scope adopts own jobs, leaves foreign ones in the backup" {
+  export AICODING_CLAUDE_RUNTIME_DIR="$TMP/runtime"
+  mkdir -p "$TMP/.claude/jobs/ownjob" "$TMP/.claude/jobs/foreignjob" "$TMP/mywork"
+  printf '{"cwd":"%s"}' "$TMP/mywork" > "$TMP/.claude/jobs/ownjob/state.json"
+  printf '{"cwd":"/no/such/workspace"}' > "$TMP/.claude/jobs/foreignjob/state.json"
+  echo '{}' > "$TMP/.claude/jobs/pins.json"
+  _sync_plumbing
+  [ -d "$TMP/runtime/jobs/ownjob" ]                # ours: migrated
+  [ -f "$TMP/runtime/jobs/pins.json" ]
+  [ -d "$TMP/.claude/jobs.premigrate/foreignjob" ] # theirs: stays in backup
+  [ ! -e "$TMP/.claude/jobs.premigrate/ownjob" ]
+}
+
+@test "claude runtime scope heals a dangling symlink after container rebuild" {
+  export AICODING_CLAUDE_RUNTIME_DIR="$TMP/runtime"
+  mkdir -p "$TMP/.claude"
+  ln -s "$TMP/runtime/jobs" "$TMP/.claude/jobs"    # rebuild wiped the base
+  _sync_plumbing
+  [ -d "$TMP/runtime/jobs" ]
+}
+
+@test "claude runtime scope is fail-open when the base is uncreatable" {
+  export AICODING_CLAUDE_RUNTIME_DIR=/proc/nonexistent/base
+  mkdir -p "$TMP/.claude/jobs"
+  run ensure_claude_runtime_scope
+  [ "$status" -eq 0 ]
+  [ ! -L "$TMP/.claude/jobs" ]                     # left untouched
+}
