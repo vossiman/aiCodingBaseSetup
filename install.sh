@@ -140,6 +140,10 @@ main() {
   check_playwright
   ensure_lfs_autopull_safe
 
+  # Provisioning completed — stamp the commit for the ⬆install staleness check.
+  # Fail-open: a non-repo blueprint (curl bootstrap) just skips the stamp.
+  manifest_stamp_provision "$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
+
   header "Done!"
   info "Mode: $mode"
   info "Secrets: $SECRETS_FILE"
