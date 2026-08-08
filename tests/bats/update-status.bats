@@ -391,6 +391,40 @@ _mk_clone() {  # fixture: commit A (stamp point), then commit B touching $1
   grep -q 'fetch' "$FAKE_GIT_LOG"
 }
 
+# --- no false positives from placeholder substitution (spec §) ---------------
+# Deployed configs carry substituted placeholders ({{HOME}}, {{*_API_KEY}}), so
+# rendered files never match blueprint sources byte-for-byte. All three badge
+# verdicts compare commits/stamps ONLY — they never hash or diff rendered
+# content — so a substituted-value change alone must stay silent. (The positive
+# controls are the "provision drift" / "image staleness" tests above: when a
+# COMMIT moves, the badge does fire.)
+@test "no false positives: a rendered-content change alone produces no badge" {
+  unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE \
+        AICODING_UPDATE_TESTONLY_INSTALLED_FILE
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  export AICODING_IMAGE_RELEASE_FILE="$TMP/release.json"
+  _mk_clone docs/notes.md                       # no gated path touched
+  jq -n --arg s "$A_SHA" '{blueprint_commit:$s, provision_commit:$s}' > "$AICODING_MANIFEST"
+  jq -n --arg s "$A_SHA" '{sha:$s}' > "$AICODING_IMAGE_RELEASE_FILE"
+  FAKE_LATEST="$A_SHA" "$BIN" --refresh
+
+  mkdir -p "$HOME/.config/demo"
+  printf 'api_key=OLD-VALUE\nhome=/home/one\n' > "$HOME/.config/demo/app.conf"
+  run "$BIN" --tmux
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+
+  # A substituted value changes (key rotation / different {{HOME}}): rendered
+  # content now differs from the blueprint source, but no commit or stamp moved.
+  printf 'api_key=ROTATED-VALUE\nhome=/home/two\n' > "$HOME/.config/demo/app.conf"
+  run "$BIN" --tmux
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run "$BIN" --print
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 @test "refresh-attach: bypasses the 6h TTL" {
   echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
   FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
