@@ -9,6 +9,7 @@ setup() {
   mkdir -p "$TMP/stubs"
   cat > "$TMP/stubs/git" <<STUB
 #!/bin/sh
+printf '%s\n' "\$*" >> "\${FAKE_GIT_LOG:-/dev/null}"
 if [ "\$1" = "ls-remote" ]; then
   [ -n "\${FAKE_LSREMOTE_FAIL:-}" ] && exit 1
   printf '%s\t%s\n' "\${FAKE_LATEST:-1111111111111111111111111111111111111111}" refs/heads/main
@@ -21,8 +22,18 @@ STUB
   export AICODING_UPDATE_TESTONLY_TOOL="demo"
   export AICODING_UPDATE_TESTONLY_REMOTE="https://example.invalid/demo"
   export AICODING_UPDATE_TESTONLY_INSTALLED_FILE="$TMP/installed"
+  export FAKE_GIT_LOG="$TMP/gitlog"
+  # NEVER let a test fall back to the real clone default (/tmp/aicoding exists
+  # in every devbox): an ungated fetch there would mutate live state.
+  export AICODING_UPDATE_TESTONLY_CLONE="$TMP/noclone"
+  # --tmux/--banner fork _refresh_detached; its child does mkdir -p under $TMP
+  # and raced teardown's rm -rf ("Directory not empty"). Suppress the fork —
+  # the refresh path itself is covered by the explicit --refresh tests.
+  export AICODING_UPDATE_TESTONLY_NO_DETACH=1
 }
-teardown() { rm -rf "$TMP"; }
+# `|| true`: teardown's exit status must never be the failure. Any straggler
+# writing under $TMP would otherwise turn a passing test red at random.
+teardown() { rm -rf "$TMP" 2>/dev/null || true; return 0; }
 
 cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
 
@@ -332,6 +343,52 @@ _mk_clone() {  # fixture: commit A (stamp point), then commit B touching $1
   jq -n --arg s "$A_SHA" '{sha:$s, built:"2026-08-08T00:00:00Z"}' > "$AICODING_IMAGE_RELEASE_FILE"
   run "$BIN" --tmux
   [[ "$output" != *"⬆rebuild"* ]]
+}
+
+@test "provision drift: the pathspec glob is evaluated by git, not the caller's cwd" {
+  # Regression: PROVISION_PATHS was a string passed as `-- $*`, so bash
+  # glob-expanded `lib/provision*` against the PROCESS'S cwd before git saw it.
+  # Run from any aicoding checkout the pathspec froze to the locally-present
+  # filenames, and a newly ADDED provisioning lib upstream matched nothing —
+  # a silent, cwd-dependent false negative.
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  _mk_clone lib/provision-newthing.sh   # upstream ADDS a lib absent locally
+  jq -n --arg s "$A_SHA" '{provision_commit:$s}' > "$AICODING_MANIFEST"
+
+  mkdir -p "$TMP/cwd/lib"               # a cwd that HAS other provision libs
+  : > "$TMP/cwd/lib/provision-system.sh"
+  : > "$TMP/cwd/lib/provision-secrets.sh"
+  cd "$TMP/cwd"
+  run "$BIN" --tmux
+  cd "$BLUEPRINT_ROOT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"⬆install"* ]]
+}
+
+@test "refresh: the blueprint-clone fetch is gated behind AICODINGSETUP_SKIP_NETWORK" {
+  # Repo rule (CLAUDE.md). Ungated, this fetched github.com for real under the
+  # suite (the stub only intercepts ls-remote) and mutated the live
+  # /tmp/aicoding clone present in every devbox.
+  echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  export AICODING_UPDATE_TESTONLY_CLONE="$TMP/fetchclone"
+  /usr/bin/git init -q -b main "$AICODING_UPDATE_TESTONLY_CLONE"
+
+  : > "$FAKE_GIT_LOG"
+  AICODINGSETUP_SKIP_NETWORK=1 FAKE_LATEST=1111111111111111111111111111111111111111 \
+    run "$BIN" --refresh
+  [ "$status" -eq 0 ]
+  # `run grep` + explicit status, NOT `! grep`: bash exempts `! cmd` from
+  # errexit, so a bare negation here would silently never fail the test.
+  run grep -c 'fetch' "$FAKE_GIT_LOG"
+  [ "$status" -ne 0 ]
+
+  # Control: without the guard the fetch IS attempted, so the assertion above
+  # tests the gate and not a missing call site.
+  rm -f "$AICODING_UPDATE_STATE"/*.json
+  : > "$FAKE_GIT_LOG"
+  AICODINGSETUP_SKIP_NETWORK="" FAKE_LATEST=1111111111111111111111111111111111111111 \
+    run "$BIN" --refresh
+  grep -q 'fetch' "$FAKE_GIT_LOG"
 }
 
 @test "refresh-attach: bypasses the 6h TTL" {

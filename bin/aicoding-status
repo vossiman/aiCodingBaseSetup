@@ -73,7 +73,13 @@ _now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # Provision/image staleness: git-history verdicts against the blueprint clone.
 # The clone is fetched by _refresh_all (throttled); verdicts run at print time.
-PROVISION_PATHS="install.sh lib/provision* image/"
+# ARRAY, and every expansion below is quoted. As a plain string it went through
+# `-- $*`, so bash glob-expanded `lib/provision*` against the CALLER'S cwd
+# before git ever saw it: run from an aicoding checkout the pathspec froze to
+# the locally-present filenames, and a newly ADDED provisioning lib upstream
+# then matched nothing — a silent, cwd-dependent false negative in exactly the
+# check this feature exists to provide.
+PROVISION_PATHS=(install.sh 'lib/provision*' image/)
 _clone_dir() { echo "${AICODING_UPDATE_TESTONLY_CLONE:-${AICODING_BLUEPRINT_CLONE:-/tmp/aicoding}}"; }
 
 # _behind_paths <base-sha> <pathspec...> — true when commits after <base-sha>
@@ -83,14 +89,14 @@ _behind_paths() {
   [ -n "$base" ] || return 1
   git -C "$clone" rev-parse --verify -q origin/main >/dev/null 2>&1 || return 1
   git -C "$clone" merge-base --is-ancestor "$base" origin/main 2>/dev/null || return 1
-  [ -n "$(git -C "$clone" rev-list "$base"..origin/main -- $* 2>/dev/null | head -1)" ]
+  [ -n "$(git -C "$clone" rev-list "$base"..origin/main -- "$@" 2>/dev/null | head -1)" ]
 }
 
 _provision_stamp() { _adopt_shared_manifest; jq -r '.provision_commit // empty' "$AICODING_MANIFEST" 2>/dev/null; }
 _image_sha() { jq -r '.sha // empty' "${AICODING_IMAGE_RELEASE_FILE:-/etc/devbox-base-release}" 2>/dev/null; }
 
 _behind_extra() {
-  _behind_paths "$(_provision_stamp)" $PROVISION_PATHS && echo install
+  _behind_paths "$(_provision_stamp)" "${PROVISION_PATHS[@]}" && echo install
   _behind_paths "$(_image_sha)" image/ && echo rebuild
   return 0
 }
@@ -117,8 +123,12 @@ _refresh_all() {
     mv "$tmp" "$STATE/$name.json"
   done < <(_registry)
 
+  # Repo rule (CLAUDE.md): gate every network call behind
+  # AICODINGSETUP_SKIP_NETWORK. Without it the bats suite — which stubs only
+  # ls-remote — would fetch github.com for real AND mutate the live
+  # /tmp/aicoding clone that exists in every devbox.
   local clone; clone=$(_clone_dir)
-  if [ -d "$clone/.git" ]; then
+  if [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ] && [ -d "$clone/.git" ]; then
     timeout "$NET_TIMEOUT" git -C "$clone" fetch -q origin main 2>/dev/null || true
   fi
 }
@@ -140,7 +150,14 @@ _maybe_refresh() {
   rmdir "$LOCK" 2>/dev/null || true
 }
 
-_refresh_detached() { ( _maybe_refresh >/dev/null 2>&1 & ) ; }
+# AICODING_UPDATE_TESTONLY_NO_DETACH: test seam. The forked child does
+# `mkdir -p "$STATE"` under the test's $TMP, which raced bats teardown's
+# `rm -rf "$TMP"` ("Directory not empty") and failed tests at random.
+_refresh_detached() {
+  [ -n "${AICODING_UPDATE_TESTONLY_NO_DETACH:-}" ] && return 0
+  ( _maybe_refresh >/dev/null 2>&1 & )
+  return 0
+}
 
 # _behind_tools — one behind tool name per line, registry order. The verdict is
 # computed HERE, at print time: cached latest vs a fresh installed read. No
