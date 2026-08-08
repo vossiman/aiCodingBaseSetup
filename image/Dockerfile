@@ -39,7 +39,7 @@ RUN usermod -l codespace vscode \
 # gh (universal shipped it via feature) and tmux runtime libs.
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      git jq ripgrep parallel bubblewrap kitty-terminfo locales \
+      git git-lfs jq ripgrep parallel bubblewrap kitty-terminfo locales \
       python3 python3-venv libevent-core-2.1-7t64 libncurses6 \
  && mkdir -p /etc/apt/keyrings \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \

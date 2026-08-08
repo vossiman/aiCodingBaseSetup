@@ -490,6 +490,12 @@ auto_install_prereqs() {
   ensure_login_shells_clean
   ensure_dind_log_rotation
   command -v git    &>/dev/null || { info "Installing git";    apt_install git; }
+  # The old universal image shipped git-lfs via devcontainer feature; the
+  # self-built devbox-base must carry it in the image (and this fallback
+  # covers containers created from an image built before it was added).
+  # 2026-08-08: its absence armed lfs-autopull.bats's skip path (see that
+  # file's teardown incident comment).
+  command -v git-lfs &>/dev/null || { info "Installing git-lfs"; apt_install git-lfs; }
   command -v jq     &>/dev/null || { info "Installing jq";     apt_install jq; }
   command -v bwrap  &>/dev/null || { info "Installing bubblewrap"; apt_install bubblewrap; }
   # Agent CLIs (codex, opencode) expect a real ripgrep binary on PATH; Claude
