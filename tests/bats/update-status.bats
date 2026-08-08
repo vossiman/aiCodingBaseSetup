@@ -261,3 +261,44 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   run "$BIN" --banner
   echo "$output" | grep -q "run: aicoding-sync"
 }
+
+_mk_clone() {  # fixture: commit A (stamp point), then commit B touching $1
+  CLONE="$TMP/clone"; git init -q -b main "$CLONE"
+  git -C "$CLONE" -c user.email=t@t -c user.name=t commit -q --allow-empty -m A
+  A_SHA=$(git -C "$CLONE" rev-parse HEAD)
+  mkdir -p "$CLONE/$(dirname "$1")"; echo x > "$CLONE/$1"
+  git -C "$CLONE" add -A
+  git -C "$CLONE" -c user.email=t@t -c user.name=t commit -q -m B
+  git -C "$CLONE" update-ref refs/remotes/origin/main HEAD
+  export AICODING_UPDATE_TESTONLY_CLONE="$CLONE"
+}
+
+@test "provision drift: provisioning path touched since stamp -> ⬆install badge" {
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  _mk_clone lib/provision-system.sh
+  jq -n --arg s "$A_SHA" '{provision_commit:$s}' > "$AICODING_MANIFEST"
+  run "$BIN" --tmux
+  [[ "$output" == *"⬆install"* ]]
+  run "$BIN" --banner
+  echo "$output" | grep -q "run: aicoding-install"
+}
+
+@test "provision drift: only non-provisioning paths touched -> no badge" {
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  _mk_clone docs/notes.md
+  jq -n --arg s "$A_SHA" '{provision_commit:$s}' > "$AICODING_MANIFEST"
+  run "$BIN" --tmux
+  [[ "$output" != *"⬆install"* ]]
+}
+
+@test "provision drift fail-open: missing stamp / stamp not ancestor -> no badge" {
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  _mk_clone lib/provision-system.sh
+  jq -n '{}' > "$AICODING_MANIFEST"
+  run "$BIN" --tmux
+  [[ "$output" != *"⬆install"* ]]
+  jq -n '{provision_commit:"3333333333333333333333333333333333333333"}' > "$AICODING_MANIFEST"
+  run "$BIN" --tmux
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"⬆install"* ]]
+}

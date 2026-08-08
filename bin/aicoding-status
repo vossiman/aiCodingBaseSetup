@@ -59,10 +59,38 @@ _registry() {
 aicoding|https://github.com/vossiman/aiCodingBaseSetup|main|_installed_aicoding
 EOF
 }
-_apply_cmd() { case "$1" in aicoding) echo "aicoding-sync";; *) echo "update";; esac; }
+_apply_cmd() {
+  case "$1" in
+    aicoding) echo "aicoding-sync";;
+    install)  echo "aicoding-install";;
+    *)        echo "update";;
+  esac
+}
 _badge_label() { case "$1" in aicoding) echo "sync";; *) echo "$1";; esac; }
 _norm() { printf '%.12s' "${1:-}"; }
 _now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# Provision/image staleness: git-history verdicts against the blueprint clone.
+# The clone is fetched by _refresh_all (throttled); verdicts run at print time.
+PROVISION_PATHS="install.sh lib/provision* image/"
+_clone_dir() { echo "${AICODING_UPDATE_TESTONLY_CLONE:-${AICODING_BLUEPRINT_CLONE:-/tmp/aicoding}}"; }
+
+# _behind_paths <base-sha> <pathspec...> — true when commits after <base-sha>
+# on origin/main touch any pathspec. Every guard fails open (return 1 = no badge).
+_behind_paths() {
+  local base=$1 clone; shift; clone=$(_clone_dir)
+  [ -n "$base" ] || return 1
+  git -C "$clone" rev-parse --verify -q origin/main >/dev/null 2>&1 || return 1
+  git -C "$clone" merge-base --is-ancestor "$base" origin/main 2>/dev/null || return 1
+  [ -n "$(git -C "$clone" rev-list "$base"..origin/main -- $* 2>/dev/null | head -1)" ]
+}
+
+_provision_stamp() { _adopt_shared_manifest; jq -r '.provision_commit // empty' "$AICODING_MANIFEST" 2>/dev/null; }
+
+_behind_extra() {
+  _behind_paths "$(_provision_stamp)" $PROVISION_PATHS && echo install
+  return 0
+}
 
 # Fetch each tool's remote latest and cache it — nothing else (see the header
 # invariant). The installed side is deliberately NOT read here.
@@ -85,6 +113,11 @@ _refresh_all() {
       '{tool:$t,latest:$l,checked_at:$c,apply_cmd:$a}' > "$tmp"
     mv "$tmp" "$STATE/$name.json"
   done < <(_registry)
+
+  local clone; clone=$(_clone_dir)
+  if [ -d "$clone/.git" ]; then
+    timeout "$NET_TIMEOUT" git -C "$clone" fetch -q origin main 2>/dev/null || true
+  fi
 }
 
 _cache_fresh() {
@@ -129,8 +162,11 @@ _print_banner() {
   local tool
   while read -r tool; do
     [ -n "$tool" ] || continue
-    printf '⬆ %s behind main — run: %s\n' "$tool" "$(_apply_cmd "$tool")"
-  done < <(_behind_tools)
+    case "$tool" in
+      install) printf '⬆ provisioning behind blueprint — run: %s\n' "$(_apply_cmd "$tool")" ;;
+      *)       printf '⬆ %s behind main — run: %s\n' "$tool" "$(_apply_cmd "$tool")" ;;
+    esac
+  done < <({ _behind_tools; _behind_extra; })
 }
 
 # --tmux: a compact, no-newline segment for the tmux status line — one `⬆<tool>`
@@ -152,7 +188,7 @@ _print_tmux() {
   while read -r tool; do
     [ -n "$tool" ] || continue
     out="${out:+$out }⬆$(_badge_label "$tool")"
-  done < <(_behind_tools)
+  done < <({ _behind_tools; _behind_extra; })
   [ -n "$out" ] && printf ' %s│ %s%s' "$SEP_STYLE" "$CTA_STYLE" "$out"
 }
 
