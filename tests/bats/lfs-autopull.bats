@@ -10,13 +10,17 @@
 setup() {
   : "${BLUEPRINT_ROOT:?unset — run via tests/bats/run.sh}"
   git lfs version &>/dev/null || skip "git-lfs not installed"
-  TMPDIR=$(mktemp -d)
-  export HOME="$TMPDIR"
+  # Private name, NOT TMPDIR: when the skip above fires, teardown still runs —
+  # reassigning TMPDIR here meant the skip path rm -rf'd the *inherited*
+  # TMPDIR, destroying bats' own run state and aborting the whole suite on
+  # any box without git-lfs.
+  LFS_SANDBOX=$(mktemp -d)
+  export HOME="$LFS_SANDBOX"
   export AICODINGSETUP_SKIP_NETWORK=1
-  export AICODINGSETUP_LFS_PULL_SCRIPT="$TMPDIR/pull-git-lfs-artifacts.sh"
+  export AICODINGSETUP_LFS_PULL_SCRIPT="$LFS_SANDBOX/pull-git-lfs-artifacts.sh"
 
   # Workspace repo the function operates on.
-  REPO="$TMPDIR/workspace"
+  REPO="$LFS_SANDBOX/workspace"
   mkdir -p "$REPO"
   (cd "$REPO" && git init -q)
 
@@ -31,7 +35,7 @@ EOF
 }
 
 teardown() {
-  rm -rf "$TMPDIR"
+  if [ -n "${LFS_SANDBOX:-}" ]; then rm -rf "$LFS_SANDBOX"; fi
 }
 
 # Source install.sh (guards keep main/check_prerequisites from running) and
