@@ -40,6 +40,13 @@ check "cursor-agent seed (both names)" '[ -x ~/.local/bin/agent ] && [ -x ~/.loc
 check "no mount-shadowed codex seed"   '[ ! -e ~/.codex ]'
 check "locales de_AT + en_US"          'locale -a | grep -qi de_AT.utf8 && locale -a | grep -qi en_US.utf8'
 check "no nvs/nvm land mines"          '! ls /usr/local/nvs 2>/dev/null && ! ls /usr/local/share/nvs 2>/dev/null'
+# The ⬆rebuild badge compares this baked SHA against origin/main. If the
+# DEVBOX_BASE_SHA build arg ever stops propagating (e.g. localEnv substitution
+# in devcontainer.json silently yields ""), the image ships {"sha":""},
+# aicoding-status fails open, and the badge is dead forever with no signal.
+# Assert the value here, where a broken build arg is still visible.
+check "image release stamp present"    '[ -f /etc/devbox-base-release ]'
+check "image release sha non-empty"    'jq -e ".sha | type == \"string\" and length > 0" /etc/devbox-base-release'
 
 echo "-- dind boot (privileged) --"
 # -v /var/lib/docker -v /var/lib/containerd: anonymous volumes (auto-removed
