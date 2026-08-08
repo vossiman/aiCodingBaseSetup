@@ -302,3 +302,34 @@ _mk_clone() {  # fixture: commit A (stamp point), then commit B touching $1
   [ "$status" -eq 0 ]
   [[ "$output" != *"⬆install"* ]]
 }
+
+@test "image staleness: image/ touched since baked sha -> ⬆rebuild + laptop CTA" {
+  export AICODING_MANIFEST="$TMP/manifest.json"; jq -n '{}' > "$AICODING_MANIFEST"
+  _mk_clone image/Dockerfile
+  export AICODING_IMAGE_RELEASE_FILE="$TMP/release.json"
+  jq -n --arg s "$A_SHA" '{sha:$s, built:"2026-08-08T00:00:00Z"}' > "$AICODING_IMAGE_RELEASE_FILE"
+  DEVPOD_WORKSPACE_ID=devmachine run "$BIN" --tmux
+  [[ "$output" == *"⬆rebuild"* ]]
+  DEVPOD_WORKSPACE_ID=devmachine run "$BIN" --banner
+  echo "$output" | grep -q "from your laptop: dvw rebuild devmachine"
+}
+
+@test "image staleness fail-open: no release file / empty sha -> no badge" {
+  export AICODING_MANIFEST="$TMP/manifest.json"; jq -n '{}' > "$AICODING_MANIFEST"
+  _mk_clone image/Dockerfile
+  export AICODING_IMAGE_RELEASE_FILE="$TMP/absent.json"
+  run "$BIN" --tmux
+  [ "$status" -eq 0 ]; [[ "$output" != *"⬆rebuild"* ]]
+  jq -n '{sha:"", built:""}' > "$AICODING_IMAGE_RELEASE_FILE"
+  run "$BIN" --tmux
+  [[ "$output" != *"⬆rebuild"* ]]
+}
+
+@test "image staleness: image/ untouched since baked sha -> no badge" {
+  export AICODING_MANIFEST="$TMP/manifest.json"; jq -n '{}' > "$AICODING_MANIFEST"
+  _mk_clone docs/notes.md
+  export AICODING_IMAGE_RELEASE_FILE="$TMP/release.json"
+  jq -n --arg s "$A_SHA" '{sha:$s, built:"2026-08-08T00:00:00Z"}' > "$AICODING_IMAGE_RELEASE_FILE"
+  run "$BIN" --tmux
+  [[ "$output" != *"⬆rebuild"* ]]
+}

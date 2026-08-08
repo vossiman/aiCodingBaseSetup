@@ -63,6 +63,7 @@ _apply_cmd() {
   case "$1" in
     aicoding) echo "aicoding-sync";;
     install)  echo "aicoding-install";;
+    rebuild)  echo "dvw rebuild ${DEVPOD_WORKSPACE_ID:-<workspace>}";;
     *)        echo "update";;
   esac
 }
@@ -86,9 +87,11 @@ _behind_paths() {
 }
 
 _provision_stamp() { _adopt_shared_manifest; jq -r '.provision_commit // empty' "$AICODING_MANIFEST" 2>/dev/null; }
+_image_sha() { jq -r '.sha // empty' "${AICODING_IMAGE_RELEASE_FILE:-/etc/devbox-base-release}" 2>/dev/null; }
 
 _behind_extra() {
   _behind_paths "$(_provision_stamp)" $PROVISION_PATHS && echo install
+  _behind_paths "$(_image_sha)" image/ && echo rebuild
   return 0
 }
 
@@ -164,6 +167,7 @@ _print_banner() {
     [ -n "$tool" ] || continue
     case "$tool" in
       install) printf '⬆ provisioning behind blueprint — run: %s\n' "$(_apply_cmd "$tool")" ;;
+      rebuild) printf '⬆ image outdated — from your laptop: %s\n' "$(_apply_cmd "$tool")" ;;
       *)       printf '⬆ %s behind main — run: %s\n' "$tool" "$(_apply_cmd "$tool")" ;;
     esac
   done < <({ _behind_tools; _behind_extra; })
