@@ -100,7 +100,7 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
   run "$BIN" --tmux
   [ "$status" -eq 0 ]
-  [ "$output" = " #[fg=#89b4fa]│ #[fg=#f9e2af]⬆aicoding ⬆dvw" ]
+  [ "$output" = " #[fg=#89b4fa]│ #[fg=#f9e2af]⬆sync ⬆dvw" ]
 }
 
 @test "stale-lock: a lock older than TTL is stolen and refresh proceeds" {
@@ -248,4 +248,16 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
     echo "$hits"
     return 1
   fi
+}
+
+@test "badge label: aicoding renders as ⬆sync, banner still says aicoding-sync" {
+  unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  jq -n '{blueprint_commit:"2222222222222222222222222222222222222222"}' > "$AICODING_MANIFEST"
+  FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
+  run "$BIN" --tmux
+  [[ "$output" == *"⬆sync"* ]]
+  [[ "$output" != *"⬆aicoding"* ]]
+  run "$BIN" --banner
+  echo "$output" | grep -q "run: aicoding-sync"
 }

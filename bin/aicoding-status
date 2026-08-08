@@ -60,6 +60,7 @@ aicoding|https://github.com/vossiman/aiCodingBaseSetup|main|_installed_aicoding
 EOF
 }
 _apply_cmd() { case "$1" in aicoding) echo "aicoding-sync";; *) echo "update";; esac; }
+_badge_label() { case "$1" in aicoding) echo "sync";; *) echo "$1";; esac; }
 _norm() { printf '%.12s' "${1:-}"; }
 _now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -150,7 +151,7 @@ _print_tmux() {
   local tool out=""
   while read -r tool; do
     [ -n "$tool" ] || continue
-    out="${out:+$out }⬆$tool"
+    out="${out:+$out }⬆$(_badge_label "$tool")"
   done < <(_behind_tools)
   [ -n "$out" ] && printf ' %s│ %s%s' "$SEP_STYLE" "$CTA_STYLE" "$out"
 }
