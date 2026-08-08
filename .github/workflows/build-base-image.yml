@@ -44,6 +44,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build image (Dockerfile + devcontainer features)
+        env:
+          DEVBOX_BASE_SHA: ${{ github.sha }}
         run: |
           DATE_TAG="$(date -u +%Y-%m-%d)"
           echo "DATE_TAG=$DATE_TAG" >> "$GITHUB_ENV"

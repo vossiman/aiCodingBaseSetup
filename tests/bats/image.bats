@@ -115,3 +115,10 @@ IMAGE_DIR="$BLUEPRINT_ROOT/image"
   grep -qE '^ENV TZ=Europe/Vienna$' "$IMAGE_DIR/Dockerfile"
   grep -qF '/usr/share/zoneinfo/Europe/Vienna /etc/localtime' "$IMAGE_DIR/Dockerfile"
 }
+
+@test "image bakes /etc/devbox-base-release and CI wires the sha build-arg" {
+  grep -q 'ARG DEVBOX_BASE_SHA' "$BLUEPRINT_ROOT/image/Dockerfile"
+  grep -q '/etc/devbox-base-release' "$BLUEPRINT_ROOT/image/Dockerfile"
+  grep -q 'DEVBOX_BASE_SHA.*localEnv:DEVBOX_BASE_SHA' "$BLUEPRINT_ROOT/image/devcontainer.json"
+  grep -q 'DEVBOX_BASE_SHA:.*github.sha' "$BLUEPRINT_ROOT/.github/workflows/build-base-image.yml"
+}
