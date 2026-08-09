@@ -46,13 +46,13 @@ launched() { [ -f "$HOME/claude-args" ]; }
   mktranscript "$TMPDIR/t.jsonl" 8192
   LLMWIKI_DISTILLER=1 run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s1)"
   [ "$status" -eq 0 ]
-  ! launched
+  if launched; then false; fi
 }
 
 @test "llmwiki-distill: missing transcript is a no-op" {
   run bash "$HOOK" <<< "$(hookjson "$TMPDIR/absent.jsonl" s1)"
   [ "$status" -eq 0 ]
-  ! launched
+  if launched; then false; fi
 }
 
 @test "llmwiki-distill: first eligible stop launches with agent, settings, env guard" {
@@ -80,7 +80,7 @@ launched() { [ -f "$HOME/claude-args" ]; }
   mktranscript "$TMPDIR/t.jsonl" 65536   # plenty of delta, but window not elapsed
   run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s1)"
   [ "$status" -eq 0 ]
-  ! launched
+  if launched; then false; fi
 }
 
 @test "llmwiki-distill: below-threshold delta skips AND leaves throttle unstamped" {
@@ -95,7 +95,7 @@ launched() { [ -f "$HOME/claude-args" ]; }
   sleep 1
   run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s1)"
   [ "$status" -eq 0 ]
-  ! launched
+  if launched; then false; fi
   [ "$(cat "$STATE_DIR/$slug_file")" -eq "$stamp_before" ]
 }
 
@@ -109,7 +109,7 @@ launched() { [ -f "$HOME/claude-args" ]; }
   [ "$status" -eq 0 ]
   launched
   [ "$(wc -c < "$HOME/slice-copy")" -eq 8192 ]
-  ! grep -q 'A' "$HOME/slice-copy"
+  if grep -q 'A' "$HOME/slice-copy"; then false; fi
   [ "$(cat "$STATE_DIR/offsets/s1")" -eq 12288 ]
 }
 
@@ -136,7 +136,7 @@ launched() { [ -f "$HOME/claude-args" ]; }
   mktranscript "$TMPDIR/t.jsonl" 8192
   PATH="/usr/bin:/bin" run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s1)"
   [ "$status" -eq 0 ]
-  ! launched
+  if launched; then false; fi
   [ ! -f "$STATE_DIR/offsets/s1" ]
 }
 
@@ -146,7 +146,7 @@ launched() { [ -f "$HOME/claude-args" ]; }
   chmod 000 "$TMPDIR/t.jsonl"        # Unreadable — stat works, tail fails
   run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s1)"
   [ "$status" -eq 0 ]               # Hook exits 0 despite tail failure
-  ! launched                        # claude never launched
+  if launched; then false; fi   # claude never launched
   [ ! -f "$STATE_DIR/offsets/s1" ] # offset file not stamped
   # Verify no throttle files created (only offsets/ and slices/ dirs)
   [ "$(find "$STATE_DIR" -maxdepth 1 -type f 2>/dev/null | wc -l)" -eq 0 ]

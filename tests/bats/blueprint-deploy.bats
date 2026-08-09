@@ -650,12 +650,12 @@ EOF
   [ "$status" -eq 0 ]
   echo "$output" | grep -qF "$HOME/.claude/hooks/llmwiki-distill.sh|overwrite|configs/claude/hooks/llmwiki-distill.sh"
   echo "$output" | grep -qF "$HOME/.claude/agents/llmwiki-distiller.md|overwrite|configs/claude/agents/llmwiki-distiller.md"
-  ! echo "$output" | grep -q 'llmwiki-nudge'
+  if echo "$output" | grep -q 'llmwiki-nudge'; then false; fi
 }
 
 @test "claude settings fragment: Stop hook is the async distill launcher" {
   jq -e '.hooks.Stop[0].hooks[0].async == true' "$BLUEPRINT_ROOT/configs/claude/settings.json"
   jq -re '.hooks.Stop[0].hooks[0].command' "$BLUEPRINT_ROOT/configs/claude/settings.json" \
     | grep -qF '{{HOME}}/.claude/hooks/llmwiki-distill.sh'
-  ! grep -q 'llmwiki-nudge' "$BLUEPRINT_ROOT/configs/claude/settings.json"
+  if grep -q 'llmwiki-nudge' "$BLUEPRINT_ROOT/configs/claude/settings.json"; then false; fi
 }
