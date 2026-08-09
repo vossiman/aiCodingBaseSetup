@@ -1,12 +1,12 @@
 # Build & publish ghcr.io/vossiman/devbox-base — the custom devcontainer base
 # image (spec: docs/superpowers/specs/2026-08-06-custom-base-image-design.md).
-# Weekly so the baked CLI seeds stay <=7 days stale; on-change for image/ PRs
-# (build+smoke only, no push); manual dispatch for out-of-band rebuilds.
+# Publish on change to image/ (PRs build+smoke only, no push); manual dispatch
+# for out-of-band rebuilds. No schedule: baked CLI seeds self-update at boot
+# via aicoding-sync, so scheduled rebuilds only churned tags (decision
+# 2026-08-09) — dispatch manually if a seed ever needs a fresh bake.
 name: build-base-image
 
 on:
-  schedule:
-    - cron: "17 5 * * 1" # Mondays 05:17 UTC
   workflow_dispatch:
   push:
     branches: [main]

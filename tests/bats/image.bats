@@ -88,10 +88,13 @@ IMAGE_DIR="$BLUEPRINT_ROOT/image"
   grep -qE '\.sha.*length > 0' "$IMAGE_DIR/smoke-test.sh"
 }
 
-@test "image workflow: weekly cron + manual dispatch + image-path triggers" {
+@test "image workflow: on-change + manual dispatch triggers, no schedule" {
   WORKFLOW="$BLUEPRINT_ROOT/.github/workflows/build-base-image.yml"
   [ -f "$WORKFLOW" ]
-  grep -qE 'cron:' "$WORKFLOW"
+  # No scheduled builds: seeds self-update at boot, so a cron only churns
+  # tags (decision 2026-08-09, see workflow header).
+  run grep -qE '^[[:space:]]*(- )?(schedule|cron):' "$WORKFLOW"
+  [ "$status" -ne 0 ]
   grep -q 'workflow_dispatch' "$WORKFLOW"
   grep -q 'image/' "$WORKFLOW"
 }
