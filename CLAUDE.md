@@ -27,6 +27,19 @@ merging; delete merged branches.
     spawned ~35 real daemons under bats and took the host down).
   - Stub every new external binary in the bats stub loops in the SAME commit
     that introduces the reference, and check for leaked processes after runs.
+- Three more rules, paid for on 2026-08-08 (#56):
+  - **Agent CLIs (claude/opencode/codex/…) count as external binaries — stub
+    them in every file that runs the real install.sh/sync.sh.** Five
+    e2e/regression tests once hit the live `claude` CLI at 146–175 s EACH,
+    dictating the whole suite wall (7–10 min); stubbed, the suite runs ~40 s.
+    The bare `tests.yml` CI runner enforces this: unstubbed binaries don't
+    exist there, so such tests fail the PR instead of silently slowing dev.
+  - **Never assert with bare `! cmd`** — command-level `!` is errexit-exempt,
+    so the assertion can never fail its test. Use `if cmd; then false; fi`
+    (or `run` + status). A regressions guard greps the suite for offenders.
+  - **Never accept a silent serial run.** run.sh warns loudly when GNU
+    parallel is missing; if the suite feels slow, check the warning and the
+    per-test `--timing` output before blaming the machine.
 - Tests must never write into `$BLUEPRINT_ROOT` (the real checkout); use the
   `blueprint_copy` helper. Mutations look fine serially but poison parallel
   runs and killed runs leak edits into the working tree.
