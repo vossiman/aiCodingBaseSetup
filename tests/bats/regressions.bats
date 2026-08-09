@@ -17,7 +17,7 @@ setup() {
   # Stub apt/curl/etc.
   export PATH="$TMPDIR/stubs:$PATH"
   mkdir -p "$TMPDIR/stubs"
-  for cmd in apt-get sudo curl npm; do
+  for cmd in apt-get sudo curl npm npx bash-build-tmux claude opencode codex cursor-agent; do
     cat > "$TMPDIR/stubs/$cmd" <<'STUB'
 #!/bin/sh
 exit 0
