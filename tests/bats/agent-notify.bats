@@ -102,3 +102,10 @@ teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
   [ ! -f "$HOME/tmux-calls" ] || { run grep 'set-option' "$HOME/tmux-calls"; [ "$status" -ne 0 ]; }
   grep -q 'test-topic-xyz' "$HOME/curl-calls"
 }
+
+@test "codex config wires notify to agent-notify above the first table" {
+  local cfg="$BLUEPRINT_ROOT/configs/codex/config.toml"
+  grep -q 'notify = \["{{HOME}}/.local/bin/agent-notify"' "$cfg"
+  # notify must appear before the first [table] or codex ignores it
+  awk '/^\[/{exit 1} /^notify = /{found=1} END{exit !found}' "$cfg"
+}
