@@ -9,6 +9,8 @@
   },
   "effortLevel": "medium",
   "autoMemoryEnabled": false,
+  "crossSessionInbound": "accept",
+  "isolatePeerMachines": true,
   "skipDangerousModePermissionPrompt": true,
   "hooks": {
     "PreToolUse": [
