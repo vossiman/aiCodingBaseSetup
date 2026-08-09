@@ -637,3 +637,9 @@ EOF
   jq -e '.crossSessionInbound == "accept"' "$BLUEPRINT_ROOT/configs/claude/settings.json"
   jq -e '.isolatePeerMachines == true' "$BLUEPRINT_ROOT/configs/claude/settings.json"
 }
+
+@test "claude CLAUDE.md fragment: parallel-session coordination protocol" {
+  grep -q '^## Parallel-session coordination' "$BLUEPRINT_ROOT/configs/claude/CLAUDE.md"
+  grep -q 'gate evidence' "$BLUEPRINT_ROOT/configs/claude/CLAUDE.md"
+  grep -q 'dedicated git worktree' "$BLUEPRINT_ROOT/configs/claude/CLAUDE.md"
+}
