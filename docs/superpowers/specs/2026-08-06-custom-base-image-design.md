@@ -121,8 +121,9 @@ universal-based workspace is gone, then delete in one sweep.
   2026-08-09: the weekly cron (Mon 05:17 UTC) was dropped — fresh containers
   self-update the seeded CLIs at boot anyway (`_sync_binaries`), so scheduled
   rebuilds burned Actions minutes and created update cycles without benefit.
-  If a seed ever needs a fresh bake (e.g. codex, which has no self-updater),
-  trigger `workflow_dispatch` manually.
+  If a seed ever needs a fresh bake, trigger `workflow_dispatch` manually.
+  (Since #58 codex also self-updates at runtime via `_update_codex`, so a
+  fresh bake is a first-boot-speed optimization, not a staleness fix.)
 - **Image repo**: this repo, `image/` + `.github/workflows/build-base-image.yml`.
 
 ## Acceptance criteria
