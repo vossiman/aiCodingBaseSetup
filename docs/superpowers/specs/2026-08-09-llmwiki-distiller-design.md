@@ -32,6 +32,20 @@ Decisions made during brainstorming (2026-08-09):
   `CLAUDE.md` or any existing file, and never commits in the project repo.
   Wiki writes remain fully autonomous (homelab-wiki governance allows
   commit+push to its `main`).
+- **Launch gate: transcript delta** (decided 2026-08-09) — after the
+  throttle window passes, only launch if the session transcript grew by
+  ≥ a threshold since the last distill of that transcript, and pass only
+  the new slice to the agent. Git state is deliberately NOT the gate: the
+  most wiki-worthy lessons (incidents, network/host facts, tool quirks)
+  often produce zero repo changes, while commits can carry none.
+
+## Scheduling model
+
+There is no scheduler, cron, or daemon. Claude Code fires the Stop hook
+after every turn of every session on the machine; the script self-gates
+(throttle, then transcript delta). Effective behavior: "at the first
+turn-end after the window elapses, if enough new conversation
+accumulated". No Claude usage on a machine → nothing ever runs there.
 
 ## Components
 
@@ -45,25 +59,38 @@ Registered as the Stop hook in `configs/claude/settings.json` with
 Behavior, in order:
 
 1. **Recursion guard**: `[ -n "$LLMWIKI_DISTILLER" ] && exit 0`.
-2. Parse stdin JSON: `transcript_path`, `cwd` (fall back to `$PWD`).
-   Missing/unreadable transcript → exit 0.
-3. **Throttle**: identical to today — per-project-root slug state file
-   under `~/.cache/aicoding/llmwiki-nudge/`; exit 0 inside the window,
-   otherwise stamp `now` and continue. (Keep the existing state dir so
-   deploys don't reset throttling.)
-4. **Launch the distiller**:
+2. Parse stdin JSON: `transcript_path`, `cwd`, `session_id` (fall back
+   to `$PWD` for cwd). Missing/unreadable transcript → exit 0.
+3. **Throttle**: per-project-root slug state file under
+   `~/.cache/aicoding/llmwiki-nudge/` as today, but the timestamp is
+   stamped **only when a distiller actually launches** (step 5), so
+   gated-out stops don't push the window forward. Exit 0 inside the
+   window. (Keep the existing state dir so deploys don't reset it.)
+4. **Transcript-delta gate**: offsets are per *transcript* (sessions
+   each have their own file, while the throttle is per project), stored
+   as `~/.cache/aicoding/llmwiki-nudge/offsets/<session_id>` holding the
+   byte size at last distill (absent → 0). Compare against the current
+   size (`stat -c %s`); if the delta is below the threshold
+   (`LLMWIKI_MIN_DELTA_BYTES`, default 4096), exit 0 without stamping.
+   Prune offset files older than ~30 days opportunistically.
+5. **Launch the distiller**, stamping the throttle and offset first,
+   and passing only the new transcript slice:
 
    ```bash
+   slice="$state_dir/slices/$session_id.jsonl"
+   tail -c +$((offset + 1)) "$transcript_path" > "$slice"
    LLMWIKI_DISTILLER=1 claude -p \
      --agent llmwiki-distiller \
      --settings '{"disableAllHooks": true}' \
-     "Review the session transcript at <transcript_path> (project root: <root>). File durable lessons per your instructions; if nothing durable emerged, do nothing." \
+     "Review the new session activity in <slice> (project root: <root>; this is the tail of a longer session). File durable lessons per your instructions; if nothing durable emerged, do nothing." \
      >> ~/.cache/aicoding/llmwiki-distill.log 2>&1
+   rm -f "$slice"
    ```
 
    `disableAllHooks` is the primary recursion guard (the child fires no
-   hooks at all); the env var is belt-and-suspenders.
-5. Always `exit 0` — a broken distiller must never block stopping.
+   hooks at all); the env var is belt-and-suspenders. The slice copy is
+   needed because the live transcript keeps growing under the agent.
+6. Always `exit 0` — a broken distiller must never block stopping.
 
 ### 2. `configs/claude/agents/llmwiki-distiller.md` (new, → `~/.claude/agents/`)
 
@@ -93,6 +120,34 @@ Instructions (summary):
   `provision-managed-files.sh` removes the old `llmwiki-nudge.sh` or at
   least that the stale file is harmless once unregistered).
 
+## Deployment scope & multi-machine behavior
+
+Deployment is per user home on whatever machine runs `aicoding-install`
+or `aicoding-sync` (devpod, WSL, Mint, …), via the managed inventory in
+`lib/blueprint-deploy.sh`: hook → `~/.claude/hooks/`, agent →
+`~/.claude/agents/`, Stop entry merged into the **global**
+`~/.claude/settings.json`. That means the distiller is active for every
+Claude Code session on that machine, in any repo or folder — not just
+aicoding-scaffolded projects (non-git dirs fall back to cwd for the
+throttle slug).
+
+Machines are fully independent: each has its own throttle/offset state
+and log under `~/.cache/aicoding/`, its own `~/homelab-wiki` clone
+(created on first wiki-worthy lesson), its own transcripts under
+`~/.claude/projects/`. The same repo on two machines gets two
+independent windows; concurrent wiki pushes are absorbed by the
+pull-first + rebase-retry rule.
+
+Per-machine prerequisites: an authenticated `claude` CLI and git
+credentials capable of pushing homelab-wiki. Where either is missing the
+design degrades safely — the run fails into the log, the interactive
+session is never affected.
+
+Debug checklist on any machine: `~/.claude/hooks/llmwiki-distill.sh`,
+`~/.claude/agents/llmwiki-distiller.md`, the Stop entry in
+`~/.claude/settings.json`, state in `~/.cache/aicoding/llmwiki-nudge/`
+(+ `offsets/`), log at `~/.cache/aicoding/llmwiki-distill.log`.
+
 ## Error handling
 
 - Hook: every failure path exits 0; launch failures land in
@@ -108,8 +163,10 @@ Instructions (summary):
 Manual, before the PR merges (exercise via
 `aicoding-sync --blueprint "$PWD/devpod/aicoding" --dry-run` then apply):
 
-1. Feed the hook crafted stdin JSON → verify throttle honored, state file
-   stamped, distiller launched, `exit 0` always.
+1. Feed the hook crafted stdin JSON → verify throttle honored, delta
+   gate skips below-threshold growth (and doesn't stamp the throttle),
+   offset/throttle stamped on launch, slice contains only new bytes,
+   `exit 0` always.
 2. Recursion: run the hook with `LLMWIKI_DISTILLER=1` → immediate exit;
    confirm the child run fires no hooks (`disableAllHooks`).
 3. Agent dry-run against a fixture transcript containing (a) a wiki-worthy
@@ -122,9 +179,10 @@ Manual, before the PR merges (exercise via
 - Other agent CLIs (codex etc.) — the four-CLI workflow contract in
   homelab-wiki's `AGENTS.md` is unchanged; this remains a Claude-only
   reliability bonus, same as the nudge it replaces.
-- SessionEnd handling, incremental "only since last distill" transcript
-  slicing (future option: reuse the throttle timestamp to scope the
-  review window and cut token cost).
+- SessionEnd handling (a final distill when a session ends; the delta
+  gate makes turn-end coverage good enough to start with).
+- Machine-level coordination (shared state across devpod/WSL/Mint);
+  per-machine independence is accepted by design.
 
 ## Risks / open items
 
@@ -134,5 +192,8 @@ Manual, before the PR merges (exercise via
 - Child-process lifetime after the async hook exits is not explicitly
   documented; if runs get reaped early in practice, fall back to
   `setsid`+`nohup` inside the script.
-- Sonnet over very long transcripts costs real tokens each window; the
-  incremental-slicing option above is the mitigation if it gets noisy.
+- Transcript JSONL format is an internal Claude Code detail; the slice
+  is raw JSONL and the agent must tolerate format drift (its
+  instructions say "extract lessons from whatever structure you find").
+- A transcript that gets compacted/rewritten in place could shrink below
+  the stored offset; guard with `offset > size → treat offset as 0`.
