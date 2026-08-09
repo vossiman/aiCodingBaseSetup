@@ -28,8 +28,10 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG TMUX_COMMIT=b07424224b88fcc02bcb9b58d8655f00b97909c6
 
 # Release stamp for the ⬆rebuild staleness check (bin/aicoding-status):
-# the repo commit this image was built from. Empty sha (local builds) is
-# fine — the check fails open.
+# the repo commit this image was built from. An empty sha merely disables
+# the badge (fail-open) — but image/smoke-test.sh hard-fails on it BY
+# DESIGN, so CI can never publish an image with a dead ⬆rebuild check.
+# Local hand-builds without --build-arg will see that one smoke FAIL.
 ARG DEVBOX_BASE_SHA=""
 RUN printf '{"sha":"%s","built":"%s"}\n' "$DEVBOX_BASE_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       > /etc/devbox-base-release
