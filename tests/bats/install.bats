@@ -903,3 +903,15 @@ LDD
   [ "$status" -eq 0 ]
   echo "$output" | grep -qi "ldd"
 }
+
+@test "install stamps provision_commit in the container-local manifest" {
+  # Directly exercise the helper + the install.sh call site wiring.
+  TMP=$(mktemp -d)
+  export AICODING_MANIFEST="$TMP/state/manifest.json"
+  run bash -c '. "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"; manifest_stamp_provision deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .provision_commit "$AICODING_MANIFEST")" = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" ]
+  # install.sh wires it: the call site exists and derives the sha from the blueprint checkout
+  grep -q 'manifest_stamp_provision "$(git -C "$SCRIPT_DIR" rev-parse HEAD' "$BLUEPRINT_ROOT/install.sh"
+  rm -rf "$TMP"
+}

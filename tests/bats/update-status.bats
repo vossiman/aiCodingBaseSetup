@@ -9,6 +9,7 @@ setup() {
   mkdir -p "$TMP/stubs"
   cat > "$TMP/stubs/git" <<STUB
 #!/bin/sh
+printf '%s\n' "\$*" >> "\${FAKE_GIT_LOG:-/dev/null}"
 if [ "\$1" = "ls-remote" ]; then
   [ -n "\${FAKE_LSREMOTE_FAIL:-}" ] && exit 1
   printf '%s\t%s\n' "\${FAKE_LATEST:-1111111111111111111111111111111111111111}" refs/heads/main
@@ -21,8 +22,18 @@ STUB
   export AICODING_UPDATE_TESTONLY_TOOL="demo"
   export AICODING_UPDATE_TESTONLY_REMOTE="https://example.invalid/demo"
   export AICODING_UPDATE_TESTONLY_INSTALLED_FILE="$TMP/installed"
+  export FAKE_GIT_LOG="$TMP/gitlog"
+  # NEVER let a test fall back to the real clone default (/tmp/aicoding exists
+  # in every devbox): an ungated fetch there would mutate live state.
+  export AICODING_UPDATE_TESTONLY_CLONE="$TMP/noclone"
+  # --tmux/--banner fork _refresh_detached; its child does mkdir -p under $TMP
+  # and raced teardown's rm -rf ("Directory not empty"). Suppress the fork —
+  # the refresh path itself is covered by the explicit --refresh tests.
+  export AICODING_UPDATE_TESTONLY_NO_DETACH=1
 }
-teardown() { rm -rf "$TMP"; }
+# `|| true`: teardown's exit status must never be the failure. Any straggler
+# writing under $TMP would otherwise turn a passing test red at random.
+teardown() { rm -rf "$TMP" 2>/dev/null || true; return 0; }
 
 cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
 
@@ -100,7 +111,7 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
   run "$BIN" --tmux
   [ "$status" -eq 0 ]
-  [ "$output" = " #[fg=#89b4fa]│ #[fg=#f9e2af]⬆aicoding ⬆dvw" ]
+  [ "$output" = " #[fg=#89b4fa]│ #[fg=#f9e2af]⬆sync ⬆dvw" ]
 }
 
 @test "stale-lock: a lock older than TTL is stolen and refresh proceeds" {
@@ -248,4 +259,183 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
     echo "$hits"
     return 1
   fi
+}
+
+@test "badge label: aicoding renders as ⬆sync, banner still says aicoding-sync" {
+  unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  jq -n '{blueprint_commit:"2222222222222222222222222222222222222222"}' > "$AICODING_MANIFEST"
+  FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
+  run "$BIN" --tmux
+  [[ "$output" == *"⬆sync"* ]]
+  [[ "$output" != *"⬆aicoding"* ]]
+  run "$BIN" --banner
+  echo "$output" | grep -q "run: aicoding-sync"
+}
+
+_mk_clone() {  # fixture: commit A (stamp point), then commit B touching $1
+  CLONE="$TMP/clone"; git init -q -b main "$CLONE"
+  git -C "$CLONE" -c user.email=t@t -c user.name=t commit -q --allow-empty -m A
+  A_SHA=$(git -C "$CLONE" rev-parse HEAD)
+  mkdir -p "$CLONE/$(dirname "$1")"; echo x > "$CLONE/$1"
+  git -C "$CLONE" add -A
+  git -C "$CLONE" -c user.email=t@t -c user.name=t commit -q -m B
+  git -C "$CLONE" update-ref refs/remotes/origin/main HEAD
+  export AICODING_UPDATE_TESTONLY_CLONE="$CLONE"
+}
+
+@test "provision drift: provisioning path touched since stamp -> ⬆install badge" {
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  _mk_clone lib/provision-system.sh
+  jq -n --arg s "$A_SHA" '{provision_commit:$s}' > "$AICODING_MANIFEST"
+  run "$BIN" --tmux
+  [[ "$output" == *"⬆install"* ]]
+  run "$BIN" --banner
+  echo "$output" | grep -q "run: aicoding-install"
+}
+
+@test "provision drift: only non-provisioning paths touched -> no badge" {
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  _mk_clone docs/notes.md
+  jq -n --arg s "$A_SHA" '{provision_commit:$s}' > "$AICODING_MANIFEST"
+  run "$BIN" --tmux
+  [[ "$output" != *"⬆install"* ]]
+}
+
+@test "provision drift fail-open: missing stamp / stamp not ancestor -> no badge" {
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  _mk_clone lib/provision-system.sh
+  jq -n '{}' > "$AICODING_MANIFEST"
+  run "$BIN" --tmux
+  [[ "$output" != *"⬆install"* ]]
+  jq -n '{provision_commit:"3333333333333333333333333333333333333333"}' > "$AICODING_MANIFEST"
+  run "$BIN" --tmux
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"⬆install"* ]]
+}
+
+@test "image staleness: image/ touched since baked sha -> ⬆rebuild + laptop CTA" {
+  export AICODING_MANIFEST="$TMP/manifest.json"; jq -n '{}' > "$AICODING_MANIFEST"
+  _mk_clone image/Dockerfile
+  export AICODING_IMAGE_RELEASE_FILE="$TMP/release.json"
+  jq -n --arg s "$A_SHA" '{sha:$s, built:"2026-08-08T00:00:00Z"}' > "$AICODING_IMAGE_RELEASE_FILE"
+  DEVPOD_WORKSPACE_ID=devmachine run "$BIN" --tmux
+  [[ "$output" == *"⬆rebuild"* ]]
+  DEVPOD_WORKSPACE_ID=devmachine run "$BIN" --banner
+  echo "$output" | grep -q "from your laptop: dvw rebuild devmachine"
+}
+
+@test "image staleness fail-open: no release file / empty sha -> no badge" {
+  export AICODING_MANIFEST="$TMP/manifest.json"; jq -n '{}' > "$AICODING_MANIFEST"
+  _mk_clone image/Dockerfile
+  export AICODING_IMAGE_RELEASE_FILE="$TMP/absent.json"
+  run "$BIN" --tmux
+  [ "$status" -eq 0 ]; [[ "$output" != *"⬆rebuild"* ]]
+  jq -n '{sha:"", built:""}' > "$AICODING_IMAGE_RELEASE_FILE"
+  run "$BIN" --tmux
+  [[ "$output" != *"⬆rebuild"* ]]
+}
+
+@test "image staleness: image/ untouched since baked sha -> no badge" {
+  export AICODING_MANIFEST="$TMP/manifest.json"; jq -n '{}' > "$AICODING_MANIFEST"
+  _mk_clone docs/notes.md
+  export AICODING_IMAGE_RELEASE_FILE="$TMP/release.json"
+  jq -n --arg s "$A_SHA" '{sha:$s, built:"2026-08-08T00:00:00Z"}' > "$AICODING_IMAGE_RELEASE_FILE"
+  run "$BIN" --tmux
+  [[ "$output" != *"⬆rebuild"* ]]
+}
+
+@test "provision drift: the pathspec glob is evaluated by git, not the caller's cwd" {
+  # Regression: PROVISION_PATHS was a string passed as `-- $*`, so bash
+  # glob-expanded `lib/provision*` against the PROCESS'S cwd before git saw it.
+  # Run from any aicoding checkout the pathspec froze to the locally-present
+  # filenames, and a newly ADDED provisioning lib upstream matched nothing —
+  # a silent, cwd-dependent false negative.
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  _mk_clone lib/provision-newthing.sh   # upstream ADDS a lib absent locally
+  jq -n --arg s "$A_SHA" '{provision_commit:$s}' > "$AICODING_MANIFEST"
+
+  mkdir -p "$TMP/cwd/lib"               # a cwd that HAS other provision libs
+  : > "$TMP/cwd/lib/provision-system.sh"
+  : > "$TMP/cwd/lib/provision-secrets.sh"
+  cd "$TMP/cwd"
+  run "$BIN" --tmux
+  cd "$BLUEPRINT_ROOT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"⬆install"* ]]
+}
+
+@test "refresh: the blueprint-clone fetch is gated behind AICODINGSETUP_SKIP_NETWORK" {
+  # Repo rule (CLAUDE.md). Ungated, this fetched github.com for real under the
+  # suite (the stub only intercepts ls-remote) and mutated the live
+  # /tmp/aicoding clone present in every devbox.
+  echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  export AICODING_UPDATE_TESTONLY_CLONE="$TMP/fetchclone"
+  /usr/bin/git init -q -b main "$AICODING_UPDATE_TESTONLY_CLONE"
+
+  : > "$FAKE_GIT_LOG"
+  AICODINGSETUP_SKIP_NETWORK=1 FAKE_LATEST=1111111111111111111111111111111111111111 \
+    run "$BIN" --refresh
+  [ "$status" -eq 0 ]
+  # `run grep` + explicit status, NOT `! grep`: bash exempts `! cmd` from
+  # errexit, so a bare negation here would silently never fail the test.
+  run grep -c 'fetch' "$FAKE_GIT_LOG"
+  [ "$status" -ne 0 ]
+
+  # Control: without the guard the fetch IS attempted, so the assertion above
+  # tests the gate and not a missing call site.
+  rm -f "$AICODING_UPDATE_STATE"/*.json
+  : > "$FAKE_GIT_LOG"
+  AICODINGSETUP_SKIP_NETWORK="" FAKE_LATEST=1111111111111111111111111111111111111111 \
+    run "$BIN" --refresh
+  grep -q 'fetch' "$FAKE_GIT_LOG"
+}
+
+# --- no false positives from placeholder substitution (spec §) ---------------
+# Deployed configs carry substituted placeholders ({{HOME}}, {{*_API_KEY}}), so
+# rendered files never match blueprint sources byte-for-byte. All three badge
+# verdicts compare commits/stamps ONLY — they never hash or diff rendered
+# content — so a substituted-value change alone must stay silent. (The positive
+# controls are the "provision drift" / "image staleness" tests above: when a
+# COMMIT moves, the badge does fire.)
+@test "no false positives: a rendered-content change alone produces no badge" {
+  unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE \
+        AICODING_UPDATE_TESTONLY_INSTALLED_FILE
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  export AICODING_IMAGE_RELEASE_FILE="$TMP/release.json"
+  _mk_clone docs/notes.md                       # no gated path touched
+  jq -n --arg s "$A_SHA" '{blueprint_commit:$s, provision_commit:$s}' > "$AICODING_MANIFEST"
+  jq -n --arg s "$A_SHA" '{sha:$s}' > "$AICODING_IMAGE_RELEASE_FILE"
+  FAKE_LATEST="$A_SHA" "$BIN" --refresh
+
+  mkdir -p "$HOME/.config/demo"
+  printf 'api_key=OLD-VALUE\nhome=/home/one\n' > "$HOME/.config/demo/app.conf"
+  run "$BIN" --tmux
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+
+  # A substituted value changes (key rotation / different {{HOME}}): rendered
+  # content now differs from the blueprint source, but no commit or stamp moved.
+  printf 'api_key=ROTATED-VALUE\nhome=/home/two\n' > "$HOME/.config/demo/app.conf"
+  run "$BIN" --tmux
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run "$BIN" --print
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "refresh-attach: bypasses the 6h TTL" {
+  echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
+  sleep 1
+  FAKE_LATEST=3333333333333333333333333333333333333333 AICODING_UPDATE_ATTACH_MIN=0 "$BIN" --refresh-attach
+  [ "$(cache | jq -r .latest | cut -c1-7)" = "3333333" ]
+}
+
+@test "refresh-attach: still throttled by its own min-interval" {
+  echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
+  FAKE_LATEST=3333333333333333333333333333333333333333 AICODING_UPDATE_ATTACH_MIN=3600 "$BIN" --refresh-attach
+  [ "$(cache | jq -r .latest | cut -c1-7)" = "1111111" ]
 }

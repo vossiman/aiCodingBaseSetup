@@ -72,6 +72,22 @@ write_manifest() {
   mv "$tmp" "$AICODING_MANIFEST"
 }
 
+# manifest_stamp_provision <sha> — record that full provisioning ran at this
+# blueprint commit. Container-local manifest only (never the shared bind
+# mount). Separate from blueprint_commit, which config-only syncs advance.
+manifest_stamp_provision() {
+  local sha=$1 dir tmp
+  [ -n "$sha" ] || return 0
+  dir=$(dirname "$AICODING_MANIFEST"); mkdir -p "$dir" 2>/dev/null || return 0
+  tmp="$AICODING_MANIFEST.tmp"
+  if [ -f "$AICODING_MANIFEST" ]; then
+    jq --arg s "$sha" '. + {provision_commit:$s}' "$AICODING_MANIFEST" > "$tmp" 2>/dev/null || return 0
+  else
+    jq -n --arg s "$sha" '{provision_commit:$s}' > "$tmp" 2>/dev/null || return 0
+  fi
+  mv "$tmp" "$AICODING_MANIFEST"
+}
+
 # In-memory staged manifest; modified by manifest_set_file /
 # manifest_remove_file between stage_begin and stage_commit.
 _aicoding_pending_manifest=""

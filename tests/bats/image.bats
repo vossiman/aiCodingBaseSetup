@@ -79,6 +79,15 @@ IMAGE_DIR="$BLUEPRINT_ROOT/image"
   [ "$status" -eq 0 ]
 }
 
+@test "image: smoke-test.sh proves the DEVBOX_BASE_SHA build arg reached the image" {
+  # Nothing else catches a silently-empty build arg: the image would ship
+  # {"sha":""}, aicoding-status' _image_sha returns empty, _behind_paths fails
+  # open, and the ⬆rebuild badge is dead forever with no signal.
+  grep -q '/etc/devbox-base-release' "$IMAGE_DIR/smoke-test.sh"
+  # …and it must assert the sha is non-empty, not merely that the file exists.
+  grep -qE '\.sha.*length > 0' "$IMAGE_DIR/smoke-test.sh"
+}
+
 @test "image workflow: weekly cron + manual dispatch + image-path triggers" {
   WORKFLOW="$BLUEPRINT_ROOT/.github/workflows/build-base-image.yml"
   [ -f "$WORKFLOW" ]
@@ -114,4 +123,11 @@ IMAGE_DIR="$BLUEPRINT_ROOT/image"
 @test "image: Dockerfile sets Vienna timezone" {
   grep -qE '^ENV TZ=Europe/Vienna$' "$IMAGE_DIR/Dockerfile"
   grep -qF '/usr/share/zoneinfo/Europe/Vienna /etc/localtime' "$IMAGE_DIR/Dockerfile"
+}
+
+@test "image bakes /etc/devbox-base-release and CI wires the sha build-arg" {
+  grep -q 'ARG DEVBOX_BASE_SHA' "$BLUEPRINT_ROOT/image/Dockerfile"
+  grep -q '/etc/devbox-base-release' "$BLUEPRINT_ROOT/image/Dockerfile"
+  grep -q 'DEVBOX_BASE_SHA.*localEnv:DEVBOX_BASE_SHA' "$BLUEPRINT_ROOT/image/devcontainer.json"
+  grep -q 'DEVBOX_BASE_SHA:.*github.sha' "$BLUEPRINT_ROOT/.github/workflows/build-base-image.yml"
 }

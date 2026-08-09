@@ -1,5 +1,8 @@
 {
-  "build": { "dockerfile": "Dockerfile" },
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": { "DEVBOX_BASE_SHA": "${localEnv:DEVBOX_BASE_SHA}" }
+  },
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
       "moby": false

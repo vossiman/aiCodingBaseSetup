@@ -27,6 +27,13 @@ FROM mcr.microsoft.com/devcontainers/base:ubuntu
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG TMUX_COMMIT=b07424224b88fcc02bcb9b58d8655f00b97909c6
 
+# Release stamp for the ⬆rebuild staleness check (bin/aicoding-status):
+# the repo commit this image was built from. Empty sha (local builds) is
+# fine — the check fails open.
+ARG DEVBOX_BASE_SHA=""
+RUN printf '{"sha":"%s","built":"%s"}\n' "$DEVBOX_BASE_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      > /etc/devbox-base-release
+
 # Keep uid 1000 named codespace: every blueprint mount targets /home/codespace.
 RUN usermod -l codespace vscode \
  && groupmod -n codespace vscode \
