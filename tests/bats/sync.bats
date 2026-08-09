@@ -24,8 +24,11 @@ setup() {
   done
   export PATH="$TMP/stubs:$PATH"
   . "$BLUEPRINT_ROOT/lib/sync.sh"
+  # cwd must leave the real checkout: _sync_devcontainer_pin targets the
+  # cwd's repo, and tests must never write into $BLUEPRINT_ROOT.
+  cd "$TMP"
 }
-teardown() { rm -rf "$TMP"; }
+teardown() { cd /; rm -rf "$TMP"; }
 
 @test "sync --boot is non-interactive and refreshes binaries" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null

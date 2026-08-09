@@ -27,11 +27,14 @@ setup() {
     chmod +x "$TMPDIR/stubs/$c"
   done
   export PATH="$TMPDIR/stubs:$PATH"
+  # cwd must leave the real checkout: _sync_devcontainer_pin targets the
+  # cwd's repo, and tests must never write into $BLUEPRINT_ROOT.
+  cd "$TMPDIR"
 }
 
 # Refuse to remove anything but a mktemp sandbox: if setup ever aborts before
 # assigning TMPDIR, the inherited value is /tmp itself (bats exports it).
-teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
+teardown() { cd /; case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
 
 @test "aicoding-sync: exits with error when no manifest" {
   run "$BLUEPRINT_ROOT/bin/aicoding-sync"
