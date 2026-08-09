@@ -100,3 +100,15 @@ teardown() { rm -rf "$TMP"; }
   [ "$status" -eq 0 ]
   [[ "$output" == *"ERROR: codex updated but version is still 0.147.0 (expected 0.148.0)"* ]]
 }
+
+@test "_sync_binaries invokes the codex updater" {
+  # claude/opencode/agent logging stubs so _sync_binaries' other calls
+  # stay off the network (standing rule: agent CLIs are external binaries).
+  for c in claude opencode agent; do
+    printf '#!/bin/sh\necho "%s $*" >> "$TMP/ran.log"\n' "$c" > "$TMP/stubs/$c"
+    chmod +x "$TMP/stubs/$c"
+  done
+  run _sync_binaries
+  [ "$status" -eq 0 ]
+  grep -q "curl-installer" "$TMP/ran.log"   # codex path reached via _sync_binaries
+}

@@ -478,6 +478,7 @@ _sync_binaries() {            # throttled network refresh
   command -v opencode >/dev/null 2>&1 && { opencode upgrade || true; }
   if command -v agent >/dev/null 2>&1; then agent update || true
   elif command -v cursor-agent >/dev/null 2>&1; then cursor-agent update || true; fi
+  _update_codex || true
 }
 
 # Reconcile machine state that isn't a managed file: MCP registrations,
