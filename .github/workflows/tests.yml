@@ -1,0 +1,33 @@
+# Run the bats suite on every PR and main push, so nobody has to wait for
+# a full local run before merging — targeted files locally, full suite here.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  bats:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install suite dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q parallel jq tmux
+
+      - name: Run bats suite
+        # run.sh locates bats itself (npx fallback), exports the network
+        # guards (AICODINGSETUP_SKIP_NETWORK=1 etc.), and parallelises
+        # across all cores now that GNU parallel is present.
+        run: bash tests/bats/run.sh

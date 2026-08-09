@@ -85,9 +85,16 @@ done
 # parallel-only failure ever appears, that test has a sandbox leak — fix the
 # test, don't serialise the suite. The will-cite touch suppresses GNU
 # parallel's one-time citation prompt non-interactively.
-if [[ $user_set_jobs -eq 0 ]] && parallel --version 2>/dev/null | head -1 | grep -q "GNU parallel"; then
-  mkdir -p "$HOME/.parallel" && touch "$HOME/.parallel/will-cite"
-  passthru+=(--jobs "$(nproc)")
+if [[ $user_set_jobs -eq 0 ]]; then
+  if parallel --version 2>/dev/null | head -1 | grep -q "GNU parallel"; then
+    mkdir -p "$HOME/.parallel" && touch "$HOME/.parallel/will-cite"
+    passthru+=(--jobs "$(nproc)")
+  else
+    # Never serialise silently: on an 8-core laptop this cost 5-10 min walls
+    # before anyone noticed GNU parallel was simply not installed (2026-08-08).
+    echo "WARN: GNU parallel not found — running SERIAL (much slower)." >&2
+    echo "WARN: install it (apt/brew install parallel) for --jobs $(nproc)." >&2
+  fi
 fi
 
 exec "${BATS[@]}" --timing "${passthru[@]}" "${files[@]}"
