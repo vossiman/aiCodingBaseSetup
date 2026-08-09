@@ -29,7 +29,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"{{HOME}}/.claude/hooks/llmwiki-nudge.sh\""
+            "command": "bash \"{{HOME}}/.claude/hooks/llmwiki-distill.sh\"",
+            "async": true
           }
         ]
       }

@@ -363,7 +363,8 @@ $HOME/.tmux.conf|overwrite|configs/tmux/tmux.conf
 $HOME/.claude/hooks/custom-statusline.js|overwrite|configs/claude/hooks/custom-statusline.js
 $HOME/.claude/hooks/bw-deny-files.sh|overwrite|configs/claude/hooks/bw-deny-files.sh
 $HOME/.claude/hooks/check-archived-docs.sh|overwrite|configs/claude/hooks/check-archived-docs.sh
-$HOME/.claude/hooks/llmwiki-nudge.sh|overwrite|configs/claude/hooks/llmwiki-nudge.sh
+$HOME/.claude/hooks/llmwiki-distill.sh|overwrite|configs/claude/hooks/llmwiki-distill.sh
+$HOME/.claude/agents/llmwiki-distiller.md|overwrite|configs/claude/agents/llmwiki-distiller.md
 $HOME/.claude/CLAUDE.md|overwrite|configs/claude/CLAUDE.md
 $HOME/.bashrc.d/aicoding-env.sh|overwrite|configs/bash/env.sh
 $HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.sh
