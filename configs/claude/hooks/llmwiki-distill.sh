@@ -55,16 +55,16 @@ size="$(stat -c %s "$transcript" 2>/dev/null || echo 0)"
 
 command -v claude >/dev/null 2>&1 || exit 0
 
-# Stamp only now — gated-out stops must not push the window, and a slow agent
-# run must not double-fire.
-printf '%s' "$now"  > "$state_file"  2>/dev/null
-printf '%s' "$size" > "$offset_file" 2>/dev/null
-find "$state_dir/offsets" -type f -mtime +30 -delete 2>/dev/null
-
 # Copy the new bytes out — the live transcript keeps growing under the agent.
 slice="$state_dir/slices/$session_id.jsonl"
 tail -c +"$(( offset + 1 ))" "$transcript" > "$slice" 2>/dev/null \
   || { rm -f "$slice"; exit 0; }
+
+# Stamp only after slice succeeds — gated-out stops and slice failures must not
+# push the window, and a slow agent run must not double-fire.
+printf '%s' "$now"  > "$state_file"  2>/dev/null
+printf '%s' "$size" > "$offset_file" 2>/dev/null
+find "$state_dir/offsets" -type f -mtime +30 -delete 2>/dev/null
 
 log="$HOME/.cache/aicoding/llmwiki-distill.log"
 {

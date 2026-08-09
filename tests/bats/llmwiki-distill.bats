@@ -139,3 +139,15 @@ launched() { [ -f "$HOME/claude-args" ]; }
   ! launched
   [ ! -f "$STATE_DIR/offsets/s1" ]
 }
+
+@test "llmwiki-distill: slice creation failure does not stamp state" {
+  export LLMWIKI_NUDGE_INTERVAL=0   # Make throttle window always pass
+  mktranscript "$TMPDIR/t.jsonl" 8192
+  chmod 000 "$TMPDIR/t.jsonl"        # Unreadable — stat works, tail fails
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s1)"
+  [ "$status" -eq 0 ]               # Hook exits 0 despite tail failure
+  ! launched                        # claude never launched
+  [ ! -f "$STATE_DIR/offsets/s1" ] # offset file not stamped
+  # Verify no throttle files created (only offsets/ and slices/ dirs)
+  [ "$(find "$STATE_DIR" -maxdepth 1 -type f 2>/dev/null | wc -l)" -eq 0 ]
+}
