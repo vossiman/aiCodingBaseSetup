@@ -1,7 +1,7 @@
 # LLMWiki background distiller — design
 
 Date: 2026-08-09
-Status: approved-pending-review
+Status: implemented on branch docs/llmwiki-distiller-spec (pending PR)
 Replaces: the Stop-hook nudge (`configs/claude/hooks/llmwiki-nudge.sh`)
 
 ## Problem
