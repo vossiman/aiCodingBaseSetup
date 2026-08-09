@@ -85,8 +85,10 @@ jobs:
       - name: Pin blueprint to published digest
         if: github.event_name != 'pull_request'
         run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::bad digest '$DIGEST'"; exit 1; }
           git pull --rebase origin main
           sed -i -E "s|(ghcr\.io/vossiman/devbox-base@)sha256:[0-9a-f]{64}|\1$DIGEST|" devcontainer.json
+          grep -qF "devbox-base@$DIGEST" devcontainer.json || { echo "::error::pin pattern did not match"; exit 1; }
           if git diff --quiet devcontainer.json; then
             echo "digest unchanged ($DIGEST) — nothing to pin"
             exit 0
