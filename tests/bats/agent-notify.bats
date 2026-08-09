@@ -109,3 +109,13 @@ teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
   # notify must appear before the first [table] or codex ignores it
   awk '/^\[/{exit 1} /^notify = /{found=1} END{exit !found}' "$cfg"
 }
+
+@test "tmux.conf wires alert hooks, clear-on-select, and waiting marker" {
+  local conf="$BLUEPRINT_ROOT/configs/tmux/tmux.conf"
+  grep -q 'alert-bell.*agent-notify --source tmux-bell' "$conf"
+  grep -q 'alert-silence.*agent-notify --source tmux-silence' "$conf"
+  grep -q 'alert-activity.*monitor-silence' "$conf"
+  grep -q 'after-select-window.*-u.*@waiting' "$conf"
+  grep -q '@catppuccin_window_default_text "#{?#{@waiting},⏸ ,}#W"' "$conf"
+  grep -q '@catppuccin_window_current_text "#{?#{@waiting},⏸ ,}#W"' "$conf"
+}
