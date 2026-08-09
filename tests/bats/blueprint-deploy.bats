@@ -643,3 +643,20 @@ EOF
   grep -q 'gate evidence' "$BLUEPRINT_ROOT/configs/claude/CLAUDE.md"
   grep -q 'dedicated git worktree' "$BLUEPRINT_ROOT/configs/claude/CLAUDE.md"
 }
+
+@test "managed_inventory_overwrite: llmwiki distill hook + distiller agent rows, nudge row gone" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run managed_inventory_overwrite
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qF "$HOME/.claude/hooks/llmwiki-distill.sh|overwrite|configs/claude/hooks/llmwiki-distill.sh"
+  echo "$output" | grep -qF "$HOME/.claude/agents/llmwiki-distiller.md|overwrite|configs/claude/agents/llmwiki-distiller.md"
+  if echo "$output" | grep -q 'llmwiki-nudge'; then false; fi
+}
+
+@test "claude settings fragment: Stop hook is the async distill launcher" {
+  jq -e '.hooks.Stop[0].hooks[0].async == true' "$BLUEPRINT_ROOT/configs/claude/settings.json"
+  jq -e '.hooks.Stop[0].hooks[0].timeout == 600' "$BLUEPRINT_ROOT/configs/claude/settings.json"
+  jq -re '.hooks.Stop[0].hooks[0].command' "$BLUEPRINT_ROOT/configs/claude/settings.json" \
+    | grep -qF '{{HOME}}/.claude/hooks/llmwiki-distill.sh'
+  if grep -q 'llmwiki-nudge' "$BLUEPRINT_ROOT/configs/claude/settings.json"; then false; fi
+}
