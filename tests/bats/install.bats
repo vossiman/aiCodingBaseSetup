@@ -174,6 +174,13 @@ EOF
   readlink "$HOME/.local/bin/aicoding-install" | grep -q "bin/aicoding-install"
 }
 
+@test "install.sh symlinks agent-notify into ~/.local/bin" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ -L "$HOME/.local/bin/agent-notify" ]
+  [ -x "$HOME/.local/bin/agent-notify" ]
+  readlink "$HOME/.local/bin/agent-notify" | grep -q "bin/agent-notify"
+}
+
 @test "install.sh reconcile mode: restores missing files without touching edited ones" {
   # First-deploy populates the manifest and all managed files.
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
