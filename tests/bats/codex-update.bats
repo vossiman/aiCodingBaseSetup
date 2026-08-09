@@ -82,9 +82,7 @@ teardown() { rm -rf "$TMP"; }
 
 @test "codex update: codex absent -> silent no-op" {
   rm "$TMP/.local/bin/codex"
-  # hash table may cache the removed path in this shell
-  hash -r 2>/dev/null || true
-  run _update_codex
+  run env PATH="$TMP/stubs:/usr/bin:/bin" bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; _update_codex'
   [ "$status" -eq 0 ]
   [ -z "$output" ]
   [ ! -e "$TMP/ran.log" ]
