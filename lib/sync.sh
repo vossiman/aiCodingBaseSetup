@@ -510,6 +510,46 @@ _sync_binaries_stamp() {
   mkdir -p "$AICODING_UPDATE_STATE"; : > "$AICODING_UPDATE_STATE/.binaries.stamp"
 }
 
+# Reconcile the workspace's .devcontainer/devcontainer.json image pin from
+# the blueprint copy. The blueprint self-pins after every image publish
+# (2026-08-09-auto-pin-image-digest-design.md); without this, the snapshot
+# `dvw new` committed into the workspace repo goes stale and the ⬆rebuild
+# badge's CTA recreates from the old pin. Working-tree edit ONLY — never
+# commits or pushes; `devpod up --recreate` reads on-disk config, so the
+# next dvw rebuild already uses the new pin and the commit rides the
+# project's normal flow. Fail-open: warn + return 0, never break sync.
+# Spec: docs/superpowers/specs/2026-08-09-sync-workspace-pin-design.md
+_sync_devcontainer_pin() {
+  local mode="${1:-}" top target bp_image cur_image old_d new_d
+  top=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null) || return 0
+  target="$top/.devcontainer/devcontainer.json"
+  [ -f "$target" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  bp_image=$(jq -r '.image // empty' "$AICODING_BLUEPRINT_CLONE/devcontainer.json" 2>/dev/null) || true
+  if [ -z "$bp_image" ]; then
+    echo "WARN: blueprint devcontainer.json has no image — skipping pin sync" >&2
+    return 0
+  fi
+  cur_image=$(jq -r '.image // empty' "$target" 2>/dev/null) || true
+  case "$cur_image" in
+    ghcr.io/vossiman/devbox-base@*) : ;;
+    *) return 0 ;;   # custom or missing image — never stomp
+  esac
+  [ "$cur_image" = "$bp_image" ] && return 0
+  old_d=$(printf '%s' "$cur_image" | sed -E 's/.*@sha256:([0-9a-f]{12}).*/\1/')
+  new_d=$(printf '%s' "$bp_image"  | sed -E 's/.*@sha256:([0-9a-f]{12}).*/\1/')
+  if [ "$mode" = dry-run ]; then
+    echo "devcontainer pin: $old_d -> $new_d (dry run, not written)"
+    return 0
+  fi
+  if ! sed -i -E "s|\"image\": \"[^\"]+\"|\"image\": \"${bp_image}\"|" "$target"; then
+    echo "WARN: devcontainer pin sync failed for $target" >&2
+    return 0
+  fi
+  echo "devcontainer pin: $old_d -> $new_d (commit at your convenience)"
+  return 0
+}
+
 aicoding_sync() {
   # Parse the FIRST recognized flag; no flag = interactive.
   local mode=interactive arg
@@ -528,6 +568,10 @@ aicoding_sync() {
   # 2. Reconcile (preview / prompt / apply per mode). The no-manifest manual
   #    error is the only nonzero return.
   _sync_reconcile "$mode" || return $?
+
+  # 2b. Workspace devcontainer pin — dry-run reports, other modes edit the
+  #     working tree (never commits). Local file ops only, no throttle.
+  _sync_devcontainer_pin "$mode" || true
 
   # 3. Binaries + machine-state provision (MCPs/plugins) — never under
   #    --dry-run. Only --boot throttles (it's the only path that runs
