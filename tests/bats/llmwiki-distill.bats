@@ -63,6 +63,8 @@ launched() { [ -f "$HOME/claude-args" ]; }
   grep -qx -- '--agent' "$HOME/claude-args"
   grep -qx 'llmwiki-distiller' "$HOME/claude-args"
   grep -q 'disableAllHooks' "$HOME/claude-args"
+  grep -q '"allow"' "$HOME/claude-args"
+  grep -q 'Bash(git:\*)' "$HOME/claude-args"
   grep -qx '1' "$HOME/claude-env-guard"
   # full transcript sliced (offset 0)
   [ "$(wc -c < "$HOME/slice-copy")" -eq 8192 ]

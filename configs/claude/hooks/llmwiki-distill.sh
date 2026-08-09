@@ -65,6 +65,7 @@ tail -c +"$(( offset + 1 ))" "$transcript" > "$slice" 2>/dev/null \
 printf '%s' "$now"  > "$state_file"  2>/dev/null
 printf '%s' "$size" > "$offset_file" 2>/dev/null
 find "$state_dir/offsets" -type f -mtime +30 -delete 2>/dev/null
+find "$state_dir/slices" -type f -mtime +30 -delete 2>/dev/null
 
 log="$HOME/.cache/aicoding/llmwiki-distill.log"
 {
@@ -72,9 +73,10 @@ log="$HOME/.cache/aicoding/llmwiki-distill.log"
     "$(date -Is)" "$slug" "$session_id" "$offset" "$size"
   LLMWIKI_DISTILLER=1 claude -p \
     --agent llmwiki-distiller \
-    --settings '{"disableAllHooks": true}' \
+    --settings '{"disableAllHooks": true, "permissions": {"allow": ["Write", "Bash(git:*)", "Bash(mkdir:*)"]}}' \
     "Review the new session activity in $slice (project root: $root; this is the tail of a longer Claude Code session transcript in JSONL format). Follow your instructions: file durable lessons; if nothing durable emerged, do nothing."
-  printf '%s done session=%s exit=%s\n' "$(date -Is)" "$session_id" "$?"
+  rc=$?
+  printf '%s done session=%s exit=%s\n' "$(date -Is)" "$session_id" "$rc"
 } >> "$log" 2>&1
 rm -f "$slice"
 

@@ -73,15 +73,21 @@ Behavior, in order:
    size (`stat -c %s`); if the delta is below the threshold
    (`LLMWIKI_MIN_DELTA_BYTES`, default 4096), exit 0 without stamping.
    Prune offset files older than ~30 days opportunistically.
-5. **Launch the distiller**, stamping the throttle and offset first,
-   and passing only the new transcript slice:
+5. **Create the slice, then launch the distiller**, stamping the throttle
+   and offset only after slice creation succeeds — a slice-write failure
+   or a gated-out stop must not push the window forward, and a slow
+   agent run must not double-fire:
 
    ```bash
    slice="$state_dir/slices/$session_id.jsonl"
-   tail -c +$((offset + 1)) "$transcript_path" > "$slice"
+   tail -c +$((offset + 1)) "$transcript_path" > "$slice" || exit 0
+
+   printf '%s' "$now"  > "$state_file"
+   printf '%s' "$size" > "$offset_file"
+
    LLMWIKI_DISTILLER=1 claude -p \
      --agent llmwiki-distiller \
-     --settings '{"disableAllHooks": true}' \
+     --settings '{"disableAllHooks": true, "permissions": {"allow": ["Write", "Bash(git:*)", "Bash(mkdir:*)"]}}' \
      "Review the new session activity in <slice> (project root: <root>; this is the tail of a longer session). File durable lessons per your instructions; if nothing durable emerged, do nothing." \
      >> ~/.cache/aicoding/llmwiki-distill.log 2>&1
    rm -f "$slice"
@@ -89,7 +95,12 @@ Behavior, in order:
 
    `disableAllHooks` is the primary recursion guard (the child fires no
    hooks at all); the env var is belt-and-suspenders. The slice copy is
-   needed because the live transcript keeps growing under the agent.
+   needed because the live transcript keeps growing under the agent. The
+   `permissions.allow` grant is required in headless mode: without it, the
+   child's Write/Bash calls hit denial prompts it can never answer, and the
+   feature is silently inert. It is scoped to exactly the agent's write
+   policy (wiki git ops, project file writes, `mkdir` for `docs/notes/`) —
+   never a broad `Bash(*)` grant, never `--dangerously-skip-permissions`.
 6. Always `exit 0` — a broken distiller must never block stopping.
 
 ### 2. `configs/claude/agents/llmwiki-distiller.md` (new, → `~/.claude/agents/`)
@@ -197,3 +208,9 @@ Manual, before the PR merges (exercise via
   instructions say "extract lessons from whatever structure you find").
 - A transcript that gets compacted/rewritten in place could shrink below
   the stored offset; guard with `offset > size → treat offset as 0`.
+- The Stop hook entry sets a generous `"timeout": 600` for the async
+  distiller run, but whether the async child actually survives a
+  multi-minute run to completion (vs. being reaped early by the harness)
+  is not verifiable in bats — that remains a post-deploy live check: look
+  for a matching `done ... exit=` line in `~/.cache/aicoding/llmwiki-distill.log`
+  after a long-running session stops.

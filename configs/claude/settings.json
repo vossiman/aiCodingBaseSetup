@@ -30,7 +30,8 @@
           {
             "type": "command",
             "command": "bash \"{{HOME}}/.claude/hooks/llmwiki-distill.sh\"",
-            "async": true
+            "async": true,
+            "timeout": 600
           }
         ]
       }

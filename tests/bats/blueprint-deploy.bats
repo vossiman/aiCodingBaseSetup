@@ -655,6 +655,7 @@ EOF
 
 @test "claude settings fragment: Stop hook is the async distill launcher" {
   jq -e '.hooks.Stop[0].hooks[0].async == true' "$BLUEPRINT_ROOT/configs/claude/settings.json"
+  jq -e '.hooks.Stop[0].hooks[0].timeout == 600' "$BLUEPRINT_ROOT/configs/claude/settings.json"
   jq -re '.hooks.Stop[0].hooks[0].command' "$BLUEPRINT_ROOT/configs/claude/settings.json" \
     | grep -qF '{{HOME}}/.claude/hooks/llmwiki-distill.sh'
   if grep -q 'llmwiki-nudge' "$BLUEPRINT_ROOT/configs/claude/settings.json"; then false; fi
