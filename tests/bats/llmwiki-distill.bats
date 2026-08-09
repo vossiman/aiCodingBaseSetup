@@ -151,3 +151,18 @@ launched() { [ -f "$HOME/claude-args" ]; }
   # Verify no throttle files created (only offsets/ and slices/ dirs)
   [ "$(find "$STATE_DIR" -maxdepth 1 -type f 2>/dev/null | wc -l)" -eq 0 ]
 }
+
+@test "llmwiki-distiller agent: frontmatter name/model match the hook contract" {
+  AGENT_DEF="$BLUEPRINT_ROOT/configs/claude/agents/llmwiki-distiller.md"
+  [ -f "$AGENT_DEF" ]
+  head -1 "$AGENT_DEF" | grep -qx -- '---'
+  grep -qx 'name: llmwiki-distiller' "$AGENT_DEF"
+  grep -qx 'model: sonnet' "$AGENT_DEF"
+}
+
+@test "llmwiki-distiller agent: encodes write-policy guardrails" {
+  AGENT_DEF="$BLUEPRINT_ROOT/configs/claude/agents/llmwiki-distiller.md"
+  grep -q 'homelab-wiki' "$AGENT_DEF"
+  grep -q 'docs/notes/' "$AGENT_DEF"
+  grep -qi 'never edit CLAUDE.md' "$AGENT_DEF"
+}
