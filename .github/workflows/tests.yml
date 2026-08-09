@@ -26,6 +26,16 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q parallel jq tmux
 
+      - name: Shim the claude CLI
+        # install.sh's prerequisite check requires `claude` on PATH; dev
+        # boxes always have it, bare runners don't. e2e.bats + four
+        # regressions run the real install.sh without stubbing it (unlike
+        # install.bats, which stubs per-test — aligning them is a follow-up),
+        # so give the runner the same logging no-op those stubs use.
+        run: |
+          printf '#!/bin/sh\necho "claude-ci-shim $*"\nexit 0\n' | sudo tee /usr/local/bin/claude >/dev/null
+          sudo chmod +x /usr/local/bin/claude
+
       - name: Run bats suite
         # run.sh locates bats itself (npx fallback), exports the network
         # guards (AICODINGSETUP_SKIP_NETWORK=1 etc.), and parallelises
