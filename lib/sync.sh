@@ -452,7 +452,7 @@ _update_codex() {
   # CODEX_NON_INTERACTIVE=1: upstream grew y/N prompts that read /dev/tty.
   # Subshell with pipefail so a failed curl doesn't vanish behind sh
   # succeeding on empty stdin.
-  if ! (set -o pipefail; curl -fsSL https://chatgpt.com/codex/install.sh \
+  if ! (set -o pipefail; curl -fsSL --max-time 600 https://chatgpt.com/codex/install.sh \
       | CODEX_NON_INTERACTIVE=1 sh >/dev/null 2>&1); then
     echo "ERROR: codex update failed — still at $installed" >&2
     return 0

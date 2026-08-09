@@ -32,9 +32,11 @@ freshness.
 
 **Update path** (versions differ):
 
-1. Re-run the official installer — `curl -fsSL
+1. Re-run the official installer — `curl -fsSL --max-time 600
    https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh` —
-   the same invocation `ensure_codex` and the image bake use.
+   the same invocation `ensure_codex` and the image bake use. The timeout
+   keeps a stalled transfer from hanging container boot — sync runs in the
+   foreground of `postStartCommand`.
 2. If `~/.codex/bin/codex` is now executable, **force** `ln -sf` into
    `~/.local/bin/codex`. Unlike `ensure_codex`'s probe (which only links
    when `~/.local/bin/codex` is absent), the force is required so the new
