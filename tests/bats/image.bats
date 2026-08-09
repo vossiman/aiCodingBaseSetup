@@ -116,6 +116,20 @@ IMAGE_DIR="$BLUEPRINT_ROOT/image"
   grep -qF -- '--config image/devcontainer.json' "$WORKFLOW"
 }
 
+@test "image workflow: auto-pins the blueprint after publish (non-PR only)" {
+  WORKFLOW="$BLUEPRINT_ROOT/.github/workflows/build-base-image.yml"
+  # Push permission for the pin commit
+  grep -q 'contents: write' "$WORKFLOW"
+  # The pin step: sed rewrite of the digest + the commit message contract
+  grep -qF 'sha256:[0-9a-f]{64}' "$WORKFLOW"
+  grep -qF 'chore(image): pin devbox-base' "$WORKFLOW"
+  # Loud failure is the contract — no silent fallback wording
+  run grep -qiE 'continue-on-error: *true' "$WORKFLOW"
+  [ "$status" -ne 0 ]
+  # Gate appears on login, push, AND pin steps
+  [ "$(grep -c "github.event_name != 'pull_request'" "$WORKFLOW")" -ge 3 ]
+}
+
 @test "image: Dockerfile points npm's global prefix at user space" {
   # NodeSource npm defaults to root-owned /usr/lib; without this,
   # install_mcp_packages' unprivileged npm -g fails on every container.
