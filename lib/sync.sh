@@ -426,11 +426,59 @@ _sync_print_summary() {
   echo
 }
 
+# Codex has no self-update subcommand; a refresh means re-running the
+# official installer. Version-gate against the npm registry (same release
+# channel as the installer) so the ~258MB download only happens on a real
+# version change. Abnormal outcomes print ERROR to stderr but return 0 —
+# sync/boot must never break on a stale codex.
+# Spec: docs/superpowers/specs/2026-08-09-codex-self-update-design.md
+_update_codex() {
+  command -v codex >/dev/null 2>&1 || return 0
+  [ "${AICODINGSETUP_SKIP_NETWORK:-}" = 1 ] && return 0
+  if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+    echo "ERROR: codex update check failed (curl/jq missing) — codex may be stale" >&2
+    return 0
+  fi
+  local installed latest
+  installed=$(codex --version 2>/dev/null | awk '{print $NF}') || true
+  latest=$(curl -fsSL --max-time 10 \
+    https://registry.npmjs.org/@openai/codex/latest 2>/dev/null \
+    | jq -r '.version // empty' 2>/dev/null) || true
+  if [ -z "$installed" ] || [ -z "$latest" ]; then
+    echo "ERROR: codex update check failed (installed='${installed:-?}' latest='${latest:-?}') — codex may be stale" >&2
+    return 0
+  fi
+  [ "$installed" = "$latest" ] && return 0
+  # CODEX_NON_INTERACTIVE=1: upstream grew y/N prompts that read /dev/tty.
+  # Subshell with pipefail so a failed curl doesn't vanish behind sh
+  # succeeding on empty stdin.
+  if ! (set -o pipefail; curl -fsSL --max-time 600 https://chatgpt.com/codex/install.sh \
+      | CODEX_NON_INTERACTIVE=1 sh >/dev/null 2>&1); then
+    echo "ERROR: codex update failed — still at $installed" >&2
+    return 0
+  fi
+  # Force-link over the baked seed. ensure_codex's probe links only when
+  # ~/.local/bin/codex is absent, which would leave the stale image seed
+  # shadowing the update. ~/.codex is the shared host mount, so the new
+  # binary reaches every container and survives recreates.
+  if [ -x "$HOME/.codex/bin/codex" ]; then
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$HOME/.codex/bin/codex" "$HOME/.local/bin/codex"
+  fi
+  local now
+  now=$(codex --version 2>/dev/null | awk '{print $NF}') || true
+  if [ "$now" != "$latest" ]; then
+    echo "ERROR: codex updated but version is still ${now:-unknown} (expected $latest)" >&2
+  fi
+  return 0
+}
+
 _sync_binaries() {            # throttled network refresh
   command -v claude   >/dev/null 2>&1 && { claude update    || true; }
   command -v opencode >/dev/null 2>&1 && { opencode upgrade || true; }
   if command -v agent >/dev/null 2>&1; then agent update || true
   elif command -v cursor-agent >/dev/null 2>&1; then cursor-agent update || true; fi
+  _update_codex || true
 }
 
 # Reconcile machine state that isn't a managed file: MCP registrations,
