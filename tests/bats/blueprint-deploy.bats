@@ -632,3 +632,8 @@ EOF
   esac
   [ "$output" = "$HOME/.local/state/aicoding/manifest.json" ]
 }
+
+@test "claude settings fragment: cross-session messaging policy keys" {
+  jq -e '.crossSessionInbound == "accept"' "$BLUEPRINT_ROOT/configs/claude/settings.json"
+  jq -e '.isolatePeerMachines == true' "$BLUEPRINT_ROOT/configs/claude/settings.json"
+}
