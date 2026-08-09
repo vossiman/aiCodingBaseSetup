@@ -119,3 +119,15 @@ teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
   grep -q '@catppuccin_window_default_text "#{?#{@waiting},⏸ ,}#W"' "$conf"
   grep -q '@catppuccin_window_current_text "#{?#{@waiting},⏸ ,}#W"' "$conf"
 }
+
+@test "tmux.conf clears @waiting on reattach and does not bell-notify the current window" {
+  local conf="$BLUEPRINT_ROOT/configs/tmux/tmux.conf"
+  # Bell must not alert for the focused window (bell-action any would notify
+  # the window you're already looking at) — same policy as activity/silence.
+  grep -q '^set -g bell-action other' "$conf"
+  # A window whose flag survived because it was already current when the
+  # client detached must have it cleared on reattach too (after-select-window
+  # only fires on an actual window *change*, which attach-to-same-window is
+  # not — verified on an isolated tmux rig, see the comment above the hook).
+  grep -q 'client-attached.*-u.*@waiting' "$conf"
+}
