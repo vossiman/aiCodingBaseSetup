@@ -85,7 +85,8 @@ sudo, locale hooks) without the toolchain zoo. Target final size: **2–3GB**.
 
 **Build & release pipeline:**
 - Dockerfile lives in this repo (`image/`), built by a GitHub Actions workflow:
-  weekly cron + manual dispatch + on-change to `image/`.
+  on-change to `image/` + manual dispatch. (Originally also a weekly cron;
+  dropped 2026-08-09 — see Resolved questions.)
 - Push to `ghcr.io/vossiman/devbox-base` with a date tag (`2026-08-06`) and
   `latest`; amd64 only (the devbox and all workspaces are amd64).
 - The blueprint `devcontainer.json` pins **by digest**
@@ -117,8 +118,12 @@ universal-based workspace is gone, then delete in one sweep.
 
 - **Go**: not baked; `ensure_go` stays provision-time (~30s curl+tar).
   Revisit only if a workspace's inner loop compiles Go.
-- **Seed-CLI staleness / cadence**: weekly (Mon 05:17 UTC) + on-change +
-  manual dispatch; seeds ≤7 days stale.
+- **Seed-CLI staleness / cadence**: on-change + manual dispatch. Revised
+  2026-08-09: the weekly cron (Mon 05:17 UTC) was dropped — fresh containers
+  self-update the seeded CLIs at boot anyway (`_sync_binaries`), so scheduled
+  rebuilds burned Actions minutes and created update cycles without benefit.
+  If a seed ever needs a fresh bake (e.g. codex, which has no self-updater),
+  trigger `workflow_dispatch` manually.
 - **Image repo**: this repo, `image/` + `.github/workflows/build-base-image.yml`.
 
 ## Acceptance criteria
