@@ -127,7 +127,7 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   # Unset the TESTONLY override so the real in-container registry is used.
   unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE AICODING_UPDATE_TESTONLY_INSTALLED_FILE
   run "$BIN" --print
-  ! echo "$output" | grep -qi dvw
+  if echo "$output" | grep -qi dvw; then false; fi
 }
 
 # --- container-local state (see: shared-manifest defect) ------------------
@@ -438,4 +438,60 @@ _mk_clone() {  # fixture: commit A (stamp point), then commit B touching $1
   FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
   FAKE_LATEST=3333333333333333333333333333333333333333 AICODING_UPDATE_ATTACH_MIN=3600 "$BIN" --refresh-attach
   [ "$(cache | jq -r .latest | cut -c1-7)" = "1111111" ]
+}
+
+@test "image staleness: newer published date tag than built date -> ⬆rebuild" {
+  export AICODING_MANIFEST="$TMP/manifest.json"; jq -n '{}' > "$AICODING_MANIFEST"
+  _mk_clone docs/notes.md   # source check negative: no image/ commits after A
+  export AICODING_IMAGE_RELEASE_FILE="$TMP/release.json"
+  jq -n --arg s "$A_SHA" '{sha:$s, built:"2026-08-01T04:00:00Z"}' > "$AICODING_IMAGE_RELEASE_FILE"
+  mkdir -p "$AICODING_UPDATE_STATE"
+  jq -n '{latest_tag:"2026-08-08", checked_at:"2026-08-08T06:00:00Z"}' > "$AICODING_UPDATE_STATE/image.json"
+  run "$BIN" --tmux
+  [[ "$output" == *"⬆rebuild"* ]]
+}
+
+_stub_curl() {  # token + tags/list endpoints; logs each call
+  cat > "$TMP/stubs/curl" <<'STUB'
+#!/bin/sh
+echo "$@" >> "${CURL_CALLS:?}"
+for a in "$@"; do case "$a" in
+  https://ghcr.io/token*) echo '{"token":"fake-anon-token"}'; exit 0 ;;
+  https://ghcr.io/v2/*/tags/list) echo '{"tags":["2026-08-07","latest","2026-08-08","2026-07-30"]}'; exit 0 ;;
+esac; done
+exit 1
+STUB
+  chmod +x "$TMP/stubs/curl"; export CURL_CALLS="$TMP/curl-calls"
+}
+
+@test "refresh: caches the newest published date tag via anonymous ghcr calls" {
+  _stub_curl
+  echo 1111111111111111111111111111111111111111 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  AICODINGSETUP_SKIP_NETWORK= FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
+  [ "$(jq -r .latest_tag "$AICODING_UPDATE_STATE/image.json")" = "2026-08-08" ]
+}
+
+@test "refresh: ghcr calls are gated behind AICODINGSETUP_SKIP_NETWORK" {
+  _stub_curl
+  echo 1111111111111111111111111111111111111111 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  AICODINGSETUP_SKIP_NETWORK=1 FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
+  [ ! -f "$AICODING_UPDATE_STATE/image.json" ]
+  run grep -c "ghcr.io" "$CURL_CALLS"
+  [ "$status" -ne 0 ]
+}
+
+@test "image staleness: published tag equal to built date -> no badge (fail-open)" {
+  export AICODING_MANIFEST="$TMP/manifest.json"; jq -n '{}' > "$AICODING_MANIFEST"
+  _mk_clone docs/notes.md
+  export AICODING_IMAGE_RELEASE_FILE="$TMP/release.json"
+  jq -n --arg s "$A_SHA" '{sha:$s, built:"2026-08-08T04:00:00Z"}' > "$AICODING_IMAGE_RELEASE_FILE"
+  mkdir -p "$AICODING_UPDATE_STATE"
+  jq -n '{latest_tag:"2026-08-08", checked_at:"2026-08-08T06:00:00Z"}' > "$AICODING_UPDATE_STATE/image.json"
+  run "$BIN" --tmux
+  [[ "$output" != *"⬆rebuild"* ]]
+  # ...and a cached tag alone, with no release file, stays silent too
+  rm -f "$AICODING_IMAGE_RELEASE_FILE"
+  run "$BIN" --tmux
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"⬆rebuild"* ]]
 }

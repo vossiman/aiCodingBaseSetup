@@ -17,7 +17,7 @@ setup() {
   # Stub apt/curl/etc.
   export PATH="$TMPDIR/stubs:$PATH"
   mkdir -p "$TMPDIR/stubs"
-  for cmd in apt-get sudo curl npm; do
+  for cmd in apt-get sudo curl npm npx bash-build-tmux claude opencode codex cursor-agent; do
     cat > "$TMPDIR/stubs/$cmd" <<'STUB'
 #!/bin/sh
 exit 0
@@ -93,7 +93,7 @@ teardown() {
 
   # install.sh's deploy substituted {{HOME}} -> $HOME — settings.json on
   # disk has no literal placeholders.
-  ! grep -q "{{HOME}}" "$HOME/.claude/settings.json"
+  if grep -q "{{HOME}}" "$HOME/.claude/settings.json"; then false; fi
   # And the resulting hooks-command path contains the expanded $HOME.
   jq -e --arg h "$HOME" '
     .hooks.PreToolUse[0].hooks[0].command | contains($h)
@@ -113,7 +113,7 @@ teardown() {
   [ "$status" -eq 0 ]
 
   # settings.json must still have substituted values — NO literal {{HOME}}.
-  ! grep -q "{{HOME}}" "$HOME/.claude/settings.json"
+  if grep -q "{{HOME}}" "$HOME/.claude/settings.json"; then false; fi
   jq -e --arg h "$HOME" '
     .hooks.PreToolUse[0].hooks[0].command | contains($h)
   ' "$HOME/.claude/settings.json"
@@ -125,7 +125,7 @@ teardown() {
   # if any are present in the blueprint.
   if [ -d "$HOME/.claude/skills" ]; then
     if ls "$HOME/.claude/skills"/*/SKILL.md 1>/dev/null 2>&1; then
-      ! grep -q "{{HOME}}" "$HOME/.claude/skills"/*/SKILL.md
+      if grep -q "{{HOME}}" "$HOME/.claude/skills"/*/SKILL.md; then false; fi
     fi
   fi
 }
@@ -179,12 +179,10 @@ teardown() {
   [ -f "$HOME/.bashrc.d/aicoding-env.sh" ]
 
   # No "diff: ... No such file" error in output.
-  ! echo "$output" | grep -q "diff:.*No such file"
-
+  if echo "$output" | grep -q "diff:.*No such file"; then false; fi
   # Output mentions "restored:" not "updated (with backup): <env.sh>".
   echo "$output" | grep -q "restored:"
-  ! echo "$output" | grep -q "updated (with backup): $HOME/.bashrc.d/aicoding-env.sh"
-
+  if echo "$output" | grep -q "updated (with backup): $HOME/.bashrc.d/aicoding-env.sh"; then false; fi
   # Summary section labeled "restore" not "needs your decision".
   echo "$output" | grep -q "restore"
 }
@@ -199,4 +197,13 @@ EOF
   [ "$status" -ne 0 ]
   # The error must mention schema_version so the user knows what to fix.
   echo "$output" | grep -q "schema_version"
+}
+
+# `! cmd` at command level is exempt from errexit, so a bare-negation
+# assertion can NEVER fail its test (aiCodingBaseSetup#55 review). Convert to
+# `if cmd; then false; fi` (or run+status). This guard keeps them out.
+@test "no bare-negation assertions anywhere in the bats suite" {
+  run grep -rnE '^[[:space:]]*! ' "$BLUEPRINT_ROOT"/tests/bats/*.bats
+  echo "$output"
+  [ "$status" -ne 0 ]
 }

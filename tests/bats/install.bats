@@ -124,7 +124,7 @@ blueprint_copy() {
   run bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
   [ "$status" -eq 0 ]
   # File must be overwritten from blueprint.
-  ! grep -q "user-edit-that-should-be-clobbered" "$HOME/.tmux.conf"
+  if grep -q "user-edit-that-should-be-clobbered" "$HOME/.tmux.conf"; then false; fi
   # Manifest must record blueprint-hash, not user's hash.
   local blueprint_hash deployed_hash
   blueprint_hash=$(sha256sum "$BLUEPRINT_ROOT/configs/tmux/tmux.conf" | awk '{print $1}')
@@ -261,7 +261,7 @@ EOF
   printf '\n# blueprint moved\n' >> "$BP/configs/bash/env.sh"
   run bash "$BP/install.sh" </dev/null
   [ "$status" -eq 0 ]
-  ! grep -q "STALE old version" "$HOME/.bashrc.d/aicoding-env.sh"
+  if grep -q "STALE old version" "$HOME/.bashrc.d/aicoding-env.sh"; then false; fi
   grep -q "blueprint moved" "$HOME/.bashrc.d/aicoding-env.sh"
   ls "$HOME"/.bashrc.d/aicoding-env.sh.bak.* >/dev/null 2>&1
 }
@@ -454,7 +454,7 @@ EOF
 
   _run_install_fn "$(_isolated_path)" install_claude_plugins
   [ "$status" -eq 0 ]
-  ! grep -q "plugin install logfire@claude-plugins-official" "$TMPDIR/claude-calls"
+  if grep -q "plugin install logfire@claude-plugins-official" "$TMPDIR/claude-calls"; then false; fi
   grep -q "plugin uninstall logfire@claude-plugins-official" "$TMPDIR/claude-calls"
 }
 
@@ -494,7 +494,7 @@ STUB
   _run_install_fn "$(_isolated_path)" ensure_cursor_agent
   echo "$output" | grep -qE "cursor-agent already installed"
   # The install attempt must be short-circuited before it starts.
-  ! echo "$output" | grep -qE "Installing Cursor CLI"
+  if echo "$output" | grep -qE "Installing Cursor CLI"; then false; fi
 }
 
 @test "install.sh non-interactive: never rewrites an existing .secrets.env (no host-secret clobber)" {
@@ -539,7 +539,7 @@ EOF
   [ -f "$HOME/.codex/config.toml" ]
   # Secret substituted (no {{...}} placeholder survives).
   grep -qF 'FIRECRAWL_API_KEY = "fake-firecrawl-123"' "$HOME/.codex/config.toml"
-  ! grep -qF '{{FIRECRAWL_API_KEY}}' "$HOME/.codex/config.toml"
+  if grep -qF '{{FIRECRAWL_API_KEY}}' "$HOME/.codex/config.toml"; then false; fi
   # Manifest records overwrite mode + deployed_hash.
   local mode
   mode=$(jq -r '.files["'"$HOME"'/.codex/config.toml"].mode' "$AICODING_MANIFEST")
@@ -847,7 +847,7 @@ LDD
   [ "$status" -eq 0 ]
   # Browser download is skipped (cache populated) but install-deps still runs.
   grep -q "install-deps chromium" "$TMPDIR/npx-calls"
-  ! grep -qE "^-y playwright install chromium$" "$TMPDIR/npx-calls"
+  if grep -qE "^-y playwright install chromium$" "$TMPDIR/npx-calls"; then false; fi
 }
 
 @test "ensure_playwright_browsers: warns with the manual command when install-deps does not fix the libs" {

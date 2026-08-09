@@ -403,7 +403,7 @@ EOF
   manifest_stage_commit
   grep -q "^prelude$" "$TMPDIR/dest"
   grep -q "^new block content$" "$TMPDIR/dest"
-  ! grep -q "old block content" "$TMPDIR/dest"
+  if grep -q "old block content" "$TMPDIR/dest"; then false; fi
   grep -q "^trailer$" "$TMPDIR/dest"
 }
 
