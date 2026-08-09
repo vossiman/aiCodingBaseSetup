@@ -17,6 +17,11 @@ merging; delete merged branches.
 
 ## Tests
 
+- **Run the suite before EVERY push — no change is "docs-only".** Guard
+  tests assert workflow triggers, doc contracts, and cross-file pins, so
+  edits to `.github/`, comments, or docs can go red in CI (paid for
+  2026-08-09, #57: removing the build cron without updating the guard test
+  in `image.bats` that asserted it).
 - ALWAYS run the suite via `bash tests/bats/run.sh`, never bare `bats`. run.sh
   locates bats itself (npx fallback), runs parallel (~70s wall), and exports
   the guard env (`AICODINGSETUP_SKIP_NETWORK=1`, fail-fast git-SSH, LFS stub).
