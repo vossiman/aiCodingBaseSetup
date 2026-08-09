@@ -165,7 +165,7 @@ teardown() { rm -rf "$TMP"; }
   printf '#!/bin/sh\necho "gh $*" >> "$TMP/ran.log"\n' > "$TMP/stubs/gh"; chmod +x "$TMP/stubs/gh"
   git config --global credential.https://github.com.helper '!/usr/bin/gh auth git-credential'
   _sync_plumbing
-  ! grep -q "gh auth setup-git" "$TMP/ran.log" 2>/dev/null
+  if grep -q "gh auth setup-git" "$TMP/ran.log" 2>/dev/null; then false; fi
 }
 
 @test "plumbing sources the secrets file so gh sees GH_TOKEN in non-interactive boot" {

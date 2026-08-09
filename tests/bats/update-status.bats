@@ -127,7 +127,7 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   # Unset the TESTONLY override so the real in-container registry is used.
   unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE AICODING_UPDATE_TESTONLY_INSTALLED_FILE
   run "$BIN" --print
-  ! echo "$output" | grep -qi dvw
+  if echo "$output" | grep -qi dvw; then false; fi
 }
 
 # --- container-local state (see: shared-manifest defect) ------------------
