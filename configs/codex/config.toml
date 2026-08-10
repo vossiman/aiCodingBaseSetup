@@ -6,6 +6,11 @@
 
 model = "gpt-5.5"
 
+# Push a phone notification when a turn completes (agent-waiting feature).
+# codex invokes argv + one JSON arg; only agent-turn-complete fires today —
+# approval prompts do not (openai/codex#11808), that tier is tmux's job.
+notify = ["{{HOME}}/.local/bin/agent-notify", "--source", "codex", "--title", "✔ codex turn done"]
+
 # Setting BOTH of these explicitly suppresses codex's per-project trust screen,
 # so codex stops writing [projects."<path>"].trust_level into this file. That
 # write is what made config.toml drift and get clobbered (with a .bak) on every

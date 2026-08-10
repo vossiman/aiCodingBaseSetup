@@ -58,6 +58,17 @@ install_update_status_symlink() {
   ok "aicoding-status installed at $dest -> $src"
 }
 
+# --- agent-notify CLI symlink ---
+# Flags a waiting tmux window and pushes an ntfy notification. Called by
+# Claude Code's Notification hook, codex's notify hook, and tmux alert hooks.
+install_agent_notify_symlink() {
+  header "agent-notify CLI"
+  local src="$SCRIPT_DIR/bin/agent-notify" dest="$HOME/.local/bin/agent-notify"
+  [[ -f "$src" ]] || { warn "bin/agent-notify not found — skipping"; return; }
+  mkdir -p "$HOME/.local/bin"; chmod +x "$src"; ln -sf "$src" "$dest"
+  ok "agent-notify installed at $dest -> $src"
+}
+
 # --- SSH agent socket self-heal watcher (container only) ---
 # Deploys the watcher onto PATH. We only DEPLOY here (a pure symlink); the
   # daemon is *started* by on-start.sh on each container start — that keeps full

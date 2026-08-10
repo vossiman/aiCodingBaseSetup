@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# agent-notify — flag the current tmux window as waiting-for-input and push
+# one ntfy notification per waiting-episode. Called by Claude Code's
+# Notification hook, codex's notify hook, and tmux alert hooks. Contract:
+# NEVER exits non-zero, never blocks the caller on failure paths; errors go
+# to ~/.cache/aicoding/agent-notify.log. Spec: devMachine
+# docs/superpowers/specs/2026-08-09-agent-waiting-phone-notify-design.md
+set -u
+
+LOG_DIR="$HOME/.cache/aicoding"
+LOG="$LOG_DIR/agent-notify.log"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+log() { printf '%s %s\n' "$(date -Is)" "$*" >> "$LOG" 2>/dev/null || true; }
+
+# Hooks run non-interactively — read the mounted secrets file directly.
+if [ -f "$HOME/.aicodingsetup/.secrets.env" ]; then
+  set -a; . "$HOME/.aicodingsetup/.secrets.env" 2>/dev/null; set +a
+fi
+[ "${AGENT_NOTIFY_DISABLE:-}" = "1" ] && exit 0
+
+source_kind="unknown" window="" priority="default" title="" body="" json=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --source)   source_kind="${2:-unknown}"; shift 2 ;;
+    --window)   window="${2:-}"; shift 2 ;;
+    --priority) priority="${2:-default}"; shift 2 ;;
+    --title)    title="${2:-}"; shift 2 ;;
+    --body)     body="${2:-}"; shift 2 ;;
+    *)          json="$1"; shift ;;   # codex passes one JSON positional
+  esac
+done
+
+# codex notify JSON: mine a body if none given (defensive — shape may drift).
+if [ -z "$body" ] && [ -n "$json" ] && command -v jq >/dev/null 2>&1; then
+  body="$(printf '%s' "$json" | jq -r '."last-assistant-message" // empty' 2>/dev/null | head -c 200)"
+fi
+
+in_tmux=0
+if [ -n "${TMUX:-}" ] || [ -n "$window" ]; then
+  if command -v tmux >/dev/null 2>&1; then in_tmux=1; fi
+fi
+
+win_name="" host="${HOSTNAME:-$(hostname 2>/dev/null || echo '?')}"
+if [ "$in_tmux" = 1 ]; then
+  if [ -z "$window" ] && [ -n "${TMUX_PANE:-}" ]; then
+    window="$(tmux display -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null)"
+  fi
+  if ! [[ "$window" =~ ^@[0-9]+$ ]]; then
+    log "bad or missing window id '$window' (source=$source_kind)"
+    window=""
+  fi
+  if [ -n "$window" ]; then
+    # Episode dedupe: an already-flagged window pushed already. Skip.
+    existing="$(tmux show-options -w -v -t "$window" @waiting 2>/dev/null || true)"
+    if [ -n "$existing" ]; then exit 0; fi
+    tmux set-option -w -t "$window" @waiting "$(date +%s)" 2>/dev/null || true
+    win_name="$(tmux display -p -t "$window" '#{window_name}' 2>/dev/null || true)"
+  fi
+fi
+
+[ "${AICODINGSETUP_SKIP_NETWORK:-}" = "" ] || exit 0
+if [ -z "${NTFY_TOPIC:-}" ]; then log "NTFY_TOPIC unset — no push (source=$source_kind)"; exit 0; fi
+
+url="${NTFY_URL:-https://ntfy.sh}"
+[ -n "$title" ] || title="⏸ $source_kind waiting"
+[ -n "$body" ]  || body="$host — window ${win_name:-?} ${window:+($window)}"
+auth=()
+[ -n "${NTFY_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $NTFY_TOKEN")
+if ! curl -fsS --max-time 10 "${auth[@]}" \
+    -H "X-Title: $title" -H "X-Priority: $priority" -H "X-Tags: robot" \
+    -d "$body" "$url/$NTFY_TOPIC" >/dev/null 2>&1; then
+  log "push failed (source=$source_kind window=$window url=$url)"
+fi
+exit 0
