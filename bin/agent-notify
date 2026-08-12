@@ -50,6 +50,20 @@ if [ "$in_tmux" = 1 ]; then
     window=""
   fi
   if [ -n "$window" ]; then
+    # Focused-window gate: the active window of an attached session is the
+    # one the user is already looking at — same policy as tmux.conf's
+    # bell/activity/silence "other" actions, which agent CLI hooks (claude
+    # Notification, codex notify) otherwise bypass. Flagging it would stick
+    # (no clear hook fires without a window *change*, so a single-window
+    # session shows "⏸ waiting" forever and dedupe suppresses every later
+    # push); pinging it is noise. Clear any stale flag while here: agent
+    # activity in a watched window proves the user is present.
+    focus="$(tmux display -p -t "$window" '#{window_active} #{session_attached}' 2>/dev/null || true)"
+    case "$focus" in
+      "1 "[1-9]*)
+        tmux set-option -w -u -t "$window" @waiting 2>/dev/null || true
+        exit 0 ;;
+    esac
     # Episode dedupe: an already-flagged window pushed already. Skip.
     existing="$(tmux show-options -w -v -t "$window" @waiting 2>/dev/null || true)"
     if [ -n "$existing" ]; then exit 0; fi

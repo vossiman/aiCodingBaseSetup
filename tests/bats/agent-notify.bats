@@ -13,13 +13,16 @@ setup() {
   printf 'NTFY_TOPIC=test-topic-xyz\n' > "$HOME/.aicodingsetup/.secrets.env"
 
   # tmux stub: display -p prints a canned window id / flag value; set-option
-  # and show-options record argv. TMUX_STUB_WAITING simulates an existing flag.
+  # and show-options record argv. TMUX_STUB_WAITING simulates an existing
+  # flag; TMUX_STUB_FOCUS simulates '#{window_active} #{session_attached}'
+  # (defaults to an unfocused, detached window).
   cat > "$HOME/stubs/tmux" <<'STUB'
 #!/bin/sh
 echo "$@" >> "$HOME/tmux-calls"
 case "$1" in
   display*|display-message)
     case "$*" in
+      *window_active*) echo "${TMUX_STUB_FOCUS:-0 0}" ;;
       *window_id*) echo "@7" ;;
       *host*|*#H*) echo "testbox" ;;
       *window_name*) echo "mywin" ;;
@@ -54,6 +57,34 @@ teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
   unset TMUX_STUB_WAITING
   [ "$status" -eq 0 ]
   [ ! -f "$HOME/curl-calls" ]
+}
+
+@test "focused window of an attached session: no flag, no push" {
+  export TMUX_STUB_FOCUS="1 2"
+  run "$CLI" --source claude
+  unset TMUX_STUB_FOCUS
+  [ "$status" -eq 0 ]
+  if grep -q 'set-option -w -t @7 @waiting' "$HOME/tmux-calls"; then false; fi
+  [ ! -f "$HOME/curl-calls" ]
+}
+
+@test "focused+attached window clears a stale flag (re-arms the episode)" {
+  export TMUX_STUB_FOCUS="1 1"
+  export TMUX_STUB_WAITING="1754700000"
+  run "$CLI" --source claude
+  unset TMUX_STUB_FOCUS TMUX_STUB_WAITING
+  [ "$status" -eq 0 ]
+  grep -q 'set-option -w -u -t @7 @waiting' "$HOME/tmux-calls"
+  [ ! -f "$HOME/curl-calls" ]
+}
+
+@test "active window of a detached session still flags and pushes" {
+  export TMUX_STUB_FOCUS="1 0"
+  run "$CLI" --source claude
+  unset TMUX_STUB_FOCUS
+  [ "$status" -eq 0 ]
+  grep -q 'set-option -w -t @7 @waiting' "$HOME/tmux-calls"
+  grep -q 'test-topic-xyz' "$HOME/curl-calls"
 }
 
 @test "explicit --window skips TMUX_PANE lookup and validates id format" {
