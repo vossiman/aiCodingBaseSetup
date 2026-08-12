@@ -170,7 +170,7 @@ Re-running the installer on an initialized container (manifest exists) re-runs t
 
 ### Bare-host install (no devcontainer)
 
-For a laptop or server that isn't a devpod container, `install-host.sh` deploys a thin, core-only profile: the `claude` CLI, the managed Claude layer (CLAUDE.md, hooks, commands, MCPs/plugins), the homelab-wiki clone, and boot-time auto-sync — plus the sandbox prereq (`bwrap`) and `bw-AICode` tooling. It skips everything container-only: codex/opencode/cursor, Playwright, Go, tmux. Day-2 commands are identical to the container flow — `aicoding-sync` and `aicoding-install` both read the manifest's `.profile` and stay on the host installer.
+For a laptop or server that isn't a devpod container, `install-host.sh` deploys a thin, core-only profile: the `claude` CLI, the managed Claude layer (CLAUDE.md, hooks, MCPs/plugins), the homelab-wiki clone, and terminal-open auto-sync (6h-throttled) — plus the sandbox prereq (`bwrap`) and `bw-AICode` tooling. It skips everything container-only: codex/opencode/cursor, Playwright, Go, tmux. Day-2 commands are identical to the container flow — `aicoding-sync` and `aicoding-install` both read the manifest's `.profile` and stay on the host installer.
 
 ```bash
 gh auth login          # or place GH_TOKEN in ~/.aicodingsetup/.secrets.env

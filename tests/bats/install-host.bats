@@ -119,6 +119,47 @@ _source_host_lib() {
   [[ "$output" == *"reconcile"* ]]
 }
 
+@test "install-host.sh: main flow survives a failed homelab-wiki clone (errexit-safe)" {
+  # Regression test for C1: a plain `git clone ... | tail -1` +
+  # `PIPESTATUS[0]` check is NOT errexit-safe — under install-host.sh's
+  # `set -euo pipefail` + ERR trap, git's non-zero exit on the left of the
+  # pipe aborts the whole installer before the PIPESTATUS check ever runs.
+  # This must run the real `main` flow (not `_source_host_lib`, which
+  # sources into a subshell and doesn't reproduce the abort) so the failure
+  # is exercised exactly the way production hits it.
+  #
+  # tests/bats/run.sh exports AICODINGSETUP_SKIP_NETWORK=1 suite-wide, which
+  # makes ensure_homelab_wiki a no-op — unset it so that step actually runs.
+  # Every other network-touching step in main() is already offline-safe
+  # without SKIP_NETWORK: ensure_claude_code/install_mcp_packages/
+  # install_claude_mcps/install_claude_plugins all gate on `command -v
+  # claude`/`command -v npm`, satisfied here by this file's no-op stubs;
+  # install_bubblewrap has its own SKIP_NETWORK guard and is unaffected by
+  # this unset since we only need it to not abort, which the git stub below
+  # ensures (it succeeds for every git invocation except the homelab-wiki
+  # clone).
+  unset AICODINGSETUP_SKIP_NETWORK
+  cat > "$TMPDIR/stubs/git" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "clone" ]]; then
+  for a in "$@"; do
+    if [[ "$a" == *homelab-wiki* ]]; then
+      echo "fatal: unable to access homelab-wiki (fake failure)" >&2
+      exit 128
+    fi
+  done
+fi
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/git"
+
+  run bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WARN"*"homelab-wiki clone failed"* ]]
+  run jq -r '.profile' "$AICODING_MANIFEST"
+  [ "$output" = "host" ]
+}
+
 @test "aicoding-install: dispatches to install-host.sh when profile=host" {
   mkdir -p "$HOME/.local/state/aicoding"
   echo '{"profile":"host"}' > "$HOME/.local/state/aicoding/manifest.json"

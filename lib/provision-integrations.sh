@@ -235,12 +235,17 @@ ensure_homelab_wiki() {
     info "Skipping homelab-wiki clone (network provisioning disabled)"
     return 0
   fi
-  # PIPESTATUS[0], not the `if pipeline; then` status, because that status
-  # is tail's (always 0) — git's real exit code would otherwise be masked.
-  git clone https://github.com/vossiman/homelab-wiki "$HOME/homelab-wiki" 2>&1 | tail -1
-  if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+  # Capture into a var and branch on `if out=$(...)`, not a piped `git clone
+  # | tail -1` with a separate PIPESTATUS check: under install-host.sh's
+  # `set -euo pipefail` + ERR trap, a failing command left of a pipe still
+  # aborts the whole installer before the PIPESTATUS check ever runs. `if
+  # out=$(...)` puts the failing command directly in the `if` condition,
+  # which is the one place errexit is suspended for it.
+  local out
+  if out=$(git clone https://github.com/vossiman/homelab-wiki "$HOME/homelab-wiki" 2>&1); then
     ok "cloned ~/homelab-wiki"
   else
+    printf '%s\n' "$out" | tail -1
     warn "homelab-wiki clone failed — agents will clone on demand"
   fi
   return 0

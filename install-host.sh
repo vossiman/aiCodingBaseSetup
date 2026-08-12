@@ -44,7 +44,6 @@ BASHRC_BLOCK_START="$(managed_marker_block_start)"
 BASHRC_BLOCK_END="$(managed_marker_block_end)"
 
 CLAUDE_DIR="$HOME/.claude"
-OPENCODE_DIR="$HOME/.config/opencode"
 SECRETS_DIR="$HOME/.aicodingsetup"
 SECRETS_FILE="$SECRETS_DIR/.secrets.env"
 
@@ -129,12 +128,15 @@ main() {
       ;;
   esac
 
+  # AFTER the mode case (writing the manifest earlier would make
+  # detect_install_mode see "reconcile" on a fresh machine), and BEFORE the
+  # fail-open extras below (install_bubblewrap, ensure_homelab_wiki) so a
+  # crash in one of those can't leave the machine without a profile stamp.
+  manifest_set_profile host
+
   install_bubblewrap
   ensure_homelab_wiki
 
-  # AFTER the mode case: writing the manifest earlier would make
-  # detect_install_mode see "reconcile" on a fresh machine.
-  manifest_set_profile host
   manifest_stamp_provision "$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
 
   header "Done!"
