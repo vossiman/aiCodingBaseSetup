@@ -32,6 +32,78 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Host day-2 commands must not point into the throwaway tracking clone used by
+# aicoding-install/aicoding-sync. Refresh a complete, durable runtime first,
+# then re-exec this installer from it so every SCRIPT_DIR-derived CLI symlink
+# survives /tmp cleanup and reboot. A tar stream preserves executable modes
+# and includes dirty/untracked local-blueprint work exactly as supplied.
+_install_host_durable_runtime() {
+  local source=$SCRIPT_DIR
+  local durable=${AICODING_HOST_BLUEPRINT_DIR:-$HOME/.local/share/aicoding/blueprint}
+  local source_real durable_real parent base stage backup exclude=()
+  source_real=$(realpath -m "$source") || return 1
+  durable_real=$(realpath -m "$durable") || return 1
+  [ "$source_real" != "$durable_real" ] || return 0
+
+  parent=$(dirname "$durable_real"); base=$(basename "$durable_real")
+  mkdir -p "$parent" || return 1
+  stage=$(mktemp -d "$parent/.${base}.stage.XXXXXX") || return 1
+  backup=$(mktemp -d "$parent/.${base}.old.XXXXXX") || { rm -rf -- "$stage"; return 1; }
+  rmdir -- "$backup" || { rm -rf -- "$stage"; return 1; }
+  case "$stage" in
+    "$parent"/."$base".stage.*) ;;
+    *) rmdir -- "$stage" 2>/dev/null || true; return 1 ;;
+  esac
+  case "$backup" in
+    "$parent"/."$base".old.*) ;;
+    *) rm -rf -- "$stage"; return 1 ;;
+  esac
+
+  # A deliberately broad source checkout can contain the durable destination
+  # (for example source=$HOME). Exclude it from the snapshot to prevent the
+  # old runtime or our staging directory recursively copying into itself.
+  # --anchored + the ./ prefix pin each pattern to the archive root: tar
+  # patterns are unanchored by default, and a bare --exclude=$rel would also
+  # silently drop every DEEPER path ending in the same suffix (a legitimate
+  # project/.runtime/blueprint elsewhere in the tree).
+  local nested rel
+  for nested in "$durable_real" "$stage" "$backup"; do
+    case "$nested/" in
+      "$source_real"/*)
+        rel=${nested#"$source_real"/}
+        exclude+=(--anchored "--exclude=./$rel")
+        ;;
+    esac
+  done
+  if ! tar -C "$source_real" "${exclude[@]}" -cf - . | tar -C "$stage" -xf -; then
+    rm -rf -- "$stage"
+    return 1
+  fi
+  if [ -e "$durable_real" ] || [ -L "$durable_real" ]; then
+    mv -- "$durable_real" "$backup" || { rm -rf -- "$stage"; return 1; }
+  fi
+  if ! mv -- "$stage" "$durable_real"; then
+    { [ -e "$backup" ] || [ -L "$backup" ]; } && mv -- "$backup" "$durable_real"
+    rm -rf -- "$stage"
+    return 1
+  fi
+  if [ -e "$backup" ] || [ -L "$backup" ]; then rm -rf -- "$backup"; fi
+  AICODING_HOST_BLUEPRINT_DIR=$durable_real
+  export AICODING_HOST_BLUEPRINT_DIR
+}
+
+# Sourcing install-host.sh is the library/test contract and stays side-effect
+# free. Executing it always finishes from the durable runtime.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  _install_host_durable_runtime
+  durable_runtime=${AICODING_HOST_BLUEPRINT_DIR:-$HOME/.local/share/aicoding/blueprint}
+  if [[ "$(realpath -m "$SCRIPT_DIR")" != "$(realpath -m "$durable_runtime")" ]]; then
+    exec env AICODING_BLUEPRINT_CLONE="$durable_runtime" \
+      AICODING_HOST_BLUEPRINT_DIR="$durable_runtime" \
+      bash "$durable_runtime/install-host.sh" "$@"
+  fi
+fi
+
 # Shared deployment library — used by both install.sh and aicoding-sync.
 . "$SCRIPT_DIR/lib/blueprint-deploy.sh"
 # Auth plumbing helpers (seed_github_known_host, credential helpers, …).

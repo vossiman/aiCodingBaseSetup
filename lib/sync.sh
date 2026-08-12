@@ -8,6 +8,7 @@
 : "${AICODING_BLUEPRINT_REMOTE:=https://github.com/vossiman/aiCodingBaseSetup}"
 : "${AICODING_BLUEPRINT_LOCAL:=0}"
 : "${AICODING_UPDATE_TTL:=21600}"
+: "${AICODING_MANIFEST:=$HOME/.local/state/aicoding/manifest.json}"
 # Container-local — must match bin/aicoding-status. ~/.aicodingsetup is a host
 # bind mount shared by every container; keeping this cache there let one
 # container's sync silence the update CTA in all the others.
@@ -185,8 +186,18 @@ ensure_claude_runtime_scope() {
 # `sudo -n` failing to provide the gate — a desktop user may have passwordless
 # sudo, and then it simply succeeds.
 _sync_profile() {
-  local p=container
-  command -v manifest_get_profile >/dev/null 2>&1 && p=$(manifest_get_profile)
+  local p=${AICODING_PROFILE:-}
+  if [ -z "$p" ] && command -v manifest_get_profile >/dev/null 2>&1; then
+    p=$(manifest_get_profile)
+  fi
+  # aicoding_sync deliberately runs plumbing before reconcile sources
+  # blueprint-deploy.sh. Read the manifest directly on that production call
+  # path so a host is never briefly treated as a container. Old/pre-profile
+  # manifests still keep the historical container default.
+  if [ -z "$p" ] && command -v jq >/dev/null 2>&1 && [ -f "$AICODING_MANIFEST" ]; then
+    p=$(jq -r '.profile // "container"' "$AICODING_MANIFEST" 2>/dev/null) || p=container
+  fi
+  case "$p" in host|container) ;; *) p=container ;; esac
   printf '%s\n' "$p"
 }
 

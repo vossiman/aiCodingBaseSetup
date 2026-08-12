@@ -166,7 +166,7 @@ aicoding-install --blueprint /path/to/aiCodingBaseSetup  # provision from a loca
 
 Re-running the installer on an initialized container (manifest exists) re-runs the apt/build/locale prereq steps (idempotent) **and** then runs **reconcile mode**, which automatically applies the conservative buckets without any prompts. Use it when provisioning-only pieces broke or changed (tool bootstrap incl. codex, templates, tmux plugins, Playwright browser + system libs) — `aicoding-sync` deliberately doesn't touch those. Running `./install.sh` from a checkout does the same against that checkout's version.
 
-`aicoding-install` is profile-aware: it reads `.profile` from the manifest and re-runs `install-host.sh` on host machines, `install.sh` everywhere else — same muscle memory either way.
+`aicoding-install` is profile-aware: it reads `.profile` from the manifest and re-runs `install-host.sh` on host machines, `install.sh` everywhere else — same muscle memory either way. Containers continue to refresh through the throwaway `/tmp/aicoding` tracking clone. Host installs first copy that exact released or local (including dirty) blueprint into `~/.local/share/aicoding/blueprint` and run from there, so `aicoding-sync`, `aicoding-install`, and `aicoding-status` never depend on `/tmp` surviving a cleanup or reboot. Set `AICODING_HOST_BLUEPRINT_DIR` to choose a different durable host location.
 
 ### Bare-host install (no devcontainer)
 

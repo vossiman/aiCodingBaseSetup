@@ -79,8 +79,19 @@ _now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # the locally-present filenames, and a newly ADDED provisioning lib upstream
 # then matched nothing — a silent, cwd-dependent false negative in exactly the
 # check this feature exists to provide.
-PROVISION_PATHS=(install.sh 'lib/provision*' image/)
+CONTAINER_PROVISION_PATHS=(install.sh 'lib/provision*' image/)
+HOST_PROVISION_PATHS=(install-host.sh 'lib/provision*')
 _clone_dir() { echo "${AICODING_UPDATE_TESTONLY_CLONE:-${AICODING_BLUEPRINT_CLONE:-/tmp/aicoding}}"; }
+
+_status_profile() {
+  local p=${AICODING_PROFILE:-}
+  if [ -z "$p" ]; then
+    _adopt_shared_manifest
+    p=$(jq -r '.profile // "container"' "$AICODING_MANIFEST" 2>/dev/null) || p=container
+  fi
+  case "$p" in host|container) ;; *) p=container ;; esac
+  printf '%s\n' "$p"
+}
 
 # _behind_paths <base-sha> <pathspec...> — true when commits after <base-sha>
 # on origin/main touch any pathspec. Every guard fails open (return 1 = no badge).
@@ -109,8 +120,12 @@ _published_newer() {
 }
 
 _behind_extra() {
-  _behind_paths "$(_provision_stamp)" "${PROVISION_PATHS[@]}" && echo install
-  { _behind_paths "$(_image_sha)" image/ || _published_newer; } && echo rebuild
+  if [ "$(_status_profile)" = host ]; then
+    _behind_paths "$(_provision_stamp)" "${HOST_PROVISION_PATHS[@]}" && echo install
+  else
+    _behind_paths "$(_provision_stamp)" "${CONTAINER_PROVISION_PATHS[@]}" && echo install
+    { _behind_paths "$(_image_sha)" image/ || _published_newer; } && echo rebuild
+  fi
   return 0
 }
 
@@ -150,7 +165,7 @@ _refresh_all() {
   # for this public image, so no credentials are involved; both calls are
   # timeout-bounded and gated per the repo network rule. Only a non-empty
   # result writes, so transient failures keep the prior known tag.
-  if [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ]; then
+  if [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ] && [ "$(_status_profile)" != host ]; then
     local ghcr_repo="${AICODING_IMAGE_GHCR_REPO:-vossiman/devbox-base}" tok newest
     tok=$(timeout "$NET_TIMEOUT" curl -fsSL \
       "https://ghcr.io/token?scope=repository:${ghcr_repo}:pull&service=ghcr.io" 2>/dev/null \
