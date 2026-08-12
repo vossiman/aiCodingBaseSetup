@@ -32,6 +32,14 @@ Decisions made during brainstorming (2026-08-09):
   `CLAUDE.md` or any existing file, and never commits in the project repo.
   Wiki writes remain fully autonomous (homelab-wiki governance allows
   commit+push to its `main`).
+  - *Revised 2026-08-12:* the untracked-handoff design left notes piling up
+    uncommitted across sessions (nine in devMachine alone). The distiller
+    now lands notes on the project's default branch itself — docs-only,
+    committed via a disposable `git worktree` so the live checkout is never
+    touched, no force-push, one retry on race — matching the docs-only
+    direct-to-`main` exemption the user granted devMachine (2026-08-09) and
+    dvw (2026-08-12). The untracked handoff remains as fallback when the
+    project has no remote or the push is refused.
 - **Launch gate: transcript delta** (decided 2026-08-09) — after the
   throttle window passes, only launch if the session transcript grew by
   ≥ a threshold since the last distill of that transcript, and pass only
