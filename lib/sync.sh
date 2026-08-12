@@ -166,6 +166,16 @@ ensure_claude_runtime_scope() {
 # NOTE: membership only reaches NEW login sessions — the shell that ran this
 # still lacks it, so the first boot after adoption needs a session restart.
 ensure_kvm_group_access() {
+  # Container profile only. On the host profile (bare-metal thin clients — the
+  # Mint desktop, jumpi) /dev/kvm may well exist, but joining a system group
+  # there is an unrequested privilege change on somebody's real machine, and
+  # the core profile runs no emulator to need it. Do not lean on `sudo -n`
+  # failing to provide this gate: a desktop user may have passwordless sudo.
+  # Guarded like _sync_binaries — an old blueprint clone may predate
+  # manifest_get_profile.
+  local profile=container
+  command -v manifest_get_profile >/dev/null 2>&1 && profile=$(manifest_get_profile)
+  [ "$profile" != host ] || return 0
   local dev="${AICODING_KVM_DEVICE:-/dev/kvm}"
   [ -c "$dev" ] || return 0
   local gid name

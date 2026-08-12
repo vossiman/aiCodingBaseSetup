@@ -373,3 +373,24 @@ _kvm_stub_sudo() {   # log calls instead of running them
   run ensure_kvm_group_access
   [ "$status" -eq 0 ]
 }
+
+@test "kvm access is skipped on the host profile (bare-metal thin client)" {
+  # /dev/kvm often exists on a real desktop; joining a system group there is an
+  # unrequested privilege change, and the core profile runs no emulator.
+  _kvm_stub_sudo; _kvm_stub_stat 994
+  printf '#!/bin/sh\nexit 2\n' > "$TMP/stubs/getent"; chmod +x "$TMP/stubs/getent"
+  manifest_get_profile() { echo host; }
+  export AICODING_KVM_DEVICE=/dev/null
+  run ensure_kvm_group_access
+  [ "$status" -eq 0 ]
+  if grep -q -e groupadd -e usermod "$TMP/ran.log" 2>/dev/null; then false; fi
+}
+
+@test "kvm access still runs on the container profile" {
+  _kvm_stub_sudo; _kvm_stub_stat 994
+  printf '#!/bin/sh\nexit 2\n' > "$TMP/stubs/getent"; chmod +x "$TMP/stubs/getent"
+  manifest_get_profile() { echo container; }
+  export AICODING_KVM_DEVICE=/dev/null
+  ensure_kvm_group_access
+  grep -q "sudo -n usermod -aG kvm " "$TMP/ran.log"
+}
