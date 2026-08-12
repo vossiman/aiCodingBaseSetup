@@ -289,7 +289,7 @@ setup() {
   export PATH="$TMPDIR/stubs:$PATH"
   mkdir -p "$TMPDIR/stubs" "$TMPDIR/.local/bin"
   # Prereq stubs present by default; individual tests remove them.
-  for t in git curl jq node npm claude; do
+  for t in git curl jq node npm bwrap claude; do
     printf '#!/bin/bash\nexit 0\n' > "$TMPDIR/stubs/$t"; chmod +x "$TMPDIR/stubs/$t"
   done
 }
@@ -370,6 +370,8 @@ check_prerequisites_host() {
   command -v jq   &>/dev/null || missing+=("jq")
   command -v node &>/dev/null || missing+=("nodejs")
   command -v npm  &>/dev/null || missing+=("npm")
+  # Claude Code's Linux Bash-sandbox mode needs bwrap (apt pkg: bubblewrap).
+  command -v bwrap &>/dev/null || missing+=("bubblewrap")
   if [[ ${#missing[@]} -gt 0 ]]; then
     err "Missing required tools: ${missing[*]}"
     err "Install them, then re-run:  sudo apt install ${missing[*]}"
@@ -552,6 +554,7 @@ main() {
       ;;
   esac
 
+  install_bubblewrap
   ensure_homelab_wiki
 
   # AFTER the mode case: writing the manifest earlier would make
@@ -570,7 +573,7 @@ main() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main "$@"; fi
 ```
 
-`chmod +x install-host.sh`. Check `install.sh`'s prelude for where `SECRETS_FILE`/`CLAUDE_DIR` come from (`lib/` or prelude) and keep whatever the prelude defines. Deliberately absent vs `install.sh`: `check_prerequisites` (host variant instead), `install_agent_notify_symlink`, `install_ssh_agent_watch_symlink`, `install_templates`, `install_tmux_plugins`, `install_bubblewrap`, `install_infra_audit`, `check_playwright`, `ensure_lfs_autopull_safe`.
+`chmod +x install-host.sh`. Check `install.sh`'s prelude for where `SECRETS_FILE`/`CLAUDE_DIR` come from (`lib/` or prelude) and keep whatever the prelude defines. Deliberately absent vs `install.sh`: `check_prerequisites` (host variant instead), `install_agent_notify_symlink`, `install_ssh_agent_watch_symlink`, `install_templates`, `install_tmux_plugins`, `install_infra_audit`, `check_playwright`, `ensure_lfs_autopull_safe`. (`install_bubblewrap` IS included — sandbox tooling, decided 2026-08-12; it's SKIP_NETWORK-guarded so the bats main-flow tests stay offline.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 

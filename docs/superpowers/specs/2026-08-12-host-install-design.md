@@ -17,9 +17,11 @@ container-only toolchain.
 
 - **Profile: core only.** claude CLI + managed `~/.claude` layer + MCP
   servers with their npm backends + `aicoding-*` symlinks + homelab-wiki
-  clone + a boot-sync trigger. NOT installed on hosts: codex/opencode/
-  cursor CLIs, Playwright + system libs, Go, uv, tmux plugins, templates,
-  bubblewrap, ssh-agent-watch, LFS autopull.
+  clone + a boot-sync trigger + sandbox tooling (`bwrap` as an apt-hint
+  prereq — Claude Code's Linux Bash sandbox needs it — and the bw-AICode
+  vendor install, which is fail-open and sudo-free; decided 2026-08-12).
+  NOT installed on hosts: codex/opencode/cursor CLIs, Playwright + system
+  libs, Go, uv, tmux plugins, templates, ssh-agent-watch, LFS autopull.
 - **Structure: separate thin entry point, shared library** (user choice —
   "C with shared functions"). `install.sh`'s `main()` is already a thin
   step list over `lib/`; `install-host.sh` is a sibling step list, zero
