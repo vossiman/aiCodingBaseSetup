@@ -555,8 +555,16 @@ _update_codex() {
 _ensure_codex_code_mode_host() {
   local bin="$HOME/.local/bin/codex" host="$HOME/.local/bin/codex-code-mode-host"
   [ -x "$bin" ] || return 0
-  # A symlinked codex resolves its own sibling — upstream's layout, nothing to do.
-  [ -L "$bin" ] && return 0
+  # A symlinked codex resolves its own sibling — upstream's layout. Drop the
+  # flat copy the seed needed: 49MB codex no longer consults (verified
+  # 2026-08-12 on a real container — symlinked codex, no sidecar in
+  # ~/.local/bin, Code Mode silent). Upstream prunes its own equivalent the
+  # same way. Only ever a plain file we placed; a symlink there is someone
+  # else's and stays.
+  if [ -L "$bin" ]; then
+    if [ -f "$host" ] && [ ! -L "$host" ]; then rm -f "$host"; fi
+    return 0
+  fi
   local version src
   version=$("$bin" --version 2>/dev/null | awk '{print $NF}') || true
   [ -n "$version" ] || return 0

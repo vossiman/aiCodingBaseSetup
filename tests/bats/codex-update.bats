@@ -141,6 +141,29 @@ _stage_release() {
   [ ! -e "$TMP/.local/bin/codex-code-mode-host" ]   # sibling resolution handles it
 }
 
+@test "code-mode host: the flat sidecar is dropped once codex becomes a symlink" {
+  # Steady state after an update: the seed's 49MB copy is dead weight that
+  # codex no longer consults (verified on a real container, 2026-08-12).
+  _stage_release 0.147.0
+  printf 'code-mode-host 0.147.0\n' > "$TMP/.local/bin/codex-code-mode-host"
+  ln -sf "$TMP/.codex/packages/standalone/releases/0.147.0-x86_64-unknown-linux-musl/bin/codex" \
+    "$TMP/.local/bin/codex"
+  run _ensure_codex_code_mode_host
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ ! -e "$TMP/.local/bin/codex-code-mode-host" ]
+}
+
+@test "code-mode host: a symlinked sidecar is never removed (not ours)" {
+  _stage_release 0.147.0
+  local relbin="$TMP/.codex/packages/standalone/releases/0.147.0-x86_64-unknown-linux-musl/bin"
+  ln -sf "$relbin/codex" "$TMP/.local/bin/codex"
+  ln -sf "$relbin/codex-code-mode-host" "$TMP/.local/bin/codex-code-mode-host"
+  run _ensure_codex_code_mode_host
+  [ "$status" -eq 0 ]
+  [ -L "$TMP/.local/bin/codex-code-mode-host" ]
+}
+
 @test "code-mode host: no release tree -> silent (next update installs one)" {
   run _ensure_codex_code_mode_host
   [ "$status" -eq 0 ]
