@@ -24,7 +24,16 @@ code, git history, docs, or the wiki itself — check before writing.
 identities) → `~/homelab-wiki`:
 1. If `~/homelab-wiki` is missing: `git clone https://github.com/vossiman/homelab-wiki ~/homelab-wiki`.
 2. Read its `AGENTS.md` and follow it. Always `git pull` first.
-3. Edit the page that owns the topic (don't create parallel pages).
+3. Edit the page that owns the topic (don't create parallel pages) — and
+   **grep that page for the topic before writing**. If an entry already
+   covers it, REWRITE that entry so it reads as one current statement.
+   Never append a second bullet saying "correction/update to the entry
+   above", even when your information contradicts what is already there: a
+   reader who stops at the first entry walks away with the wrong answer, and
+   each round adds another layer. Owning the right *page* is not enough —
+   own the individual *entry*. (Paid for 2026-08-12 by a three-deep
+   `/dev/kvm` chain on `wiki/aicoding.md`, whose first entry asserted the
+   opposite of the two corrections below it.)
 4. Commit and push to `main` autonomously — that repo's governance allows it.
 5. If the push is rejected: `git pull --rebase` and retry ONCE, then give up
    and state the failure in your final message.

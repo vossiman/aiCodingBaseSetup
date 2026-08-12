@@ -12,8 +12,10 @@ Managed by the aiCodingBaseSetup blueprint (`configs/claude/CLAUDE.md`);
   facts — hosts, network, ports, backups, incidents, tool identities — go to
   the homelab-wiki (`~/homelab-wiki`; clone
   `https://github.com/vossiman/homelab-wiki` if missing, then follow its
-  `AGENTS.md`: pull first, edit the owning page, commit+push to its `main`
-  autonomously — that repo's governance allows it). **Project-internal**
+  `AGENTS.md`: pull first, edit the owning page — grep it and **rewrite the
+  entry that already covers the topic**, never append a "correction to the
+  entry above" bullet — then commit+push to its `main` autonomously; that
+  repo's governance allows it). **Project-internal**
   lessons go to the project's CLAUDE.md or `docs/notes/`. Don't record what
   code, git history, or docs already show. For homelab questions, consult
   `~/homelab-wiki` before re-deriving from raw repos.
