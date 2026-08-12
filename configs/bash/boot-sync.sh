@@ -22,11 +22,23 @@ _aicoding_boot_sync() {
   # mkdir is the freshness-check mutex: every contender must acquire it
   # before inspecting or writing the stamp. A shell killed inside this short
   # critical section leaves an empty directory; recover it after 15 minutes
-  # (overrideable for tests), then compete for mkdir again. rmdir deliberately
-  # removes only this exact, empty lock directory.
+  # (overrideable for tests), then compete for mkdir again. Recovery steals
+  # the stale lock by RENAMING it to a private name first — an in-place
+  # rmdir+mkdir let two recoverers interleave so the second rmdir removed the
+  # first one's fresh lock. mv is atomic: exactly one steal wins, a failed mv
+  # means someone else won. The mtime re-check on the private copy (rename
+  # preserves it) catches the residual race where the stolen dir was already
+  # a competitor's fresh lock — hand it back instead of vaporising it. rmdir
+  # deliberately removes only this exact, empty lock directory.
   if ! mkdir "$lock" 2>/dev/null; then
     [ -n "$(find "$lock" -maxdepth 0 -type d ! -newermt "-${lock_stale_seconds} seconds" -print 2>/dev/null)" ] || return 0
-    rmdir "$lock" 2>/dev/null || return 0
+    local stolen="$lock.stale.$$"
+    mv "$lock" "$stolen" 2>/dev/null || return 0
+    if [ -z "$(find "$stolen" -maxdepth 0 -type d ! -newermt "-${lock_stale_seconds} seconds" -print 2>/dev/null)" ]; then
+      mv "$stolen" "$lock" 2>/dev/null || rmdir "$stolen" 2>/dev/null || true
+      return 0
+    fi
+    rmdir "$stolen" 2>/dev/null || true
     mkdir "$lock" 2>/dev/null || return 0
   fi
 

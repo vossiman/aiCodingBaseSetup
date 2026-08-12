@@ -62,12 +62,16 @@ _install_host_durable_runtime() {
   # A deliberately broad source checkout can contain the durable destination
   # (for example source=$HOME). Exclude it from the snapshot to prevent the
   # old runtime or our staging directory recursively copying into itself.
+  # --anchored + the ./ prefix pin each pattern to the archive root: tar
+  # patterns are unanchored by default, and a bare --exclude=$rel would also
+  # silently drop every DEEPER path ending in the same suffix (a legitimate
+  # project/.runtime/blueprint elsewhere in the tree).
   local nested rel
   for nested in "$durable_real" "$stage" "$backup"; do
     case "$nested/" in
       "$source_real"/*)
         rel=${nested#"$source_real"/}
-        exclude+=("--exclude=./$rel" "--exclude=$rel")
+        exclude+=(--anchored "--exclude=./$rel")
         ;;
     esac
   done

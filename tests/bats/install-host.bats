@@ -258,6 +258,9 @@ EOF
   [ "$status" -eq 0 ]
   [ "$output" = done ]
   [ ! -e "$HOME/.local/state/aicoding/updates/.boot-sync.lock" ]
+  # The steal renames the stale lock to .boot-sync.lock.stale.<pid> before
+  # removing it — recovery must not leave that private copy behind either.
+  [ -z "$(find "$HOME/.local/state/aicoding/updates" -maxdepth 1 -name '.boot-sync.lock.stale.*' -print 2>/dev/null)" ]
 }
 
 @test "aicoding-install: dispatches to install-host.sh when profile=host" {

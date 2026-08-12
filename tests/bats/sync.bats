@@ -453,6 +453,11 @@ _kvm_stub_sudo() {   # log calls instead of running them
   [ "$output" = container ]
 }
 
+# WARNING: the two host-install tests below run the FULL install-host.sh main
+# flow. They are offline-safe only under tests/bats/run.sh, which exports
+# AICODINGSETUP_SKIP_NETWORK=1 suite-wide; invoking bats on this file directly
+# would clone homelab-wiki and clone AND EXECUTE the real vendored bw-AICode
+# installer (Go toolchain download, read-only files that break teardown).
 @test "aicoding-install host commands survive tracking-clone deletion" {
   local clone="$TMP/tracking-clone" durable="$TMP/durable/blueprint"
   mkdir -p "$clone" "$(dirname "$AICODING_MANIFEST")"
@@ -497,13 +502,17 @@ _kvm_stub_sudo() {   # log calls instead of running them
   local clone="$TMP/parent-checkout" durable="$TMP/parent-checkout/.runtime/blueprint"
   mkdir -p "$clone" "$(dirname "$AICODING_MANIFEST")"
   tar -C "$BLUEPRINT_ROOT" --exclude=.git -cf - . | tar -C "$clone" -xf -
+  # Same-suffix decoy: only the EXACT nested destination may be dropped from
+  # the snapshot. tar patterns are unanchored by default, so an un-anchored
+  # --exclude=.runtime/blueprint would silently drop this deeper file too.
+  mkdir -p "$clone/project/.runtime/blueprint"
+  echo survives > "$clone/project/.runtime/blueprint/keepme.txt"
   echo '{"schema_version":1,"profile":"host","files":{}}' > "$AICODING_MANIFEST"
 
   AICODING_HOST_BLUEPRINT_DIR="$durable" \
     run bash "$clone/install-host.sh"
   [ "$status" -eq 0 ]
   [ -x "$durable/bin/aicoding-install" ]
-  local nested_count
-  nested_count=$(find "$clone/.runtime" -type d -path '*/.runtime/blueprint' | wc -l)
-  [ "$nested_count" -eq 1 ]
+  [ ! -e "$durable/.runtime/blueprint" ]   # no recursive self-copy
+  [ "$(cat "$durable/project/.runtime/blueprint/keepme.txt")" = survives ]
 }
