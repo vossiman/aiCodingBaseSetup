@@ -111,6 +111,34 @@ agent can rewrite or delete the host-side source of truth. Two consequences:
 
 Two distinct flows after the initial install:
 
+### Which one do I run?
+
+Normally neither, by hand — the tmux badges from `aicoding-status` decide:
+
+| Badge | What moved on blueprint `main` | You run |
+|-------|--------------------------------|---------|
+| ⬆`sync` | anything sync can deliver: managed configs, MCP/plugin definitions, agent-CLI updates, sync's own code | `aicoding-sync` — or nothing; boot/attach runs it on a throttle |
+| ⬆`install` | provisioning itself: `install.sh`, `lib/provision*`, `image/` | `aicoding-install` |
+| ⬆`rebuild` | the base image | rebuild the container from your laptop |
+
+Rule of thumb: **agent harness, plugins, MCPs, and the agent CLIs
+themselves are sync territory** (the CLIs self-update via
+`claude update` / `opencode upgrade` / `agent update` / codex's
+version-gated reinstall). **System tools are install territory** —
+apt prereqs, node, go, uv, tmux (built from source at a pinned
+commit), Playwright deps, and first-time bootstrap of a missing CLI.
+Sync deliberately doesn't touch those.
+
+Both commands bring the blueprint clone (`/tmp/aicoding`) current to
+`origin/main` before doing any work, and fall back to the cached clone
+when offline (`--blueprint` mode never fetches). One asymmetry:
+`aicoding-install` re-executes the freshly pulled `install.sh`, so the
+code doing the work is always the just-fetched version — whereas
+`aicoding-sync` sources its library *before* refreshing the clone, so a
+change to sync's **own code** is pulled by one run and first executed by
+the next. Content it deploys (configs, MCP/plugin definitions) is
+always same-run current.
+
 ### `aicoding-sync` — day-2 reconciliation (recommended)
 
 ```bash
@@ -149,10 +177,15 @@ CLI binaries on a throttle. Behaviour per CLI:
 | Claude Code | `claude update` | ✅ (throttled) |
 | opencode | `opencode upgrade` | ✅ (throttled) |
 | Cursor Agent | `agent update` (or `cursor-agent update` on older releases) | ✅ (throttled) |
-| OpenAI Codex | None — no in-place subcommand exists upstream | ❌ — pinned at install-time. Re-run the installer when you want a newer version, OR use `./install.sh --force-reinstall` which re-invokes `ensure_codex`. |
+| OpenAI Codex | Version-gated reinstall: sync compares the installed version against the npm registry and re-runs the official installer only on a real change (no in-place subcommand exists upstream; spec: `docs/superpowers/specs/2026-08-09-codex-self-update-design.md`) | ✅ (throttled) |
 
-
-Failures on any of the in-place updates are non-fatal and surface as `WARN:` lines so a transient network blip doesn't block container start.
+Each updater's output is prefaced with a `--- <tool> ---` header so error
+text is attributable — Cursor's binary is named `agent`, so without one
+its errors read as someone else's (its expired-session
+`Error: Update failed: [unauthenticated] Error` was once chased as a
+codex failure). Failures on any of the updates are non-fatal (the step
+is `|| true`; codex prints self-labeled `ERROR:` lines) so a transient
+network blip doesn't block container start.
 
 ### Install modes
 
