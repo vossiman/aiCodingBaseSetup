@@ -167,4 +167,9 @@ launched() { [ -f "$HOME/claude-args" ]; }
   grep -q 'homelab-wiki' "$AGENT_DEF"
   grep -q 'docs/notes/' "$AGENT_DEF"
   grep -qi 'never edit CLAUDE.md' "$AGENT_DEF"
+  # 2026-08-12 revision: notes land on the default branch via a disposable
+  # worktree, docs-only, no force-push, untracked fallback preserved.
+  grep -q 'worktree add' "$AGENT_DEF"
+  grep -qi 'never force-push' "$AGENT_DEF"
+  grep -qi 'leave them untracked' "$AGENT_DEF"
 }
