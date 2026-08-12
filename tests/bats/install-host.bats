@@ -160,6 +160,41 @@ EOF
   [ "$output" = "host" ]
 }
 
+@test "install-host.sh: main registers the git-credential-aicoding fallback helper" {
+  # Root cause of the 2026-08-12 Mint field failure: helper registration
+  # lived only in _sync_plumbing (sync-time), so the installer's own HTTPS
+  # wiki clone found no credential helper and prompted interactively.
+  # The git stub passes `config` through to real git (writes to this test's
+  # fake $HOME/.gitconfig) and no-ops everything else.
+  export AICODINGSETUP_SKIP_NETWORK=1
+  cat > "$TMPDIR/stubs/git" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "config" ]]; then exec /usr/bin/git "$@"; fi
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/git"
+  run bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  [ "$status" -eq 0 ]
+  grep -q 'git-credential-aicoding' "$HOME/.gitconfig"
+}
+
+@test "ensure_homelab_wiki: clone runs with GIT_TERMINAL_PROMPT=0 (never prompts)" {
+  unset AICODINGSETUP_SKIP_NETWORK
+  # run.sh exports GIT_TERMINAL_PROMPT=0 suite-wide as an offline guard —
+  # unset it so this test proves ensure_homelab_wiki sets it ITSELF (the
+  # production shell on a real host has no such export).
+  unset GIT_TERMINAL_PROMPT
+  cat > "$TMPDIR/stubs/git" <<'EOF'
+#!/bin/bash
+echo "GTP=${GIT_TERMINAL_PROMPT:-unset}"
+exit 128
+EOF
+  chmod +x "$TMPDIR/stubs/git"
+  run _source_host_lib ensure_homelab_wiki
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"GTP=0"* ]]
+}
+
 @test "aicoding-install: dispatches to install-host.sh when profile=host" {
   mkdir -p "$HOME/.local/state/aicoding"
   echo '{"profile":"host"}' > "$HOME/.local/state/aicoding/manifest.json"
