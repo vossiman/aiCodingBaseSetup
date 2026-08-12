@@ -474,10 +474,17 @@ _update_codex() {
 }
 
 _sync_binaries() {            # throttled network refresh
-  command -v claude   >/dev/null 2>&1 && { claude update    || true; }
-  command -v opencode >/dev/null 2>&1 && { opencode upgrade || true; }
-  if command -v agent >/dev/null 2>&1; then agent update || true
-  elif command -v cursor-agent >/dev/null 2>&1; then cursor-agent update || true; fi
+  # Header per pass-through updater so error text is attributable — Cursor's
+  # binary is named `agent`, so its errors read as someone else's without one
+  # (2026-08-12: "[unauthenticated]" mistaken for codex). _update_codex needs
+  # no header: silent on success, self-labeled ERROR lines otherwise.
+  command -v claude   >/dev/null 2>&1 && { echo "--- claude update ---";    claude update    || true; }
+  command -v opencode >/dev/null 2>&1 && { echo "--- opencode upgrade ---"; opencode upgrade || true; }
+  if command -v agent >/dev/null 2>&1; then
+    echo "--- cursor (agent update) ---"; agent update || true
+  elif command -v cursor-agent >/dev/null 2>&1; then
+    echo "--- cursor (cursor-agent update) ---"; cursor-agent update || true
+  fi
   _update_codex || true
 }
 
