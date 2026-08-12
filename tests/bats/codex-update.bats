@@ -101,6 +101,92 @@ teardown() { rm -rf "$TMP"; }
   [[ "$output" == *"ERROR: codex updated but version is still 0.147.0 (expected 0.148.0)"* ]]
 }
 
+# --- _ensure_codex_code_mode_host -------------------------------------------
+# Helper: stage a release tree holding both binaries for $1.
+_stage_release() {
+  local dir="$TMP/.codex/packages/standalone/releases/$1-x86_64-unknown-linux-musl/bin"
+  mkdir -p "$dir"
+  printf '#!/bin/sh\necho "codex-cli %s"\n' "$1" > "$dir/codex"
+  printf 'code-mode-host %s\n' "$1" > "$dir/codex-code-mode-host"
+  chmod +x "$dir/codex" "$dir/codex-code-mode-host"
+}
+
+@test "code-mode host: flattened seed gets the version-matched sidecar" {
+  _stage_release 0.147.0
+  run _ensure_codex_code_mode_host
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ -x "$TMP/.local/bin/codex-code-mode-host" ]
+  [ "$(cat "$TMP/.local/bin/codex-code-mode-host")" = "code-mode-host 0.147.0" ]
+}
+
+@test "code-mode host: a stale sidecar is replaced, a matching one left alone" {
+  _stage_release 0.147.0
+  printf 'code-mode-host 0.140.0\n' > "$TMP/.local/bin/codex-code-mode-host"
+  _ensure_codex_code_mode_host
+  [ "$(cat "$TMP/.local/bin/codex-code-mode-host")" = "code-mode-host 0.147.0" ]
+  # Second pass is a no-op (cmp short-circuit), not a re-copy.
+  local before; before=$(stat -c %Y "$TMP/.local/bin/codex-code-mode-host")
+  _ensure_codex_code_mode_host
+  [ "$(stat -c %Y "$TMP/.local/bin/codex-code-mode-host")" = "$before" ]
+}
+
+@test "code-mode host: symlinked codex is left alone (upstream layout)" {
+  _stage_release 0.147.0
+  ln -sf "$TMP/.codex/packages/standalone/releases/0.147.0-x86_64-unknown-linux-musl/bin/codex" \
+    "$TMP/.local/bin/codex"
+  run _ensure_codex_code_mode_host
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ ! -e "$TMP/.local/bin/codex-code-mode-host" ]   # sibling resolution handles it
+}
+
+@test "code-mode host: no release tree -> silent (next update installs one)" {
+  run _ensure_codex_code_mode_host
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "code-mode host: release tree without a matching version -> ERROR, exit 0" {
+  _stage_release 0.140.0        # tree exists, but not for installed 0.147.0
+  run _ensure_codex_code_mode_host
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no codex-code-mode-host for codex 0.147.0"* ]]
+}
+
+@test "code-mode host: no codex at all -> silent no-op" {
+  rm "$TMP/.local/bin/codex"
+  run _ensure_codex_code_mode_host
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "code-mode host: reconciled even when codex is already up to date" {
+  # The gap ships on an up-to-date codex, so the equal-version early return
+  # in _update_codex must not skip the pairing.
+  _stage_release 0.147.0
+  for c in claude opencode agent; do
+    printf '#!/bin/sh\necho "%s $*" >> "$TMP/ran.log"\n' "$c" > "$TMP/stubs/$c"
+    chmod +x "$TMP/stubs/$c"
+  done
+  CODEX_LATEST="0.147.0" run _sync_binaries
+  [ "$status" -eq 0 ]
+  if grep -q "curl-installer" "$TMP/ran.log"; then false; fi   # no update ran
+  [ -x "$TMP/.local/bin/codex-code-mode-host" ]
+}
+
+@test "codex update: relinks the versioned packages/standalone layout" {
+  # Upstream moved off the flat ~/.codex/bin path; probing only that one
+  # silently left the stale image seed on PATH.
+  mkdir -p "$TMP/.codex/packages/standalone/current/bin"
+  printf '#!/bin/sh\necho "codex-cli 0.148.0"\n' \
+    > "$TMP/.codex/packages/standalone/current/bin/codex"
+  chmod +x "$TMP/.codex/packages/standalone/current/bin/codex"
+  run _update_codex
+  [ "$status" -eq 0 ]
+  [ "$(readlink "$TMP/.local/bin/codex")" = "$TMP/.codex/packages/standalone/current/bin/codex" ]
+}
+
 @test "_sync_binaries invokes the codex updater" {
   # claude/opencode/agent logging stubs so _sync_binaries' other calls
   # stay off the network (standing rule: agent CLIs are external binaries).

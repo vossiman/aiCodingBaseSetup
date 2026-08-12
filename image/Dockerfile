@@ -100,16 +100,29 @@ RUN curl -fsSL https://opencode.ai/install | bash \
  && mkdir -p ~/.local/bin \
  && ln -sf "$HOME/.opencode/bin/opencode" ~/.local/bin/opencode \
  && [ -x "$(readlink -f ~/.local/bin/opencode)" ]
+# Flattening the codex symlink costs the release layout, so the Code Mode
+# sidecar `codex-code-mode-host` must be copied ALONGSIDE it: codex resolves
+# the sidecar as a sibling of its own path, and upstream never links it on
+# Linux. Seeding `codex` alone shipped a codex whose Code Mode failed closed
+# ("host executable was not found", 2026-08-12). The final assertion is
+# deliberately unconditional: if upstream moves the sidecar or drops the
+# symlink layout, fail the build rather than ship a codex that fails closed.
 RUN curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh \
  && mkdir -p ~/.local/bin \
  && if [ -L ~/.local/bin/codex ]; then \
       codex_real="$(readlink -f ~/.local/bin/codex)" \
+      && codex_host="$(dirname "$codex_real")/codex-code-mode-host" \
       && rm -f ~/.local/bin/codex \
       && cp "$codex_real" ~/.local/bin/codex \
-      && chmod +x ~/.local/bin/codex; \
+      && chmod +x ~/.local/bin/codex \
+      && if [ -x "$codex_host" ]; then \
+           cp "$codex_host" ~/.local/bin/codex-code-mode-host \
+           && chmod +x ~/.local/bin/codex-code-mode-host; \
+         fi; \
     fi \
  && rm -rf ~/.codex \
- && [ -x ~/.local/bin/codex ]
+ && [ -x ~/.local/bin/codex ] \
+ && [ -x ~/.local/bin/codex-code-mode-host ]
 RUN curl -fsSL https://cursor.com/install | bash \
  && cd ~/.local/bin \
  && { [ -e agent ] || ln -s cursor-agent agent; } \

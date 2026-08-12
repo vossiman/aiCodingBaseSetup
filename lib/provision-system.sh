@@ -197,7 +197,15 @@ ensure_opencode() {
 
 ensure_codex() {
   header "Ensuring OpenAI Codex CLI"
-  command -v codex &>/dev/null && { ok "codex already installed"; return 0; }
+  # The Code Mode sidecar is reconciled on BOTH paths: this short-circuit is
+  # why a running container never heals an image seed that shipped `codex`
+  # without `codex-code-mode-host` (see _ensure_codex_code_mode_host in
+  # lib/sync.sh, sourced ahead of this file by install.sh).
+  if command -v codex &>/dev/null; then
+    ok "codex already installed"
+    declare -F _ensure_codex_code_mode_host >/dev/null && _ensure_codex_code_mode_host
+    return 0
+  fi
   command -v curl  &>/dev/null || { warn "curl not available — skipping codex install"; return 0; }
   info "Installing OpenAI Codex CLI"
   # CODEX_NON_INTERACTIVE=1: upstream grew y/N prompts that read /dev/tty
@@ -207,10 +215,17 @@ ensure_codex() {
   # Upstream installer's drop-path isn't formally documented. Probe two
   # likely locations and symlink into ~/.local/bin so non-interactive
   # shells (postStartCommand) see codex without sourcing rc files.
-  if [[ ! -x "$HOME/.local/bin/codex" ]] && [[ -x "$HOME/.codex/bin/codex" ]]; then
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "$HOME/.codex/bin/codex" "$HOME/.local/bin/codex"
+  if [[ ! -x "$HOME/.local/bin/codex" ]]; then
+    local cand
+    for cand in "$HOME/.codex/packages/standalone/current/bin/codex" \
+                "$HOME/.codex/bin/codex"; do
+      [[ -x "$cand" ]] || continue
+      mkdir -p "$HOME/.local/bin"
+      ln -sf "$cand" "$HOME/.local/bin/codex"
+      break
+    done
   fi
+  declare -F _ensure_codex_code_mode_host >/dev/null && _ensure_codex_code_mode_host
   [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
 }
 
