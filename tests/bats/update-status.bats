@@ -294,6 +294,20 @@ _mk_clone() {  # fixture: commit A (stamp point), then commit B touching $1
   echo "$output" | grep -q "run: aicoding-install"
 }
 
+@test "host provision drift tracks install-host.sh instead of install.sh" {
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  _mk_clone install-host.sh
+  jq -n --arg s "$A_SHA" '{profile:"host", provision_commit:$s}' > "$AICODING_MANIFEST"
+  run "$BIN" --tmux
+  [[ "$output" == *"⬆install"* ]]
+
+  rm -rf "$CLONE"
+  _mk_clone install.sh
+  jq -n --arg s "$A_SHA" '{profile:"host", provision_commit:$s}' > "$AICODING_MANIFEST"
+  run "$BIN" --tmux
+  [[ "$output" != *"⬆install"* ]]
+}
+
 @test "provision drift: only non-provisioning paths touched -> no badge" {
   export AICODING_MANIFEST="$TMP/manifest.json"
   _mk_clone docs/notes.md
@@ -323,6 +337,21 @@ _mk_clone() {  # fixture: commit A (stamp point), then commit B touching $1
   [[ "$output" == *"⬆rebuild"* ]]
   DEVPOD_WORKSPACE_ID=devmachine run "$BIN" --banner
   echo "$output" | grep -q "from your laptop: dvw rebuild devmachine"
+}
+
+@test "host status excludes container image and published-date rebuild notices" {
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  _mk_clone image/Dockerfile
+  jq -n --arg s "$A_SHA" '{profile:"host", provision_commit:$s}' > "$AICODING_MANIFEST"
+  export AICODING_IMAGE_RELEASE_FILE="$TMP/release.json"
+  jq -n --arg s "$A_SHA" '{sha:$s, built:"2026-08-08T00:00:00Z"}' > "$AICODING_IMAGE_RELEASE_FILE"
+  mkdir -p "$AICODING_UPDATE_STATE"
+  jq -n '{latest_tag:"2099-01-01"}' > "$AICODING_UPDATE_STATE/image.json"
+
+  run "$BIN" --tmux
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"⬆rebuild"* ]]
+  [[ "$output" != *"⬆install"* ]]
 }
 
 @test "image staleness fail-open: no release file / empty sha -> no badge" {

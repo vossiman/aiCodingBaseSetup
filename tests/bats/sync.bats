@@ -14,7 +14,7 @@ setup() {
   mkdir -p "$TMP/.local/bin"
   # Neutralise install.sh's prereq installers so install.sh no-ops them and
   # leaves our logging stubs (claude/opencode/agent) on PATH untouched.
-  for cmd in apt-get sudo curl npm npx bash-build-tmux cursor-agent; do
+  for cmd in apt-get sudo curl npm npx bwrap bash-build-tmux cursor-agent; do
     printf '#!/bin/sh\nexit 0\n' > "$TMP/stubs/$cmd"
     chmod +x "$TMP/stubs/$cmd"
   done
@@ -79,6 +79,37 @@ teardown() { cd /; rm -rf "$TMP"; }
   run env AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT" AICODING_UPDATE_TTL=0 \
       "$BLUEPRINT_ROOT/bin/aicoding-sync" --boot
   [ "$status" -eq 0 ]
+}
+
+@test "aicoding-sync --boot sees host profile before reconcile sources deploy helpers" {
+  # Production order regression: invoke the real entrypoint with a refreshed
+  # clone whose sync library loads first. Do not pre-source blueprint-deploy or
+  # define manifest_get_profile; plumbing is exactly where the host used to be
+  # misclassified as a container.
+  local clone="$TMP/tracking-clone"
+  mkdir -p "$clone/lib" "$(dirname "$AICODING_MANIFEST")" \
+    "$TMP/.claude/jobs" "$TMP/.claude/sessions" "$TMP/.claude/daemon" \
+    "$AICODING_UPDATE_STATE"
+  cp "$BLUEPRINT_ROOT/lib/sync.sh" "$clone/lib/sync.sh"
+  echo '{"profile":"host"}' > "$AICODING_MANIFEST"
+  local runtime_dir
+  for runtime_dir in jobs sessions daemon; do
+    echo "live-host-$runtime_dir" > "$TMP/.claude/$runtime_dir/live"
+  done
+  : > "$AICODING_UPDATE_STATE/.binaries.stamp"
+  _kvm_stub_sudo; _kvm_stub_stat 994
+
+  AICODING_KVM_DEVICE=/dev/null AICODING_UPDATE_TTL=3600 \
+    run env AICODING_BLUEPRINT_CLONE="$clone" \
+      "$BLUEPRINT_ROOT/bin/aicoding-sync" --boot
+  [ "$status" -eq 0 ]
+  for runtime_dir in jobs sessions daemon; do
+    [ -d "$TMP/.claude/$runtime_dir" ]
+    [ ! -L "$TMP/.claude/$runtime_dir" ]
+    [ "$(cat "$TMP/.claude/$runtime_dir/live")" = "live-host-$runtime_dir" ]
+    if [ -e "$TMP/.claude/$runtime_dir.premigrate" ]; then false; fi
+  done
+  if grep -q -e groupadd -e usermod "$TMP/ran.log" 2>/dev/null; then false; fi
 }
 @test "clean sync still advances the manifest blueprint_commit stamp" {
   # Regression: "Nothing to do." returned before stamping, so a sync with no
@@ -420,4 +451,59 @@ _kvm_stub_sudo() {   # log calls instead of running them
 @test "_sync_profile defaults to container when the clone predates profiles" {
   run bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; _sync_profile'
   [ "$output" = container ]
+}
+
+@test "aicoding-install host commands survive tracking-clone deletion" {
+  local clone="$TMP/tracking-clone" durable="$TMP/durable/blueprint"
+  mkdir -p "$clone" "$(dirname "$AICODING_MANIFEST")"
+  # A full non-git tracking snapshot: installer inputs are real, but refresh
+  # cannot contact an origin. Add untracked/dirty content to prove local-mode
+  # snapshots are copied verbatim rather than reconstructed from git.
+  tar -C "$BLUEPRINT_ROOT" --exclude=.git -cf - . | tar -C "$clone" -xf -
+  git -C "$clone" init -q -b main
+  git -C "$clone" add -A
+  git -C "$clone" -c user.email=t@t -c user.name=t commit -q -m tracking-snapshot
+  echo dirty-local-content > "$clone/dirty-sentinel"
+  echo '{"schema_version":1,"profile":"host","files":{}}' > "$AICODING_MANIFEST"
+
+  AICODING_HOST_BLUEPRINT_DIR="$durable" \
+    run env AICODING_BLUEPRINT_CLONE="$clone" \
+      bash "$clone/bin/aicoding-install"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$durable/dirty-sentinel")" = dirty-local-content ]
+  [ -x "$durable/install-host.sh" ]
+  local command
+  for command in aicoding-sync aicoding-install aicoding-status; do
+    [ -L "$HOME/.local/bin/$command" ]
+    [[ "$(readlink -f "$HOME/.local/bin/$command")" == "$durable/bin/$command" ]]
+  done
+
+  rm -rf -- "$clone"
+  for command in aicoding-sync aicoding-install aicoding-status; do
+    run "$HOME/.local/bin/$command" --help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"usage:"* ]]
+  done
+  run "$HOME/.local/bin/aicoding-sync" --blueprint "$durable" --dry-run
+  [ "$status" -eq 0 ]
+  run "$HOME/.local/bin/aicoding-status" --print
+  [ "$status" -eq 0 ]
+  AICODING_HOST_BLUEPRINT_DIR="$durable" \
+    run "$HOME/.local/bin/aicoding-install" --blueprint "$durable"
+  [ "$status" -eq 0 ]
+}
+
+@test "host durable snapshot excludes a destination nested in its source" {
+  local clone="$TMP/parent-checkout" durable="$TMP/parent-checkout/.runtime/blueprint"
+  mkdir -p "$clone" "$(dirname "$AICODING_MANIFEST")"
+  tar -C "$BLUEPRINT_ROOT" --exclude=.git -cf - . | tar -C "$clone" -xf -
+  echo '{"schema_version":1,"profile":"host","files":{}}' > "$AICODING_MANIFEST"
+
+  AICODING_HOST_BLUEPRINT_DIR="$durable" \
+    run bash "$clone/install-host.sh"
+  [ "$status" -eq 0 ]
+  [ -x "$durable/bin/aicoding-install" ]
+  local nested_count
+  nested_count=$(find "$clone/.runtime" -type d -path '*/.runtime/blueprint' | wc -l)
+  [ "$nested_count" -eq 1 ]
 }

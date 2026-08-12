@@ -128,17 +128,11 @@ _source_host_lib() {
   # sources into a subshell and doesn't reproduce the abort) so the failure
   # is exercised exactly the way production hits it.
   #
-  # tests/bats/run.sh exports AICODINGSETUP_SKIP_NETWORK=1 suite-wide, which
-  # makes ensure_homelab_wiki a no-op — unset it so that step actually runs.
-  # Every other network-touching step in main() is already offline-safe
-  # without SKIP_NETWORK: ensure_claude_code/install_mcp_packages/
-  # install_claude_mcps/install_claude_plugins all gate on `command -v
-  # claude`/`command -v npm`, satisfied here by this file's no-op stubs;
-  # install_bubblewrap has its own SKIP_NETWORK guard and is unaffected by
-  # this unset since we only need it to not abort, which the git stub below
-  # ensures (it succeeds for every git invocation except the homelab-wiki
-  # clone).
-  unset AICODINGSETUP_SKIP_NETWORK
+  # Keep run.sh's suite-wide network guard enabled for the entire real main
+  # flow. In particular, install_bubblewrap must not run an ignored checkout's
+  # real vendor/bw-AICode installer. Wrap only ensure_homelab_wiki so its
+  # production implementation sees the guard disabled for this fake-git call.
+  export AICODINGSETUP_SKIP_NETWORK=1
   cat > "$TMPDIR/stubs/git" <<'EOF'
 #!/bin/bash
 if [[ "$1" == "clone" ]]; then
@@ -153,8 +147,18 @@ exit 0
 EOF
   chmod +x "$TMPDIR/stubs/git"
 
-  run bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  run bash -c '
+    cd "$BLUEPRINT_ROOT"
+    source ./install-host.sh
+    definition=$(declare -f ensure_homelab_wiki)
+    eval "_real_$definition"
+    ensure_homelab_wiki() {
+      AICODINGSETUP_SKIP_NETWORK= _real_ensure_homelab_wiki
+    }
+    main
+  '
   [ "$status" -eq 0 ]
+  [[ "$output" == *"Skipping bw-AICode (AICODINGSETUP_SKIP_NETWORK)"* ]]
   [[ "$output" == *"WARN"*"homelab-wiki clone failed"* ]]
   run jq -r '.profile' "$AICODING_MANIFEST"
   [ "$output" = "host" ]
@@ -207,6 +211,53 @@ EOF
   run bash -c "PATH='$TMPDIR/stubs:/usr/bin:/bin'; source '$BLUEPRINT_ROOT/configs/bash/boot-sync.sh'; for i in \$(seq 50); do [ -f \"\$HOME/sync-ran\" ] && break; sleep 0.1; done; cat \"\$HOME/sync-ran\""
   [ "$status" -eq 0 ]
   [[ "$output" == *"RAN --boot"* ]]
+}
+
+@test "boot-sync snippet: concurrent shells launch only one sync" {
+  unset AICODINGSETUP_SKIP_NETWORK
+  cat > "$HOME/.local/bin/aicoding-sync" <<'EOF'
+#!/bin/bash
+echo start >> "$HOME/sync-ran"
+sleep 0.2
+echo done >> "$HOME/sync-ran"
+EOF
+  chmod +x "$HOME/.local/bin/aicoding-sync"
+
+  run bash -c '
+    for _ in $(seq 20); do
+      PATH="$TMPDIR/stubs:/usr/bin:/bin" bash -c ". \"$BLUEPRINT_ROOT/configs/bash/boot-sync.sh\"" &
+    done
+    wait
+    for _ in $(seq 100); do
+      [ "$(grep -c "^done$" "$HOME/sync-ran" 2>/dev/null || true)" -eq 1 ] && break
+      sleep 0.05
+    done
+    cat "$HOME/sync-ran"
+  '
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^start$' <<<"$output")" -eq 1 ]
+  [ "$(grep -c '^done$' <<<"$output")" -eq 1 ]
+  [ ! -e "$HOME/.local/state/aicoding/updates/.boot-sync.lock" ]
+}
+
+@test "boot-sync snippet: recovers an abandoned stale lock" {
+  unset AICODINGSETUP_SKIP_NETWORK
+  printf '#!/bin/bash\necho done > "$HOME/sync-ran"\n' > "$HOME/.local/bin/aicoding-sync"
+  chmod +x "$HOME/.local/bin/aicoding-sync"
+  mkdir -p "$HOME/.local/state/aicoding/updates/.boot-sync.lock"
+  touch -d '2000-01-01' "$HOME/.local/state/aicoding/updates/.boot-sync.lock"
+
+  run bash -c '
+    PATH="$TMPDIR/stubs:/usr/bin:/bin" source "$BLUEPRINT_ROOT/configs/bash/boot-sync.sh"
+    for _ in $(seq 100); do
+      [ -f "$HOME/sync-ran" ] && break
+      sleep 0.05
+    done
+    cat "$HOME/sync-ran"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = done ]
+  [ ! -e "$HOME/.local/state/aicoding/updates/.boot-sync.lock" ]
 }
 
 @test "aicoding-install: dispatches to install-host.sh when profile=host" {
