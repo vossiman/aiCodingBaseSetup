@@ -6,21 +6,41 @@ setup() {
   export HOME="$TMPDIR"
   export AICODING_MANIFEST="$TMPDIR/.local/state/aicoding/manifest.json"
   export AICODINGSETUP_NONINTERACTIVE=1
+  # install-host.sh's nvs-strip prelude (copied from install.sh) unconditionally
+  # `exec`s into `bash "$0"` unless this is already set. Under bats, sourcing
+  # via `_source_host_lib` runs in a subshell whose $0 is bats' own test
+  # runner, not install-host.sh — letting that exec fire re-execs the wrong
+  # file. install.bats's `_run_install_fn` dodges the same landmine by
+  # pre-setting this before sourcing install.sh; mirror that here.
+  export _AICODINGSETUP_NVS_STRIPPED=1
   export PATH="$TMPDIR/stubs:$PATH"
   mkdir -p "$TMPDIR/stubs" "$TMPDIR/.local/bin"
   # Prereq stubs present by default; individual tests remove them.
-  for t in git curl jq node npm bwrap claude; do
+  for t in git curl node npm bwrap claude; do
     printf '#!/bin/bash\nexit 0\n' > "$TMPDIR/stubs/$t"; chmod +x "$TMPDIR/stubs/$t"
+  done
+  # dirname and jq are real passthroughs, not no-op stubs. install-host.sh's
+  # SCRIPT_DIR resolution (`dirname "${BASH_SOURCE[0]}"`) needs dirname's
+  # actual output at source-time, and the deploy engine's manifest read/write
+  # (manifest_set_profile, manifest_stamp_provision, detect_install_mode)
+  # needs real jq behavior — a no-op stub would silently truncate
+  # $AICODING_MANIFEST to empty on every write. Some tests set
+  # PATH="$TMPDIR/stubs" (no system dirs) to hide real jq/npm from
+  # `command -v`; without a stub-dir dirname/jq passthrough, that same
+  # restriction also hides coreutils' dirname and breaks sourcing before
+  # check_prerequisites_host is even defined. `command -v jq`'s presence
+  # check for check_prerequisites_host tests still works via this passthrough
+  # (present) or via the plain `rm` some tests do (absent).
+  for t in dirname jq; do
+    printf '#!/bin/bash\nexec /usr/bin/%s "$@"\n' "$t" > "$TMPDIR/stubs/$t"
+    chmod +x "$TMPDIR/stubs/$t"
   done
 }
 
 teardown() { rm -rf "$TMPDIR"; }
 
 _source_host_lib() {
-  ( cd "$BLUEPRINT_ROOT" \
-    && source lib/provision.sh >/dev/null 2>&1 \
-    && source lib/provision-system.sh >/dev/null 2>&1 \
-    && source lib/provision-integrations.sh >/dev/null 2>&1; "$@" )
+  ( cd "$BLUEPRINT_ROOT" && source ./install-host.sh >/dev/null 2>&1; "$@" )
 }
 
 @test "check_prerequisites_host: all present -> success" {
@@ -65,4 +85,36 @@ _source_host_lib() {
   run _source_host_lib ensure_homelab_wiki
   [ "$status" -eq 0 ]
   [[ "$output" == *"WARN"* ]]
+}
+
+@test "install-host.sh: sourcing defines functions without executing main" {
+  run _source_host_lib true
+  [ "$status" -eq 0 ]
+  [ ! -f "$AICODING_MANIFEST" ]
+}
+
+@test "install-host.sh: main writes profile=host and provision stamp to manifest" {
+  export AICODINGSETUP_SKIP_NETWORK=1
+  run bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  [ "$status" -eq 0 ]
+  run jq -r '.profile' "$AICODING_MANIFEST"
+  [ "$output" = "host" ]
+}
+
+@test "install-host.sh: deploys host-shaped managed set (boot-sync yes, tmux/codex no)" {
+  export AICODINGSETUP_SKIP_NETWORK=1
+  bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  [ -f "$HOME/.bashrc.d/aicoding-boot-sync.sh" ]
+  [ -f "$HOME/.claude/CLAUDE.md" ]
+  [ ! -f "$HOME/.tmux.conf" ]
+  [ ! -f "$HOME/.codex/config.toml" ]
+  grep -q 'aicoding managed block' "$HOME/.bashrc"
+}
+
+@test "install-host.sh: second run is reconcile mode, still exits 0" {
+  export AICODINGSETUP_SKIP_NETWORK=1
+  bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  run bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"reconcile"* ]]
 }
