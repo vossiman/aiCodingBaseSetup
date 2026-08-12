@@ -154,6 +154,37 @@ ensure_claude_runtime_scope() {
   return 0
 }
 
+# Join the group that owns /dev/kvm so hardware acceleration (Android emulator,
+# qemu) works without sudo. Devpods are privileged and already carry the host's
+# /dev, but /dev/kvm is mode 0660 and group-owned by a HOST gid that has no
+# matching entry in the container's /etc/group — so opening it fails for
+# codespace despite the device being right there. The gid varies per host, so
+# it is read from the device rather than hardcoded. Group membership is
+# container state that dies with a rebuild: this belongs in plumbing (every
+# boot), not install-time provisioning. Fail-open; a container whose host has
+# no KVM simply skips.
+# NOTE: membership only reaches NEW login sessions — the shell that ran this
+# still lacks it, so the first boot after adoption needs a session restart.
+ensure_kvm_group_access() {
+  local dev="${AICODING_KVM_DEVICE:-/dev/kvm}"
+  [ -c "$dev" ] || return 0
+  local gid name
+  gid=$(stat -c %g "$dev" 2>/dev/null) || return 0
+  [ -n "$gid" ] || return 0
+  id -G 2>/dev/null | tr ' ' '\n' | grep -qx "$gid" && return 0   # already a member
+  name=$(getent group "$gid" 2>/dev/null | cut -d: -f1)
+  if [ -z "$name" ]; then
+    # Prefer the conventional name; fall back when `kvm` is taken by another gid.
+    name=kvm
+    getent group kvm >/dev/null 2>&1 && name="kvm$gid"
+    sudo -n groupadd -g "$gid" "$name" 2>/dev/null || return 0
+  fi
+  if sudo -n usermod -aG "$name" "$(id -un)" 2>/dev/null; then
+    declare -F ok >/dev/null && ok "joined group $name (gid $gid) for /dev/kvm — restart the session to pick it up"
+  fi
+  return 0
+}
+
 _sync_plumbing() {            # never throttled — must be correct now
   command -v aicoding-ssh-agent-watch >/dev/null 2>&1 && aicoding-ssh-agent-watch --ensure 2>/dev/null || true
   command -v seed_github_known_host >/dev/null 2>&1 && seed_github_known_host || true
@@ -161,6 +192,7 @@ _sync_plumbing() {            # never throttled — must be correct now
   command -v ensure_git_credential_file_fallback >/dev/null 2>&1 && ensure_git_credential_file_fallback || true
   command -v ensure_agents_skills_symlink >/dev/null 2>&1 && ensure_agents_skills_symlink || true
   command -v ensure_claude_runtime_scope >/dev/null 2>&1 && ensure_claude_runtime_scope || true
+  command -v ensure_kvm_group_access >/dev/null 2>&1 && ensure_kvm_group_access || true
 }
 
 # Return the provenance stored in manifest.json. A local source is deliberately

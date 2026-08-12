@@ -306,3 +306,70 @@ teardown() { cd /; rm -rf "$TMP"; }
   [ "$status" -eq 0 ]
   [ ! -L "$TMP/.claude/jobs" ]                     # left untouched
 }
+
+# --- /dev/kvm group access ----------------------------------------------------
+# Privileged devpods carry the host's /dev, but /dev/kvm is 0660 root:<host gid>
+# with no matching container group — so the Android emulator / qemu can't open it
+# without sudo. Plumbing joins the owning group on every boot (membership is
+# container state and dies with a rebuild). /dev/null stands in for the device:
+# it is a char device on every host, and `stat` is stubbed for the gid.
+
+_kvm_stub_stat() {   # $1 = gid the fake device reports
+  printf '#!/bin/sh\necho "%s"\n' "$1" > "$TMP/stubs/stat"; chmod +x "$TMP/stubs/stat"
+}
+_kvm_stub_sudo() {   # log calls instead of running them
+  printf '#!/bin/sh\necho "sudo $*" >> "$TMP/ran.log"\n' > "$TMP/stubs/sudo"; chmod +x "$TMP/stubs/sudo"
+}
+
+@test "kvm access is skipped on a host without /dev/kvm" {
+  _kvm_stub_sudo
+  export AICODING_KVM_DEVICE="$TMP/no-such-kvm"
+  run ensure_kvm_group_access
+  [ "$status" -eq 0 ]
+  if grep -q usermod "$TMP/ran.log" 2>/dev/null; then false; fi
+}
+
+@test "kvm access creates the missing group and joins it" {
+  _kvm_stub_sudo; _kvm_stub_stat 994
+  printf '#!/bin/sh\nexit 2\n' > "$TMP/stubs/getent"; chmod +x "$TMP/stubs/getent"   # no group, any name
+  export AICODING_KVM_DEVICE=/dev/null
+  run ensure_kvm_group_access
+  [ "$status" -eq 0 ]
+  grep -q "sudo -n groupadd -g 994 kvm" "$TMP/ran.log"
+  grep -q "sudo -n usermod -aG kvm " "$TMP/ran.log"
+}
+
+@test "kvm access reuses an existing group with the device's gid" {
+  _kvm_stub_sudo; _kvm_stub_stat 994
+  printf '#!/bin/sh\necho "kvm:x:994:"\n' > "$TMP/stubs/getent"; chmod +x "$TMP/stubs/getent"
+  export AICODING_KVM_DEVICE=/dev/null
+  ensure_kvm_group_access
+  if grep -q groupadd "$TMP/ran.log" 2>/dev/null; then false; fi
+  grep -q "sudo -n usermod -aG kvm " "$TMP/ran.log"
+}
+
+@test "kvm access picks a distinct name when 'kvm' is taken by another gid" {
+  _kvm_stub_sudo; _kvm_stub_stat 994
+  # gid lookup misses; the NAME lookup hits (a different gid already owns 'kvm')
+  printf '#!/bin/sh\n[ "$2" = kvm ] && { echo "kvm:x:108:"; exit 0; }\nexit 2\n' \
+    > "$TMP/stubs/getent"; chmod +x "$TMP/stubs/getent"
+  export AICODING_KVM_DEVICE=/dev/null
+  ensure_kvm_group_access
+  grep -q "sudo -n groupadd -g 994 kvm994" "$TMP/ran.log"
+}
+
+@test "kvm access is a no-op when the user is already a member" {
+  _kvm_stub_sudo; _kvm_stub_stat "$(id -g)"
+  export AICODING_KVM_DEVICE=/dev/null
+  ensure_kvm_group_access
+  if grep -q -e groupadd -e usermod "$TMP/ran.log" 2>/dev/null; then false; fi
+}
+
+@test "kvm access is fail-open when groupadd is not permitted" {
+  printf '#!/bin/sh\nexit 1\n' > "$TMP/stubs/sudo"; chmod +x "$TMP/stubs/sudo"
+  _kvm_stub_stat 994
+  printf '#!/bin/sh\nexit 2\n' > "$TMP/stubs/getent"; chmod +x "$TMP/stubs/getent"
+  export AICODING_KVM_DEVICE=/dev/null
+  run ensure_kvm_group_access
+  [ "$status" -eq 0 ]
+}
