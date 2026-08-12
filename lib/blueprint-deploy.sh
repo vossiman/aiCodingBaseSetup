@@ -386,10 +386,14 @@ remove_managed_file() {
 # and we want shell expansion to happen at emit time, not earlier.)
 # ----------------------------------------------------------------------------
 
-# managed_inventory_overwrite — files deployed by full overwrite.
+# managed_inventory_overwrite — whole-file managed deployments. Emits
+# "dest|overwrite|blueprint-relative-source" lines. Profile-aware: hosts
+# (manifest_get_profile = host) skip container-only tooling configs and
+# gain the boot-sync trigger; containers are byte-identical to before.
 managed_inventory_overwrite() {
+  local profile
+  profile=$(manifest_get_profile)
   cat <<EOF
-$HOME/.tmux.conf|overwrite|configs/tmux/tmux.conf
 $HOME/.claude/hooks/custom-statusline.js|overwrite|configs/claude/hooks/custom-statusline.js
 $HOME/.claude/hooks/bw-deny-files.sh|overwrite|configs/claude/hooks/bw-deny-files.sh
 $HOME/.claude/hooks/check-archived-docs.sh|overwrite|configs/claude/hooks/check-archived-docs.sh
@@ -398,22 +402,34 @@ $HOME/.claude/hooks/agent-waiting.sh|overwrite|configs/claude/hooks/agent-waitin
 $HOME/.claude/agents/llmwiki-distiller.md|overwrite|configs/claude/agents/llmwiki-distiller.md
 $HOME/.claude/CLAUDE.md|overwrite|configs/claude/CLAUDE.md
 $HOME/.bashrc.d/aicoding-env.sh|overwrite|configs/bash/env.sh
-$HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.sh
 $HOME/.bashrc.d/aicoding-update-notify.sh|overwrite|configs/bash/update-notify.sh
-$HOME/.codex/config.toml|overwrite|configs/codex/config.toml
 $HOME/.bashrc.d/aicoding-aliases.sh|overwrite|configs/bash/aliases.sh
 $HOME/.local/bin/git-credential-aicoding|overwrite|configs/git/git-credential-aicoding
 EOF
+  if [[ "$profile" == host ]]; then
+    echo "$HOME/.bashrc.d/aicoding-boot-sync.sh|overwrite|configs/bash/boot-sync.sh"
+  else
+    cat <<EOF
+$HOME/.tmux.conf|overwrite|configs/tmux/tmux.conf
+$HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.sh
+$HOME/.codex/config.toml|overwrite|configs/codex/config.toml
+EOF
+  fi
 }
 
 # managed_inventory_merge — JSON configs deep-merged into user files.
+# Hosts manage only Claude's settings; opencode/cursor are container-only.
 managed_inventory_merge() {
-  cat <<EOF
-$HOME/.claude/settings.json|merge|configs/claude/settings.json
+  local profile
+  profile=$(manifest_get_profile)
+  echo "$HOME/.claude/settings.json|merge|configs/claude/settings.json"
+  if [[ "$profile" != host ]]; then
+    cat <<EOF
 $HOME/.config/opencode/opencode.json|merge|configs/opencode/opencode.json
 $HOME/.cursor/mcp.json|merge|configs/cursor/mcp.json
 $HOME/.cursor/cli-config.json|merge|configs/cursor/cli-config.json
 EOF
+  fi
 }
 
 # Fixed marker strings for the managed ~/.bashrc block.

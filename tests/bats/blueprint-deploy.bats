@@ -691,3 +691,31 @@ EOF
   AICODING_PROFILE=host run manifest_get_profile
   [ "$output" = "host" ]
 }
+
+@test "inventories: container profile output is unchanged (no boot-sync, has tmux/codex/cursor)" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run managed_inventory_overwrite
+  [[ "$output" == *"/.tmux.conf|"* ]]
+  [[ "$output" == *"aicoding-ssh-auth-sock.sh|"* ]]
+  [[ "$output" == *"/.codex/config.toml|"* ]]
+  [[ "$output" != *"aicoding-boot-sync.sh"* ]]
+  run managed_inventory_merge
+  [[ "$output" == *"opencode.json|"* ]]
+  [[ "$output" == *"/.cursor/mcp.json|"* ]]
+}
+
+@test "inventories: host profile drops container-only files, adds boot-sync" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  export AICODING_PROFILE=host
+  run managed_inventory_overwrite
+  [[ "$output" != *"/.tmux.conf|"* ]]
+  [[ "$output" != *"aicoding-ssh-auth-sock.sh|"* ]]
+  [[ "$output" != *"/.codex/config.toml|"* ]]
+  [[ "$output" == *"$HOME/.bashrc.d/aicoding-boot-sync.sh|overwrite|configs/bash/boot-sync.sh"* ]]
+  [[ "$output" == *"/.claude/CLAUDE.md|"* ]]
+  run managed_inventory_merge
+  [[ "$output" == *"/.claude/settings.json|"* ]]
+  [[ "$output" != *"opencode.json|"* ]]
+  [[ "$output" != *"cursor"* ]]
+  unset AICODING_PROFILE
+}
