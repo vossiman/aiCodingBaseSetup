@@ -394,3 +394,30 @@ _kvm_stub_sudo() {   # log calls instead of running them
   ensure_kvm_group_access
   grep -q "sudo -n usermod -aG kvm " "$TMP/ran.log"
 }
+
+@test "claude runtime scope is skipped on the host profile" {
+  # Premise of the scoping is several containers sharing one bind-mounted home;
+  # a bare host has one home, and relocating live ~/.claude state there is
+  # unrequested. #69 final-review deferred follow-up.
+  export AICODING_CLAUDE_RUNTIME_DIR="$TMP/runtime"
+  manifest_get_profile() { echo host; }
+  mkdir -p "$TMP/.claude/jobs"
+  run ensure_claude_runtime_scope
+  [ "$status" -eq 0 ]
+  [ -d "$TMP/.claude/jobs" ]                       # left a real dir
+  if [ -L "$TMP/.claude/jobs" ]; then false; fi    # not symlinked away
+  if [ -e "$TMP/.claude/jobs.premigrate" ]; then false; fi
+}
+
+@test "claude runtime scope still runs on the container profile" {
+  export AICODING_CLAUDE_RUNTIME_DIR="$TMP/runtime"
+  manifest_get_profile() { echo container; }
+  mkdir -p "$TMP/.claude"
+  ensure_claude_runtime_scope
+  [ -L "$TMP/.claude/jobs" ]
+}
+
+@test "_sync_profile defaults to container when the clone predates profiles" {
+  run bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; _sync_profile'
+  [ "$output" = container ]
+}

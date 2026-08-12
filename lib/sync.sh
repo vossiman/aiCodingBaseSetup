@@ -119,6 +119,15 @@ ensure_agents_skills_symlink() {
 # cwd exists locally). The base dies with a container rebuild — correct, those
 # agents' processes die too; transcripts stay in shared ~/.claude/projects.
 ensure_claude_runtime_scope() {
+  # Container profile only (deferred follow-up from #69's final review). The
+  # whole premise above is several containers sharing ONE bind-mounted home; a
+  # bare host has a single home and no sharing, so there is nothing to
+  # de-conflict. Left ungated on a desktop with passwordless sudo this would
+  # create /var/local/claude-runtime, move the user's live
+  # ~/.claude/{jobs,sessions,daemon} aside to *.premigrate and symlink them
+  # away — unrequested, and the "base dies with a container rebuild" cleanup
+  # assumption inverts on a host, where nothing ever rebuilds it away.
+  [ "$(_sync_profile)" != host ] || return 0
   local base="${AICODING_CLAUDE_RUNTIME_DIR:-/var/local/claude-runtime}"
   local d link backup entry cwd
   if [ ! -d "$base" ]; then
@@ -165,17 +174,27 @@ ensure_claude_runtime_scope() {
 # no KVM simply skips.
 # NOTE: membership only reaches NEW login sessions — the shell that ran this
 # still lacks it, so the first boot after adoption needs a session restart.
+# The deployment profile this sync is running under: `host` for bare-metal thin
+# clients (the Mint desktop, jumpi), `container` for devpods. Guarded — an old
+# blueprint clone may predate manifest_get_profile, and `container` is the safe
+# default because it is what every pre-profile clone actually was.
+#
+# Plumbing steps that touch machine state MUST consult this. Unlike
+# _sync_binaries, _sync_plumbing runs on EVERY profile, so a step that quietly
+# reconfigures the box will do it to somebody's real desktop. Do not lean on a
+# `sudo -n` failing to provide the gate — a desktop user may have passwordless
+# sudo, and then it simply succeeds.
+_sync_profile() {
+  local p=container
+  command -v manifest_get_profile >/dev/null 2>&1 && p=$(manifest_get_profile)
+  printf '%s\n' "$p"
+}
+
 ensure_kvm_group_access() {
-  # Container profile only. On the host profile (bare-metal thin clients — the
-  # Mint desktop, jumpi) /dev/kvm may well exist, but joining a system group
-  # there is an unrequested privilege change on somebody's real machine, and
-  # the core profile runs no emulator to need it. Do not lean on `sudo -n`
-  # failing to provide this gate: a desktop user may have passwordless sudo.
-  # Guarded like _sync_binaries — an old blueprint clone may predate
-  # manifest_get_profile.
-  local profile=container
-  command -v manifest_get_profile >/dev/null 2>&1 && profile=$(manifest_get_profile)
-  [ "$profile" != host ] || return 0
+  # Container profile only: /dev/kvm may well exist on a real desktop, but
+  # joining a system group there is an unrequested privilege change, and the
+  # core profile runs no emulator to need it.
+  [ "$(_sync_profile)" != host ] || return 0
   local dev="${AICODING_KVM_DEVICE:-/dev/kvm}"
   [ -c "$dev" ] || return 0
   local gid name
@@ -521,10 +540,8 @@ _sync_binaries() {            # throttled network refresh
   # (2026-08-12: "[unauthenticated]" mistaken for codex). _update_codex needs
   # no header: silent on success, self-labeled ERROR lines otherwise.
   # Host profile (bare-metal thin clients): claude is the only CLI the
-  # core profile installs, so it's the only one to refresh. Guarded: an
-  # old blueprint clone may predate manifest_get_profile.
-  local profile=container
-  command -v manifest_get_profile >/dev/null 2>&1 && profile=$(manifest_get_profile)
+  # core profile installs, so it's the only one to refresh.
+  local profile; profile=$(_sync_profile)
   command -v claude   >/dev/null 2>&1 && { echo "--- claude update ---";    claude update    || true; }
   if [ "$profile" != host ]; then
     command -v opencode >/dev/null 2>&1 && { echo "--- opencode upgrade ---"; opencode upgrade || true; }
