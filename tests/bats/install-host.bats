@@ -118,3 +118,15 @@ _source_host_lib() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"reconcile"* ]]
 }
+
+@test "aicoding-install: dispatches to install-host.sh when profile=host" {
+  mkdir -p "$HOME/.local/state/aicoding"
+  echo '{"profile":"host"}' > "$HOME/.local/state/aicoding/manifest.json"
+  # Fake blueprint clone with sentinel installers; no network.
+  CLONE="$TMPDIR/clone"; mkdir -p "$CLONE/lib"
+  printf '#!/bin/bash\necho HOST-INSTALLER-RAN\n' > "$CLONE/install-host.sh"
+  printf '#!/bin/bash\necho CONTAINER-INSTALLER-RAN\n' > "$CLONE/install.sh"
+  run env AICODING_BLUEPRINT_CLONE="$CLONE" bash "$BLUEPRINT_ROOT/bin/aicoding-install"
+  [[ "$output" == *"HOST-INSTALLER-RAN"* ]]
+  [[ "$output" != *"CONTAINER-INSTALLER-RAN"* ]]
+}
