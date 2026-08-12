@@ -373,3 +373,51 @@ _kvm_stub_sudo() {   # log calls instead of running them
   run ensure_kvm_group_access
   [ "$status" -eq 0 ]
 }
+
+@test "kvm access is skipped on the host profile (bare-metal thin client)" {
+  # /dev/kvm often exists on a real desktop; joining a system group there is an
+  # unrequested privilege change, and the core profile runs no emulator.
+  _kvm_stub_sudo; _kvm_stub_stat 994
+  printf '#!/bin/sh\nexit 2\n' > "$TMP/stubs/getent"; chmod +x "$TMP/stubs/getent"
+  manifest_get_profile() { echo host; }
+  export AICODING_KVM_DEVICE=/dev/null
+  run ensure_kvm_group_access
+  [ "$status" -eq 0 ]
+  if grep -q -e groupadd -e usermod "$TMP/ran.log" 2>/dev/null; then false; fi
+}
+
+@test "kvm access still runs on the container profile" {
+  _kvm_stub_sudo; _kvm_stub_stat 994
+  printf '#!/bin/sh\nexit 2\n' > "$TMP/stubs/getent"; chmod +x "$TMP/stubs/getent"
+  manifest_get_profile() { echo container; }
+  export AICODING_KVM_DEVICE=/dev/null
+  ensure_kvm_group_access
+  grep -q "sudo -n usermod -aG kvm " "$TMP/ran.log"
+}
+
+@test "claude runtime scope is skipped on the host profile" {
+  # Premise of the scoping is several containers sharing one bind-mounted home;
+  # a bare host has one home, and relocating live ~/.claude state there is
+  # unrequested. #69 final-review deferred follow-up.
+  export AICODING_CLAUDE_RUNTIME_DIR="$TMP/runtime"
+  manifest_get_profile() { echo host; }
+  mkdir -p "$TMP/.claude/jobs"
+  run ensure_claude_runtime_scope
+  [ "$status" -eq 0 ]
+  [ -d "$TMP/.claude/jobs" ]                       # left a real dir
+  if [ -L "$TMP/.claude/jobs" ]; then false; fi    # not symlinked away
+  if [ -e "$TMP/.claude/jobs.premigrate" ]; then false; fi
+}
+
+@test "claude runtime scope still runs on the container profile" {
+  export AICODING_CLAUDE_RUNTIME_DIR="$TMP/runtime"
+  manifest_get_profile() { echo container; }
+  mkdir -p "$TMP/.claude"
+  ensure_claude_runtime_scope
+  [ -L "$TMP/.claude/jobs" ]
+}
+
+@test "_sync_profile defaults to container when the clone predates profiles" {
+  run bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; _sync_profile'
+  [ "$output" = container ]
+}
