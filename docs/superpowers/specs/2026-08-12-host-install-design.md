@@ -62,14 +62,14 @@ Step list, shared functions used verbatim:
 6. Managed files: the shared `detect_install_mode` →
    `deploy_all_managed_files` / `adopt_existing_files` /
    `reconcile_existing_install` engine, unchanged. This is the heart.
-7. `install_boot_sync_trigger` (new): deploy managed
-   `~/.bashrc.d/aicoding-boot-sync.sh` that runs `aicoding-sync --boot
-   --yes` (self-throttled; `--yes` because a login shell is
-   non-interactive for our purposes — see the 2026-08-12 devMachine note
-   on sync's no-TTY behavior), plus a marker block in `~/.bashrc` that
-   sources `~/.bashrc.d/*.sh` — stock Mint/WSL bashrc doesn't; the
-   container image does it via `/etc/profile`. Marker-block machinery
-   already exists in `lib/blueprint-deploy.sh`.
+7. Boot-sync trigger (new): a managed `~/.bashrc.d/aicoding-boot-sync.sh`
+   that runs `aicoding-sync --boot` throttled and backgrounded. (`--boot`
+   already applies the conservative buckets unattended — the no-TTY
+   "reports but doesn't apply" gotcha only affects flagless interactive
+   mode; `aicoding_sync` takes the first recognized flag, so `--boot
+   --yes` would be `--boot` anyway.) The `~/.bashrc` marker block that
+   sources `~/.bashrc.d/*.sh` is already part of the shared managed set
+   (`managed_bashrc_block_body`), so hosts get it from step 6 for free.
 8. `ensure_homelab_wiki` (new): `git clone
    https://github.com/vossiman/homelab-wiki ~/homelab-wiki` if missing;
    a failed clone warns and continues (agents self-heal per CLAUDE.md).
