@@ -221,3 +221,27 @@ check_playwright() {
     ok "Playwright system libraries present"
   fi
 }
+
+# ensure_homelab_wiki — host-profile step: agents expect ~/homelab-wiki
+# (global CLAUDE.md tells them to consult it). Clone if missing; fail-open
+# (agents clone on demand per their own instructions).
+ensure_homelab_wiki() {
+  header "homelab-wiki"
+  if [[ -d "$HOME/homelab-wiki/.git" ]]; then
+    ok "~/homelab-wiki already present"
+    return 0
+  fi
+  if [[ "${AICODINGSETUP_SKIP_NETWORK:-}" == "1" ]]; then
+    info "Skipping homelab-wiki clone (network provisioning disabled)"
+    return 0
+  fi
+  # PIPESTATUS[0], not the `if pipeline; then` status, because that status
+  # is tail's (always 0) — git's real exit code would otherwise be masked.
+  git clone https://github.com/vossiman/homelab-wiki "$HOME/homelab-wiki" 2>&1 | tail -1
+  if [[ ${PIPESTATUS[0]} -eq 0 ]]; then
+    ok "cloned ~/homelab-wiki"
+  else
+    warn "homelab-wiki clone failed — agents will clone on demand"
+  fi
+  return 0
+}
