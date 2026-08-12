@@ -522,15 +522,70 @@ _update_codex() {
   # ~/.local/bin/codex is absent, which would leave the stale image seed
   # shadowing the update. ~/.codex is the shared host mount, so the new
   # binary reaches every container and survives recreates.
-  if [ -x "$HOME/.codex/bin/codex" ]; then
+  # Two drop-paths, newest first: upstream moved to a versioned
+  # packages/standalone layout behind a `current` symlink; ~/.codex/bin is
+  # the older flat one. Probing only the old path silently did nothing.
+  local cand
+  for cand in "$HOME/.codex/packages/standalone/current/bin/codex" \
+              "$HOME/.codex/bin/codex"; do
+    [ -x "$cand" ] || continue
     mkdir -p "$HOME/.local/bin"
-    ln -sf "$HOME/.codex/bin/codex" "$HOME/.local/bin/codex"
-  fi
+    ln -sf "$cand" "$HOME/.local/bin/codex"
+    break
+  done
   local now
   now=$(codex --version 2>/dev/null | awk '{print $NF}') || true
   if [ "$now" != "$latest" ]; then
     echo "ERROR: codex updated but version is still ${now:-unknown} (expected $latest)" >&2
   fi
+  return 0
+}
+
+# Codex ships TWO binaries per release: `codex` and the Code Mode sidecar
+# `codex-code-mode-host`. Upstream symlinks ~/.local/bin/codex into the
+# release dir and never links the sidecar on Linux — codex resolves it as a
+# sibling of its own resolved path. The image can't keep that layout
+# (~/.codex is a host bind mount at runtime, so baked content is invisible),
+# so image/Dockerfile flattens the symlink into a plain copy — and copying
+# `codex` alone strands the sidecar. codex 0.147.0 made features.code_mode_host
+# stable/default-on, turning the gap into "Code Mode is unavailable ... host
+# executable was not found" with Code Mode failing closed (2026-08-12).
+# Re-pair the two next to the flattened binary. Idempotent, no network,
+# fail-open: a broken Code Mode must never break sync.
+_ensure_codex_code_mode_host() {
+  local bin="$HOME/.local/bin/codex" host="$HOME/.local/bin/codex-code-mode-host"
+  [ -x "$bin" ] || return 0
+  # A symlinked codex resolves its own sibling — upstream's layout. Drop the
+  # flat copy the seed needed: 49MB codex no longer consults (verified
+  # 2026-08-12 on a real container — symlinked codex, no sidecar in
+  # ~/.local/bin, Code Mode silent). Upstream prunes its own equivalent the
+  # same way. Only ever a plain file we placed; a symlink there is someone
+  # else's and stays.
+  if [ -L "$bin" ]; then
+    if [ -f "$host" ] && [ ! -L "$host" ]; then rm -f "$host"; fi
+    return 0
+  fi
+  local version src
+  version=$("$bin" --version 2>/dev/null | awk '{print $NF}') || true
+  [ -n "$version" ] || return 0
+  # Version-matched only: a sidecar from another release is not a fix.
+  for src in "$HOME"/.codex/packages/standalone/releases/"$version"-*/bin/codex-code-mode-host; do
+    [ -x "$src" ] || continue
+    cmp -s "$src" "$host" 2>/dev/null && return 0
+    if cp -f "$src" "$host.tmp.$$" 2>/dev/null && chmod +x "$host.tmp.$$" 2>/dev/null \
+       && mv -f "$host.tmp.$$" "$host" 2>/dev/null; then
+      return 0
+    fi
+    rm -f "$host.tmp.$$"
+    echo "ERROR: could not install codex-code-mode-host — codex Code Mode will fail closed" >&2
+    return 0
+  done
+  [ -x "$host" ] && return 0
+  # No release tree yet (fresh container, mount not populated): the next
+  # _update_codex installs one. Only complain when a tree exists but lacks
+  # this version — that is the real drift.
+  [ -d "$HOME/.codex/packages/standalone/releases" ] || return 0
+  echo "ERROR: no codex-code-mode-host for codex $version under ~/.codex/packages/standalone/releases — Code Mode will fail closed" >&2
   return 0
 }
 
@@ -551,6 +606,9 @@ _sync_binaries() {            # throttled network refresh
       echo "--- cursor (cursor-agent update) ---"; cursor-agent update || true
     fi
     _update_codex || true
+    # After the version gate, not inside it: the pairing can be broken while
+    # codex is perfectly up to date (that is exactly how the image seed ships).
+    _ensure_codex_code_mode_host || true
   fi
 }
 

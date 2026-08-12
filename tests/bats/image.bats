@@ -73,6 +73,16 @@ IMAGE_DIR="$BLUEPRINT_ROOT/image"
   fi
 }
 
+@test "image: codex seed carries its code-mode sidecar" {
+  # Flattening the codex symlink drops the release layout, so the sidecar
+  # `codex-code-mode-host` must be copied next to the binary and asserted.
+  # Seeding `codex` alone ships a codex whose Code Mode fails closed
+  # ("host executable was not found", 2026-08-12).
+  grep -qF 'cp "$codex_host" ~/.local/bin/codex-code-mode-host' "$IMAGE_DIR/Dockerfile"
+  grep -qF '[ -x ~/.local/bin/codex-code-mode-host ]' "$IMAGE_DIR/Dockerfile"
+  grep -qF 'codex-code-mode-host' "$IMAGE_DIR/smoke-test.sh"
+}
+
 @test "image: smoke-test.sh exists, is executable, and checks the core contract" {
   [ -x "$IMAGE_DIR/smoke-test.sh" ]
   run grep -c -E 'tmux-commit|daemon\.json|docker-init\.sh|codespace' "$IMAGE_DIR/smoke-test.sh"
