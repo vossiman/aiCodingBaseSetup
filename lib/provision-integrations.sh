@@ -241,8 +241,10 @@ ensure_homelab_wiki() {
   # aborts the whole installer before the PIPESTATUS check ever runs. `if
   # out=$(...)` puts the failing command directly in the `if` condition,
   # which is the one place errexit is suspended for it.
+  # GIT_TERMINAL_PROMPT=0: with no usable credential helper this must fail
+  # into the warn path below, never hang on an interactive username prompt.
   local out
-  if out=$(git clone https://github.com/vossiman/homelab-wiki "$HOME/homelab-wiki" 2>&1); then
+  if out=$(GIT_TERMINAL_PROMPT=0 git clone https://github.com/vossiman/homelab-wiki "$HOME/homelab-wiki" 2>&1); then
     ok "cloned ~/homelab-wiki"
   else
     printf '%s\n' "$out" | tail -1

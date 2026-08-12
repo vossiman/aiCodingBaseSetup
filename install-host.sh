@@ -95,6 +95,12 @@ main() {
   fi
 
   load_or_prompt_secrets
+  # Register the HTTPS credential helpers NOW, not just at sync time
+  # (_sync_plumbing): the wiki clone below and the first boot-sync both
+  # need them, and on a bare host nothing else has ever registered them
+  # (2026-08-12 Mint field failure: clone prompted for a username).
+  ensure_gh_credential_helper
+  ensure_git_credential_file_fallback
   ensure_claude_code
   report_unmanaged
   install_mcp_packages
