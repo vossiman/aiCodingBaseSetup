@@ -660,3 +660,34 @@ EOF
     | grep -qF '{{HOME}}/.claude/hooks/llmwiki-distill.sh'
   if grep -q 'llmwiki-nudge' "$BLUEPRINT_ROOT/configs/claude/settings.json"; then false; fi
 }
+
+@test "manifest_get_profile: defaults to container when manifest absent" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run manifest_get_profile
+  [ "$status" -eq 0 ]
+  [ "$output" = "container" ]
+}
+
+@test "manifest_set_profile then get round-trips host" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_set_profile host
+  run jq -r '.profile' "$AICODING_MANIFEST"
+  [ "$output" = "host" ]
+  run manifest_get_profile
+  [ "$output" = "host" ]
+}
+
+@test "manifest_set_profile preserves existing manifest keys" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stamp_provision deadbeef
+  manifest_set_profile host
+  run jq -r '.provision_commit' "$AICODING_MANIFEST"
+  [ "$output" = "deadbeef" ]
+}
+
+@test "manifest_get_profile: AICODING_PROFILE env overrides manifest" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_set_profile container
+  AICODING_PROFILE=host run manifest_get_profile
+  [ "$output" = "host" ]
+}

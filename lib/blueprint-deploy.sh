@@ -88,6 +88,36 @@ manifest_stamp_provision() {
   mv "$tmp" "$AICODING_MANIFEST"
 }
 
+# manifest_get_profile — echo this machine's install profile: "host" or
+# "container". Precedence: AICODING_PROFILE env (set by install-host.sh
+# before the first manifest write) → manifest .profile → "container".
+# Absent key = container so every pre-profile machine behaves as before.
+manifest_get_profile() {
+  if [ -n "${AICODING_PROFILE:-}" ]; then
+    printf '%s' "$AICODING_PROFILE"
+    return 0
+  fi
+  if [ -f "$AICODING_MANIFEST" ]; then
+    jq -r '.profile // "container"' "$AICODING_MANIFEST" 2>/dev/null && return 0
+  fi
+  printf 'container'
+}
+
+# manifest_set_profile <profile> — persist the install profile. Same
+# create-or-amend pattern as manifest_stamp_provision.
+manifest_set_profile() {
+  local profile=$1 dir tmp
+  [ -n "$profile" ] || return 0
+  dir=$(dirname "$AICODING_MANIFEST"); mkdir -p "$dir" 2>/dev/null || return 0
+  tmp="$AICODING_MANIFEST.tmp"
+  if [ -f "$AICODING_MANIFEST" ]; then
+    jq --arg p "$profile" '. + {profile:$p}' "$AICODING_MANIFEST" > "$tmp" 2>/dev/null || return 0
+  else
+    jq -n --arg p "$profile" '{profile:$p}' > "$tmp" 2>/dev/null || return 0
+  fi
+  mv "$tmp" "$AICODING_MANIFEST"
+}
+
 # In-memory staged manifest; modified by manifest_set_file /
 # manifest_remove_file between stage_begin and stage_commit.
 _aicoding_pending_manifest=""
