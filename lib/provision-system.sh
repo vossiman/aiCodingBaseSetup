@@ -559,3 +559,23 @@ check_prerequisites() {
     warn "opencode CLI not found — skipping opencode configuration"
   fi
 }
+
+# check_prerequisites_host — host-profile prereq gate. Unlike container
+# check_prerequisites it NEVER auto-installs and never touches apt/sudo:
+# it verifies and, on any miss, prints the exact apt line for the user.
+# node/npm are needed for the npm packages backing stdio MCPs.
+check_prerequisites_host() {
+  local missing=()
+  command -v git  &>/dev/null || missing+=("git")
+  command -v curl &>/dev/null || missing+=("curl")
+  command -v jq   &>/dev/null || missing+=("jq")
+  command -v node &>/dev/null || missing+=("nodejs")
+  command -v npm  &>/dev/null || missing+=("npm")
+  # Claude Code's Linux Bash-sandbox mode needs bwrap (apt pkg: bubblewrap).
+  command -v bwrap &>/dev/null || missing+=("bubblewrap")
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    err "Missing required tools: ${missing[*]}"
+    err "Install them, then re-run:  sudo apt install ${missing[*]}"
+    exit 1
+  fi
+}

@@ -221,3 +221,32 @@ check_playwright() {
     ok "Playwright system libraries present"
   fi
 }
+
+# ensure_homelab_wiki — host-profile step: agents expect ~/homelab-wiki
+# (global CLAUDE.md tells them to consult it). Clone if missing; fail-open
+# (agents clone on demand per their own instructions).
+ensure_homelab_wiki() {
+  header "homelab-wiki"
+  if [[ -d "$HOME/homelab-wiki/.git" ]]; then
+    ok "~/homelab-wiki already present"
+    return 0
+  fi
+  if [[ "${AICODINGSETUP_SKIP_NETWORK:-}" == "1" ]]; then
+    info "Skipping homelab-wiki clone (network provisioning disabled)"
+    return 0
+  fi
+  # Capture into a var and branch on `if out=$(...)`, not a piped `git clone
+  # | tail -1` with a separate PIPESTATUS check: under install-host.sh's
+  # `set -euo pipefail` + ERR trap, a failing command left of a pipe still
+  # aborts the whole installer before the PIPESTATUS check ever runs. `if
+  # out=$(...)` puts the failing command directly in the `if` condition,
+  # which is the one place errexit is suspended for it.
+  local out
+  if out=$(git clone https://github.com/vossiman/homelab-wiki "$HOME/homelab-wiki" 2>&1); then
+    ok "cloned ~/homelab-wiki"
+  else
+    printf '%s\n' "$out" | tail -1
+    warn "homelab-wiki clone failed — agents will clone on demand"
+  fi
+  return 0
+}

@@ -88,6 +88,36 @@ manifest_stamp_provision() {
   mv "$tmp" "$AICODING_MANIFEST"
 }
 
+# manifest_get_profile — echo this machine's install profile: "host" or
+# "container". Precedence: AICODING_PROFILE env (set by install-host.sh
+# before the first manifest write) → manifest .profile → "container".
+# Absent key = container so every pre-profile machine behaves as before.
+manifest_get_profile() {
+  if [ -n "${AICODING_PROFILE:-}" ]; then
+    printf '%s' "$AICODING_PROFILE"
+    return 0
+  fi
+  if [ -f "$AICODING_MANIFEST" ]; then
+    jq -r '.profile // "container"' "$AICODING_MANIFEST" 2>/dev/null && return 0
+  fi
+  printf 'container'
+}
+
+# manifest_set_profile <profile> — persist the install profile. Same
+# create-or-amend pattern as manifest_stamp_provision.
+manifest_set_profile() {
+  local profile=$1 dir tmp
+  [ -n "$profile" ] || return 0
+  dir=$(dirname "$AICODING_MANIFEST"); mkdir -p "$dir" 2>/dev/null || return 0
+  tmp="$AICODING_MANIFEST.tmp"
+  if [ -f "$AICODING_MANIFEST" ]; then
+    jq --arg p "$profile" '. + {profile:$p}' "$AICODING_MANIFEST" > "$tmp" 2>/dev/null || return 0
+  else
+    jq -n --arg p "$profile" '{profile:$p}' > "$tmp" 2>/dev/null || return 0
+  fi
+  mv "$tmp" "$AICODING_MANIFEST"
+}
+
 # In-memory staged manifest; modified by manifest_set_file /
 # manifest_remove_file between stage_begin and stage_commit.
 _aicoding_pending_manifest=""
@@ -356,10 +386,14 @@ remove_managed_file() {
 # and we want shell expansion to happen at emit time, not earlier.)
 # ----------------------------------------------------------------------------
 
-# managed_inventory_overwrite — files deployed by full overwrite.
+# managed_inventory_overwrite — whole-file managed deployments. Emits
+# "dest|overwrite|blueprint-relative-source" lines. Profile-aware: hosts
+# (manifest_get_profile = host) skip container-only tooling configs and
+# gain the boot-sync trigger; containers are byte-identical to before.
 managed_inventory_overwrite() {
+  local profile
+  profile=$(manifest_get_profile)
   cat <<EOF
-$HOME/.tmux.conf|overwrite|configs/tmux/tmux.conf
 $HOME/.claude/hooks/custom-statusline.js|overwrite|configs/claude/hooks/custom-statusline.js
 $HOME/.claude/hooks/bw-deny-files.sh|overwrite|configs/claude/hooks/bw-deny-files.sh
 $HOME/.claude/hooks/check-archived-docs.sh|overwrite|configs/claude/hooks/check-archived-docs.sh
@@ -368,22 +402,34 @@ $HOME/.claude/hooks/agent-waiting.sh|overwrite|configs/claude/hooks/agent-waitin
 $HOME/.claude/agents/llmwiki-distiller.md|overwrite|configs/claude/agents/llmwiki-distiller.md
 $HOME/.claude/CLAUDE.md|overwrite|configs/claude/CLAUDE.md
 $HOME/.bashrc.d/aicoding-env.sh|overwrite|configs/bash/env.sh
-$HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.sh
 $HOME/.bashrc.d/aicoding-update-notify.sh|overwrite|configs/bash/update-notify.sh
-$HOME/.codex/config.toml|overwrite|configs/codex/config.toml
 $HOME/.bashrc.d/aicoding-aliases.sh|overwrite|configs/bash/aliases.sh
 $HOME/.local/bin/git-credential-aicoding|overwrite|configs/git/git-credential-aicoding
 EOF
+  if [[ "$profile" == host ]]; then
+    echo "$HOME/.bashrc.d/aicoding-boot-sync.sh|overwrite|configs/bash/boot-sync.sh"
+  else
+    cat <<EOF
+$HOME/.tmux.conf|overwrite|configs/tmux/tmux.conf
+$HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.sh
+$HOME/.codex/config.toml|overwrite|configs/codex/config.toml
+EOF
+  fi
 }
 
 # managed_inventory_merge — JSON configs deep-merged into user files.
+# Hosts manage only Claude's settings; opencode/cursor are container-only.
 managed_inventory_merge() {
-  cat <<EOF
-$HOME/.claude/settings.json|merge|configs/claude/settings.json
+  local profile
+  profile=$(manifest_get_profile)
+  echo "$HOME/.claude/settings.json|merge|configs/claude/settings.json"
+  if [[ "$profile" != host ]]; then
+    cat <<EOF
 $HOME/.config/opencode/opencode.json|merge|configs/opencode/opencode.json
 $HOME/.cursor/mcp.json|merge|configs/cursor/mcp.json
 $HOME/.cursor/cli-config.json|merge|configs/cursor/cli-config.json
 EOF
+  fi
 }
 
 # Fixed marker strings for the managed ~/.bashrc block.

@@ -45,6 +45,28 @@ teardown() { cd /; rm -rf "$TMP"; }
   [ ! -s "$TMP/ran.log" ]                  # binaries were NOT refreshed
 }
 
+@test "_sync_binaries: host profile refreshes claude only" {
+  printf '#!/bin/sh\necho "codex $*" >> "$TMP/ran.log"\n' > "$TMP/stubs/codex"; chmod +x "$TMP/stubs/codex"
+  mkdir -p "$(dirname "$AICODING_MANIFEST")"
+  echo '{"profile":"host"}' > "$AICODING_MANIFEST"
+  : > "$TMP/ran.log"
+  . "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  _sync_binaries
+  grep -q "^claude update" "$TMP/ran.log"
+  [ "$(grep -c '^opencode' "$TMP/ran.log")" = 0 ]
+  [ "$(grep -c '^agent' "$TMP/ran.log")" = 0 ]
+  [ "$(grep -c '^codex' "$TMP/ran.log")" = 0 ]
+}
+
+@test "_sync_binaries: container/absent profile refreshes all CLIs" {
+  : > "$TMP/ran.log"
+  . "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  _sync_binaries
+  grep -q "^claude update" "$TMP/ran.log"
+  grep -q "^opencode upgrade" "$TMP/ran.log"
+  grep -q "^agent update" "$TMP/ran.log"
+}
+
 @test "sync exits 0 even if a binary update fails (fail-open)" {
   printf '#!/bin/sh\nexit 7\n' > "$TMP/stubs/claude"; chmod +x "$TMP/stubs/claude"
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null

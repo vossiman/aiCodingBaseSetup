@@ -478,14 +478,21 @@ _sync_binaries() {            # throttled network refresh
   # binary is named `agent`, so its errors read as someone else's without one
   # (2026-08-12: "[unauthenticated]" mistaken for codex). _update_codex needs
   # no header: silent on success, self-labeled ERROR lines otherwise.
+  # Host profile (bare-metal thin clients): claude is the only CLI the
+  # core profile installs, so it's the only one to refresh. Guarded: an
+  # old blueprint clone may predate manifest_get_profile.
+  local profile=container
+  command -v manifest_get_profile >/dev/null 2>&1 && profile=$(manifest_get_profile)
   command -v claude   >/dev/null 2>&1 && { echo "--- claude update ---";    claude update    || true; }
-  command -v opencode >/dev/null 2>&1 && { echo "--- opencode upgrade ---"; opencode upgrade || true; }
-  if command -v agent >/dev/null 2>&1; then
-    echo "--- cursor (agent update) ---"; agent update || true
-  elif command -v cursor-agent >/dev/null 2>&1; then
-    echo "--- cursor (cursor-agent update) ---"; cursor-agent update || true
+  if [ "$profile" != host ]; then
+    command -v opencode >/dev/null 2>&1 && { echo "--- opencode upgrade ---"; opencode upgrade || true; }
+    if command -v agent >/dev/null 2>&1; then
+      echo "--- cursor (agent update) ---"; agent update || true
+    elif command -v cursor-agent >/dev/null 2>&1; then
+      echo "--- cursor (cursor-agent update) ---"; cursor-agent update || true
+    fi
+    _update_codex || true
   fi
-  _update_codex || true
 }
 
 # Reconcile machine state that isn't a managed file: MCP registrations,

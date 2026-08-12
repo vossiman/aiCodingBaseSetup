@@ -14,6 +14,8 @@ for arg in "${AICODING_REMAINING_ARGS[@]}"; do
     -h|--help)
       echo "usage: aicoding-install [--blueprint PATH] [--force-reinstall]"
       echo "  --blueprint PATH  install from this local Git checkout verbatim (never fetch or reset it)"
+      echo "  Dispatches on the manifest's profile: host machines re-run install-host.sh,"
+      echo "  everything else (default) re-runs install.sh."
       exit 0
       ;;
   esac
@@ -29,7 +31,18 @@ fi
 if command -v refresh_blueprint >/dev/null 2>&1; then
   refresh_blueprint || exit $?
 fi
-if [ -f "$AICODING_BLUEPRINT_CLONE/install.sh" ]; then
-  exec bash "$AICODING_BLUEPRINT_CLONE/install.sh" "${AICODING_REMAINING_ARGS[@]}"
+# Host-profile machines re-run the host installer; everything else keeps
+# the container installer. Read the profile straight from the manifest —
+# bin scripts don't source blueprint-deploy.sh.
+manifest="${AICODING_MANIFEST:-$HOME/.local/state/aicoding/manifest.json}"
+profile=container
+if command -v jq >/dev/null 2>&1 && [ -f "$manifest" ]; then
+  profile=$(jq -r '.profile // "container"' "$manifest" 2>/dev/null || echo container)
 fi
-exec bash "$SCRIPT_DIR/install.sh" "${AICODING_REMAINING_ARGS[@]}"
+installer=install.sh
+[ "$profile" = host ] && installer=install-host.sh
+
+if [ -f "$AICODING_BLUEPRINT_CLONE/$installer" ]; then
+  exec bash "$AICODING_BLUEPRINT_CLONE/$installer" "${AICODING_REMAINING_ARGS[@]}"
+fi
+exec bash "$SCRIPT_DIR/$installer" "${AICODING_REMAINING_ARGS[@]}"

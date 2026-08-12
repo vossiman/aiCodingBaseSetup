@@ -34,6 +34,7 @@ declare -F info   >/dev/null || info()   { echo "INFO: $*"; }
 declare -F ok     >/dev/null || ok()     { echo "  OK: $*"; }
 declare -F warn   >/dev/null || warn()   { echo "WARN: $*"; }
 declare -F header >/dev/null || header() { echo "=== $* ==="; }
+declare -F err    >/dev/null || err()    { echo "ERROR: $*"; }
 
 # --- MCP npm packages ---
 # Install MCP server binaries that aren't run via npx

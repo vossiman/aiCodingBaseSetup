@@ -166,6 +166,18 @@ aicoding-install --blueprint /path/to/aiCodingBaseSetup  # provision from a loca
 
 Re-running the installer on an initialized container (manifest exists) re-runs the apt/build/locale prereq steps (idempotent) **and** then runs **reconcile mode**, which automatically applies the conservative buckets without any prompts. Use it when provisioning-only pieces broke or changed (tool bootstrap incl. codex, templates, tmux plugins, Playwright browser + system libs) — `aicoding-sync` deliberately doesn't touch those. Running `./install.sh` from a checkout does the same against that checkout's version.
 
+`aicoding-install` is profile-aware: it reads `.profile` from the manifest and re-runs `install-host.sh` on host machines, `install.sh` everywhere else — same muscle memory either way.
+
+### Bare-host install (no devcontainer)
+
+For a laptop or server that isn't a devpod container, `install-host.sh` deploys a thin, core-only profile: the `claude` CLI, the managed Claude layer (CLAUDE.md, hooks, MCPs/plugins), the homelab-wiki clone, and terminal-open auto-sync (6h-throttled) — plus the sandbox prereq (`bwrap`) and `bw-AICode` tooling. It skips everything container-only: codex/opencode/cursor, Playwright, Go, tmux. Day-2 commands are identical to the container flow — `aicoding-sync` and `aicoding-install` both read the manifest's `.profile` and stay on the host installer.
+
+```bash
+gh auth login          # or place GH_TOKEN in ~/.aicodingsetup/.secrets.env
+git clone https://github.com/vossiman/aiCodingBaseSetup && cd aiCodingBaseSetup
+./install-host.sh
+```
+
 ### Per-CLI binary refresh (`aicoding-sync --boot`)
 
 Different CLIs have different in-place update stories. Container `postStartCommand`
