@@ -63,6 +63,14 @@ blueprint_copy() {
   [ -f "$HOME/.tmux.conf" ]
 }
 
+@test "install.sh: container flow writes no profile key to the manifest" {
+  # Regression pin (spec 2026-08-12-host-install-design.md): absent profile
+  # key IS the container contract — only install-host.sh may write one.
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  run jq 'has("profile")' "$AICODING_MANIFEST"
+  [ "$output" = "false" ]
+}
+
 @test "install.sh mode: adopt when managed files exist but no manifest" {
   mkdir -p "$HOME"
   echo "user-customised tmux config" > "$HOME/.tmux.conf"

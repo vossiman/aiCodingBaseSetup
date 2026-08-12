@@ -195,6 +195,20 @@ EOF
   [[ "$output" == *"GTP=0"* ]]
 }
 
+@test "boot-sync snippet: falls back to ~/.local/bin when aicoding-sync is not on PATH" {
+  # A fresh machine's first login shell may predate ~/.local/bin appearing
+  # on PATH (Debian/Mint add it only when the dir existed at login), which
+  # would silently defer the first sync forever. PATH below deliberately
+  # excludes both the fake $HOME/.local/bin and the devcontainer's real
+  # aicoding-sync.
+  unset AICODINGSETUP_SKIP_NETWORK
+  printf '#!/bin/bash\necho "RAN $*" > "$HOME/sync-ran"\n' > "$HOME/.local/bin/aicoding-sync"
+  chmod +x "$HOME/.local/bin/aicoding-sync"
+  run bash -c "PATH='$TMPDIR/stubs:/usr/bin:/bin'; source '$BLUEPRINT_ROOT/configs/bash/boot-sync.sh'; for i in \$(seq 50); do [ -f \"\$HOME/sync-ran\" ] && break; sleep 0.1; done; cat \"\$HOME/sync-ran\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"RAN --boot"* ]]
+}
+
 @test "aicoding-install: dispatches to install-host.sh when profile=host" {
   mkdir -p "$HOME/.local/state/aicoding"
   echo '{"profile":"host"}' > "$HOME/.local/state/aicoding/manifest.json"
