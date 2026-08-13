@@ -17,8 +17,15 @@ Managed by the aiCodingBaseSetup blueprint (`configs/claude/CLAUDE.md`);
   entry above" bullet — then commit+push to its `main` autonomously; that
   repo's governance allows it). **Project-internal**
   lessons go to the project's CLAUDE.md or `docs/notes/`. Don't record what
-  code, git history, or docs already show. For homelab questions, consult
-  `~/homelab-wiki` before re-deriving from raw repos.
+  code, git history, or docs already show. That is the **write path** and it
+  is unchanged.
+- **Read path — retrieval.** For homelab, environment, or infrastructure
+  questions, call the `memory_search` MCP tool (the `memory-router` server)
+  before re-deriving anything from raw repos. If the router is unavailable,
+  fall back to grepping the local `~/homelab-wiki` clone. If both fail,
+  proceed without retrieval rather than blocking. Retrieval never replaces
+  the write path above: durable lessons still get written to the wiki (or
+  `docs/notes/`) under the wiki's own `AGENTS.md` conventions.
 - Integrate via PR — never commit or force-push to a protected `main`. Ask
   before merging; delete merged branches.
 
