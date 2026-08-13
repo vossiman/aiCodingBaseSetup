@@ -12,6 +12,7 @@ setup() {
   TMPDIR=$(mktemp -d)
   export HOME="$TMPDIR"
   unset LLMWIKI_DISTILLER LLMWIKI_NUDGE_INTERVAL LLMWIKI_MIN_DELTA_BYTES
+  unset MEMORY_LANES_TEE MEMORY_LANES_SPOOL
 
   mkdir -p "$TMPDIR/stubs"
   cat > "$TMPDIR/stubs/claude" <<'STUB'
@@ -152,6 +153,94 @@ launched() { [ -f "$HOME/claude-args" ]; }
   [ ! -f "$STATE_DIR/offsets/s1" ] # offset file not stamped
   # Verify no throttle files created (only offsets/ and slices/ dirs)
   [ "$(find "$STATE_DIR" -maxdepth 1 -type f 2>/dev/null | wc -l)" -eq 0 ]
+}
+
+# --- memory-lanes slice tee ------------------------------------------------
+# The tee is additive: it copies a REDACTED slice to the spool as
+# <session-id>-<offset>. Nothing here may change distiller/offset/throttle
+# behaviour, and no failure may make the hook exit non-zero.
+
+SPOOL() { printf '%s' "$HOME/.local/state/memory-lanes/inbox"; }
+
+@test "llmwiki-distill: tee spools the slice as <session>-<offset>" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  { head -c 4096 /dev/zero | tr '\0' 'A'; head -c 8192 /dev/zero | tr '\0' 'B'; } \
+    > "$TMPDIR/t.jsonl"
+  mkdir -p "$STATE_DIR/offsets"
+  printf '4096' > "$STATE_DIR/offsets/s1"
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s1)"
+  [ "$status" -eq 0 ]
+  launched
+  [ -f "$(SPOOL)/s1-4096" ]
+  # Same window as the distiller slice: only the post-offset bytes.
+  grep -q 'B' "$(SPOOL)/s1-4096"
+  if grep -q 'A' "$(SPOOL)/s1-4096"; then false; fi
+  # No stray temp files left behind.
+  [ "$(find "$(SPOOL)" -name '.tmp-*' | wc -l)" -eq 0 ]
+}
+
+@test "llmwiki-distill: tee redacts pattern-shaped and literal secrets" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  literal="zz11aaBB22ccDD33eeFF44ggHH55iiJJ"
+  mkdir -p "$HOME/.aicodingsetup"
+  printf 'MEMORY_ROUTER_TOKEN=%s\n' "$literal" > "$HOME/.aicodingsetup/.secrets.env"
+
+  {
+    printf 'ordinary prose about the tmux server that must survive\n'
+    printf 'gh token ghp_abcdefghijklmnopqrstuvwxyz012345 in a log line\n'
+    printf 'openai key sk-abcdefghijklmnopqrstuvwx here\n'
+    printf 'FOO_TOKEN=abcdef123456\n'
+    printf 'router token %s inline\n' "$literal"
+    head -c 8192 /dev/zero | tr '\0' 'q'; printf '\n'
+  } > "$TMPDIR/t.jsonl"
+
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s2)"
+  [ "$status" -eq 0 ]
+  spooled="$(SPOOL)/s2-0"
+  [ -f "$spooled" ]
+  if grep -q 'ghp_abcdefghijklmnopqrstuvwxyz012345' "$spooled"; then false; fi
+  if grep -q 'sk-abcdefghijklmnopqrstuvwx' "$spooled"; then false; fi
+  if grep -q 'abcdef123456' "$spooled"; then false; fi
+  if grep -qF "$literal" "$spooled"; then false; fi
+  grep -q 'REDACTED' "$spooled"
+  # Key names and ordinary prose survive — the slice stays useful.
+  grep -q 'ordinary prose about the tmux server that must survive' "$spooled"
+  grep -q 'FOO_TOKEN=' "$spooled"
+  # The read-only secrets file is never rewritten.
+  grep -qx "MEMORY_ROUTER_TOKEN=$literal" "$HOME/.aicodingsetup/.secrets.env"
+}
+
+@test "llmwiki-distill: tee works with no secrets file present" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  [ ! -e "$HOME/.aicodingsetup/.secrets.env" ]
+  mktranscript "$TMPDIR/t.jsonl" 8192 'z'
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s3)"
+  [ "$status" -eq 0 ]
+  launched
+  [ -f "$(SPOOL)/s3-0" ]
+}
+
+@test "llmwiki-distill: unusable spool dir still exits 0 and still runs the distiller" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  # A regular file where the spool's parent dir must be: mkdir -p can never
+  # succeed. (chmod 000 would be a no-op for a root CI runner.)
+  printf 'not a directory' > "$TMPDIR/blocked"
+  export MEMORY_LANES_SPOOL="$TMPDIR/blocked/inbox"
+  mktranscript "$TMPDIR/t.jsonl" 8192
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s4)"
+  [ "$status" -eq 0 ]
+  launched
+  [ ! -e "$TMPDIR/blocked/inbox" ]
+  [ "$(cat "$STATE_DIR/offsets/s4")" -eq 8192 ]
+}
+
+@test "llmwiki-distill: MEMORY_LANES_TEE=0 disables the tee" {
+  export LLMWIKI_NUDGE_INTERVAL=0 MEMORY_LANES_TEE=0
+  mktranscript "$TMPDIR/t.jsonl" 8192
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s5)"
+  [ "$status" -eq 0 ]
+  launched
+  [ ! -d "$(SPOOL)" ]
 }
 
 @test "llmwiki-distiller agent: frontmatter name/model match the hook contract" {
