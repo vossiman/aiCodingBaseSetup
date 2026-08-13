@@ -12,6 +12,7 @@ setup() {
   TMPDIR=$(mktemp -d)
   export HOME="$TMPDIR"
   unset LLMWIKI_DISTILLER LLMWIKI_NUDGE_INTERVAL LLMWIKI_MIN_DELTA_BYTES
+  unset MEMORY_LANES_TEE MEMORY_LANES_SPOOL
 
   mkdir -p "$TMPDIR/stubs"
   cat > "$TMPDIR/stubs/claude" <<'STUB'
@@ -152,6 +153,265 @@ launched() { [ -f "$HOME/claude-args" ]; }
   [ ! -f "$STATE_DIR/offsets/s1" ] # offset file not stamped
   # Verify no throttle files created (only offsets/ and slices/ dirs)
   [ "$(find "$STATE_DIR" -maxdepth 1 -type f 2>/dev/null | wc -l)" -eq 0 ]
+}
+
+# --- memory-lanes slice tee ------------------------------------------------
+# The tee is additive: it copies a REDACTED slice to the spool as
+# <session-id>-<offset>. Nothing here may change distiller/offset/throttle
+# behaviour, and no failure may make the hook exit non-zero.
+
+SPOOL() { printf '%s' "$HOME/.local/state/memory-lanes/inbox"; }
+
+@test "llmwiki-distill: tee spools the slice as <session>-<offset>" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  { head -c 4096 /dev/zero | tr '\0' 'A'; head -c 8192 /dev/zero | tr '\0' 'B'; } \
+    > "$TMPDIR/t.jsonl"
+  mkdir -p "$STATE_DIR/offsets"
+  printf '4096' > "$STATE_DIR/offsets/s1"
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s1)"
+  [ "$status" -eq 0 ]
+  launched
+  [ -f "$(SPOOL)/s1-4096" ]
+  # Same window as the distiller slice: only the post-offset bytes.
+  grep -q 'B' "$(SPOOL)/s1-4096"
+  if grep -q 'A' "$(SPOOL)/s1-4096"; then false; fi
+  # No stray temp files left behind.
+  [ "$(find "$(SPOOL)" -name '.tmp-*' | wc -l)" -eq 0 ]
+}
+
+# pad — 8KB of filler so the delta always clears MIN_DELTA. Plain 'q' runs
+# match no redaction rule (single character class, no digits).
+pad() { head -c 8192 /dev/zero | tr '\0' 'q'; printf '\n'; }
+
+@test "llmwiki-distill: tee redacts pattern-shaped and literal secrets" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  # Literal-only value: 32 lowercase hex. Below the 48-hex rule, no uppercase
+  # (so the entropy layer cannot see it), planted as bare prose (so the
+  # credential-keyword rule cannot see it). ONLY the literal layer catches it,
+  # which is what makes this assertion able to fail.
+  literal="deadbeefcafebabefeedface12345678"
+  mkdir -p "$HOME/.aicodingsetup"
+  printf 'MEMORY_ROUTER_TOKEN=%s\n' "$literal" > "$HOME/.aicodingsetup/.secrets.env"
+
+  {
+    printf 'ordinary prose about the tmux server that must survive\n'
+    printf 'gh token ghp_abcdefghijklmnopqrstuvwxyz012345 in a log line\n'
+    printf 'openai key sk-abcdefghijklmnopqrstuvwx here\n'
+    printf 'FOO_TOKEN=abcdef123456\n'
+    printf 'router token %s inline\n' "$literal"
+    head -c 8192 /dev/zero | tr '\0' 'q'; printf '\n'
+  } > "$TMPDIR/t.jsonl"
+
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s2)"
+  [ "$status" -eq 0 ]
+  spooled="$(SPOOL)/s2-0"
+  [ -f "$spooled" ]
+  if grep -q 'ghp_abcdefghijklmnopqrstuvwxyz012345' "$spooled"; then false; fi
+  if grep -q 'sk-abcdefghijklmnopqrstuvwx' "$spooled"; then false; fi
+  if grep -q 'abcdef123456' "$spooled"; then false; fi
+  if grep -qF "$literal" "$spooled"; then false; fi
+  grep -q 'REDACTED' "$spooled"
+  # Key names and ordinary prose survive — the slice stays useful.
+  grep -q 'ordinary prose about the tmux server that must survive' "$spooled"
+  grep -q 'FOO_TOKEN=' "$spooled"
+  # The read-only secrets file is never rewritten.
+  grep -qx "MEMORY_ROUTER_TOKEN=$literal" "$HOME/.aicodingsetup/.secrets.env"
+}
+
+# Decision (a): an ABSENT secrets file is not a failure — a machine with no
+# secrets file has no literal values to leak, so the tee proceeds with the
+# pattern + entropy layers only. This test pins that, and simultaneously pins
+# that the literal-only fixture above really is literal-only: without the
+# secrets file the very same value survives.
+@test "llmwiki-distill: no secrets file — tee proceeds, patterns still redact, literals do not" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  [ ! -e "$HOME/.aicodingsetup/.secrets.env" ]
+  literal="deadbeefcafebabefeedface12345678"
+  {
+    printf 'router value %s inline\n' "$literal"
+    printf 'gh token ghp_abcdefghijklmnopqrstuvwxyz012345 in a log line\n'
+    pad
+  } > "$TMPDIR/t.jsonl"
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s3)"
+  [ "$status" -eq 0 ]
+  launched
+  [ -f "$(SPOOL)/s3-0" ]
+  # Pattern layer still active.
+  if grep -q 'ghp_abcdefghijklmnopqrstuvwxyz012345' "$(SPOOL)/s3-0"; then false; fi
+  # No secrets file => no literal layer => the literal-only value survives.
+  # (If this ever fails, some other layer now covers it and the literal test
+  # above has gone vacuous.)
+  grep -qF "$literal" "$(SPOOL)/s3-0"
+}
+
+@test "llmwiki-distill: secrets file present but unreadable — fail closed, nothing spooled" {
+  if [ "$(id -u)" -eq 0 ]; then
+    skip "running as root: chmod 000 does not make a file unreadable"
+  fi
+  export LLMWIKI_NUDGE_INTERVAL=0
+  mkdir -p "$HOME/.aicodingsetup"
+  printf 'MEMORY_ROUTER_TOKEN=deadbeefcafebabefeedface12345678\n' \
+    > "$HOME/.aicodingsetup/.secrets.env"
+  chmod 000 "$HOME/.aicodingsetup/.secrets.env"
+
+  { printf 'router value deadbeefcafebabefeedface12345678 inline\n'; pad; } \
+    > "$TMPDIR/t.jsonl"
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s3u)"
+
+  # Fail closed means "no spool file", never "the hook fails".
+  [ "$status" -eq 0 ]
+  launched
+  [ ! -e "$(SPOOL)/s3u-0" ]
+  [ "$(find "$(SPOOL)" -maxdepth 1 -type f 2>/dev/null | wc -l)" -eq 0 ]
+  # The distiller path is untouched: state still stamped.
+  [ -f "$STATE_DIR/offsets/s3u" ]
+}
+
+@test "llmwiki-distill: partially parsed secrets file — fail closed, nothing spooled" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  mkdir -p "$HOME/.aicodingsetup"
+  # `read` silently drops the trailing NUL, so the shell sees a 7-char value
+  # (below the literal floor, no rule emitted) while the independent counter
+  # sees the 8 bytes actually on disk and expects one rule. The counts diverge
+  # => the literal layer is untrustworthy => nothing is spooled.
+  printf 'MANGLED=abcdefg\000\n' > "$HOME/.aicodingsetup/.secrets.env"
+  { printf 'value abcdefg inline\n'; pad; } > "$TMPDIR/t.jsonl"
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s3c)"
+  [ "$status" -eq 0 ]
+  launched
+  [ ! -e "$(SPOOL)/s3c-0" ]
+  [ "$(find "$(SPOOL)" -maxdepth 1 -type f 2>/dev/null | wc -l)" -eq 0 ]
+}
+
+@test "llmwiki-distill: tee redacts JSON-escaped forms of literal secrets" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  quoted='abc"def12345'
+  slashed='abc\def12345'
+  mkdir -p "$HOME/.aicodingsetup"
+  { printf 'Q_TOKEN=%s\n' "$quoted"; printf 'S_TOKEN=%s\n' "$slashed"; } \
+    > "$HOME/.aicodingsetup/.secrets.env"
+
+  # Transcripts are JSONL: a `"` is stored as \" and a `\` as \\.
+  {
+    printf 'line one %s tail\n' 'abc\"def12345'
+    printf 'line two %s tail\n' 'abc\\def12345'
+    pad
+  } > "$TMPDIR/t.jsonl"
+
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s3j)"
+  [ "$status" -eq 0 ]
+  spooled="$(SPOOL)/s3j-0"
+  [ -f "$spooled" ]
+  if grep -qF 'abc\"def12345' "$spooled"; then false; fi
+  if grep -qF 'abc\\def12345' "$spooled"; then false; fi
+  grep -q 'REDACTED' "$spooled"
+}
+
+@test "llmwiki-distill: literal values containing ERE metacharacters are matched literally" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  meta='a.b*c[d]e+f$g12345'
+  mkdir -p "$HOME/.aicodingsetup"
+  printf 'META_TOKEN=%s\n' "$meta" > "$HOME/.aicodingsetup/.secrets.env"
+  {
+    printf 'exact %s here\n' "$meta"
+    printf 'regexy aXbYcZdWeVfUg12345 here\n'
+    pad
+  } > "$TMPDIR/t.jsonl"
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s3m)"
+  [ "$status" -eq 0 ]
+  spooled="$(SPOOL)/s3m-0"
+  [ -f "$spooled" ]
+  if grep -qF "$meta" "$spooled"; then false; fi
+  # The metacharacters were escaped, not interpreted: a string the value would
+  # match only as a REGEX survives untouched.
+  grep -q 'aXbYcZdWeVfUg12345' "$spooled"
+}
+
+@test "llmwiki-distill: literal layer floor is 8 chars (7 survives, 8 redacted)" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  mkdir -p "$HOME/.aicodingsetup"
+  { printf 'SEVEN=qwertyu\n'; printf 'EIGHT=zxcvbnml\n'; } \
+    > "$HOME/.aicodingsetup/.secrets.env"
+  { printf 'seven qwertyu inline\neight zxcvbnml inline\n'; pad; } \
+    > "$TMPDIR/t.jsonl"
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s3f)"
+  [ "$status" -eq 0 ]
+  spooled="$(SPOOL)/s3f-0"
+  [ -f "$spooled" ]
+  # Characterization: below the floor, values are deliberately NOT redacted —
+  # a short value would shred ordinary prose.
+  grep -q 'seven qwertyu inline' "$spooled"
+  if grep -q 'zxcvbnml' "$spooled"; then false; fi
+}
+
+@test "llmwiki-distill: spool dir is 0700 and the spooled slice is 0600" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  mktranscript "$TMPDIR/t.jsonl" 8192 'z'
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s3p)"
+  [ "$status" -eq 0 ]
+  [ -f "$(SPOOL)/s3p-0" ]
+  [ "$(stat -c %a "$(SPOOL)")" = "700" ]
+  [ "$(stat -c %a "$(SPOOL)/s3p-0")" = "600" ]
+}
+
+@test "llmwiki-distill: tee prunes orphan temp files older than 60 minutes" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  mkdir -p "$(SPOOL)"
+  : > "$(SPOOL)/.tmp-oldorphan"
+  touch -d '2 hours ago' "$(SPOOL)/.tmp-oldorphan"
+  : > "$(SPOOL)/.tmp-freshorphan"
+  mktranscript "$TMPDIR/t.jsonl" 8192 'z'
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s3t)"
+  [ "$status" -eq 0 ]
+  [ -f "$(SPOOL)/s3t-0" ]
+  [ ! -e "$(SPOOL)/.tmp-oldorphan" ]
+  # An in-flight temp file from a concurrent run must survive.
+  [ -f "$(SPOOL)/.tmp-freshorphan" ]
+}
+
+@test "llmwiki-distill: token-family rules redact long hex and base64 but spare git SHAs" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  hex64="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  sha40="8f2a1c9d0e4b7a6f3c5d2e1b0a9f8e7d6c5b4a39"
+  aws="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+  {
+    printf 'bare hex %s inline\n' "$hex64"
+    printf 'commit %s landed\n' "$sha40"
+    printf 'blob %s inline\n' "$aws"
+    pad
+  } > "$TMPDIR/t.jsonl"
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s3k)"
+  [ "$status" -eq 0 ]
+  spooled="$(SPOOL)/s3k-0"
+  [ -f "$spooled" ]
+  if grep -qF "$hex64" "$spooled"; then false; fi
+  if grep -qF "$aws" "$spooled"; then false; fi
+  # 40-char lowercase hex is a git SHA, not a secret — the 48-char floor on
+  # the hex rule exists precisely to keep these readable.
+  grep -qF "$sha40" "$spooled"
+}
+
+@test "llmwiki-distill: unusable spool dir still exits 0 and still runs the distiller" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  # A regular file where the spool's parent dir must be: mkdir -p can never
+  # succeed. (chmod 000 would be a no-op for a root CI runner.)
+  printf 'not a directory' > "$TMPDIR/blocked"
+  export MEMORY_LANES_SPOOL="$TMPDIR/blocked/inbox"
+  mktranscript "$TMPDIR/t.jsonl" 8192
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s4)"
+  [ "$status" -eq 0 ]
+  launched
+  [ ! -e "$TMPDIR/blocked/inbox" ]
+  [ "$(cat "$STATE_DIR/offsets/s4")" -eq 8192 ]
+}
+
+@test "llmwiki-distill: MEMORY_LANES_TEE=0 disables the tee" {
+  export LLMWIKI_NUDGE_INTERVAL=0 MEMORY_LANES_TEE=0
+  mktranscript "$TMPDIR/t.jsonl" 8192
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s5)"
+  [ "$status" -eq 0 ]
+  launched
+  [ ! -d "$(SPOOL)" ]
 }
 
 @test "llmwiki-distiller agent: frontmatter name/model match the hook contract" {

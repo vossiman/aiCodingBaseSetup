@@ -644,6 +644,18 @@ EOF
   grep -q 'dedicated git worktree' "$BLUEPRINT_ROOT/configs/claude/CLAUDE.md"
 }
 
+@test "claude CLAUDE.md fragment: retrieval read path goes through memory_search" {
+  CM="$BLUEPRINT_ROOT/configs/claude/CLAUDE.md"
+  grep -q 'memory_search' "$CM"
+  grep -q 'memory-router' "$CM"
+  # Fallback and non-blocking clauses must both survive edits.
+  grep -q 'grepping the local `~/homelab-wiki` clone' "$CM"
+  grep -qi 'rather than blocking' "$CM"
+  # The old unconditional "consult the wiki clone first" sentence is gone
+  # (it wrapped across two lines, so compare with newlines flattened).
+  if tr '\n' ' ' < "$CM" | grep -q 'consult *`~/homelab-wiki` before re-deriving'; then false; fi
+}
+
 @test "managed_inventory_overwrite: llmwiki distill hook + distiller agent rows, nudge row gone" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run managed_inventory_overwrite
