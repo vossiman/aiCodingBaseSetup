@@ -5,7 +5,7 @@
 # not just fresh provisions. Sourced (no shebang / set -e); matches lib/*.sh.
 
 # Managed component lists (also used for unmanaged component detection).
-MANAGED_MCPS=("firecrawl" "brave-search" "context7" "playwright" "logfire")
+MANAGED_MCPS=("firecrawl" "brave-search" "context7" "playwright" "logfire" "memory-router")
 MANAGED_PLUGINS=(
   "superpowers@claude-plugins-official"
   "frontend-design@claude-plugins-official"
@@ -124,6 +124,21 @@ install_claude_mcps() {
     ok "logfire MCP already configured"
   else
     warn "logfire MCP may need manual setup"
+  fi
+
+  # memory-router — local memory-lanes retrieval router (the memory_search
+  # tool). HTTP MCP on localhost:8091 with bearer auth; the token is a shared
+  # secret from ~/.aicodingsetup/.secrets.env, so no token means no server.
+  if [[ -n "${MEMORY_ROUTER_TOKEN:-}" ]]; then
+    if claude mcp add --transport http -s user memory-router http://localhost:8091/mcp -H "Authorization: Bearer ${MEMORY_ROUTER_TOKEN}" 2>/dev/null; then
+      ok "memory-router MCP configured"
+    elif claude mcp get memory-router &>/dev/null; then
+      ok "memory-router MCP already configured"
+    else
+      warn "memory-router MCP may need manual setup"
+    fi
+  else
+    warn "memory-router MCP skipped (MEMORY_ROUTER_TOKEN not set)"
   fi
 }
 

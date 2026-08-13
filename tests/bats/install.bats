@@ -457,6 +457,38 @@ EOF
   grep -E "mcp add .*logfire" "$TMPDIR/claude-calls" | grep -q "https://logfire-eu.pydantic.dev/mcp"
 }
 
+@test "install_claude_mcps: registers memory-router over http with bearer auth" {
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+  export MEMORY_ROUTER_TOKEN=testtoken
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  line=$(grep -E "mcp add .*memory-router" "$TMPDIR/claude-calls")
+  echo "$line" | grep -q -- "--transport http"
+  echo "$line" | grep -q "http://localhost:8091/mcp"
+  echo "$line" | grep -q "Authorization: Bearer testtoken"
+}
+
+@test "install_claude_mcps: skips memory-router when MEMORY_ROUTER_TOKEN is unset" {
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+  unset MEMORY_ROUTER_TOKEN
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  if grep -qE "mcp add .*memory-router" "$TMPDIR/claude-calls"; then false; fi
+  echo "$output" | grep -q "MEMORY_ROUTER_TOKEN not set"
+}
+
 @test "install_claude_plugins: does not install the logfire plugin, uninstalls it if present" {
   # The plugin's bundled MCP server hardcodes the US URL (no repoint, no
   # per-server disable) — we run the EU hosted MCP at user scope instead.
