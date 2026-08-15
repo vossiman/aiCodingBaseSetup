@@ -4,7 +4,7 @@
 # {{HOME}} / {{*_API_KEY}} placeholders are substituted at deploy time by
 # lib/blueprint-deploy.sh's deploy_overwrite_file_substituted pipeline.
 
-model = "gpt-5.5"
+model = "gpt-5.6-sol"
 
 # Push a phone notification when a turn completes (agent-waiting feature).
 # codex invokes argv + one JSON arg; only agent-turn-complete fires today —
