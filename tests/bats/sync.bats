@@ -351,6 +351,13 @@ _kvm_stub_stat() {   # $1 = gid the fake device reports
 _kvm_stub_sudo() {   # log calls instead of running them
   printf '#!/bin/sh\necho "sudo $*" >> "$TMP/ran.log"\n' > "$TMP/stubs/sudo"; chmod +x "$TMP/stubs/sudo"
 }
+_kvm_unused_gid() {
+  local gid=42424 groups=" $(id -G) "
+  while [[ "$groups" == *" $gid "* ]]; do
+    gid=$((gid + 1))
+  done
+  printf '%s\n' "$gid"
+}
 
 @test "kvm access is skipped on a host without /dev/kvm" {
   _kvm_stub_sudo
@@ -361,18 +368,22 @@ _kvm_stub_sudo() {   # log calls instead of running them
 }
 
 @test "kvm access creates the missing group and joins it" {
-  _kvm_stub_sudo; _kvm_stub_stat 994
+  local gid
+  gid=$(_kvm_unused_gid)
+  _kvm_stub_sudo; _kvm_stub_stat "$gid"
   printf '#!/bin/sh\nexit 2\n' > "$TMP/stubs/getent"; chmod +x "$TMP/stubs/getent"   # no group, any name
   export AICODING_KVM_DEVICE=/dev/null
   run ensure_kvm_group_access
   [ "$status" -eq 0 ]
-  grep -q "sudo -n groupadd -g 994 kvm" "$TMP/ran.log"
+  grep -q "sudo -n groupadd -g $gid kvm" "$TMP/ran.log"
   grep -q "sudo -n usermod -aG kvm " "$TMP/ran.log"
 }
 
 @test "kvm access reuses an existing group with the device's gid" {
-  _kvm_stub_sudo; _kvm_stub_stat 994
-  printf '#!/bin/sh\necho "kvm:x:994:"\n' > "$TMP/stubs/getent"; chmod +x "$TMP/stubs/getent"
+  local gid
+  gid=$(_kvm_unused_gid)
+  _kvm_stub_sudo; _kvm_stub_stat "$gid"
+  printf '#!/bin/sh\necho "kvm:x:%s:"\n' "$gid" > "$TMP/stubs/getent"; chmod +x "$TMP/stubs/getent"
   export AICODING_KVM_DEVICE=/dev/null
   ensure_kvm_group_access
   if grep -q groupadd "$TMP/ran.log" 2>/dev/null; then false; fi
@@ -380,13 +391,15 @@ _kvm_stub_sudo() {   # log calls instead of running them
 }
 
 @test "kvm access picks a distinct name when 'kvm' is taken by another gid" {
-  _kvm_stub_sudo; _kvm_stub_stat 994
+  local gid
+  gid=$(_kvm_unused_gid)
+  _kvm_stub_sudo; _kvm_stub_stat "$gid"
   # gid lookup misses; the NAME lookup hits (a different gid already owns 'kvm')
   printf '#!/bin/sh\n[ "$2" = kvm ] && { echo "kvm:x:108:"; exit 0; }\nexit 2\n' \
     > "$TMP/stubs/getent"; chmod +x "$TMP/stubs/getent"
   export AICODING_KVM_DEVICE=/dev/null
   ensure_kvm_group_access
-  grep -q "sudo -n groupadd -g 994 kvm994" "$TMP/ran.log"
+  grep -q "sudo -n groupadd -g $gid kvm$gid" "$TMP/ran.log"
 }
 
 @test "kvm access is a no-op when the user is already a member" {
@@ -418,7 +431,9 @@ _kvm_stub_sudo() {   # log calls instead of running them
 }
 
 @test "kvm access still runs on the container profile" {
-  _kvm_stub_sudo; _kvm_stub_stat 994
+  local gid
+  gid=$(_kvm_unused_gid)
+  _kvm_stub_sudo; _kvm_stub_stat "$gid"
   printf '#!/bin/sh\nexit 2\n' > "$TMP/stubs/getent"; chmod +x "$TMP/stubs/getent"
   manifest_get_profile() { echo container; }
   export AICODING_KVM_DEVICE=/dev/null
