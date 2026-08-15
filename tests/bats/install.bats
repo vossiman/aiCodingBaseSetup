@@ -664,7 +664,7 @@ EOF
   cat > "$HOME/.config/opencode/opencode.json" <<'EOF'
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "anthropic/claude-opus-4-6",
+  "model": "anthropic/claude-opus-5",
   "mcp": {
     "user-server": {
       "type": "local",
@@ -690,6 +690,11 @@ EOF
   jq -e '.mcp["brave-search"]'  "$HOME/.config/opencode/opencode.json"
   jq -e '.mcp.context7'         "$HOME/.config/opencode/opencode.json"
   jq -e '.mcp.playwright'       "$HOME/.config/opencode/opencode.json"
+}
+
+@test "managed model defaults use the current pinned families" {
+  grep -qx 'model = "gpt-5.6-sol"' "$BLUEPRINT_ROOT/configs/codex/config.toml"
+  jq -e '.model == "anthropic/claude-opus-5"' "$BLUEPRINT_ROOT/configs/opencode/opencode.json"
 }
 
 @test "reconcile: restores deleted ~/.codex/config.toml on rebuild" {
