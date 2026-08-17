@@ -71,7 +71,7 @@ deploy_all_managed_files() {
 # MANAGED_MCPS / MANAGED_PLUGINS live in lib/provision.sh (sourced below,
 # after the colored loggers are defined) — shared with aicoding-sync so both
 # reconcile the same MCP/plugin set.
-MANAGED_HOOKS=("custom-statusline.js" "bw-deny-files.sh" "check-archived-docs.sh" "llmwiki-distill.sh")
+MANAGED_HOOKS=("custom-statusline.js" "bw-deny-files.sh" "check-archived-docs.sh" "llmwiki-distill.sh" "agent-waiting.sh" "memory-hint.sh")
 MANAGED_SKILLS=("cloudflare-browser")
 # JSON merge lives in lib/blueprint-deploy.sh as _json_merge_into (unions both
 # permissions.allow and permissions.deny). Do not reintroduce a local merger.
@@ -149,11 +149,18 @@ detect_install_mode() {
     return
   fi
   # No manifest. Check whether any managed files already exist on disk.
-  local dest
+  # Capture the inventory BEFORE looping: an early `return` while the process
+  # substitution is still writing SIGPIPEs the producer's heredoc `cat`, and
+  # with `set -E` + the ERR trap that subshell prints a phantom
+  # "INSTALL FAILED ... line=414" even though nothing failed (dataEnv
+  # rebuild, 2026-08-17). Command substitution waits for the producer, so
+  # there is no concurrent writer left to kill.
+  local inventory dest
+  inventory=$(managed_inventory_overwrite; managed_inventory_merge)
   while IFS='|' read -r dest _ _; do
     [[ -z "$dest" ]] && continue
     [[ -e "$dest" ]] && { echo "adopt"; return; }
-  done < <(managed_inventory_overwrite; managed_inventory_merge)
+  done <<< "$inventory"
   [[ -f "$HOME/.bashrc" ]] && grep -qxF "$BASHRC_BLOCK_START" "$HOME/.bashrc" \
     && { echo "adopt"; return; }
   # Legacy: today's install.sh appends a standalone Go-PATH export to
