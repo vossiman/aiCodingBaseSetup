@@ -41,13 +41,23 @@ identities) → `~/homelab-wiki`:
 **Project-internal lessons** → a NEW file
 `docs/notes/YYYY-MM-DD-<short-slug>.md` in the project repo. Additive only:
 never edit CLAUDE.md, never modify or delete any existing file, and never
-touch the live checkout at all — no `git add`/`commit`/`push`/`switch` there;
-sessions may have work in flight (dirty tree, feature branch, detached
-submodule pin).
+run `git add`/`commit`/`push`/`switch` in the live checkout; sessions may
+have work in flight (dirty tree, feature branch, detached submodule pin).
 
-Land the notes on the project's default branch via a disposable worktree
-(user decision 2026-08-12 — docs-only additions under `docs/**` may go
-straight to `main`):
+How the notes land depends on an explicit per-repo opt-in:
+
+**Default — untracked handoff.** Write the note file(s) into
+`<project-root>/docs/notes/` (create the dir if absent) and leave them
+untracked; the file surfacing in `git status` is the handoff. No git
+mutations of any kind. This is the only permitted behavior unless the
+marker below exists: a push to a project branch can trigger that project's
+CI/CD (user decision 2026-08-17, after a distiller push to a repo whose
+`main` auto-deploys to prod).
+
+**Opt-in — land on the default branch.** ONLY if the tracked marker file
+`<project-root>/docs/notes/.llmwiki-direct-push-ok` exists (the user adds
+it deliberately, per repo). Then commit via a disposable worktree so the
+live checkout is never touched:
 
 1. `git -C <project-root> fetch origin`, then resolve the default branch
    from `git -C <project-root> symbolic-ref --short refs/remotes/origin/HEAD`
@@ -60,15 +70,13 @@ straight to `main`):
 4. Push rejected (concurrent push won the race): fetch, `git reset --hard
    origin/<default>` in the worktree, re-write the notes, re-commit, retry
    ONCE. Rejected again — or the remote refuses direct pushes outright
-   (branch protection) — use the fallback below.
+   (branch protection) — fall back to the untracked handoff above.
 5. Cleanup: `git -C <project-root> worktree remove --force /tmp/llmwiki-land-…`.
    If git refuses (worktrees containing submodules can't be removed), run
    `git worktree prune` and leave the directory — /tmp is disposable.
 
-**Fallback** — not a git repo, no `origin`, or the push failed: write the
-note file(s) into `<project-root>/docs/notes/` (create the dir if absent)
-and leave them untracked; the file surfacing in `git status` is the
-handoff. Even then, never commit inside the live checkout.
+If the project is not a git repo or has no `origin`, the untracked handoff
+applies regardless of any marker.
 
 ## Reading the slice
 
