@@ -30,7 +30,7 @@ def read_token() -> str:
             for line in fh:
                 match = re.match(r"^MEMORY_ROUTER_TOKEN=(['\"]?)(.*)\1\s*$", line)
                 if match:
-                    token = match.group(2)  # last-match-wins convention
+                    token = match.group(2).rstrip()  # last-match-wins convention
     except Exception:
         pass
     return token
@@ -57,7 +57,7 @@ def main() -> int:
     if not token:
         return 0
 
-    base = os.environ.get("MEMORY_ROUTER_URL", "http://localhost:8091")
+    base = os.environ.get("MEMORY_ROUTER_URL", "http://localhost:8091").rstrip("/")
     request = urllib.request.Request(
         base + "/hint",
         data=json.dumps({"query": prompt, "k": args.k, "client": args.client}).encode(),
