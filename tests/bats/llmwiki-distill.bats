@@ -425,11 +425,16 @@ pad() { head -c 8192 /dev/zero | tr '\0' 'q'; printf '\n'; }
 @test "llmwiki-distiller agent: encodes write-policy guardrails" {
   AGENT_DEF="$BLUEPRINT_ROOT/configs/claude/agents/llmwiki-distiller.md"
   grep -q 'homelab-wiki' "$AGENT_DEF"
-  grep -q 'docs/notes/' "$AGENT_DEF"
   grep -qi 'never edit CLAUDE.md' "$AGENT_DEF"
-  # 2026-08-12 revision: notes land on the default branch via a disposable
-  # worktree, docs-only, no force-push, untracked fallback preserved.
-  grep -q 'worktree add' "$AGENT_DEF"
-  grep -qi 'never force-push' "$AGENT_DEF"
-  grep -qi 'leave them untracked' "$AGENT_DEF"
+  # 2026-08-17 revision: ALL lessons land in the wiki (project-scoped ones
+  # on wiki/<project>.md); the wiki is the only repo the agent may commit
+  # to, and the untracked in-repo note is only the wiki-unreachable
+  # fallback. Guards against regressing to project-repo pushes, which can
+  # trigger CI/CD deploys (dataEnv incident 2026-08-17).
+  grep -q 'wiki/<project>.md' "$AGENT_DEF"
+  grep -qi 'the ONLY repo you may run' "$AGENT_DEF"
+  grep -q 'docs/notes/' "$AGENT_DEF"
+  if grep -q 'worktree add' "$AGENT_DEF"; then false; fi
+  if grep -q 'push origin HEAD' "$AGENT_DEF"; then false; fi
+  if grep -q 'direct-push-ok' "$AGENT_DEF"; then false; fi
 }

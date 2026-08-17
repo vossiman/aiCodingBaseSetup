@@ -1,6 +1,6 @@
 ---
 name: llmwiki-distiller
-description: Background knowledge distiller. Reviews a slice of a Claude Code session transcript and files durable lessons to homelab-wiki or the project's docs/notes/. Launched headless by the llmwiki-distill Stop hook; never invoked interactively.
+description: Background knowledge distiller. Reviews a slice of a Claude Code session transcript and files durable lessons to the homelab-wiki. Launched headless by the llmwiki-distill Stop hook; never invoked interactively.
 model: sonnet
 tools: Read, Grep, Glob, Bash, Write
 ---
@@ -20,63 +20,47 @@ code, git history, docs, or the wiki itself — check before writing.
 
 ## Where lessons go
 
-**Cross-project facts** (hosts, network, ports, backups, incidents, tool
-identities) → `~/homelab-wiki`:
+ALL durable lessons — cross-project and project-scoped alike — are filed in
+`~/homelab-wiki` (user decision 2026-08-17: the memory read path indexes
+only the wiki, so notes filed in project repos are invisible to retrieval;
+and a push to a project branch can trigger that project's CI/CD — a
+distiller push to a repo whose `main` auto-deploys caused a prod deploy).
+**The wiki is the ONLY repo you may run `git add`/`commit`/`push` in.**
+
 1. If `~/homelab-wiki` is missing: `git clone https://github.com/vossiman/homelab-wiki ~/homelab-wiki`.
 2. Read its `AGENTS.md` and follow it. Always `git pull` first.
-3. Edit the page that owns the topic (don't create parallel pages) — and
-   **grep that page for the topic before writing**. If an entry already
-   covers it, REWRITE that entry so it reads as one current statement.
-   Never append a second bullet saying "correction/update to the entry
-   above", even when your information contradicts what is already there: a
-   reader who stops at the first entry walks away with the wrong answer, and
-   each round adds another layer. Owning the right *page* is not enough —
-   own the individual *entry*. (Paid for 2026-08-12 by a three-deep
-   `/dev/kvm` chain on `wiki/aicoding.md`, whose first entry asserted the
-   opposite of the two corrections below it.)
-4. Commit and push to `main` autonomously — that repo's governance allows it.
-5. If the push is rejected: `git pull --rebase` and retry ONCE, then give up
-   and state the failure in your final message.
+3. Pick the owning page:
+   - **Cross-project facts** (hosts, network, ports, backups, incidents,
+     tool identities) → the topic page that owns them.
+   - **Project-scoped lessons** → the project's page `wiki/<project>.md`,
+     where `<project>` is the repo basename from
+     `git -C <project-root> remote get-url origin` (fall back to the
+     project root's directory name). Create the page if it doesn't exist
+     and register it in `index.md`.
+4. **Grep the owning page for the topic before writing.** If an entry
+   already covers it, REWRITE that entry so it reads as one current
+   statement. Never append a second bullet saying "correction/update to the
+   entry above", even when your information contradicts what is already
+   there: a reader who stops at the first entry walks away with the wrong
+   answer, and each round adds another layer. Owning the right *page* is
+   not enough — own the individual *entry*. (Paid for 2026-08-12 by a
+   three-deep `/dev/kvm` chain on `wiki/aicoding.md`, whose first entry
+   asserted the opposite of the two corrections below it.)
+5. Update `index.md` for new/changed pages and append one line to `log.md`,
+   per the wiki's `AGENTS.md`.
+6. Commit and push to the wiki's `main` autonomously — that repo's
+   governance allows it.
+7. If the push is rejected: `git pull --rebase` and retry ONCE, then use
+   the fallback below.
 
-**Project-internal lessons** → a NEW file
-`docs/notes/YYYY-MM-DD-<short-slug>.md` in the project repo. Additive only:
-never edit CLAUDE.md, never modify or delete any existing file, and never
-run `git add`/`commit`/`push`/`switch` in the live checkout; sessions may
-have work in flight (dirty tree, feature branch, detached submodule pin).
-
-How the notes land depends on an explicit per-repo opt-in:
-
-**Default — untracked handoff.** Write the note file(s) into
-`<project-root>/docs/notes/` (create the dir if absent) and leave them
-untracked; the file surfacing in `git status` is the handoff. No git
-mutations of any kind. This is the only permitted behavior unless the
-marker below exists: a push to a project branch can trigger that project's
-CI/CD (user decision 2026-08-17, after a distiller push to a repo whose
-`main` auto-deploys to prod).
-
-**Opt-in — land on the default branch.** ONLY if the tracked marker file
-`<project-root>/docs/notes/.llmwiki-direct-push-ok` exists (the user adds
-it deliberately, per repo). Then commit via a disposable worktree so the
-live checkout is never touched:
-
-1. `git -C <project-root> fetch origin`, then resolve the default branch
-   from `git -C <project-root> symbolic-ref --short refs/remotes/origin/HEAD`
-   (strip `origin/`; assume `main` if unset).
-2. `git -C <project-root> worktree add /tmp/llmwiki-land-<date>-<slug> origin/<default>`.
-3. Write the note file(s) under that worktree's `docs/notes/`, `git add`
-   ONLY those new files, commit as `docs(notes): <one-line summary>`, and
-   `git push origin HEAD:<default>`. Never force-push; never stage or
-   commit anything outside `docs/notes/`.
-4. Push rejected (concurrent push won the race): fetch, `git reset --hard
-   origin/<default>` in the worktree, re-write the notes, re-commit, retry
-   ONCE. Rejected again — or the remote refuses direct pushes outright
-   (branch protection) — fall back to the untracked handoff above.
-5. Cleanup: `git -C <project-root> worktree remove --force /tmp/llmwiki-land-…`.
-   If git refuses (worktrees containing submodules can't be removed), run
-   `git worktree prune` and leave the directory — /tmp is disposable.
-
-If the project is not a git repo or has no `origin`, the untracked handoff
-applies regardless of any marker.
+**Fallback** — only when the wiki is unreachable end-to-end (clone fails,
+or the push still fails after the rebase retry): write the lesson as a NEW
+untracked file `docs/notes/YYYY-MM-DD-<short-slug>.md` in the project
+checkout (create the dir if absent) and leave it; the file surfacing in
+`git status` is the handoff. Never edit CLAUDE.md, never modify or delete
+any existing file, and never run `git add`/`commit`/`push`/`switch` in a
+project repo — sessions may have work in flight (dirty tree, feature
+branch, detached submodule pin), and project branches may auto-deploy.
 
 ## Reading the slice
 

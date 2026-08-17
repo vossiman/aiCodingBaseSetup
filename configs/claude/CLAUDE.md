@@ -7,18 +7,24 @@ Managed by the aiCodingBaseSetup blueprint (`configs/claude/CLAUDE.md`);
 - Plain language: no jargon, one idea per sentence.
 - Ground claims in code and command output, not memory. Cite `file:line` and
   show outputs as receipts; say plainly when something is unverified.
-- The repo is the source of truth. Auto-memory is disabled. Durable lessons
-  (gotchas, incidents, environment quirks) split two ways: **cross-project**
-  facts — hosts, network, ports, backups, incidents, tool identities — go to
-  the homelab-wiki (`~/homelab-wiki`; clone
-  `https://github.com/vossiman/homelab-wiki` if missing, then follow its
-  `AGENTS.md`: pull first, edit the owning page — grep it and **rewrite the
-  entry that already covers the topic**, never append a "correction to the
-  entry above" bullet — then commit+push to its `main` autonomously; that
-  repo's governance allows it). **Project-internal**
-  lessons go to the project's CLAUDE.md or `docs/notes/`. Don't record what
-  code, git history, or docs already show. That is the **write path** and it
-  is unchanged.
+- The repo is the source of truth for code; the homelab-wiki is the source
+  of truth for lessons. Auto-memory is disabled. ALL durable lessons
+  (gotchas, incidents, environment quirks) go to the homelab-wiki
+  (`~/homelab-wiki`; clone `https://github.com/vossiman/homelab-wiki` if
+  missing, then follow its `AGENTS.md`: pull first, edit the owning page —
+  grep it and **rewrite the entry that already covers the topic**, never
+  append a "correction to the entry above" bullet — then commit+push to its
+  `main` autonomously; that repo's governance allows it). **Cross-project**
+  facts — hosts, network, ports, backups, incidents, tool identities — go
+  to their topic page; **project-scoped** lessons go to that project's page
+  `wiki/<repo>.md` (create it if missing, register it in `index.md`). Never
+  land memory-write commits in project repos (decided 2026-08-17: a docs
+  note pushed to a project `main` triggered a prod deploy, and the memory
+  read path indexes only the wiki — in-repo notes are invisible to it). A
+  project's CLAUDE.md and `docs/` are for deliberate, reviewed
+  documentation — specs, plans, READMEs — via the normal PR flow, not a
+  memory store. Don't record what code, git history, or docs already show.
+  That is the **write path**.
 - **Read path — retrieval.** A persistent memory system indexes durable
   knowledge from all past sessions and the homelab wiki. Matching memories
   are auto-injected into context as `<memory-hints>` blocks — treat them as
@@ -30,8 +36,8 @@ Managed by the aiCodingBaseSetup blueprint (`configs/claude/CLAUDE.md`);
   answering from assumption. If the router is unavailable, fall back to
   grepping the local `~/homelab-wiki` clone; if both fail, proceed without
   retrieval rather than blocking. Retrieval never replaces the write path
-  above: durable lessons still get written to the wiki (or `docs/notes/`)
-  under the wiki's own `AGENTS.md` conventions.
+  above: durable lessons still get written to the wiki under its own
+  `AGENTS.md` conventions.
 - Integrate via PR — never commit or force-push to a protected `main`. Ask
   before merging; delete merged branches.
 

@@ -48,6 +48,19 @@ Decisions made during brainstorming (2026-08-09):
     (accepting the pile-up cost in repos without the marker); repos that
     want notes landed on the default branch (e.g. devMachine, dvw) carry
     the marker.
+  - *Revised 2026-08-17, same day (supersedes the marker mechanism):*
+    project notes no longer land in the project repo at all. ALL lessons —
+    cross-project and project-scoped — are filed in homelab-wiki;
+    project-scoped ones on the project's entity page `wiki/<repo>.md`
+    (created on first need), under the wiki's supersede-in-place rules.
+    Rationale: memory-lanes indexes only the wiki clone
+    (`memory-lanes:src/memory_lanes/wiki.py`, recursive `rglob("*.md")`),
+    so in-repo notes were invisible to the retrieval read path; and the
+    marker design still left un-marked repos accumulating untracked note
+    files. The wiki is the only repo the distiller may commit to; the
+    untracked in-repo note survives solely as the fallback when the wiki
+    itself is unreachable. The `.llmwiki-direct-push-ok` marker mechanism
+    is retired (markers removed from devMachine and dvw the same day).
 - **Launch gate: transcript delta** (decided 2026-08-09) — after the
   throttle window passes, only launch if the session transcript grew by
   ≥ a threshold since the last distill of that transcript, and pass only
