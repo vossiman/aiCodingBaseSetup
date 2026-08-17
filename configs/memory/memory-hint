@@ -24,22 +24,31 @@ def read_token() -> str:
     env = os.environ.get("MEMORY_ROUTER_TOKEN")
     if env:
         return env
+    token = ""
     try:
         with open(SECRETS, encoding="utf-8") as fh:
             for line in fh:
                 match = re.match(r"^MEMORY_ROUTER_TOKEN=(['\"]?)(.*)\1\s*$", line)
                 if match:
-                    return match.group(2)
-    except OSError:
+                    token = match.group(2)  # last-match-wins convention
+    except Exception:
         pass
-    return ""
+    return token
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    class SilentArgumentParser(argparse.ArgumentParser):
+        """ArgumentParser that exits silently on error."""
+        def error(self, message: str) -> None:
+            sys.exit(0)  # silently degrade to exit 0, never print error
+
+    parser = SilentArgumentParser()
     parser.add_argument("--client", default="hook:unknown")
     parser.add_argument("--k", type=int, default=3)
-    args = parser.parse_args()
+    try:
+        args = parser.parse_args()
+    except SystemExit:  # argparse exits on error; degrade to silent 0
+        return 0
 
     prompt = sys.stdin.read().strip()
     if not prompt or prompt.startswith("/") or len(prompt.split()) < MIN_WORDS:
@@ -57,24 +66,23 @@ def main() -> int:
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
             data = json.load(response)
+        results = data.get("results") or []
+        if not results:
+            return 0
+        lines = [
+            '<memory-hints source="memory-lanes">',
+            "Possibly relevant stored memories (leads, not facts - verify before relying on them):",
+        ]
+        for index, hit in enumerate(results, 1):
+            lines.append(f"[{index}] {hit.get('citation', '?')}")
+            lines.append(hit.get("text", "").strip())
+        lines.append(
+            f"(If a hint was decisive or wrong, report it: memory_feedback query_id={data.get('query_id', '')})"
+        )
+        lines.append("</memory-hints>")
+        print("\n".join(lines))
     except Exception:  # any failure: stay silent, never block the agent
         return 0
-
-    results = data.get("results") or []
-    if not results:
-        return 0
-    lines = [
-        '<memory-hints source="memory-lanes">',
-        "Possibly relevant stored memories (leads, not facts - verify before relying on them):",
-    ]
-    for index, hit in enumerate(results, 1):
-        lines.append(f"[{index}] {hit.get('citation', '?')}")
-        lines.append(hit.get("text", "").strip())
-    lines.append(
-        f"(If a hint was decisive or wrong, report it: memory_feedback query_id={data.get('query_id', '')})"
-    )
-    lines.append("</memory-hints>")
-    print("\n".join(lines))
     return 0
 
 
