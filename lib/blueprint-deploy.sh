@@ -405,6 +405,7 @@ $HOME/.bashrc.d/aicoding-env.sh|overwrite|configs/bash/env.sh
 $HOME/.bashrc.d/aicoding-update-notify.sh|overwrite|configs/bash/update-notify.sh
 $HOME/.bashrc.d/aicoding-aliases.sh|overwrite|configs/bash/aliases.sh
 $HOME/.local/bin/git-credential-aicoding|overwrite|configs/git/git-credential-aicoding
+$HOME/.local/bin/memory-hint|overwrite|configs/memory/memory-hint
 EOF
   if [[ "$profile" == host ]]; then
     echo "$HOME/.bashrc.d/aicoding-boot-sync.sh|overwrite|configs/bash/boot-sync.sh"

@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""memory-hint - tier-1 automatic memory check (agent-agnostic).
+
+Reads a user prompt on stdin, asks the memory-lanes router's /hint endpoint
+for champion matches, and prints a <memory-hints> block for injection into
+agent context. Prints nothing and exits 0 on ANY failure or weak input: this
+must never block or break an agent turn. Adapters (Claude Code hook, Codex
+hook, OpenCode plugin, ...) differ only in how they extract the prompt and
+where they put the stdout.
+"""
+import argparse
+import json
+import os
+import re
+import sys
+import urllib.request
+
+SECRETS = os.path.expanduser("~/.aicodingsetup/.secrets.env")
+MIN_WORDS = 4          # shorter prompts are commands/ack noise, not questions
+TIMEOUT_S = 3
+
+
+def read_token() -> str:
+    env = os.environ.get("MEMORY_ROUTER_TOKEN")
+    if env:
+        return env
+    try:
+        with open(SECRETS, encoding="utf-8") as fh:
+            for line in fh:
+                match = re.match(r"^MEMORY_ROUTER_TOKEN=(['\"]?)(.*)\1\s*$", line)
+                if match:
+                    return match.group(2)
+    except OSError:
+        pass
+    return ""
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--client", default="hook:unknown")
+    parser.add_argument("--k", type=int, default=3)
+    args = parser.parse_args()
+
+    prompt = sys.stdin.read().strip()
+    if not prompt or prompt.startswith("/") or len(prompt.split()) < MIN_WORDS:
+        return 0
+    token = read_token()
+    if not token:
+        return 0
+
+    base = os.environ.get("MEMORY_ROUTER_URL", "http://localhost:8091")
+    request = urllib.request.Request(
+        base + "/hint",
+        data=json.dumps({"query": prompt, "k": args.k, "client": args.client}).encode(),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
+            data = json.load(response)
+    except Exception:  # any failure: stay silent, never block the agent
+        return 0
+
+    results = data.get("results") or []
+    if not results:
+        return 0
+    lines = [
+        '<memory-hints source="memory-lanes">',
+        "Possibly relevant stored memories (leads, not facts - verify before relying on them):",
+    ]
+    for index, hit in enumerate(results, 1):
+        lines.append(f"[{index}] {hit.get('citation', '?')}")
+        lines.append(hit.get("text", "").strip())
+    lines.append(
+        f"(If a hint was decisive or wrong, report it: memory_feedback query_id={data.get('query_id', '')})"
+    )
+    lines.append("</memory-hints>")
+    print("\n".join(lines))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
