@@ -19,13 +19,19 @@ Managed by the aiCodingBaseSetup blueprint (`configs/claude/CLAUDE.md`);
   lessons go to the project's CLAUDE.md or `docs/notes/`. Don't record what
   code, git history, or docs already show. That is the **write path** and it
   is unchanged.
-- **Read path — retrieval.** For homelab, environment, or infrastructure
-  questions, call the `memory_search` MCP tool (the `memory-router` server)
-  before re-deriving anything from raw repos. If the router is unavailable,
-  fall back to grepping the local `~/homelab-wiki` clone. If both fail,
-  proceed without retrieval rather than blocking. Retrieval never replaces
-  the write path above: durable lessons still get written to the wiki (or
-  `docs/notes/`) under the wiki's own `AGENTS.md` conventions.
+- **Read path — retrieval.** A persistent memory system indexes durable
+  knowledge from all past sessions and the homelab wiki. Matching memories
+  are auto-injected into context as `<memory-hints>` blocks — treat them as
+  leads, verify before relying on them, and report decisive or wrong hints
+  via `memory_feedback`. Independently of hints, call the `memory_search`
+  MCP tool (the `memory-router` server) whenever the answer may live outside
+  the current repo and conversation — prior decisions, past incidents,
+  environment facts, "have we solved this before" — BEFORE re-deriving it or
+  answering from assumption. If the router is unavailable, fall back to
+  grepping the local `~/homelab-wiki` clone; if both fail, proceed without
+  retrieval rather than blocking. Retrieval never replaces the write path
+  above: durable lessons still get written to the wiki (or `docs/notes/`)
+  under the wiki's own `AGENTS.md` conventions.
 - Integrate via PR — never commit or force-push to a protected `main`. Ask
   before merging; delete merged branches.
 
