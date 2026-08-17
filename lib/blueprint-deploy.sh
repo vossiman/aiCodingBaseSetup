@@ -399,6 +399,7 @@ $HOME/.claude/hooks/bw-deny-files.sh|overwrite|configs/claude/hooks/bw-deny-file
 $HOME/.claude/hooks/check-archived-docs.sh|overwrite|configs/claude/hooks/check-archived-docs.sh
 $HOME/.claude/hooks/llmwiki-distill.sh|overwrite|configs/claude/hooks/llmwiki-distill.sh
 $HOME/.claude/hooks/agent-waiting.sh|overwrite|configs/claude/hooks/agent-waiting.sh
+$HOME/.claude/hooks/memory-hint.sh|overwrite|configs/claude/hooks/memory-hint.sh
 $HOME/.claude/agents/llmwiki-distiller.md|overwrite|configs/claude/agents/llmwiki-distiller.md
 $HOME/.claude/CLAUDE.md|overwrite|configs/claude/CLAUDE.md
 $HOME/.bashrc.d/aicoding-env.sh|overwrite|configs/bash/env.sh
