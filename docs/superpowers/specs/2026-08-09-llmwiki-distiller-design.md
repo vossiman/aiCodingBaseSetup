@@ -40,6 +40,14 @@ Decisions made during brainstorming (2026-08-09):
     direct-to-`main` exemption the user granted devMachine (2026-08-09) and
     dvw (2026-08-12). The untracked handoff remains as fallback when the
     project has no remote or the push is refused.
+  - *Revised 2026-08-17:* direct push is now **opt-in per repo** via a
+    tracked marker file `docs/notes/.llmwiki-direct-push-ok`. The
+    2026-08-12 revision had generalized a devMachine/dvw-specific
+    exemption to every project; in dataEnv the distiller's push to `main`
+    triggered a prod deploy. Default reverts to the untracked handoff
+    (accepting the pile-up cost in repos without the marker); repos that
+    want notes landed on the default branch (e.g. devMachine, dvw) carry
+    the marker.
 - **Launch gate: transcript delta** (decided 2026-08-09) — after the
   throttle window passes, only launch if the session transcript grew by
   ≥ a threshold since the last distill of that transcript, and pass only
