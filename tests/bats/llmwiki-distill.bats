@@ -13,6 +13,7 @@ setup() {
   export HOME="$TMPDIR"
   unset LLMWIKI_DISTILLER LLMWIKI_NUDGE_INTERVAL LLMWIKI_MIN_DELTA_BYTES
   unset MEMORY_LANES_TEE MEMORY_LANES_SPOOL
+  unset MEMORY_LANES_SHIP MEMORY_LANES_SHIP_KEY MEMORY_LANES_SHIP_TARGET
 
   mkdir -p "$TMPDIR/stubs"
   cat > "$TMPDIR/stubs/claude" <<'STUB'
@@ -412,6 +413,73 @@ pad() { head -c 8192 /dev/zero | tr '\0' 'q'; printf '\n'; }
   [ "$status" -eq 0 ]
   launched
   [ ! -d "$(SPOOL)" ]
+}
+
+# --- memory-lanes slice ship (rsync over ssh, restricted key) --------------
+# _ml_ship runs right after _ml_tee and best-effort-ships whatever is sitting
+# in the spool to vossisrv. Network is never touched here: rsync is stubbed.
+
+@test "ml_ship invokes rsync with remove-source-files and the ship key" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  mkdir -p "$HOME/.aicodingsetup"
+  printf 'fake-restricted-key' > "$HOME/.aicodingsetup/memory-lanes-ship"
+
+  cat > "$TMPDIR/stubs/rsync" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$@" >> "$HOME/rsync-args"
+printf 'x\n' >> "$HOME/rsync-calls"
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/rsync"
+
+  mktranscript "$TMPDIR/t.jsonl" 8192 'z'
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s6)"
+  [ "$status" -eq 0 ]
+
+  # called exactly once
+  [ "$(wc -l < "$HOME/rsync-calls")" -eq 1 ]
+  grep -qx -- '--remove-source-files' "$HOME/rsync-args"
+  grep -qxF -- "--exclude=.tmp-*" "$HOME/rsync-args"
+  grep -q "$HOME/.aicodingsetup/memory-lanes-ship" "$HOME/rsync-args"
+  grep -q "$(SPOOL)/" "$HOME/rsync-args"
+}
+
+@test "ml_ship is silent no-op when the ship key is absent" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  export MEMORY_LANES_SHIP_KEY="$HOME/no-such-key"
+
+  cat > "$TMPDIR/stubs/rsync" <<'STUB'
+#!/bin/sh
+printf 'x\n' >> "$HOME/rsync-calls"
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/rsync"
+
+  mktranscript "$TMPDIR/t.jsonl" 8192 'z'
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s7)"
+  [ "$status" -eq 0 ]
+  [ ! -f "$HOME/rsync-calls" ]
+  # slice stayed in the spool — nothing shipped it away
+  [ -f "$(SPOOL)/s7-0" ]
+}
+
+@test "ml_ship failure leaves the slice in the spool and does not fail the hook" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  mkdir -p "$HOME/.aicodingsetup"
+  printf 'fake-restricted-key' > "$HOME/.aicodingsetup/memory-lanes-ship"
+
+  cat > "$TMPDIR/stubs/rsync" <<'STUB'
+#!/bin/sh
+printf 'x\n' >> "$HOME/rsync-calls"
+exit 30
+STUB
+  chmod +x "$TMPDIR/stubs/rsync"
+
+  mktranscript "$TMPDIR/t.jsonl" 8192 'z'
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s8)"
+  [ "$status" -eq 0 ]
+  [ -f "$HOME/rsync-calls" ]
+  [ -f "$(SPOOL)/s8-0" ]
 }
 
 @test "llmwiki-distiller agent: frontmatter name/model match the hook contract" {

@@ -285,8 +285,28 @@ _ml_tee() {
   return 0
 }
 
+# Ship spooled slices to the central inbox on vossisrv. Best-effort and
+# silent: any failure leaves files in the local spool and the next hook run
+# re-ships (at-least-once; the watcher's markers dedupe). The key is
+# command=-restricted server-side (rrsync write-only into the inbox), so it
+# can drop slices and nothing else.
+_ml_ship() {
+  [ "${MEMORY_LANES_SHIP:-1}" != "0" ] || return 0
+  local spool key target
+  spool="${MEMORY_LANES_SPOOL:-$HOME/.local/state/memory-lanes/inbox}"
+  key="${MEMORY_LANES_SHIP_KEY:-$HOME/.aicodingsetup/memory-lanes-ship}"
+  target="${MEMORY_LANES_SHIP_TARGET:-vossi@10.0.0.249:/}"
+  [ -f "$key" ] || return 0                  # no key deployed -> local spool only
+  command -v rsync >/dev/null 2>&1 || return 0
+  find "$spool" -maxdepth 1 -type f ! -name '.*' -print -quit 2>/dev/null | grep -q . || return 0
+  rsync -a --timeout=10 --exclude='.tmp-*' --remove-source-files \
+    -e "ssh -i $key -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new" \
+    "$spool"/ "$target" >/dev/null 2>&1 || true
+}
+
 if [ "${MEMORY_LANES_TEE:-1}" != "0" ]; then
   ( _ml_tee "$slice" "$session_id" "$offset" ) >/dev/null 2>&1 || true
+  ( _ml_ship ) >/dev/null 2>&1 || true
 fi
 # --- end memory-lanes slice tee --------------------------------------------
 
