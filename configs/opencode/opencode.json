@@ -27,6 +27,7 @@
   },
   "agent": {},
   "permission": {
-    "*": "allow"
+    "*": "allow",
+    "doom_loop": "ask"
   }
 }

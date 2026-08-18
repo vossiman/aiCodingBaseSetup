@@ -18,6 +18,37 @@ compute_hash() {
   sha256sum "$1" | awk '{print $1}'
 }
 
+# compute_managed_hash <dest_path> — compute_hash, except for files where the
+# owning CLI writes runtime state into our managed config: that state is
+# stripped before hashing so it never registers as drift. Currently only
+# codex's config.toml: codex ≥0.147 auto-trusts local projects and persists
+# [projects."<dir>"] trust_level sections on every new directory it opens
+# (the both-keys-set suppression documented in configs/codex/config.toml no
+# longer holds). Strips each [projects...] section plus the blank lines codex
+# inserts before it; all other edits still count as drift. Must be used by
+# every site that hashes a managed dest (classify, deploy, adopt), or the
+# recorded deployed_hash and the compared hash disagree.
+compute_managed_hash() {
+  local dest=$1
+  case "$dest" in
+    "$HOME"/.codex/config.toml)
+      [ -e "$dest" ] || { echo ""; return 0; }
+      awk '
+        function flushbuf(i) { for (i = 1; i <= n; i++) print buf[i]; n = 0 }
+        /^[[:space:]]*$/ { if (!skip) buf[++n] = $0; next }
+        /^\[/ {
+          if ($0 ~ /^\[projects[]."]/) { skip = 1; n = 0 }
+          else { skip = 0; flushbuf(); print }
+          next
+        }
+        { if (!skip) { flushbuf(); print } }
+        END { if (!skip) flushbuf() }
+      ' "$dest" | sha256sum | awk '{print $1}'
+      ;;
+    *) compute_hash "$dest" ;;
+  esac
+}
+
 # compute_block_hash <path> <start_marker> <end_marker> — sha256 of content
 # strictly between the start and end marker lines (exclusive). Each captured
 # line retains its trailing newline (so two lines hash "line1\nline2\n").
@@ -253,7 +284,7 @@ classify_file() {
   fi
 
   local current new deployed
-  current=$(compute_hash "$dest")
+  current=$(compute_managed_hash "$dest")
   # Hash the SUBSTITUTED source — that's what the deploy path writes to disk
   # and records as deployed_hash. Hashing the raw source leaves any file with
   # a {{PLACEHOLDER}} permanently classified will_update (phantom drift).
@@ -283,7 +314,7 @@ deploy_overwrite_file() {
   mkdir -p "$(dirname "$dest")"
   cp "$src" "$dest"
   local h
-  h=$(compute_hash "$dest")
+  h=$(compute_managed_hash "$dest")
   local entry
   entry=$(jq -n --arg s "$label" --arg h "$h" \
     '{mode:"overwrite", source:$s, deployed_hash:$h}')

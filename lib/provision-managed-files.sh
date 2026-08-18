@@ -183,7 +183,7 @@ adopt_existing_files() {
     [[ -z "$dest" ]] && continue
     if [[ -e "$dest" ]]; then
       local h
-      h=$(compute_hash "$dest")
+      h=$(compute_managed_hash "$dest")
       manifest_set_file "$dest" \
         "$(jq -n --arg s "$source" --arg h "$h" \
             '{mode:"overwrite",source:$s,deployed_hash:$h}')"

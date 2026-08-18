@@ -300,6 +300,48 @@ EOF
   [ "$output" = "will_update" ]
 }
 
+@test "classify_file: codex config.toml ignores codex-written [projects.*] trust sections" {
+  # codex ≥0.147 auto-appends a blank line + [projects."<dir>"] trust_level
+  # after opening any directory; that must never count as drift.
+  mkdir -p "$TMPDIR/.codex"
+  printf 'model = "m"\n\n[tui]\nstatus_line = ["run-state"]\n' > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_overwrite_file_substituted "$TMPDIR/src" "$TMPDIR/.codex/config.toml" "configs/codex/config.toml"
+  manifest_stage_commit
+  printf '\n[projects."/some/dir"]\ntrust_level = "trusted"\n' >> "$TMPDIR/.codex/config.toml"
+  run classify_file "$TMPDIR/.codex/config.toml" "$TMPDIR/src" "overwrite"
+  [ "$status" -eq 0 ]
+  [ "$output" = "up_to_date" ]
+}
+
+@test "classify_file: codex config.toml still detects real user edits alongside trust sections" {
+  mkdir -p "$TMPDIR/.codex"
+  printf 'model = "m"\n' > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_overwrite_file_substituted "$TMPDIR/src" "$TMPDIR/.codex/config.toml" "configs/codex/config.toml"
+  manifest_stage_commit
+  printf 'model = "changed-by-user"\n\n[projects."/some/dir"]\ntrust_level = "trusted"\n' > "$TMPDIR/.codex/config.toml"
+  printf 'model = "new-blueprint"\n' > "$TMPDIR/src"
+  run classify_file "$TMPDIR/.codex/config.toml" "$TMPDIR/src" "overwrite"
+  [ "$status" -eq 0 ]
+  [ "$output" = "drifted_and_updating" ]
+}
+
+@test "compute_managed_hash: adopt and classify agree on a codex config carrying trust sections" {
+  # adopt_existing_files records the hash an already-present file will later
+  # be compared against — both sides must strip [projects.*] identically.
+  mkdir -p "$TMPDIR/.codex"
+  printf 'model = "m"\n\n[projects."/a"]\ntrust_level = "trusted"\n' > "$TMPDIR/.codex/config.toml"
+  printf 'model = "m"\n' > "$TMPDIR/clean"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  local with_trust without_trust
+  with_trust=$(compute_managed_hash "$TMPDIR/.codex/config.toml")
+  without_trust=$(compute_hash "$TMPDIR/clean")
+  [ "$with_trust" = "$without_trust" ]
+}
+
 @test "deploy_overwrite_file: writes file and records hash in pending manifest" {
   echo "content" > "$TMPDIR/src"
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
