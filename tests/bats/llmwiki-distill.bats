@@ -442,6 +442,26 @@ STUB
   grep -qxF -- "--exclude=.tmp-*" "$HOME/rsync-args"
   grep -q "$HOME/.aicodingsetup/memory-lanes-ship" "$HOME/rsync-args"
   grep -q "$(SPOOL)/" "$HOME/rsync-args"
+  grep -qx -- 'vossi@10.0.0.249:/' "$HOME/rsync-args"
+}
+
+@test "ml_ship invokes rsync against an overridden MEMORY_LANES_SHIP_TARGET" {
+  export LLMWIKI_NUDGE_INTERVAL=0
+  export MEMORY_LANES_SHIP_TARGET="other@203.0.113.5:/inbox"
+  mkdir -p "$HOME/.aicodingsetup"
+  printf 'fake-restricted-key' > "$HOME/.aicodingsetup/memory-lanes-ship"
+
+  cat > "$TMPDIR/stubs/rsync" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$@" >> "$HOME/rsync-args"
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/rsync"
+
+  mktranscript "$TMPDIR/t.jsonl" 8192 'z'
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s6t)"
+  [ "$status" -eq 0 ]
+  grep -qx -- 'other@203.0.113.5:/inbox' "$HOME/rsync-args"
 }
 
 @test "ml_ship is silent no-op when the ship key is absent" {
@@ -461,6 +481,25 @@ STUB
   [ ! -f "$HOME/rsync-calls" ]
   # slice stayed in the spool — nothing shipped it away
   [ -f "$(SPOOL)/s7-0" ]
+}
+
+@test "MEMORY_LANES_SHIP=0 disables shipping but the slice still lands in the local spool" {
+  export LLMWIKI_NUDGE_INTERVAL=0 MEMORY_LANES_SHIP=0
+  mkdir -p "$HOME/.aicodingsetup"
+  printf 'fake-restricted-key' > "$HOME/.aicodingsetup/memory-lanes-ship"
+
+  cat > "$TMPDIR/stubs/rsync" <<'STUB'
+#!/bin/sh
+printf 'x\n' >> "$HOME/rsync-calls"
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/rsync"
+
+  mktranscript "$TMPDIR/t.jsonl" 8192 'z'
+  run bash "$HOOK" <<< "$(hookjson "$TMPDIR/t.jsonl" s6d)"
+  [ "$status" -eq 0 ]
+  [ ! -f "$HOME/rsync-calls" ]
+  [ -f "$(SPOOL)/s6d-0" ]
 }
 
 @test "ml_ship failure leaves the slice in the spool and does not fail the hook" {

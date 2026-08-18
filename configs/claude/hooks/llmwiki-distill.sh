@@ -15,10 +15,14 @@
 # docs/superpowers/specs/2026-08-13-memory-ab-testing-design.md
 #
 # Tunables:
-#   LLMWIKI_NUDGE_INTERVAL   seconds between launches per project (default 900)
-#   LLMWIKI_MIN_DELTA_BYTES  minimum new transcript bytes to launch (default 4096)
-#   MEMORY_LANES_TEE         set to 0 to disable the spool tee (default on)
-#   MEMORY_LANES_SPOOL       spool dir (default ~/.local/state/memory-lanes/inbox)
+#   LLMWIKI_NUDGE_INTERVAL    seconds between launches per project (default 900)
+#   LLMWIKI_MIN_DELTA_BYTES   minimum new transcript bytes to launch (default 4096)
+#   MEMORY_LANES_TEE          set to 0 to disable the spool tee (default on)
+#   MEMORY_LANES_SPOOL        spool dir (default ~/.local/state/memory-lanes/inbox)
+#   MEMORY_LANES_SHIP         set to 0 to disable shipping the spool to vossisrv (default on)
+#   MEMORY_LANES_SHIP_KEY     restricted ssh key for shipping (default ~/.aicodingsetup/memory-lanes-ship)
+#   MEMORY_LANES_SHIP_TARGET  rsync target (default vossi@10.0.0.249:/ — rrsync
+#                             remaps / to the vossisrv inbox server-side)
 # Never exits non-zero — a broken distiller must never block stopping.
 
 # Recursion guard: never act inside a distiller-spawned session.
@@ -292,7 +296,7 @@ _ml_tee() {
 # can drop slices and nothing else.
 _ml_ship() {
   [ "${MEMORY_LANES_SHIP:-1}" != "0" ] || return 0
-  local spool key target
+  local spool key target rc
   spool="${MEMORY_LANES_SPOOL:-$HOME/.local/state/memory-lanes/inbox}"
   key="${MEMORY_LANES_SHIP_KEY:-$HOME/.aicodingsetup/memory-lanes-ship}"
   target="${MEMORY_LANES_SHIP_TARGET:-vossi@10.0.0.249:/}"
@@ -300,8 +304,16 @@ _ml_ship() {
   command -v rsync >/dev/null 2>&1 || return 0
   find "$spool" -maxdepth 1 -type f ! -name '.*' -print -quit 2>/dev/null | grep -q . || return 0
   rsync -a --timeout=10 --exclude='.tmp-*' --remove-source-files \
-    -e "ssh -i $key -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new" \
-    "$spool"/ "$target" >/dev/null 2>&1 || true
+    -e "ssh -i '$key' -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new" \
+    "$spool"/ "$target" >/dev/null 2>&1
+  rc=$?
+  # Shipping stays silent to the session (never blocks/fails the hook), but a
+  # stuck spool becomes diagnosable via the hook's existing log file.
+  if [ "$rc" -ne 0 ]; then
+    printf '%s ml_ship: rsync exit %s, slices retained\n' "$(date -Is)" "$rc" \
+      >> "$HOME/.cache/aicoding/llmwiki-distill.log" 2>/dev/null || true
+  fi
+  return 0
 }
 
 if [ "${MEMORY_LANES_TEE:-1}" != "0" ]; then
