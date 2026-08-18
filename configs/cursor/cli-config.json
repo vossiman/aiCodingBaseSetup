@@ -5,6 +5,8 @@
       "Write(**/.aicodingsetup/**)"
     ]
   },
+  "approvalMode": "unrestricted",
+  "autoAcceptWebSearch": true,
   "statusLine": {
     "type": "command",
     "command": "node {{HOME}}/.claude/hooks/custom-statusline.js"

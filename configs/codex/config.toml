@@ -7,14 +7,20 @@
 model = "gpt-5.6-sol"
 
 # Push a phone notification when a turn completes (agent-waiting feature).
-# codex invokes argv + one JSON arg; only agent-turn-complete fires today —
-# approval prompts do not (openai/codex#11808), that tier is tmux's job.
+# codex invokes argv + one JSON arg; only agent-turn-complete fires. The
+# approval-prompt tier stays tmux's job for now (openai/codex#11808 closed
+# 2026-02 in favor of the [hooks] feature — stable+default-on since 0.147,
+# events incl. PermissionRequest — a candidate replacement for this notify
+# wiring, not yet adopted; see docs/agent-release-audits.md 2026-08-18).
 notify = ["{{HOME}}/.local/bin/agent-notify", "--source", "codex", "--title", "✔ codex turn done"]
 
-# Setting BOTH of these explicitly suppresses codex's per-project trust screen,
-# so codex stops writing [projects."<path>"].trust_level into this file. That
-# write is what made config.toml drift and get clobbered (with a .bak) on every
-# `aicoding-sync`. Spike-verified: with both set, no trust_level is written.
+# Historical: setting BOTH keys below once suppressed codex's per-project
+# trust screen and its [projects."<path>"].trust_level writes into this file
+# (spike-verified on 0.144). Codex 0.147 regressed that: it now auto-trusts
+# local projects and persists trust_level regardless (spike-verified
+# 2026-08-18). The drift problem is instead handled sync-side —
+# compute_managed_hash in lib/blueprint-deploy.sh strips [projects.*]
+# sections before drift comparison, so those writes are ignored.
 #
 # Automode (2026-07-14): the devpod container is the isolation boundary, so no
 # prompts and no codex sandbox — same posture as claude's skip-permissions.
@@ -30,6 +36,12 @@ notify = ["{{HOME}}/.local/bin/agent-notify", "--source", "codex", "--title", "�
 # the (stripped) environment.
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
+
+# Codex-side subagent delegation (stable since 0.145 but default-off;
+# adopted 2026-08-18, see docs/agent-release-audits.md). Sub-agent model,
+# reasoning effort, and concurrency are tunable via [agents] if needed.
+[features]
+multi_agent_v2 = true
 
 # Codex has no custom-command statusline (openai/codex#17827) — these
 # built-in items approximate the claude/cursor powerline script (context

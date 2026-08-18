@@ -5,7 +5,8 @@
     ]
   },
   "env": {
-    "CLAUDE_CODE_NO_FLICKER": "1"
+    "CLAUDE_CODE_NO_FLICKER": "1",
+    "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"
   },
   "effortLevel": "medium",
   "autoMemoryEnabled": false,
