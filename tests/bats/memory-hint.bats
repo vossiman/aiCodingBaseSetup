@@ -66,6 +66,10 @@ PY
   [[ "$output" == *"qid-1"* ]]
 }
 
+@test "default MEMORY_ROUTER_URL points at the vossisrv router" {
+  grep -q 'MEMORY_ROUTER_URL", "http://10.0.0.249:8091"' "$CLI"
+}
+
 @test "empty results: no output, exit 0" {
   port=$(python3 - <<'PY'
 import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()

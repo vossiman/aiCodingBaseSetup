@@ -126,11 +126,12 @@ install_claude_mcps() {
     warn "logfire MCP may need manual setup"
   fi
 
-  # memory-router — local memory-lanes retrieval router (the memory_search
-  # tool). HTTP MCP on localhost:8091 with bearer auth; the token is a shared
-  # secret from ~/.aicodingsetup/.secrets.env, so no token means no server.
+  # memory-router — the central memory-lanes retrieval router on vossisrv
+  # (the memory_search tool). HTTP MCP with bearer auth; the token is a
+  # shared secret from ~/.aicodingsetup/.secrets.env, so no token means no
+  # server.
   if [[ -n "${MEMORY_ROUTER_TOKEN:-}" ]]; then
-    if claude mcp add --transport http -s user memory-router http://localhost:8091/mcp -H "Authorization: Bearer ${MEMORY_ROUTER_TOKEN}" 2>/dev/null; then
+    if claude mcp add --transport http -s user memory-router http://10.0.0.249:8091/mcp -H "Authorization: Bearer ${MEMORY_ROUTER_TOKEN}" 2>/dev/null; then
       ok "memory-router MCP configured"
     elif claude mcp get memory-router &>/dev/null; then
       ok "memory-router MCP already configured"

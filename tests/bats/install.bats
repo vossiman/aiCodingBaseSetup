@@ -470,7 +470,7 @@ EOF
   [ "$status" -eq 0 ]
   line=$(grep -E "mcp add .*memory-router" "$TMPDIR/claude-calls")
   echo "$line" | grep -q -- "--transport http"
-  echo "$line" | grep -q "http://localhost:8091/mcp"
+  echo "$line" | grep -q "http://10.0.0.249:8091/mcp"
   echo "$line" | grep -q "Authorization: Bearer testtoken"
 }
 

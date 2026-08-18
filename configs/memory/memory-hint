@@ -57,7 +57,7 @@ def main() -> int:
     if not token:
         return 0
 
-    base = os.environ.get("MEMORY_ROUTER_URL", "http://localhost:8091").rstrip("/")
+    base = os.environ.get("MEMORY_ROUTER_URL", "http://10.0.0.249:8091").rstrip("/")
     request = urllib.request.Request(
         base + "/hint",
         data=json.dumps({"query": prompt, "k": args.k, "client": args.client}).encode(),
