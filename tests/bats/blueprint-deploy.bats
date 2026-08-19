@@ -758,18 +758,22 @@ EOF
   [[ "$output" == *"/.cursor/mcp.json|"* ]]
 }
 
-@test "inventories: host profile drops container-only files, adds boot-sync" {
+@test "inventories: host profile drops container-only wiring, keeps agent CLI configs" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   export AICODING_PROFILE=host
   run managed_inventory_overwrite
+  # tmux/ssh-agent wiring is container-only; boot-sync is host-only.
   [[ "$output" != *"/.tmux.conf|"* ]]
   [[ "$output" != *"aicoding-ssh-auth-sock.sh|"* ]]
-  [[ "$output" != *"/.codex/config.toml|"* ]]
   [[ "$output" == *"$HOME/.bashrc.d/aicoding-boot-sync.sh|overwrite|configs/bash/boot-sync.sh"* ]]
   [[ "$output" == *"/.claude/CLAUDE.md|"* ]]
+  # Agent CLI configs are managed on hosts too (user decision 2026-08-19).
+  [[ "$output" == *"/.codex/config.toml|"* ]]
+  [[ "$output" == *"/.codex/AGENTS.md|"* ]]
   run managed_inventory_merge
   [[ "$output" == *"/.claude/settings.json|"* ]]
-  [[ "$output" != *"opencode.json|"* ]]
-  [[ "$output" != *"cursor"* ]]
+  [[ "$output" == *"opencode.json|"* ]]
+  [[ "$output" == *"/.cursor/mcp.json|"* ]]
+  [[ "$output" == *"/.cursor/cli-config.json|"* ]]
   unset AICODING_PROFILE
 }
