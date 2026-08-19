@@ -43,22 +43,34 @@ Managed by the aiCodingBaseSetup blueprint (`configs/claude/CLAUDE.md`);
 
 ## Parallel-session coordination
 
-Other sessions in this container are the user's own sessions working this
-same project, usually in sibling worktrees.
+Other sessions on this host are the user's own — but not necessarily on this
+project: on a desktop, ListAgents also lists sessions in unrelated repos.
+**Siblings** are only sessions working the same repo family: this repo, any
+worktree of it, or its superproject/submodules (submodule names come from
+`.gitmodules`). All coordination below applies to siblings only; never
+message unrelated sessions — cross-project chatter just burns tokens.
 
+- Name sessions `<repo>/<branch>` (`claude --name devMachine/feat-x` or
+  `/rename`). ListAgents exposes only names, so the repo prefix is what
+  makes siblings recognizable; the branch suffix keeps worktrees apart
+  (auto-names derive from folder basenames and collide across worktrees).
+- Sibling matching uses ONLY the repo prefix — the part before the `/`.
+  Branches never enter the comparison: same-repo sessions on different
+  features are exactly who should talk. A session whose name has no
+  matching repo prefix is not a sibling; when unsure, skip it.
 - **After landing changes** (merge to main, rebase, force-push, or a change
-  to a shared interface/schema): run ListAgents; if sibling sessions exist,
-  message each a short summary — what landed, which files or areas were
-  touched, and whether rebasing is now needed or now safe.
+  to a shared interface/schema): run ListAgents; if siblings exist, message
+  each a short summary — what landed, which files or areas were touched,
+  and whether rebasing is now needed or now safe.
 - **Before starting work that spans many files** (refactor, rename,
   formatting sweep): ask sibling sessions which files they have in flight,
   and surface overlaps to the user instead of proceeding blind.
-- **On receiving such a message:** diff its touched-files list against your
-  own working set; if they intersect, tell the user before continuing.
+- **On receiving such a message:** if the sender is outside your repo
+  family, no action is needed. Otherwise diff its touched-files list
+  against your own working set; if they intersect, tell the user before
+  continuing.
 - Never ask another session to perform an action your own session's
   permissions would block.
-- Name sessions after their branch (`claude --name <branch>` or `/rename`) —
-  auto-names derive from folder basenames and collide across worktrees.
 - **Branch work always takes a dedicated git worktree.** Never switch
   branches in a checkout other sessions may share (the project root or a
   submodule checkout); a checkout's current branch is repo state, not
