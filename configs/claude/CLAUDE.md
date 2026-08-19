@@ -50,14 +50,19 @@ worktree of it, or its superproject/submodules (submodule names come from
 `.gitmodules`). All coordination below applies to siblings only; never
 message unrelated sessions — cross-project chatter just burns tokens.
 
-- Name sessions `<repo>/<branch>` (`claude --name devMachine/feat-x` or
-  `/rename`). ListAgents exposes only names, so the repo prefix is what
-  makes siblings recognizable; the branch suffix keeps worktrees apart
-  (auto-names derive from folder basenames and collide across worktrees).
-- Sibling matching uses ONLY the repo prefix — the part before the `/`.
-  Branches never enter the comparison: same-repo sessions on different
-  features are exactly who should talk. A session whose name has no
-  matching repo prefix is not a sibling; when unsure, skip it.
+- **Finding siblings — never guess from session names.** The live session
+  registry `~/.claude/sessions/*.json` records each running session's
+  exact `cwd`; its `name` field matches the name ListAgents shows. Map
+  each peer's name to its cwd there, then check repo family with git:
+  sibling if that cwd's `git rev-parse --show-toplevel` equals yours, is
+  listed in your `git worktree list`, or is your superproject or one of
+  your submodules (`.gitmodules`) — branches never enter it. If the
+  registry is missing or a cwd doesn't resolve to a repo, skip that
+  session.
+- Name sessions after their branch (`claude --name <branch>` or
+  `/rename`) — purely for human legibility; auto-names derive from folder
+  basenames and collide across worktrees. Names play no role in sibling
+  detection.
 - **After landing changes** (merge to main, rebase, force-push, or a change
   to a shared interface/schema): run ListAgents; if siblings exist, message
   each a short summary — what landed, which files or areas were touched,
