@@ -489,6 +489,71 @@ EOF
   echo "$output" | grep -q "MEMORY_ROUTER_TOKEN not set"
 }
 
+@test "install_claude_mcps: heals memory-router URL drift by remove + re-add" {
+  # Stub: `mcp get memory-router` reports the pre-#85 localhost URL; every
+  # call is logged so we can assert the remove/re-add sequence.
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+case "\$*" in
+  "mcp get memory-router")
+    printf 'memory-router:\n  Type: http\n  URL: http://localhost:8091/mcp\n'
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+  export MEMORY_ROUTER_TOKEN=testtoken
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  grep -q "mcp remove -s user memory-router" "$TMPDIR/claude-calls"
+  grep -E "mcp add .*memory-router" "$TMPDIR/claude-calls" | grep -q "http://10.0.0.249:8091/mcp"
+  # Remove must precede the re-add.
+  remove_line=$(grep -n "mcp remove -s user memory-router" "$TMPDIR/claude-calls" | head -1 | cut -d: -f1)
+  add_line=$(grep -nE "mcp add .*memory-router" "$TMPDIR/claude-calls" | head -1 | cut -d: -f1)
+  [ "$remove_line" -lt "$add_line" ]
+}
+
+@test "install_claude_mcps: does not touch memory-router when URL already correct" {
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+case "\$*" in
+  "mcp get memory-router")
+    printf 'memory-router:\n  Type: http\n  URL: http://10.0.0.249:8091/mcp\n'
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+  export MEMORY_ROUTER_TOKEN=testtoken
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  if grep -q "mcp remove -s user memory-router" "$TMPDIR/claude-calls"; then false; fi
+  echo "$output" | grep -q "memory-router MCP already configured"
+}
+
+@test "install_claude_mcps: heals logfire URL drift by remove + re-add" {
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+case "\$*" in
+  "mcp get logfire")
+    printf 'logfire:\n  Type: http\n  URL: https://mcp.pydantic.dev/mcp\n'
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  grep -q "mcp remove -s user logfire" "$TMPDIR/claude-calls"
+  grep -E "mcp add .*logfire" "$TMPDIR/claude-calls" | grep -q "https://logfire-eu.pydantic.dev/mcp"
+}
+
 @test "install_claude_plugins: does not install the logfire plugin, uninstalls it if present" {
   # The plugin's bundled MCP server hardcodes the US URL (no repoint, no
   # per-server disable) — we run the EU hosted MCP at user scope instead.
@@ -597,9 +662,9 @@ EOF
   [ "$hash" != "null" ]
 }
 
-@test "first-deploy: cursor mcp.json merges 4 blueprint servers without dropping user adds" {
+@test "first-deploy: cursor mcp.json merges 5 blueprint servers without dropping user adds" {
   # Pre-create ~/.cursor/mcp.json with one user-added server. The merge
-  # pipeline must preserve it while adding the blueprint's 4 servers.
+  # pipeline must preserve it while adding the blueprint's 5 servers.
   mkdir -p "$HOME/.cursor"
   cat > "$HOME/.cursor/mcp.json" <<'EOF'
 {
@@ -620,35 +685,39 @@ FIRECRAWL_API_KEY=fake-firecrawl-123
 BRAVE_API_KEY=fake-brave-456
 CLOUDFLARE_API_TOKEN=
 CLOUDFLARE_ACCOUNT_ID=
+MEMORY_ROUTER_TOKEN=fake-memtoken-789
 EOF
 
   bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
 
   [ -f "$HOME/.cursor/mcp.json" ]
-  # All 4 blueprint servers present.
+  # All 5 blueprint servers present.
   jq -e '.mcpServers.firecrawl'    "$HOME/.cursor/mcp.json"
   jq -e '.mcpServers["brave-search"]' "$HOME/.cursor/mcp.json"
   jq -e '.mcpServers.context7'     "$HOME/.cursor/mcp.json"
   jq -e '.mcpServers.playwright'   "$HOME/.cursor/mcp.json"
+  jq -e '.mcpServers["memory-router"].url == "http://10.0.0.249:8091/mcp"' "$HOME/.cursor/mcp.json"
   # User's custom server preserved.
   jq -e '.mcpServers["user-custom"]' "$HOME/.cursor/mcp.json"
   # Substitution applied.
   jq -r '.mcpServers.firecrawl.env.FIRECRAWL_API_KEY' "$HOME/.cursor/mcp.json" | grep -qF 'fake-firecrawl-123'
+  jq -r '.mcpServers["memory-router"].headers.Authorization' "$HOME/.cursor/mcp.json" | grep -qF 'Bearer fake-memtoken-789'
 }
 
-@test "first-deploy: opencode.json mcp field populated with 4 servers and substituted secrets" {
+@test "first-deploy: opencode.json mcp field populated with 5 servers and substituted secrets" {
   mkdir -p "$HOME/.aicodingsetup"
   cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
 FIRECRAWL_API_KEY=fake-firecrawl-123
 BRAVE_API_KEY=fake-brave-456
 CLOUDFLARE_API_TOKEN=
 CLOUDFLARE_ACCOUNT_ID=
+MEMORY_ROUTER_TOKEN=fake-memtoken-789
 EOF
 
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
 
   [ -f "$HOME/.config/opencode/opencode.json" ]
-  # All 4 servers present under the 'mcp' (not 'mcpServers') top-level key.
+  # All 5 servers present under the 'mcp' (not 'mcpServers') top-level key.
   jq -e '.mcp.firecrawl.type == "local"'                  "$HOME/.config/opencode/opencode.json"
   jq -e '.mcp["brave-search"].type == "local"'            "$HOME/.config/opencode/opencode.json"
   jq -e '.mcp.context7.type == "local"'                   "$HOME/.config/opencode/opencode.json"
@@ -656,6 +725,51 @@ EOF
   # opencode schema uses 'environment' not 'env' and 'command' is an array.
   jq -e '.mcp.firecrawl.environment.FIRECRAWL_API_KEY == "fake-firecrawl-123"' "$HOME/.config/opencode/opencode.json"
   jq -e '.mcp.firecrawl.command | type == "array"'        "$HOME/.config/opencode/opencode.json"
+  # memory-router is a remote server with substituted bearer auth; oauth off
+  # (API-key-style shared secret, not an OAuth server).
+  jq -e '.mcp["memory-router"].type == "remote"'          "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp["memory-router"].url == "http://10.0.0.249:8091/mcp"' "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp["memory-router"].headers.Authorization == "Bearer fake-memtoken-789"' "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp["memory-router"].oauth == false'            "$HOME/.config/opencode/opencode.json"
+}
+
+@test "first-deploy: codex config.toml registers memory-router with substituted token" {
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
+FIRECRAWL_API_KEY=fake-firecrawl-123
+BRAVE_API_KEY=fake-brave-456
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_ACCOUNT_ID=
+MEMORY_ROUTER_TOKEN=fake-memtoken-789
+EOF
+
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+
+  [ -f "$HOME/.codex/config.toml" ]
+  grep -q '^\[mcp_servers.memory-router\]' "$HOME/.codex/config.toml"
+  grep -q 'url = "http://10.0.0.249:8091/mcp"' "$HOME/.codex/config.toml"
+  grep -qF 'Authorization = "Bearer fake-memtoken-789"' "$HOME/.codex/config.toml"
+}
+
+@test "first-deploy: codex global AGENTS.md deployed with memory retrieval instructions" {
+  # Codex reads global guidance from ~/.codex/AGENTS.md (CODEX_HOME). Unlike
+  # opencode, it has no fallback to ~/.claude/CLAUDE.md, so the memory
+  # read-path instructions need their own managed file.
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
+FIRECRAWL_API_KEY=fake-firecrawl-123
+BRAVE_API_KEY=fake-brave-456
+EOF
+
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+
+  [ -f "$HOME/.codex/AGENTS.md" ]
+  grep -q 'memory_search' "$HOME/.codex/AGENTS.md"
+  grep -q 'homelab-wiki' "$HOME/.codex/AGENTS.md"
+  # Deployment is manifest-tracked (managed file, not a one-shot copy).
+  hash=$(jq -r '.files["'"$HOME"'/.codex/AGENTS.md"].deployed_hash' "$AICODING_MANIFEST")
+  [ -n "$hash" ]
+  [ "$hash" != "null" ]
 }
 
 @test "merge: opencode.json mcp field preserves user-added server" {
@@ -684,12 +798,13 @@ EOF
 
   bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
 
-  # User server + all 4 blueprint servers both present.
+  # User server + all 5 blueprint servers both present.
   jq -e '.mcp["user-server"]'   "$HOME/.config/opencode/opencode.json"
   jq -e '.mcp.firecrawl'        "$HOME/.config/opencode/opencode.json"
   jq -e '.mcp["brave-search"]'  "$HOME/.config/opencode/opencode.json"
   jq -e '.mcp.context7'         "$HOME/.config/opencode/opencode.json"
   jq -e '.mcp.playwright'       "$HOME/.config/opencode/opencode.json"
+  jq -e '.mcp["memory-router"]' "$HOME/.config/opencode/opencode.json"
 }
 
 @test "managed model defaults use the current pinned families" {
