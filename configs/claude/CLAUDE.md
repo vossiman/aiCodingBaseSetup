@@ -58,7 +58,13 @@ message unrelated sessions — cross-project chatter just burns tokens.
   listed in your `git worktree list`, or is your superproject or one of
   your submodules (`.gitmodules`) — branches never enter it. If the
   registry is missing or a cwd doesn't resolve to a repo, skip that
-  session.
+  session. Never compare cwd strings as paths — lookalike paths (every
+  devcontainer has some `/workspaces/<name>`) prove nothing; only the git
+  resolution counts. In devpod containers `~/.claude` is one host mount
+  shared by all containers, so registry entries may belong to sessions in
+  other containers (and pid-keyed files can collide) — the git check
+  absorbs that too: a foreign cwd won't resolve into your repo family and
+  gets skipped.
 - Name sessions after their branch (`claude --name <branch>` or
   `/rename`) — purely for human legibility; auto-names derive from folder
   basenames and collide across worktrees. Names play no role in sibling
@@ -81,6 +87,13 @@ message unrelated sessions — cross-project chatter just burns tokens.
   submodule checkout); a checkout's current branch is repo state, not
   per-session state. Shared checkouts are neutral ground: project root on
   `main`, submodule checkouts detached at the parent's pinned SHA.
+- **Worktrees live inside the project, nowhere else:** create them at
+  `<repo-root>/.claude/worktrees/<branch>` — the same place Claude Code's
+  native worktree feature uses — never under `../`, `$HOME`, or temp
+  dirs. One predictable location keeps worktrees discoverable and lets
+  them die with the repo instead of littering the host. If they show up
+  as untracked in `git status`, add `.claude/worktrees/` to
+  `.git/info/exclude` (local, never committed).
 - **If a merge conflict between parallel worktree branches occurs that no
   cross-session message forewarned**, log a row to the "Cross-session
   messaging — Layer 3 gate evidence" table on the homelab-wiki `aicoding`
