@@ -419,8 +419,11 @@ remove_managed_file() {
 
 # managed_inventory_overwrite — whole-file managed deployments. Emits
 # "dest|overwrite|blueprint-relative-source" lines. Profile-aware: hosts
-# (manifest_get_profile = host) skip container-only tooling configs and
-# gain the boot-sync trigger; containers are byte-identical to before.
+# (manifest_get_profile = host) skip container-only environment wiring
+# (tmux, ssh-agent watcher) and gain the boot-sync trigger. Agent CLI
+# configs (codex) are managed on BOTH profiles (user decision 2026-08-19:
+# every machine behaves the same; repo-level AGENTS.md/config still
+# overrides globals per each CLI's own precedence rules).
 managed_inventory_overwrite() {
   local profile
   profile=$(manifest_get_profile)
@@ -438,6 +441,8 @@ $HOME/.bashrc.d/aicoding-update-notify.sh|overwrite|configs/bash/update-notify.s
 $HOME/.bashrc.d/aicoding-aliases.sh|overwrite|configs/bash/aliases.sh
 $HOME/.local/bin/git-credential-aicoding|overwrite|configs/git/git-credential-aicoding
 $HOME/.local/bin/memory-hint|overwrite|configs/memory/memory-hint
+$HOME/.codex/config.toml|overwrite|configs/codex/config.toml
+$HOME/.codex/AGENTS.md|overwrite|configs/codex/AGENTS.md
 EOF
   if [[ "$profile" == host ]]; then
     echo "$HOME/.bashrc.d/aicoding-boot-sync.sh|overwrite|configs/bash/boot-sync.sh"
@@ -445,25 +450,21 @@ EOF
     cat <<EOF
 $HOME/.tmux.conf|overwrite|configs/tmux/tmux.conf
 $HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.sh
-$HOME/.codex/config.toml|overwrite|configs/codex/config.toml
-$HOME/.codex/AGENTS.md|overwrite|configs/codex/AGENTS.md
 EOF
   fi
 }
 
 # managed_inventory_merge — JSON configs deep-merged into user files.
-# Hosts manage only Claude's settings; opencode/cursor are container-only.
+# All agent CLI configs are managed on both profiles (see
+# managed_inventory_overwrite); merge mode keeps personal entries (e.g. a
+# host's own MCP servers) while adding/updating the blueprint's keys.
 managed_inventory_merge() {
-  local profile
-  profile=$(manifest_get_profile)
-  echo "$HOME/.claude/settings.json|merge|configs/claude/settings.json"
-  if [[ "$profile" != host ]]; then
-    cat <<EOF
+  cat <<EOF
+$HOME/.claude/settings.json|merge|configs/claude/settings.json
 $HOME/.config/opencode/opencode.json|merge|configs/opencode/opencode.json
 $HOME/.cursor/mcp.json|merge|configs/cursor/mcp.json
 $HOME/.cursor/cli-config.json|merge|configs/cursor/cli-config.json
 EOF
-  fi
 }
 
 # Fixed marker strings for the managed ~/.bashrc block.

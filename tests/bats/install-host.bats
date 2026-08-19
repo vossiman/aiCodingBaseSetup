@@ -101,14 +101,40 @@ _source_host_lib() {
   [ "$output" = "host" ]
 }
 
-@test "install-host.sh: deploys host-shaped managed set (boot-sync yes, tmux/codex no)" {
+@test "install-host.sh: deploys host-shaped managed set (boot-sync + agent CLIs yes, tmux no)" {
   export AICODINGSETUP_SKIP_NETWORK=1
   bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
   [ -f "$HOME/.bashrc.d/aicoding-boot-sync.sh" ]
   [ -f "$HOME/.claude/CLAUDE.md" ]
+  # Agent CLI configs are managed on hosts too (user decision 2026-08-19:
+  # all machines behave the same; repo-level files still override globals).
+  [ -f "$HOME/.codex/config.toml" ]
+  [ -f "$HOME/.codex/AGENTS.md" ]
+  [ -f "$HOME/.config/opencode/opencode.json" ]
+  [ -f "$HOME/.cursor/mcp.json" ]
+  [ -f "$HOME/.cursor/cli-config.json" ]
+  # tmux/ssh-agent wiring stays container-only.
   [ ! -f "$HOME/.tmux.conf" ]
-  [ ! -f "$HOME/.codex/config.toml" ]
+  [ ! -f "$HOME/.bashrc.d/aicoding-ssh-auth-sock.sh" ]
   grep -q 'aicoding managed block' "$HOME/.bashrc"
+}
+
+@test "install-host.sh: host merge preserves personal cursor MCP entries" {
+  export AICODINGSETUP_SKIP_NETWORK=1
+  mkdir -p "$HOME/.cursor"
+  cat > "$HOME/.cursor/mcp.json" <<'EOF'
+{
+  "mcpServers": {
+    "postgres": { "command": "docker", "args": ["run", "-i", "--rm", "pg-mcp"] }
+  }
+}
+EOF
+  # A managed file on disk with no manifest flips detect_install_mode to
+  # 'adopt' (review, don't merge) — force first-deploy, same as the
+  # container-side cursor merge test.
+  bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh --force-reinstall"
+  jq -e '.mcpServers.postgres'         "$HOME/.cursor/mcp.json"
+  jq -e '.mcpServers["memory-router"]' "$HOME/.cursor/mcp.json"
 }
 
 @test "install-host.sh: second run is reconcile mode, still exits 0" {
