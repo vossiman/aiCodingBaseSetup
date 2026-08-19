@@ -65,6 +65,36 @@ install_mcp_packages() {
   done
 }
 
+# ensure_http_mcp <name> <url> [extra `claude mcp add` args...] — register an
+# HTTP MCP at user scope, healing URL drift: `claude mcp add` refuses to touch
+# an existing name, so a server whose URL moved (e.g. memory-router
+# localhost→vossisrv, #85) would otherwise stay stale forever with this
+# function reporting success. Compare the registered URL first and
+# remove + re-add on mismatch; skip the add entirely when it already matches.
+ensure_http_mcp() {
+  local name="$1" url="$2"; shift 2
+  # `|| true`: a failing `claude mcp get` (server missing, CLI broken) must
+  # stay fail-open under install.sh's set -e/pipefail — empty means "not
+  # registered", and the add path below reports any real trouble.
+  local current
+  current="$(claude mcp get "$name" 2>/dev/null | sed -n 's/^ *URL: //p' | head -n1)" || true
+  if [[ -n "$current" ]]; then
+    if [[ "$current" == "$url" ]]; then
+      ok "$name MCP already configured"
+      return
+    fi
+    info "$name MCP URL drifted ($current -> $url) — re-registering"
+    claude mcp remove -s user "$name" 2>/dev/null || true
+  fi
+  if claude mcp add --transport http -s user "$name" "$url" "$@" 2>/dev/null; then
+    ok "$name MCP configured"
+  elif claude mcp get "$name" &>/dev/null; then
+    ok "$name MCP already configured"
+  else
+    warn "$name MCP may need manual setup"
+  fi
+}
+
 # --- Claude Code MCPs ---
 install_claude_mcps() {
   header "Claude Code MCPs"
@@ -118,26 +148,15 @@ install_claude_mcps() {
   # in its bundled .mcp.json (no env override); its README tells EU users to
   # register a user-scope entry at the EU endpoint instead. The plugin's US
   # server stays unauthenticated. Auth: run /mcp once (OAuth).
-  if claude mcp add --transport http -s user logfire https://logfire-eu.pydantic.dev/mcp 2>/dev/null; then
-    ok "logfire MCP configured (EU)"
-  elif claude mcp get logfire &>/dev/null; then
-    ok "logfire MCP already configured"
-  else
-    warn "logfire MCP may need manual setup"
-  fi
+  ensure_http_mcp logfire https://logfire-eu.pydantic.dev/mcp
 
   # memory-router — the central memory-lanes retrieval router on vossisrv
   # (the memory_search tool). HTTP MCP with bearer auth; the token is a
   # shared secret from ~/.aicodingsetup/.secrets.env, so no token means no
   # server.
   if [[ -n "${MEMORY_ROUTER_TOKEN:-}" ]]; then
-    if claude mcp add --transport http -s user memory-router http://10.0.0.249:8091/mcp -H "Authorization: Bearer ${MEMORY_ROUTER_TOKEN}" 2>/dev/null; then
-      ok "memory-router MCP configured"
-    elif claude mcp get memory-router &>/dev/null; then
-      ok "memory-router MCP already configured"
-    else
-      warn "memory-router MCP may need manual setup"
-    fi
+    ensure_http_mcp memory-router http://10.0.0.249:8091/mcp \
+      -H "Authorization: Bearer ${MEMORY_ROUTER_TOKEN}"
   else
     warn "memory-router MCP skipped (MEMORY_ROUTER_TOKEN not set)"
   fi

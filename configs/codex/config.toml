@@ -71,3 +71,12 @@ args = ["-y", "@upstash/context7-mcp"]
 [mcp_servers.playwright]
 command = "npx"
 args = ["@playwright/mcp@latest", "--browser", "chromium"]
+
+# memory-router — central memory-lanes retrieval router on vossisrv (the
+# memory_search tool). Streamable HTTP; the bearer token is substituted at
+# deploy time (same pipeline as the API keys above) rather than read from the
+# environment, so it also works when codex is launched from non-interactive
+# contexts that never source ~/.bashrc.d.
+[mcp_servers.memory-router]
+url = "http://10.0.0.249:8091/mcp"
+http_headers = { Authorization = "Bearer {{MEMORY_ROUTER_TOKEN}}" }

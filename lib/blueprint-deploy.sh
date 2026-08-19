@@ -446,6 +446,7 @@ EOF
 $HOME/.tmux.conf|overwrite|configs/tmux/tmux.conf
 $HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.sh
 $HOME/.codex/config.toml|overwrite|configs/codex/config.toml
+$HOME/.codex/AGENTS.md|overwrite|configs/codex/AGENTS.md
 EOF
   fi
 }
@@ -509,6 +510,7 @@ substitute_secrets() {
   content="${content//\{\{BRAVE_API_KEY\}\}/${BRAVE_API_KEY:-}}"
   content="${content//\{\{CLOUDFLARE_API_TOKEN\}\}/${CLOUDFLARE_API_TOKEN:-}}"
   content="${content//\{\{CLOUDFLARE_ACCOUNT_ID\}\}/${CLOUDFLARE_ACCOUNT_ID:-}}"
+  content="${content//\{\{MEMORY_ROUTER_TOKEN\}\}/${MEMORY_ROUTER_TOKEN:-}}"
   printf '%s' "$content"
 }
 
@@ -518,7 +520,7 @@ substitute_secrets() {
 # substitution's "strip trailing newlines" behavior.
 _substitute_file_to() {
   local src=$1 out=$2
-  # The five placeholders are mutually independent; one sed pipeline handles
+  # The six placeholders are mutually independent; one sed pipeline handles
   # all of them with each value safely quoted (we escape `&`, `/`, and `\`
   # because they're sed-replacement metacharacters).
   local home_v="$HOME"
@@ -526,6 +528,7 @@ _substitute_file_to() {
   local br_v="${BRAVE_API_KEY:-}"
   local cf_t_v="${CLOUDFLARE_API_TOKEN:-}"
   local cf_a_v="${CLOUDFLARE_ACCOUNT_ID:-}"
+  local mr_v="${MEMORY_ROUTER_TOKEN:-}"
   _esc() { printf '%s' "$1" | sed -e 's/[\/&\\]/\\&/g'; }
   sed \
     -e "s/{{HOME}}/$(_esc "$home_v")/g" \
@@ -533,6 +536,7 @@ _substitute_file_to() {
     -e "s/{{BRAVE_API_KEY}}/$(_esc "$br_v")/g" \
     -e "s/{{CLOUDFLARE_API_TOKEN}}/$(_esc "$cf_t_v")/g" \
     -e "s/{{CLOUDFLARE_ACCOUNT_ID}}/$(_esc "$cf_a_v")/g" \
+    -e "s/{{MEMORY_ROUTER_TOKEN}}/$(_esc "$mr_v")/g" \
     "$src" > "$out"
 }
 

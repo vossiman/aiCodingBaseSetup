@@ -15,6 +15,10 @@
     "playwright": {
       "command": "npx",
       "args": ["@playwright/mcp@latest", "--browser", "chromium"]
+    },
+    "memory-router": {
+      "url": "http://10.0.0.249:8091/mcp",
+      "headers": { "Authorization": "Bearer {{MEMORY_ROUTER_TOKEN}}" }
     }
   }
 }
