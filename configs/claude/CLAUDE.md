@@ -50,14 +50,25 @@ worktree of it, or its superproject/submodules (submodule names come from
 `.gitmodules`). All coordination below applies to siblings only; never
 message unrelated sessions — cross-project chatter just burns tokens.
 
-- Name sessions `<repo>/<branch>` (`claude --name devMachine/feat-x` or
-  `/rename`). ListAgents exposes only names, so the repo prefix is what
-  makes siblings recognizable; the branch suffix keeps worktrees apart
-  (auto-names derive from folder basenames and collide across worktrees).
-- Sibling matching uses ONLY the repo prefix — the part before the `/`.
-  Branches never enter the comparison: same-repo sessions on different
-  features are exactly who should talk. A session whose name has no
-  matching repo prefix is not a sibling; when unsure, skip it.
+- **Finding siblings — never guess from session names.** The live session
+  registry `~/.claude/sessions/*.json` records each running session's
+  exact `cwd`; its `name` field matches the name ListAgents shows. Map
+  each peer's name to its cwd there, then check repo family with git:
+  sibling if that cwd's `git rev-parse --show-toplevel` equals yours, is
+  listed in your `git worktree list`, or is your superproject or one of
+  your submodules (`.gitmodules`) — branches never enter it. If the
+  registry is missing or a cwd doesn't resolve to a repo, skip that
+  session. Never compare cwd strings as paths — lookalike paths (every
+  devcontainer has some `/workspaces/<name>`) prove nothing; only the git
+  resolution counts. In devpod containers `~/.claude` is one host mount
+  shared by all containers, so registry entries may belong to sessions in
+  other containers (and pid-keyed files can collide) — the git check
+  absorbs that too: a foreign cwd won't resolve into your repo family and
+  gets skipped.
+- Name sessions after their branch (`claude --name <branch>` or
+  `/rename`) — purely for human legibility; auto-names derive from folder
+  basenames and collide across worktrees. Names play no role in sibling
+  detection.
 - **After landing changes** (merge to main, rebase, force-push, or a change
   to a shared interface/schema): run ListAgents; if siblings exist, message
   each a short summary — what landed, which files or areas were touched,
@@ -76,6 +87,13 @@ message unrelated sessions — cross-project chatter just burns tokens.
   submodule checkout); a checkout's current branch is repo state, not
   per-session state. Shared checkouts are neutral ground: project root on
   `main`, submodule checkouts detached at the parent's pinned SHA.
+- **Worktrees live inside the project, nowhere else:** create them at
+  `<repo-root>/.claude/worktrees/<branch>` — the same place Claude Code's
+  native worktree feature uses — never under `../`, `$HOME`, or temp
+  dirs. One predictable location keeps worktrees discoverable and lets
+  them die with the repo instead of littering the host. If they show up
+  as untracked in `git status`, add `.claude/worktrees/` to
+  `.git/info/exclude` (local, never committed).
 - **If a merge conflict between parallel worktree branches occurs that no
   cross-session message forewarned**, log a row to the "Cross-session
   messaging — Layer 3 gate evidence" table on the homelab-wiki `aicoding`
