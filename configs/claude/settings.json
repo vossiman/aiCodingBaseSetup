@@ -9,6 +9,7 @@
     "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"
   },
   "effortLevel": "medium",
+  "outputStyle": "Concise",
   "autoMemoryEnabled": false,
   "crossSessionInbound": "accept",
   "isolatePeerMachines": true,
