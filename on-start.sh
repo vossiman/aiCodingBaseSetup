@@ -48,10 +48,41 @@ if [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ] && [ -d "$HOME/homelab-wiki/.git" ];
     || echo "WARN: homelab-wiki pull failed (non-fatal)" >&2
 fi
 
+# Resolve the sync entrypoint. ~/.local/bin/aicoding-sync is a SYMLINK into the
+# blueprint clone under /tmp (tmpfs). A container restart wipes /tmp, the link
+# dangles, and `command -v` fails — and the re-clone that would heal it lives
+# inside aicoding-sync itself. Before 2026-08-20 this hook then skipped the sync
+# silently, leaving every aicoding-* command "not found" until someone ran the
+# submodule copy by hand. Break the loop: fall back to the bin/ next to this
+# script (submodule projects), else re-clone the blueprint ourselves
+# (self-contained curl|bash projects, where $0 is the stashed copy).
+sync_cmd=""
+if command -v aicoding-sync >/dev/null 2>&1; then
+  sync_cmd=aicoding-sync
+else
+  echo "WARN: aicoding-sync not on PATH (stale symlink after a /tmp wipe?) — bootstrapping" >&2
+  self_dir=$(cd "$(dirname -- "$0")" && pwd -P)
+  if [ -x "$self_dir/bin/aicoding-sync" ]; then
+    sync_cmd="$self_dir/bin/aicoding-sync"
+  elif [ -x "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" ]; then
+    sync_cmd="$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync"
+  elif [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ]; then
+    : "${AICODING_BLUEPRINT_REMOTE:=https://github.com/vossiman/aiCodingBaseSetup}"
+    echo "WARN: re-cloning blueprint to $AICODING_BLUEPRINT_CLONE" >&2
+    rm -rf "$AICODING_BLUEPRINT_CLONE"
+    if git clone --quiet "$AICODING_BLUEPRINT_REMOTE" "$AICODING_BLUEPRINT_CLONE" \
+       && [ -x "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" ]; then
+      sync_cmd="$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync"
+    else
+      echo "WARN: blueprint clone failed — skipping boot sync (non-fatal)" >&2
+    fi
+  fi
+fi
+
 # Plumbing (ssh-agent watcher, GitHub host key), config reconcile and throttled
 # binary refresh all live in aicoding_sync now — let it own the work. Fail-open:
 # a transient sync error must never block container start.
-if command -v aicoding-sync >/dev/null 2>&1; then
-  aicoding-sync --boot || echo "WARN: aicoding-sync failed (non-fatal)" >&2
+if [ -n "$sync_cmd" ]; then
+  "$sync_cmd" --boot || echo "WARN: aicoding-sync failed (non-fatal)" >&2
 fi
 exit 0

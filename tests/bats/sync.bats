@@ -236,6 +236,43 @@ teardown() { cd /; rm -rf "$TMP"; }
   [ "$status" -eq 0 ]
 }
 
+# 2026-08-20: ~/.local/bin/aicoding-sync is a symlink into the tmpfs blueprint
+# clone. A container restart wipes /tmp, the link dangles, `command -v` fails,
+# and on-start.sh used to skip the sync silently — the very step that would
+# have re-cloned /tmp/aicoding. Every aicoding-* command stayed "not found"
+# until someone ran the submodule copy by hand.
+# The developer's real ~/.local/bin (with a working aicoding-sync) is inherited
+# on PATH; drop it so `command -v` sees only the test HOME's copy.
+_path_without_real_local_bin() {
+  printf '%s' "$PATH" | tr ':' '\n' | grep -v '/home/[^/]*/\.local/bin$' | paste -sd:
+}
+
+@test "on-start.sh falls back to its own bin/ when ~/.local/bin/aicoding-sync dangles" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  ln -sfn "$TMP/wiped-clone/bin/aicoding-sync" "$HOME/.local/bin/aicoding-sync"
+  [ ! -e "$HOME/.local/bin/aicoding-sync" ]   # dangling, as after a /tmp wipe
+  run env PATH="$(_path_without_real_local_bin)" \
+      AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT" AICODING_UPDATE_TTL=0 \
+      bash "$BLUEPRINT_ROOT/on-start.sh"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "aicoding-sync not on PATH"
+  echo "$output" | grep -q "=== "   # the sync actually ran
+}
+
+@test "on-start.sh re-clones the blueprint when neither PATH nor a sibling bin/ has aicoding-sync" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  rm -f "$HOME/.local/bin/aicoding-sync"
+  # Self-contained (curl | bash) shape: the stashed copy has no bin/ next to it.
+  mkdir -p "$TMP/stash"; cp "$BLUEPRINT_ROOT/on-start.sh" "$TMP/stash/on-start.sh"
+  run env PATH="$(_path_without_real_local_bin)" \
+      AICODING_BLUEPRINT_CLONE="$TMP/fresh-clone" \
+      AICODING_BLUEPRINT_REMOTE="$BLUEPRINT_ROOT" AICODING_UPDATE_TTL=0 \
+      AICODINGSETUP_SKIP_NETWORK= bash "$TMP/stash/on-start.sh"
+  [ "$status" -eq 0 ]
+  [ -x "$TMP/fresh-clone/bin/aicoding-sync" ]
+  echo "$output" | grep -q "re-cloning"
+}
+
 # --- gh credential helper plumbing -------------------------------------------
 # Rebuilt containers lose the container-local ~/.gitconfig, and with it the gh
 # credential helper — HTTPS git then prompts "Username for 'https://github.com'".
