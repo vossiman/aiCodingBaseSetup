@@ -65,31 +65,57 @@ install_mcp_packages() {
   done
 }
 
+# Per-server fingerprint of the extra `claude mcp add` args (headers). The
+# CLI can't read headers back, so this sha256 (non-secret) is the only way to
+# notice a rotated/missing credential at an unchanged URL and re-register.
+: "${AICODING_MCP_STATE:=$HOME/.local/state/aicoding/mcp-fingerprints}"
+
 # ensure_http_mcp <name> <url> [extra `claude mcp add` args...] — register an
-# HTTP MCP at user scope, healing URL drift: `claude mcp add` refuses to touch
+# HTTP MCP at user scope, healing drift: `claude mcp add` refuses to touch
 # an existing name, so a server whose URL moved (e.g. memory-router
-# localhost→vossisrv, #85) would otherwise stay stale forever with this
-# function reporting success. Compare the registered URL first and
-# remove + re-add on mismatch; skip the add entirely when it already matches.
+# localhost→vossisrv, #85) or whose token rotated would otherwise stay stale
+# forever with this function reporting success. Compare the registered URL
+# and the stored args fingerprint first; remove + re-add on mismatch, and
+# verify the re-add actually landed by reading the URL back — a swallowed
+# remove failure must surface as WARN, not "already configured" (#91 review).
 ensure_http_mcp() {
   local name="$1" url="$2"; shift 2
+  local fp=""
+  (( $# )) && fp="$(printf '%s\n' "$@" | sha256sum | awk '{print $1}')"
+  local fp_file="$AICODING_MCP_STATE/$name.sha256" stored=""
+  [[ -f "$fp_file" ]] && stored="$(cat "$fp_file" 2>/dev/null)" || true
   # `|| true`: a failing `claude mcp get` (server missing, CLI broken) must
   # stay fail-open under install.sh's set -e/pipefail — empty means "not
   # registered", and the add path below reports any real trouble.
   local current
   current="$(claude mcp get "$name" 2>/dev/null | sed -n 's/^ *URL: //p' | head -n1)" || true
   if [[ -n "$current" ]]; then
-    if [[ "$current" == "$url" ]]; then
+    if [[ "$current" == "$url" && "$stored" == "$fp" ]]; then
       ok "$name MCP already configured"
       return
     fi
-    info "$name MCP URL drifted ($current -> $url) — re-registering"
-    claude mcp remove -s user "$name" 2>/dev/null || true
+    if [[ "$current" != "$url" ]]; then
+      info "$name MCP URL drifted ($current -> $url) — re-registering"
+    else
+      info "$name MCP connection args changed — re-registering"
+    fi
+    if ! claude mcp remove -s user "$name" 2>/dev/null; then
+      warn "$name MCP: failed to remove stale registration — still at $current"
+      return
+    fi
   fi
   if claude mcp add --transport http -s user "$name" "$url" "$@" 2>/dev/null; then
-    ok "$name MCP configured"
-  elif claude mcp get "$name" &>/dev/null; then
-    ok "$name MCP already configured"
+    # Read back and verify: an add that "succeeded" against a lingering old
+    # registration would otherwise report a config that isn't there.
+    local after
+    after="$(claude mcp get "$name" 2>/dev/null | sed -n 's/^ *URL: //p' | head -n1)" || true
+    if [[ "$after" == "$url" ]]; then
+      mkdir -p "$AICODING_MCP_STATE" 2>/dev/null || true
+      printf '%s\n' "$fp" > "$fp_file" 2>/dev/null || true
+      ok "$name MCP configured"
+    else
+      warn "$name MCP: registration did not verify (URL is '${after:-none}', wanted $url)"
+    fi
   else
     warn "$name MCP may need manual setup"
   fi

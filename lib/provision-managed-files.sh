@@ -252,8 +252,9 @@ adopt_existing_files() {
 
 # reconcile_existing_install — manifest exists; classify each managed file
 # and auto-apply only the conservative bucket set (restore, will_update,
-# drifted_but_aligned, merge). new_file and to_remove are skipped — they stay
-# for the human-driven `aicoding-sync`.
+# drifted_but_aligned, merge, plus new_file where the dest is absent).
+# new_file_existing and to_remove are skipped — replacing a personal file at
+# a newly managed path stays with the human-driven `aicoding-sync`.
 #
 # Strictly more conservative than `aicoding-sync --yes`: never auto-applies
 # drifted_and_updating or to_remove, because automatic provisioning should
@@ -292,6 +293,7 @@ reconcile_existing_install() {
     bucket=${BUCKETS[$dest]}
     case "$bucket" in
       new_file)             n_new=$((n_new+1)) ;;
+      new_file_existing)    n_to_review=$((n_to_review+1)) ;;
       restore)              n_restored=$((n_restored+1)) ;;
       will_update)          n_updated=$((n_updated+1)) ;;
       will_update_owned)    n_updated=$((n_updated+1)) ;;

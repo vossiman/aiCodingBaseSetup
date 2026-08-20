@@ -229,7 +229,7 @@ _is_owned_overwrite() {
 
 # classify_file <dest_path> <src_path> <mode> — echoes one of:
 #   up_to_date, will_update, drifted_but_aligned, drifted_and_updating,
-#   new_file, to_remove, merge.
+#   new_file, new_file_existing, to_remove, merge.
 classify_file() {
   local dest=$1 src=$2 mode=$3
 
@@ -265,7 +265,17 @@ classify_file() {
   entry=$(manifest_get_file "$dest")
 
   if [ "$entry" = "null" ]; then
-    [ -e "$src" ] && { echo "new_file"; return 0; }
+    if [ -e "$src" ]; then
+      # Untracked dest already on disk = a personal file the user put there
+      # before the blueprint started managing this path (e.g. a host's own
+      # ~/.codex/config.toml when the inventory grew). Deploying it as a
+      # plain new_file would silently clobber that file with no backup —
+      # classify it separately so apply backs it up and unattended modes
+      # can leave it for a human decision.
+      [ -e "$dest" ] && { echo "new_file_existing"; return 0; }
+      echo "new_file"
+      return 0
+    fi
     echo "up_to_date"  # neither tracked nor present in blueprint; no-op.
     return 0
   fi
@@ -539,6 +549,43 @@ _substitute_file_to() {
     -e "s/{{CLOUDFLARE_ACCOUNT_ID}}/$(_esc "$cf_a_v")/g" \
     -e "s/{{MEMORY_ROUTER_TOKEN}}/$(_esc "$mr_v")/g" \
     "$src" > "$out"
+  _strip_absent_secret_servers "$src" "$out"
+}
+
+# _strip_absent_secret_servers <src> <out> — with MEMORY_ROUTER_TOKEN unset,
+# substitution leaves "Bearer " in the agent CLI configs: a broken-but-non-
+# empty scalar that a merge would write over a user's valid manual header,
+# and that gives clean installs an enabled 401ing MCP. Match Claude's
+# behavior (install_claude_mcps skips the server without the token) by
+# stripping the memory-router entry from the rendered config instead.
+# Runs inside _substitute_file_to so classify's simulation and the deploy
+# path see identical content — stripping only at deploy time would leave the
+# classifier comparing against an entry that never lands (phantom drift).
+_strip_absent_secret_servers() {
+  local src=$1 out=$2
+  [[ -z "${MEMORY_ROUTER_TOKEN:-}" ]] || return 0
+  local stripped
+  case "$src" in
+    */configs/cursor/mcp.json)
+      stripped=$(jq 'del(.mcpServers."memory-router")' "$out") \
+        && printf '%s\n' "$stripped" > "$out"
+      ;;
+    */configs/opencode/opencode.json)
+      stripped=$(jq 'del(.mcp."memory-router")' "$out") \
+        && printf '%s\n' "$stripped" > "$out"
+      ;;
+    */configs/codex/config.toml)
+      # Drop the [mcp_servers.memory-router] section (header through the
+      # line before the next [section] or EOF). The explanatory comment
+      # above it stays — harmless, and cheaper than tracking prose.
+      local tmp="$out.strip"
+      awk '
+        /^\[/ { skip = ($0 == "[mcp_servers.memory-router]") }
+        !skip { print }
+      ' "$out" > "$tmp" && mv "$tmp" "$out"
+      ;;
+  esac
+  return 0
 }
 
 # deploy_overwrite_file_substituted <src> <dest> <label>
@@ -734,7 +781,9 @@ classify_managed_files() {
 #
 # Buckets the caller can request:
 #   restore               — file in manifest, missing on disk; redeploy.
-#   new_file              — in blueprint, not in manifest; deploy.
+#   new_file              — in blueprint, not in manifest, dest absent; deploy.
+#   new_file_existing     — in blueprint, not in manifest, dest already on
+#                           disk (personal file); back up, then deploy.
 #   will_update           — tracked, unedited, blueprint changed; deploy.
 #   drifted_but_aligned   — refresh manifest hash, no file write.
 #   merge                 — re-merge JSON merge-mode files.
@@ -757,7 +806,7 @@ apply_managed_buckets() {
       restore|new_file|will_update)
         _apply_deploy "$mode" "$dest" "$src"
         ;;
-      drifted_and_updating|will_update_owned)
+      drifted_and_updating|will_update_owned|new_file_existing)
         [[ -e "$dest" ]] && _backup_file "$dest"
         _apply_deploy "$mode" "$dest" "$src"
         ;;
@@ -773,7 +822,11 @@ apply_managed_buckets() {
                 '{mode:"marker_block",source:"(composed)",marker_start:$s,marker_end:$e,deployed_block_hash:$h}')"
         else
           local h
-          h=$(compute_hash "$dest")
+          # compute_managed_hash, not compute_hash: classification compares
+          # managed hashes, so recording a raw hash here (which for codex's
+          # config.toml includes the ignored [projects.*] trust sections)
+          # would disagree with the next classify and re-drift every sync.
+          h=$(compute_managed_hash "$dest")
           manifest_set_file "$dest" \
             "$(jq -n --arg s "${FILE_SOURCE[$dest]}" --arg h "$h" \
                 '{mode:"overwrite",source:$s,deployed_hash:$h}')"

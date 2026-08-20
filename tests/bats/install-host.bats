@@ -121,6 +121,12 @@ _source_host_lib() {
 
 @test "install-host.sh: host merge preserves personal cursor MCP entries" {
   export AICODINGSETUP_SKIP_NETWORK=1
+  # memory-router only deploys when its token exists (empty-token deploys
+  # used to write a broken "Bearer " header over valid manual ones). The
+  # installer's load_or_prompt_secrets exports every key from the secrets
+  # FILE (ambient env is overwritten), so provide it there.
+  mkdir -p "$HOME/.aicodingsetup"
+  printf 'MEMORY_ROUTER_TOKEN=hosttoken\n' > "$HOME/.aicodingsetup/.secrets.env"
   mkdir -p "$HOME/.cursor"
   cat > "$HOME/.cursor/mcp.json" <<'EOF'
 {
@@ -135,6 +141,53 @@ EOF
   bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh --force-reinstall"
   jq -e '.mcpServers.postgres'         "$HOME/.cursor/mcp.json"
   jq -e '.mcpServers["memory-router"]' "$HOME/.cursor/mcp.json"
+}
+
+@test "install-host.sh: reconcile leaves an existing unmanaged ~/.codex/config.toml untouched" {
+  # Regression (unified review 2026-08-20, HIGH): a previously installed host
+  # (manifest exists) with a personal codex config not yet tracked used to
+  # classify it new_file and clobber it with no backup on the next
+  # unattended reconcile/boot-sync.
+  export AICODINGSETUP_SKIP_NETWORK=1
+  bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  # Simulate the pre-#89 state: path exists on disk but is not in the
+  # manifest (the inventory grew after this host's install).
+  jq 'del(.files["'"$HOME"'/.codex/config.toml"])' "$AICODING_MANIFEST" \
+    > "$AICODING_MANIFEST.t" && mv "$AICODING_MANIFEST.t" "$AICODING_MANIFEST"
+  printf 'model = "my-personal-model"\n' > "$HOME/.codex/config.toml"
+
+  run bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  [ "$status" -eq 0 ]
+  # The personal file survives reconcile verbatim; the replace decision
+  # belongs to an interactive `aicoding-sync`.
+  grep -q 'my-personal-model' "$HOME/.codex/config.toml"
+  if grep -q 'mcp_servers' "$HOME/.codex/config.toml"; then false; fi
+}
+
+@test "install-host.sh: absent MEMORY_ROUTER_TOKEN deploys no memory-router, keeps a manual one" {
+  export AICODINGSETUP_SKIP_NETWORK=1
+  unset MEMORY_ROUTER_TOKEN
+  mkdir -p "$HOME/.cursor"
+  cat > "$HOME/.cursor/mcp.json" <<'EOF'
+{
+  "mcpServers": {
+    "memory-router": {
+      "url": "http://myown:9999/mcp",
+      "headers": { "Authorization": "Bearer manual-token" }
+    }
+  }
+}
+EOF
+  bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh --force-reinstall"
+  # The manual registration survives the merge untouched.
+  jq -e '.mcpServers["memory-router"].headers.Authorization == "Bearer manual-token"' \
+    "$HOME/.cursor/mcp.json"
+  jq -e '.mcpServers["memory-router"].url == "http://myown:9999/mcp"' \
+    "$HOME/.cursor/mcp.json"
+  # Fresh opencode/codex configs carry no broken memory-router entry.
+  run jq -e '.mcp["memory-router"]' "$HOME/.config/opencode/opencode.json"
+  [ "$status" -ne 0 ]
+  if grep -q '^\[mcp_servers.memory-router\]' "$HOME/.codex/config.toml"; then false; fi
 }
 
 @test "install-host.sh: second run is reconcile mode, still exits 0" {
