@@ -175,6 +175,36 @@ teardown() { cd /; rm -rf "$TMP"; }
   [ "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')" = "$before" ]
 }
 
+@test "sync --boot leaves an existing unmanaged file at a newly managed path alone" {
+  # Regression (unified review 2026-08-20, HIGH): dest exists + manifest
+  # exists + path untracked used to bucket as new_file, which boot's
+  # unattended apply set deploys — clobbering a personal file with no backup.
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  jq 'del(.files["'"$HOME"'/.codex/config.toml"])' "$AICODING_MANIFEST" \
+    > "$AICODING_MANIFEST.t" && mv "$AICODING_MANIFEST.t" "$AICODING_MANIFEST"
+  printf 'model = "my-personal-model"\n' > "$HOME/.codex/config.toml"
+
+  AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  grep -q 'my-personal-model' "$HOME/.codex/config.toml"
+  run ls "$HOME/.codex/config.toml.bak."*
+  [ "$status" -ne 0 ]
+}
+
+@test "sync --yes backs up an existing unmanaged file before managing it" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  jq 'del(.files["'"$HOME"'/.codex/config.toml"])' "$AICODING_MANIFEST" \
+    > "$AICODING_MANIFEST.t" && mv "$AICODING_MANIFEST.t" "$AICODING_MANIFEST"
+  printf 'model = "my-personal-model"\n' > "$HOME/.codex/config.toml"
+
+  run bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_sync --yes'
+  [ "$status" -eq 0 ]
+  # Blueprint version deployed, personal content preserved in the backup.
+  if grep -q 'my-personal-model' "$HOME/.codex/config.toml"; then false; fi
+  bak=$(ls "$HOME"/.codex/config.toml.bak.* 2>/dev/null | head -1)
+  [ -n "$bak" ]
+  grep -q 'my-personal-model' "$bak"
+}
+
 @test "aicoding-install: pulls the blueprint and re-runs the installer (reconcile)" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   run "$BLUEPRINT_ROOT/bin/aicoding-install" --blueprint "$BLUEPRINT_ROOT" </dev/null

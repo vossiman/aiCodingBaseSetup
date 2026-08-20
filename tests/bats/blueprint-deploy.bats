@@ -212,6 +212,134 @@ EOF
   [ "$output" = "new_file" ]
 }
 
+@test "classify_file: new_file_existing when untracked but dest already on disk" {
+  # A personal file at a path the blueprint just started managing must not
+  # classify as plain new_file — that bucket deploys with no backup.
+  echo "personal content" > "$TMPDIR/dest"
+  echo "blueprint content" > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  manifest_stage_commit
+  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
+  [ "$status" -eq 0 ]
+  [ "$output" = "new_file_existing" ]
+}
+
+@test "apply_managed_buckets: new_file_existing backs up before deploying" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs/codex" "$HOME/.codex"
+  echo "blueprint codex config" > "$AICODING_BLUEPRINT_CLONE/configs/codex/config.toml"
+  echo "personal codex config" > "$HOME/.codex/config.toml"
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE
+  BUCKETS[$HOME/.codex/config.toml]=new_file_existing
+  FILE_MODE[$HOME/.codex/config.toml]=overwrite
+  FILE_SOURCE[$HOME/.codex/config.toml]=configs/codex/config.toml
+
+  manifest_stage_begin
+  # No `run`: it subshells, which would discard the staged-manifest mutation
+  # this test asserts on.
+  apply_managed_buckets "new_file_existing"
+  manifest_stage_commit
+
+  grep -q "blueprint codex config" "$HOME/.codex/config.toml"
+  local bak
+  bak=$(ls "$HOME"/.codex/config.toml.bak.* 2>/dev/null | head -1)
+  [ -n "$bak" ]
+  grep -q "personal codex config" "$bak"
+  jq -e '.files["'"$HOME"'/.codex/config.toml"]' "$AICODING_MANIFEST"
+}
+
+@test "apply_managed_buckets: drifted_but_aligned records the MANAGED hash (codex trust sections)" {
+  # Regression: the refresh used compute_hash, so a codex config.toml with
+  # [projects.*] trust sections stored a hash the next classify (which strips
+  # them) could never match — permanent re-drift on every sync.
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs/codex" "$HOME/.codex"
+  printf 'model = "personal"\n' > "$AICODING_BLUEPRINT_CLONE/configs/codex/config.toml"
+  printf 'model = "personal"\n\n[projects."/w/x"]\ntrust_level = "trusted"\n' \
+    > "$HOME/.codex/config.toml"
+  cat > "$AICODING_MANIFEST" <<EOF
+{"schema_version":1,"files":{"$HOME/.codex/config.toml":{"mode":"overwrite","source":"configs/codex/config.toml","deployed_hash":"obsolete"}}}
+EOF
+
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE
+  FILE_MODE[$HOME/.codex/config.toml]=overwrite
+  FILE_SOURCE[$HOME/.codex/config.toml]=configs/codex/config.toml
+  BUCKETS[$HOME/.codex/config.toml]=$(classify_file "$HOME/.codex/config.toml" \
+    "$AICODING_BLUEPRINT_CLONE/configs/codex/config.toml" overwrite)
+  [ "${BUCKETS[$HOME/.codex/config.toml]}" = "drifted_but_aligned" ]
+
+  manifest_stage_begin
+  apply_managed_buckets "drifted_but_aligned"
+  manifest_stage_commit
+
+  local stored managed
+  stored=$(jq -r '.files["'"$HOME"'/.codex/config.toml"].deployed_hash' "$AICODING_MANIFEST")
+  managed=$(compute_managed_hash "$HOME/.codex/config.toml")
+  [ "$stored" = "$managed" ]
+  # Stable: the next classification converges instead of re-drifting.
+  run classify_file "$HOME/.codex/config.toml" \
+    "$AICODING_BLUEPRINT_CLONE/configs/codex/config.toml" overwrite
+  [ "$output" = "up_to_date" ]
+}
+
+@test "_substitute_file_to: strips memory-router from cursor mcp.json when token absent" {
+  unset MEMORY_ROUTER_TOKEN
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$TMPDIR/clone/configs/cursor"
+  cp "$BLUEPRINT_ROOT/configs/cursor/mcp.json" "$TMPDIR/clone/configs/cursor/mcp.json"
+  _substitute_file_to "$TMPDIR/clone/configs/cursor/mcp.json" "$TMPDIR/out.json"
+  run jq -e '.mcpServers["memory-router"]' "$TMPDIR/out.json"
+  [ "$status" -ne 0 ]
+  # Other servers survive the strip.
+  jq -e '.mcpServers.context7' "$TMPDIR/out.json"
+}
+
+@test "_substitute_file_to: keeps memory-router with substituted header when token set" {
+  export MEMORY_ROUTER_TOKEN=tok-123
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$TMPDIR/clone/configs/cursor"
+  cp "$BLUEPRINT_ROOT/configs/cursor/mcp.json" "$TMPDIR/clone/configs/cursor/mcp.json"
+  _substitute_file_to "$TMPDIR/clone/configs/cursor/mcp.json" "$TMPDIR/out.json"
+  jq -e '.mcpServers["memory-router"].headers.Authorization == "Bearer tok-123"' "$TMPDIR/out.json"
+}
+
+@test "_substitute_file_to: strips the codex memory-router section when token absent" {
+  unset MEMORY_ROUTER_TOKEN
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$TMPDIR/clone/configs/codex"
+  cp "$BLUEPRINT_ROOT/configs/codex/config.toml" "$TMPDIR/clone/configs/codex/config.toml"
+  _substitute_file_to "$TMPDIR/clone/configs/codex/config.toml" "$TMPDIR/out.toml"
+  if grep -q '^\[mcp_servers.memory-router\]' "$TMPDIR/out.toml"; then false; fi
+  # No dangling empty bearer anywhere in the rendered file.
+  if grep -q 'Bearer "' "$TMPDIR/out.toml"; then false; fi
+  # Other content is intact.
+  grep -q '^model' "$TMPDIR/out.toml"
+}
+
+@test "merge with token absent preserves an existing manual memory-router entry" {
+  unset MEMORY_ROUTER_TOKEN
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$TMPDIR/clone/configs/opencode" "$TMPDIR/dest"
+  cp "$BLUEPRINT_ROOT/configs/opencode/opencode.json" "$TMPDIR/clone/configs/opencode/opencode.json"
+  cat > "$TMPDIR/dest/opencode.json" <<'EOF'
+{"mcp":{"memory-router":{"type":"remote","url":"http://myown:9999/mcp","headers":{"Authorization":"Bearer manual-token"},"enabled":true}}}
+EOF
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  manifest_stage_begin
+  deploy_merge_file_substituted "$TMPDIR/clone/configs/opencode/opencode.json" \
+    "$TMPDIR/dest/opencode.json" configs/opencode/opencode.json
+  manifest_stage_commit
+  # The manual registration is untouched; blueprint keys still merged in.
+  jq -e '.mcp["memory-router"].headers.Authorization == "Bearer manual-token"' "$TMPDIR/dest/opencode.json"
+  jq -e '.mcp["memory-router"].url == "http://myown:9999/mcp"' "$TMPDIR/dest/opencode.json"
+  jq -e '.mcp.context7' "$TMPDIR/dest/opencode.json"
+}
+
 @test "classify_file: to_remove when in manifest but src is absent" {
   echo "old" > "$TMPDIR/dest"
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"

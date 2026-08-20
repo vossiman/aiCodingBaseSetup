@@ -341,7 +341,7 @@ _sync_reconcile() {
   declare -A COUNT
   local b
   for b in up_to_date will_update will_update_owned drifted_but_aligned \
-           drifted_and_updating restore new_file to_remove merge; do
+           drifted_and_updating restore new_file new_file_existing to_remove merge; do
     COUNT[$b]=0
   done
   for d in "${!BUCKETS[@]}"; do
@@ -351,7 +351,7 @@ _sync_reconcile() {
 
   if [[ "$mode" == dry-run ]]; then
     for b in up_to_date will_update will_update_owned drifted_but_aligned \
-             drifted_and_updating restore new_file to_remove merge; do
+             drifted_and_updating restore new_file new_file_existing to_remove merge; do
       echo "  ${COUNT[$b]} $b"
     done
     return 0
@@ -367,7 +367,8 @@ _sync_reconcile() {
   # hash) and up_to_date are NOT actionable, so they're excluded here — otherwise
   # a pure manifest-hash refresh would wrongly trigger an Apply? prompt.
   if (( COUNT[will_update] + COUNT[will_update_owned] + COUNT[drifted_and_updating] \
-        + COUNT[restore] + COUNT[new_file] + COUNT[to_remove] + COUNT[merge] == 0 )); then
+        + COUNT[restore] + COUNT[new_file] + COUNT[new_file_existing] \
+        + COUNT[to_remove] + COUNT[merge] == 0 )); then
     echo "Nothing to do."
     # Still advance the blueprint_commit stamp: the blueprint may have moved
     # without touching any managed file (lib/tests/bin-only changes). Leaving
@@ -398,11 +399,13 @@ _sync_reconcile() {
   local buckets
   if [[ "$mode" == boot ]]; then
     # Conservative on boot: preserve user edits (no drifted_and_updating, no
-    # to_remove) since boot runs unattended on every container start.
+    # new_file_existing, no to_remove) since boot runs unattended on every
+    # container start — a personal file at a newly managed path must never be
+    # replaced without a human in the loop.
     buckets="restore new_file will_update will_update_owned drifted_but_aligned merge"
   else
     # interactive / yes / first: full reconcile.
-    buckets="restore new_file will_update will_update_owned drifted_but_aligned drifted_and_updating merge to_remove"
+    buckets="restore new_file new_file_existing will_update will_update_owned drifted_but_aligned drifted_and_updating merge to_remove"
   fi
   apply_managed_buckets "$buckets"
 
@@ -415,6 +418,7 @@ _sync_reconcile() {
     case "$bucket" in
       restore)              echo "      restored: $d" ;;
       new_file)             echo "      new: $d" ;;
+      new_file_existing)    echo "      new (existing file backed up): $d" ;;
       will_update)          echo "      updated: $d" ;;
       will_update_owned)    echo "      updated: $d" ;;
       drifted_and_updating) echo "      updated (with backup): $d" ;;
@@ -485,6 +489,13 @@ _sync_print_summary() {
     echo "  ${COUNT[new_file]} new files           (will be deployed):"
     for dest in "${!BUCKETS[@]}"; do
       [[ ${BUCKETS[$dest]} == new_file ]] && echo "      $dest"
+    done
+  fi
+
+  if (( COUNT[new_file_existing] > 0 )); then
+    echo "  ${COUNT[new_file_existing]} newly managed       (your existing file will be backed up, then replaced):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} == new_file_existing ]] && echo "      $dest"
     done
   fi
 

@@ -490,14 +490,23 @@ EOF
 }
 
 @test "install_claude_mcps: heals memory-router URL drift by remove + re-add" {
-  # Stub: `mcp get memory-router` reports the pre-#85 localhost URL; every
-  # call is logged so we can assert the remove/re-add sequence.
+  # Stub: `mcp get memory-router` reports the pre-#85 localhost URL until an
+  # add for that name has run (marker file), then the new URL — so the
+  # read-back verification sees what a real re-add would produce. Every call
+  # is logged so we can assert the remove/re-add sequence.
   cat > "$TMPDIR/stubs/claude" <<EOF
 #!/bin/sh
 echo "\$@" >> '$TMPDIR/claude-calls'
 case "\$*" in
   "mcp get memory-router")
-    printf 'memory-router:\n  Type: http\n  URL: http://localhost:8091/mcp\n'
+    if [ -f '$TMPDIR/mr-added' ]; then
+      printf 'memory-router:\n  Type: http\n  URL: http://10.0.0.249:8091/mcp\n'
+    else
+      printf 'memory-router:\n  Type: http\n  URL: http://localhost:8091/mcp\n'
+    fi
+    ;;
+  "mcp add"*"memory-router"*)
+    touch '$TMPDIR/mr-added'
     ;;
 esac
 exit 0
@@ -513,9 +522,21 @@ EOF
   remove_line=$(grep -n "mcp remove -s user memory-router" "$TMPDIR/claude-calls" | head -1 | cut -d: -f1)
   add_line=$(grep -nE "mcp add .*memory-router" "$TMPDIR/claude-calls" | head -1 | cut -d: -f1)
   [ "$remove_line" -lt "$add_line" ]
+  # Verified re-add reports configured and records the args fingerprint.
+  echo "$output" | grep -q "memory-router MCP configured"
+  [ -f "$HOME/.local/state/aicoding/mcp-fingerprints/memory-router.sha256" ]
 }
 
-@test "install_claude_mcps: does not touch memory-router when URL already correct" {
+# Seed the stored fingerprint ensure_http_mcp would have written for
+# memory-router with this token, so "already configured" short-circuits.
+_seed_mr_fingerprint() {
+  local token=$1
+  mkdir -p "$HOME/.local/state/aicoding/mcp-fingerprints"
+  printf '%s\n' "-H" "Authorization: Bearer $token" | sha256sum | awk '{print $1}' \
+    > "$HOME/.local/state/aicoding/mcp-fingerprints/memory-router.sha256"
+}
+
+@test "install_claude_mcps: does not touch memory-router when URL and token unchanged" {
   cat > "$TMPDIR/stubs/claude" <<EOF
 #!/bin/sh
 echo "\$@" >> '$TMPDIR/claude-calls'
@@ -528,11 +549,84 @@ exit 0
 EOF
   chmod +x "$TMPDIR/stubs/claude"
   export MEMORY_ROUTER_TOKEN=testtoken
+  _seed_mr_fingerprint testtoken
 
   _run_install_fn "$(_isolated_path)" install_claude_mcps
   [ "$status" -eq 0 ]
   if grep -q "mcp remove -s user memory-router" "$TMPDIR/claude-calls"; then false; fi
   echo "$output" | grep -q "memory-router MCP already configured"
+}
+
+@test "ensure_http_mcp: re-registers when the token rotated at an unchanged URL" {
+  # URL matches, but the stored fingerprint was taken with the OLD token —
+  # the registration silently carries stale credentials and must be redone.
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+case "\$*" in
+  "mcp get memory-router")
+    printf 'memory-router:\n  Type: http\n  URL: http://10.0.0.249:8091/mcp\n'
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+  export MEMORY_ROUTER_TOKEN=rotated-token
+  _seed_mr_fingerprint old-token
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  grep -q "mcp remove -s user memory-router" "$TMPDIR/claude-calls"
+  grep -E "mcp add .*memory-router" "$TMPDIR/claude-calls" \
+    | grep -q "Bearer rotated-token"
+}
+
+@test "ensure_http_mcp: failed removal must not report success" {
+  # `mcp remove` fails and `mcp get` keeps returning the stale URL — the
+  # old code fell through to the get-based "already configured" fallback.
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+case "\$*" in
+  "mcp get memory-router")
+    printf 'memory-router:\n  Type: http\n  URL: http://localhost:8091/mcp\n'
+    ;;
+  "mcp remove"*)
+    exit 1
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+  export MEMORY_ROUTER_TOKEN=testtoken
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  if echo "$output" | grep -qE "memory-router MCP (already )?configured"; then false; fi
+  echo "$output" | grep -q "memory-router MCP: failed to remove stale registration"
+  if grep -qE "mcp add .*memory-router" "$TMPDIR/claude-calls"; then false; fi
+}
+
+@test "ensure_http_mcp: add that does not verify warns instead of reporting configured" {
+  # add exits 0 but the read-back still shows the stale URL (e.g. the add
+  # half-failed against a lingering registration).
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+case "\$*" in
+  "mcp get memory-router")
+    printf 'memory-router:\n  Type: http\n  URL: http://localhost:8091/mcp\n'
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+  export MEMORY_ROUTER_TOKEN=testtoken
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  if echo "$output" | grep -qE "memory-router MCP (already )?configured"; then false; fi
+  echo "$output" | grep -q "memory-router MCP: registration did not verify"
 }
 
 @test "install_claude_mcps: heals logfire URL drift by remove + re-add" {
@@ -794,6 +888,7 @@ FIRECRAWL_API_KEY=fake-firecrawl-123
 BRAVE_API_KEY=fake-brave-456
 CLOUDFLARE_API_TOKEN=
 CLOUDFLARE_ACCOUNT_ID=
+MEMORY_ROUTER_TOKEN=fake-memtoken-789
 EOF
 
   bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
