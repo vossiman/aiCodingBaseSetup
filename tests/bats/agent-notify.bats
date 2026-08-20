@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
-# Unit tests for bin/agent-notify. tmux and curl are stubbed: tmux records
-# set-option/display calls to files, curl records its argv. Real network and
-# real tmux are never touched.
+# Unit tests for bin/agent-notify. tmux is stubbed: set-option/display calls
+# are recorded to files, real tmux is never touched. A curl stub is kept only
+# to prove the retired ntfy push is really gone — nothing may invoke it.
 
 setup() {
   : "${BLUEPRINT_ROOT:?unset — run via tests/bats/run.sh}"
@@ -11,6 +11,7 @@ setup() {
   unset AGENT_NOTIFY_DISABLE AICODINGSETUP_SKIP_NETWORK NTFY_URL NTFY_TOPIC NTFY_TOKEN
   mkdir -p "$HOME/.aicodingsetup" "$HOME/stubs"
   printf 'NTFY_TOPIC=test-topic-xyz\n' > "$HOME/.aicodingsetup/.secrets.env"
+  # ^ a populated secrets file: even with a topic present, nothing may push.
 
   # tmux stub: display -p prints a canned window id / flag value; set-option
   # and show-options record argv. TMUX_STUB_WAITING simulates an existing
@@ -43,23 +44,24 @@ STUB
 
 teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
 
-@test "flags window and sends push with topic from secrets file" {
-  run "$CLI" --source claude --priority high --title "claude waiting"
+@test "flags window; push payload flags are accepted and ignored" {
+  run "$CLI" --source claude --priority high --title "claude waiting" --body "hi"
   [ "$status" -eq 0 ]
   grep -q 'set-option -w -t @7 @waiting' "$HOME/tmux-calls"
-  grep -q 'test-topic-xyz' "$HOME/curl-calls"
-  grep -q 'X-Priority: high' "$HOME/curl-calls"
+  [ ! -f "$HOME/curl-calls" ]
 }
 
-@test "already-flagged window does not push again (episode dedupe)" {
+@test "already-flagged window keeps its original timestamp (episode dedupe)" {
   export TMUX_STUB_WAITING="1754700000"
   run "$CLI" --source claude
   unset TMUX_STUB_WAITING
   [ "$status" -eq 0 ]
-  [ ! -f "$HOME/curl-calls" ]
+  # dvw sorts on this epoch — a second hook in the same episode must not move it
+  run grep 'set-option -w -t @7 @waiting' "$HOME/tmux-calls"
+  [ "$status" -ne 0 ]
 }
 
-@test "focused window of an attached session: no flag, no push" {
+@test "focused window of an attached session: no flag" {
   export TMUX_STUB_FOCUS="1 2"
   run "$CLI" --source claude
   unset TMUX_STUB_FOCUS
@@ -78,13 +80,12 @@ teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
   [ ! -f "$HOME/curl-calls" ]
 }
 
-@test "active window of a detached session still flags and pushes" {
+@test "active window of a detached session still flags" {
   export TMUX_STUB_FOCUS="1 0"
   run "$CLI" --source claude
   unset TMUX_STUB_FOCUS
   [ "$status" -eq 0 ]
   grep -q 'set-option -w -t @7 @waiting' "$HOME/tmux-calls"
-  grep -q 'test-topic-xyz' "$HOME/curl-calls"
 }
 
 @test "explicit --window skips TMUX_PANE lookup and validates id format" {
@@ -97,41 +98,39 @@ teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
   [ "$status" -ne 0 ]           # …and never embeds an unvalidated id
 }
 
-@test "kill switch and SKIP_NETWORK suppress the push but still exit 0" {
+@test "kill switch suppresses the flag but still exits 0" {
   export AGENT_NOTIFY_DISABLE=1
   run "$CLI" --source claude
   unset AGENT_NOTIFY_DISABLE
   [ "$status" -eq 0 ]
+  [ ! -f "$HOME/tmux-calls" ]
+}
+
+@test "the retired ntfy push is gone: no network, no secrets read" {
+  # Secrets file holds a topic and curl is on PATH — neither may be touched.
+  run "$CLI" --source claude
+  [ "$status" -eq 0 ]
   [ ! -f "$HOME/curl-calls" ]
-
-  export AICODINGSETUP_SKIP_NETWORK=1
-  run "$CLI" --source claude
-  unset AICODINGSETUP_SKIP_NETWORK
-  [ "$status" -eq 0 ]
-  [ ! -f "$HOME/curl-calls" ]
+  # No push code left: no curl, no NTFY_* env, no secrets read. (The header
+  # comment still names ntfy to explain the removal, so match code, not prose.)
+  run grep -nE 'curl|NTFY_|secrets\.env' "$BLUEPRINT_ROOT/bin/agent-notify"
+  echo "$output"
+  [ "$status" -ne 0 ]
 }
 
-@test "missing NTFY_TOPIC logs and exits 0" {
-  rm "$HOME/.aicodingsetup/.secrets.env"
-  run "$CLI" --source claude
-  [ "$status" -eq 0 ]
-  grep -q 'NTFY_TOPIC' "$HOME/.cache/aicoding/agent-notify.log"
-}
-
-@test "curl failure logs and exits 0" {
-  export CURL_STUB_EXIT=7
-  run "$CLI" --source claude
-  unset CURL_STUB_EXIT
-  [ "$status" -eq 0 ]
-  grep -q 'push failed' "$HOME/.cache/aicoding/agent-notify.log"
-}
-
-@test "outside tmux still pushes, without flagging" {
+@test "outside tmux: no flag, no error" {
   unset TMUX TMUX_PANE
   run "$CLI" --source codex --title "codex done"
   [ "$status" -eq 0 ]
-  [ ! -f "$HOME/tmux-calls" ] || { run grep 'set-option' "$HOME/tmux-calls"; [ "$status" -ne 0 ]; }
-  grep -q 'test-topic-xyz' "$HOME/curl-calls"
+  [ ! -f "$HOME/tmux-calls" ]
+  [ ! -f "$HOME/curl-calls" ]
+}
+
+@test "codex positional JSON payload is tolerated" {
+  run "$CLI" --source codex '{"last-assistant-message":"done"}'
+  [ "$status" -eq 0 ]
+  grep -q 'set-option -w -t @7 @waiting' "$HOME/tmux-calls"
+  [ ! -f "$HOME/curl-calls" ]
 }
 
 @test "codex config wires notify to agent-notify above the first table" {

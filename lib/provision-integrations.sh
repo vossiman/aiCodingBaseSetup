@@ -59,7 +59,7 @@ install_update_status_symlink() {
 }
 
 # --- agent-notify CLI symlink ---
-# Flags a waiting tmux window and pushes an ntfy notification. Called by
+# Flags a waiting tmux window. Called by
 # Claude Code's Notification hook, codex's notify hook, and tmux alert hooks.
 install_agent_notify_symlink() {
   header "agent-notify CLI"
