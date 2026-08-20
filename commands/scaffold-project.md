@@ -15,6 +15,8 @@ Inspect the current working directory (do not run a tool yet — just reason abo
 - `README.md`
 - `TODO.md`
 - `.claude/settings.json`
+- `.github/workflows/renovate.yml`
+- `renovate.json`
 - `docs/specs/{active,archive}/.gitkeep`
 - `docs/plans/{active,archive}/.gitkeep`
 - `docs/notes/{active,archive}/.gitkeep`
@@ -49,7 +51,7 @@ Do **not** try to invent a layout. The templates are the source of truth.
 For each template file under `~/.aicodingsetup/templates/project/`:
 
 - If the source name ends in `.tpl`, strip the `.tpl` suffix for the destination.
-- If the source path starts with `dot-claude/`, rewrite to `.claude/` in the destination (templates can't ship dotfiles cleanly through some archives, so we use the `dot-` prefix in the repo).
+- If a source path component starts with `dot-` (e.g. `dot-claude/`, `dot-github/`), rewrite that component to `.claude/`, `.github/` etc. in the destination (templates can't ship dotfiles cleanly through some archives, so we use the `dot-` prefix in the repo).
 - Read the source with the `Read` tool, substitute `{{PROJECT_NAME}}` and `{{PURPOSE}}` with the collected values, and write the result with `Write`.
 - For `.gitkeep` files, just copy them (no substitution).
 
@@ -68,5 +70,9 @@ If not a git repo, run `git init`. Do not make a commit — leave that to the us
 Print a concise summary: how many files created, how many skipped, path to the new `CLAUDE.md`, and a one-line pointer:
 
 > Next: fill in `TODO.md` and run `/housekeep` when you start marking docs `status: done`.
+
+If the scaffold created `.github/workflows/renovate.yml`, add one more line:
+
+> Renovate needs a `RENOVATE_TOKEN` repo secret (`gh secret set RENOVATE_TOKEN`) — without it the workflow runs and fails.
 
 Do not elaborate further. The user can read `CLAUDE.md` for the conventions.

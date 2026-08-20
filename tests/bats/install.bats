@@ -1011,6 +1011,13 @@ EOF
   grep -q "@AGENTS.md" "$dest/CLAUDE.md.tpl"
   # Scaffold-time placeholders must NOT be expanded at install time.
   grep -q "{{PROJECT_NAME}}" "$dest/AGENTS.md.tpl"
+  # Renovate seed: the config plus the workflow that runs it. Without these a
+  # scaffolded repo never gets its devbox-base digest bumped and goes stale
+  # (2026-08-20: 8 workspace repos pinned to a 11-day-old image).
+  [ -f "$dest/renovate.json" ]
+  [ -f "$dest/dot-github/workflows/renovate.yml" ]
+  grep -q "devbox-base" "$dest/renovate.json"
+  grep -q "RENOVATE_TOKEN" "$dest/dot-github/workflows/renovate.yml"
 }
 
 @test "install.sh reconcile mode: restores a deleted slash command" {

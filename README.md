@@ -63,12 +63,12 @@ Configured for **all four CLIs**: `claude mcp add` for Claude Code (existing), `
 
 ### Slash commands
 
-- **/scaffold-project** — Drops the canonical project layout (`CLAUDE.md`, `TODO.md`, `docs/{specs,plans,notes}/{active,archive}/`, project `.claude/settings.json`) into the current directory. Interactive: asks for name and one-line purpose. Refuses to clobber existing files.
+- **/scaffold-project** — Drops the canonical project layout (`CLAUDE.md`, `TODO.md`, `docs/{specs,plans,notes}/{active,archive}/`, project `.claude/settings.json`, `renovate.json` + `.github/workflows/renovate.yml`) into the current directory. Interactive: asks for name and one-line purpose. Refuses to clobber existing files.
 - **/housekeep** — Sweeps `docs/*/active/` for docs with `status: done` frontmatter and moves them into the sibling `archive/`. Also prunes `[x]` items older than 14 days from `TODO.md`.
 
 ### Project templates
 
-Installed to `~/.aicodingsetup/templates/project/`. Used by `/scaffold-project` to materialize a new project. **Intentional scaffold material outside the manifest:** `install_templates()` rsyncs with `--delete` every run — the repo tree is always SoT; these are not user-edited managed dotfiles, so they skip classify/hash tracking.
+Installed to `~/.aicodingsetup/templates/project/`. Used by `/scaffold-project` to materialize a new project. The Renovate seed (`renovate.json` + `dot-github/workflows/renovate.yml`) is what keeps a project's committed `devbox-base` digest fresh: `aicoding-sync` reconciles `.devcontainer/devcontainer.json` in the container working tree but deliberately never commits it (see `docs/superpowers/specs/2026-08-09-sync-workspace-pin-design.md`), so without Renovate the repo copy goes stale and `dvw rebuild` keeps recreating the old image. The workflow needs a `RENOVATE_TOKEN` repo secret. **Intentional scaffold material outside the manifest:** `install_templates()` rsyncs with `--delete` every run — the repo tree is always SoT; these are not user-edited managed dotfiles, so they skip classify/hash tracking.
 
 ### Container-side helpers
 

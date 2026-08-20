@@ -1,0 +1,39 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices"
+  ],
+  "timezone": "UTC",
+  "schedule": ["before 5am on monday"],
+  "prHourlyLimit": 0,
+  "prConcurrentLimit": 20,
+  "prCreation": "immediate",
+  "rebaseWhen": "behind-base-branch",
+  "platformAutomerge": true,
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "schedule": ["at any time"],
+    "labels": ["security"],
+    "automerge": true
+  },
+  "packageRules": [
+    {
+      "description": "Docker/devcontainer: keep digests pinned, own commit prefix",
+      "matchCategories": ["docker"],
+      "pinDigests": true,
+      "commitMessagePrefix": "chore(docker): "
+    },
+    {
+      "description": "devbox-base digest bumps are mechanical - automerge them",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/vossiman/devbox-base"],
+      "matchUpdateTypes": ["digest", "pin"],
+      "automerge": true
+    },
+    {
+      "description": "Major updates: solo PRs, manual review",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    }
+  ]
+}
