@@ -112,7 +112,21 @@ runs `/hooks` in the TUI. `~/.codex/hooks.json` would therefore be inert on a
 fresh machine — the exact bug this change exists to fix — so
 `ensure_codex_managed_hooks()` installs it to `/etc/codex/requirements.toml`
 instead, where hooks are trusted by policy and cannot be disabled from the user
-hook browser. That step needs root; without it the install warns and continues.
+hook browser.
+
+That one step is the only part of the install that needs root, and it escalates
+for itself — **never run `sudo aicoding-install`**. Behaviour by context:
+
+| Context | What happens |
+|---|---|
+| root, or passwordless sudo (containers) | writes silently |
+| sudo needs a password, terminal attached | explains why, then prompts for that step alone |
+| non-interactive (CI, `--yes` in a pipe) | warns once and continues |
+| `--boot` sync | silent skip — it runs on every container start and must not nag |
+
+`aicoding-sync` reconciles it too, not just `aicoding-install`, so an existing
+container self-heals on its next boot instead of waiting for someone to re-run
+the installer.
 
 To answer "is this key set?" without reading anything, run **`secrets-check`**:
 it prints key names, set/empty, length and a per-machine salted fingerprint —

@@ -277,25 +277,53 @@ ensure_codex_managed_hooks() {
     return 0
   fi
 
-  # Only probe sudo when we actually have one. With SUDO empty (no sudo, or
-  # already root) fall through and let the write itself decide — the target
-  # may well be writable, and `"" -n true` would run `-n` as a command.
-  if [[ $EUID -ne 0 && -n "$SUDO" ]] && ! $SUDO -n true 2>/dev/null; then
-    warn "codex managed hook needs root and sudo is not available non-interactively"
-    warn "  run: sudo aicoding-install   (until then, codex can still read secrets)"
+  # Root is needed for THESE WRITES ONLY — never for the installer as a whole.
+  # `esc` is the escalation prefix applied to just the four commands below;
+  # everything else in install/sync keeps running unprivileged.
+  local esc=""
+  if [[ $EUID -eq 0 ]]; then
+    esc=""                                  # already root
+  elif [[ -z "$SUDO" ]]; then
+    esc=""                                  # no sudo binary; a writable target still works
+  elif $SUDO -n true 2>/dev/null; then
+    esc="$SUDO"                             # passwordless (containers) — silent
+  elif _codex_hook_can_prompt; then
+    # A password is needed. Explain before the prompt appears, so the sudo
+    # challenge is never an unexplained interruption mid-install.
+    info "One step needs root: codex only honors hooks from $dir."
+    info "  (a hook under ~/.codex would sit untrusted and inert until someone runs /hooks)"
+    info "  Escalating for these writes alone — the rest of the install stays unprivileged."
+    esc="$SUDO"
+  else
+    # Non-interactive (boot sync, CI): never hang on a password prompt. Boot
+    # runs on every container start, so it stays SILENT rather than printing
+    # the same unactionable warning forever; an interactive run says it once.
+    [[ "${AICODING_SYNC_MODE:-}" == "boot" ]] && return 0
+    warn "codex managed hook needs root for $dir and this run cannot prompt"
+    warn "  run 'aicoding-install' from a terminal to grant it for that one step"
+    warn "  (until then codex — unlike claude/cursor/opencode — can still read secrets)"
     return 0
   fi
 
   info "Installing codex managed hook into $dir"
-  $SUDO mkdir -p "$dir/hooks" || { warn "cannot create $dir — skipping"; return 0; }
+  $esc mkdir -p "$dir/hooks" || { warn "cannot create $dir — skipping"; return 0; }
   # Root-owned and not user-writable on purpose: a hook script an agent can
   # edit is a hook an agent can neuter.
-  $SUDO cp "$src" "$hook_dest" || { warn "cannot write $hook_dest — skipping"; return 0; }
-  $SUDO chmod 0755 "$hook_dest"
-  printf '%s\n' "$rendered" | $SUDO tee "$req_dest" >/dev/null \
+  $esc cp "$src" "$hook_dest" || { warn "cannot write $hook_dest — skipping"; return 0; }
+  $esc chmod 0755 "$hook_dest"
+  printf '%s\n' "$rendered" | $esc tee "$req_dest" >/dev/null \
     || { warn "cannot write $req_dest — skipping"; return 0; }
-  $SUDO chmod 0644 "$req_dest"
+  $esc chmod 0644 "$req_dest"
   ok "codex managed hook installed ($req_dest)"
+}
+
+# _codex_hook_can_prompt — may this run stop and ask for a sudo password?
+# Only when a human is actually watching: a boot sync or CI run must fail
+# soft instead of blocking forever on an unanswerable prompt.
+_codex_hook_can_prompt() {
+  [[ "${AICODINGSETUP_NONINTERACTIVE:-}" == "1" ]] && return 1
+  [[ "${AICODING_SYNC_MODE:-}" == "boot" ]] && return 1
+  [[ -t 0 && -t 1 ]]
 }
 
 ensure_cursor_agent() {
