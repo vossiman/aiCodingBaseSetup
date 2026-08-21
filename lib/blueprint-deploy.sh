@@ -334,6 +334,13 @@ deploy_overwrite_file() {
 # _json_merge_into <target_path> <source_path> — deep-merge source into
 # target; source wins for scalars; "allow"/"deny" arrays are unioned (a sync
 # must never drop a user-added permission rule); other arrays: source wins.
+#
+# INVARIANT: keep "allow"/"deny" arrays SORTED in the blueprint configs. The
+# union below runs through jq `unique`, which sorts — but a first install of a
+# missing target copies the blueprint file verbatim (see the `cp` above). An
+# unsorted blueprint array therefore lands unsorted, and every later sync
+# re-sorts it and reports phantom drift forever. Caught by sync.bats
+# "sync right after install reports Nothing to do".
 _json_merge_into() {
   local target=$1 source=$2
   if [ ! -f "$target" ]; then
@@ -451,6 +458,7 @@ $HOME/.bashrc.d/aicoding-update-notify.sh|overwrite|configs/bash/update-notify.s
 $HOME/.bashrc.d/aicoding-aliases.sh|overwrite|configs/bash/aliases.sh
 $HOME/.local/bin/git-credential-aicoding|overwrite|configs/git/git-credential-aicoding
 $HOME/.local/bin/memory-hint|overwrite|configs/memory/memory-hint
+$HOME/.local/bin/secrets-check|overwrite|configs/secrets/secrets-check
 $HOME/.codex/config.toml|overwrite|configs/codex/config.toml
 $HOME/.codex/AGENTS.md|overwrite|configs/codex/AGENTS.md
 EOF

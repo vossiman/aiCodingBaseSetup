@@ -54,8 +54,11 @@ and a gentle session-start reminder.
 > manifest** (intentional scaffold material — rsync `--delete`, not classify).
 > There is no standalone `install_commands` function any more. A later fix
 > (`12bf21b`) preserves the hook's executable bit through substituted deploys.
-> `bw-deny-files.sh` is inventory-owned under `configs/claude/hooks/` (vendored
-> from bw-AICode; reconcile/sync deploy it like other hooks).
+> `bw-deny-files.sh` is inventory-owned under `configs/claude/hooks/` (originally
+> vendored from bw-AICode, **forked 2026-08-21** to enforce a built-in secrets deny
+> list unconditionally instead of only inside the bubblewrap sandbox; do not
+> re-sync it from upstream without re-applying that change). `secrets-check`
+> (`configs/secrets/secrets-check` → `~/.local/bin/`) is its sanctioned escape hatch.
 
 > **Cross-agent conventions** (AGENTS.md): the scaffold now writes `AGENTS.md` as
 > the canonical, agent-agnostic conventions file (read natively by Codex,

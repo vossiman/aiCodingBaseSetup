@@ -2,6 +2,16 @@
   "permissions": {
     "allow": [
       "Bash(git show:*)"
+    ],
+    "deny": [
+      "Read(**/*.key)",
+      "Read(**/*.pem)",
+      "Read(**/.netrc)",
+      "Read(**/.pgpass)",
+      "Read(**/.secrets.env)",
+      "Read(~/.aicodingsetup/*-ship)",
+      "Read(~/.aicodingsetup/.secrets.env)",
+      "Read(~/.ssh/id_*)"
     ]
   },
   "env": {

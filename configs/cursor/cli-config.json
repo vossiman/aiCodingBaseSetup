@@ -1,7 +1,14 @@
 {
   "permissions": {
     "deny": [
+      "Read(**/*.key)",
+      "Read(**/*.pem)",
       "Read(**/.aicodingsetup/**)",
+      "Read(**/.netrc)",
+      "Read(**/.pgpass)",
+      "Read(**/.secrets.env)",
+      "Read(**/id_ed25519)",
+      "Read(**/id_rsa)",
       "Write(**/.aicodingsetup/**)"
     ]
   },
