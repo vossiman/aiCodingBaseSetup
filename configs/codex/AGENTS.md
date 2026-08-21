@@ -17,6 +17,7 @@ proceed without retrieval rather than blocking.
 
 Durable lessons (gotchas, incidents, environment quirks) belong in the
 homelab-wiki — follow its `AGENTS.md` conventions — never in project repos.
+
 ## Secrets — never read them
 
 `~/.aicodingsetup/.secrets.env` and any private key (`*.pem`, `*.key`,

@@ -640,18 +640,36 @@ _sync_binaries() {            # throttled network refresh
 # the refreshed clone's copy so a manual sync runs the latest definitions.
 # Fail-open throughout — every provision function warns instead of failing.
 _sync_provision() {
+  # The sync mode reaches ensure_codex_managed_hooks through this variable:
+  # on --boot it must never prompt for a sudo password (nothing can answer)
+  # and must not re-warn on every container start.
+  AICODING_SYNC_MODE="${1:-}"
+
+  local blueprint_lib=""
   if [ -f "$AICODING_BLUEPRINT_CLONE/lib/provision.sh" ]; then
-    . "$AICODING_BLUEPRINT_CLONE/lib/provision.sh"
+    blueprint_lib="$AICODING_BLUEPRINT_CLONE/lib"
   elif [ -n "${SCRIPT_DIR:-}" ] && [ -f "$SCRIPT_DIR/lib/provision.sh" ]; then
-    . "$SCRIPT_DIR/lib/provision.sh"
+    blueprint_lib="$SCRIPT_DIR/lib"
   else
     return 0
   fi
+  . "$blueprint_lib/provision.sh"
   command -v load_secrets_env >/dev/null 2>&1 && load_secrets_env || true
   install_mcp_packages   || true
   install_claude_mcps    || true
   install_claude_plugins || true
   remove_deprecated_shims || true
+
+  # Codex's managed hook is install-time work, but syncing it here too is what
+  # makes an existing machine self-heal: in a container (passwordless sudo) it
+  # lands silently on the next boot instead of waiting for someone to re-run
+  # the installer. provision.sh does not pull in provision-system.sh, so source
+  # it directly — guarded, since a partial blueprint clone may not carry it.
+  if [ -f "$blueprint_lib/provision-system.sh" ]; then
+    . "$blueprint_lib/provision-system.sh" >/dev/null 2>&1 || true
+    command -v ensure_codex_managed_hooks >/dev/null 2>&1 \
+      && ensure_codex_managed_hooks || true
+  fi
   return 0
 }
 
@@ -732,7 +750,7 @@ aicoding_sync() {
   if [ "$mode" != dry-run ]; then
     if [ "$mode" = boot ] && _sync_binaries_fresh; then :; else
       _sync_binaries
-      _sync_provision
+      _sync_provision "$mode"
       _sync_binaries_stamp
     fi
   fi

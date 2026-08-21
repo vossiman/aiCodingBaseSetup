@@ -110,3 +110,64 @@ print('ok')
   [ "$status" -eq 0 ]
   [[ "$output" == *"needs root"* ]]
 }
+
+# --- root escalation: only for the /etc writes, never the whole installer ----
+# A sudo stub that can be told to refuse `-n` (i.e. "a password is required")
+# while still executing the command when actually invoked.
+_stub_sudo() {
+  cat > "$TMPDIR_T/bin/sudo" <<EOF
+#!/bin/bash
+echo "sudo \$*" >> "$TMPDIR_T/sudo.log"
+if [ "\$1" = "-n" ]; then exit ${1:-0}; fi
+exec "\$@"
+EOF
+  chmod +x "$TMPDIR_T/bin/sudo"
+  SUDO="$TMPDIR_T/bin/sudo"
+}
+
+@test "passwordless sudo: escalates silently, no explanation noise" {
+  _stub_sudo 0
+  run ensure_codex_managed_hooks
+  [ "$status" -eq 0 ]
+  [ -f "$REQ" ]
+  [[ "$output" != *"Escalating"* ]]
+  grep -q '^sudo -n true' "$TMPDIR_T/sudo.log"
+}
+
+@test "password needed + interactive: explains, then escalates for the writes" {
+  _stub_sudo 1
+  _codex_hook_can_prompt() { return 0; }   # pretend a human is watching
+  run ensure_codex_managed_hooks
+  [ "$status" -eq 0 ]
+  [ -f "$REQ" ]
+  [[ "$output" == *"One step needs root"* ]]
+  [[ "$output" == *"rest of the install stays unprivileged"* ]]
+}
+
+@test "password needed + non-interactive: warns, and never says 'sudo aicoding-install'" {
+  _stub_sudo 1
+  export AICODINGSETUP_NONINTERACTIVE=1
+  run ensure_codex_managed_hooks
+  [ "$status" -eq 0 ]
+  [ ! -e "$REQ" ]
+  [[ "$output" == *"cannot prompt"* ]]
+  [[ "$output" == *"run 'aicoding-install' from a terminal"* ]]
+  # the whole point of this change: never tell the user to sudo the installer
+  if [[ "$output" == *"sudo aicoding-install"* ]]; then false; fi
+}
+
+@test "boot sync: silent skip, so it cannot nag on every container start" {
+  _stub_sudo 1
+  export AICODING_SYNC_MODE=boot
+  run ensure_codex_managed_hooks
+  [ "$status" -eq 0 ]
+  [ ! -e "$REQ" ]
+  [[ "$output" != *"cannot prompt"* ]]
+}
+
+@test "_codex_hook_can_prompt refuses in boot and non-interactive runs" {
+  AICODING_SYNC_MODE=boot run _codex_hook_can_prompt
+  [ "$status" -ne 0 ]
+  AICODINGSETUP_NONINTERACTIVE=1 run _codex_hook_can_prompt
+  [ "$status" -ne 0 ]
+}

@@ -100,6 +100,7 @@ message unrelated sessions — cross-project chatter just burns tokens.
   page (date, repo, branches, overlapping files, cleanup cost). Notable
   saves — a message that demonstrably prevented a conflict — get a row in
   the saves table.
+
 ## Secrets — never read them
 
 `~/.aicodingsetup/.secrets.env` and any private key (`*.pem`, `*.key`,
