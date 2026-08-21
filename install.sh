@@ -135,6 +135,7 @@ main() {
   esac
 
   install_templates
+  ensure_codex_managed_hooks
   install_tmux_plugins
   install_bubblewrap
   install_infra_audit

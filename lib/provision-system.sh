@@ -229,6 +229,75 @@ ensure_codex() {
   [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
 }
 
+CODEX_MANAGED_DIR="${CODEX_MANAGED_DIR:-/etc/codex}"
+CODEX_MANAGED_MARKER="# aiCodingBaseSetup managed file"
+
+# ensure_codex_managed_hooks — install the secrets deny hook as a codex MANAGED
+# hook, so it is trusted by policy and runs with no interactive review.
+#
+# Codex implements the same PreToolUse contract as Claude Code (verified
+# against codex-cli 0.148.0), so it runs the very same script. What differs is
+# trust: a hook in ~/.codex/hooks.json or <repo>/.codex/hooks.json is recorded
+# against a hash and SILENTLY SKIPPED until someone runs /hooks in the TUI —
+# an installed-but-inert hook, the exact bug this deny hook exists to fix.
+# Hooks from requirements.toml are managed: trusted, always on, and not
+# disableable from the user hook browser.
+#
+# Needs root, so this is fail-soft: no sudo, no codex, or an admin's own
+# requirements.toml all warn and return 0 rather than failing the install.
+ensure_codex_managed_hooks() {
+  header "Codex managed secrets hook"
+
+  command -v codex &>/dev/null || { info "codex not installed — skipping managed hook"; return 0; }
+
+  local src="$SCRIPT_DIR/configs/claude/hooks/bw-deny-files.sh"
+  local req_src="$SCRIPT_DIR/configs/codex/requirements.toml"
+  [[ -f "$src" && -f "$req_src" ]] || { warn "blueprint hook sources missing — skipping"; return 0; }
+
+  local dir="$CODEX_MANAGED_DIR"
+  local hook_dest="$dir/hooks/bw-deny-files.sh"
+  local req_dest="$dir/requirements.toml"
+
+  # Never clobber a requirements.toml this blueprint did not write: it is the
+  # enterprise policy layer and an admin may own it.
+  if [[ -f "$req_dest" ]] && ! grep -qF "$CODEX_MANAGED_MARKER" "$req_dest" 2>/dev/null; then
+    warn "$req_dest exists and is not blueprint-managed — leaving it untouched"
+    warn "  add the PreToolUse hook from $req_src by hand, or move that file aside"
+    return 0
+  fi
+
+  local rendered; rendered=$(sed "s|{{MANAGED_DIR}}|$dir|g" "$req_src")
+
+  # Idempotent: only touch /etc when something actually differs, so a clean
+  # sync stays silent (and never prompts for sudo on hosts).
+  if [[ -f "$req_dest" && -f "$hook_dest" ]] \
+     && [[ "$rendered" == "$(cat "$req_dest" 2>/dev/null)" ]] \
+     && cmp -s "$src" "$hook_dest"; then
+    ok "codex managed hook up to date ($req_dest)"
+    return 0
+  fi
+
+  # Only probe sudo when we actually have one. With SUDO empty (no sudo, or
+  # already root) fall through and let the write itself decide — the target
+  # may well be writable, and `"" -n true` would run `-n` as a command.
+  if [[ $EUID -ne 0 && -n "$SUDO" ]] && ! $SUDO -n true 2>/dev/null; then
+    warn "codex managed hook needs root and sudo is not available non-interactively"
+    warn "  run: sudo aicoding-install   (until then, codex can still read secrets)"
+    return 0
+  fi
+
+  info "Installing codex managed hook into $dir"
+  $SUDO mkdir -p "$dir/hooks" || { warn "cannot create $dir — skipping"; return 0; }
+  # Root-owned and not user-writable on purpose: a hook script an agent can
+  # edit is a hook an agent can neuter.
+  $SUDO cp "$src" "$hook_dest" || { warn "cannot write $hook_dest — skipping"; return 0; }
+  $SUDO chmod 0755 "$hook_dest"
+  printf '%s\n' "$rendered" | $SUDO tee "$req_dest" >/dev/null \
+    || { warn "cannot write $req_dest — skipping"; return 0; }
+  $SUDO chmod 0644 "$req_dest"
+  ok "codex managed hook installed ($req_dest)"
+}
+
 ensure_cursor_agent() {
   header "Ensuring Cursor CLI"
   # Binary name is empirically uncertain (see spec Open Question #2):

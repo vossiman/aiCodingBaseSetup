@@ -1,0 +1,33 @@
+# aiCodingBaseSetup managed file — do not edit by hand.
+# Rewritten by ensure_codex_managed_hooks() (lib/provision-system.sh) on every
+# install/sync. Deployed to /etc/codex/requirements.toml (root-owned).
+#
+# Why this file exists, and why it is not ~/.codex/hooks.json:
+# codex gates every NON-managed hook behind a trust hash and silently skips it
+# until a human runs /hooks in the TUI — an installed-but-inert hook, which is
+# exactly the failure this whole change was made to fix. Hooks sourced from
+# requirements.toml are "managed": trusted by policy, no interactive review,
+# and not disableable from the user hook browser. Verified against
+# codex-cli 0.148.0.
+#
+# The hook script is the SAME one Claude Code uses: codex implements the same
+# PreToolUse contract (tool_name + tool_input.command, and a
+# hookSpecificOutput.permissionDecision = "deny" response). Verified by
+# feeding a real tool call to codex 0.148.0 and watching it refuse:
+#   ERROR codex_core::tools::router: error=Command blocked by PreToolUse hook
+#
+# `hooks` is a stable, default-on feature in 0.148 (`codex features list`), so
+# no [features] block is needed here. allow_managed_hooks_only is deliberately
+# NOT set — that would disable the user's own hooks, which is not our call.
+
+[[hooks.PreToolUse]]
+# Match every tool: the script itself decides per tool_name. Codex's canonical
+# names are Bash and apply_patch (plus mcp__server__tool); the script handles
+# the first two and falls through to "allow" for anything it does not know.
+matcher = ".*"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "{{MANAGED_DIR}}/hooks/bw-deny-files.sh"
+timeout = 30
+statusMessage = "secrets guard"

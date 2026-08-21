@@ -30,6 +30,7 @@ hook() {
   run bash -c "bash '$HOOK' < '$TMPDIR/in.json'"
 }
 bash_hook() { hook "$(jq -nc --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}')"; }
+patch_hook() { hook "$(jq -nc --arg c "$1" '{tool_name:"apply_patch",tool_input:{command:$c}}')"; }
 file_hook() { hook "$(jq -nc --arg t "$1" --arg f "$2" '{tool_name:$t,tool_input:{file_path:$f}}')"; }
 
 denied()  { [ "$status" -eq 0 ] && [[ "$output" == *'"deny"'* ]]; }
@@ -141,6 +142,55 @@ allowed() { [ "$status" -eq 0 ] && [ -z "$output" ]; }
 @test "empty input does not crash the hook" {
   hook ''
   [ "$status" -eq 0 ]
+}
+
+# --- codex's apply_patch tool -----------------------------------------------
+# Codex sends the patch text in tool_input.command, same field name as Bash
+# (verified against codex-cli 0.148.0), so the same script covers both agents.
+
+@test "apply_patch: editing the secrets file is denied" {
+  patch_hook "*** Begin Patch
+*** Update File: $HOME/.aicodingsetup/.secrets.env
+@@
+-GH_TOKEN=ghp_supersecret
++GH_TOKEN=leaked
+*** End Patch"
+  denied
+}
+
+@test "apply_patch: creating a new private key is denied before it exists" {
+  patch_hook "*** Begin Patch
+*** Add File: $HOME/work/exfil.pem
++-----BEGIN PRIVATE KEY-----
+*** End Patch"
+  denied
+}
+
+@test "apply_patch: deleting a private key is denied" {
+  patch_hook "*** Begin Patch
+*** Delete File: $HOME/.ssh/id_ed25519
+*** End Patch"
+  denied
+}
+
+@test "apply_patch: an ordinary file edit is allowed" {
+  patch_hook "*** Begin Patch
+*** Update File: $HOME/work/README.md
+@@
+-hello
++goodbye
+*** End Patch"
+  allowed
+}
+
+@test "apply_patch: patch BODY mentioning a key-like name is not a false positive" {
+  patch_hook "*** Begin Patch
+*** Update File: $HOME/work/README.md
+@@
+-old line
++see config.key and server.pem for details
+*** End Patch"
+  allowed
 }
 
 # --- sandbox patterns are additive, not the on/off switch -------------------

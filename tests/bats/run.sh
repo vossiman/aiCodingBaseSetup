@@ -17,6 +17,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 export BLUEPRINT_ROOT="$PWD"
+# ensure_codex_managed_hooks writes to /etc/codex on a real install. Point
+# every test at a scratch dir so the suite can never touch the real one.
+export CODEX_MANAGED_DIR="${TMPDIR:-/tmp}/aicoding-bats-etc-codex"
 
 # --- Keep the suite offline & non-hanging in the devcontainer ----------------
 # Tests run the real install.sh / sync.sh, which otherwise reach the network.

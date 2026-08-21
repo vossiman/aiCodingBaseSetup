@@ -115,6 +115,8 @@ to the wiki — a leak that outlives the session.
   `base64`, or otherwise echo these files, and never route around a deny hook
   or permission rule that blocks them.
 
-Claude Code (PreToolUse hook + deny rules) and Cursor/OpenCode (deny rules)
-enforce this at the tool layer. Codex has no equivalent read-deny, so there
-the rule is on you.
+All four CLIs enforce this at the tool layer: Claude Code and Codex run the
+same PreToolUse deny hook (Codex's is installed as a *managed* hook in
+`/etc/codex/requirements.toml`, so it is trusted by policy and cannot be
+switched off), and Cursor/OpenCode use deny rules. Attempts are refused, not
+silently ignored.

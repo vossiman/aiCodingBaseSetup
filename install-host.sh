@@ -212,6 +212,7 @@ main() {
   # crash in one of those can't leave the machine without a profile stamp.
   manifest_set_profile host
 
+  ensure_codex_managed_hooks
   install_bubblewrap
   ensure_homelab_wiki
 

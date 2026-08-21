@@ -158,9 +158,27 @@ case "$TOOL_NAME" in
     fi
     ;;
 
-  Bash)
+  Bash|apply_patch)
+    # Codex uses the same PreToolUse contract as Claude Code — verified against
+    # codex-cli 0.148.0 by feeding it a real tool call: tool_name "Bash" with
+    # tool_input.command as a plain string, and "apply_patch" with the patch
+    # text in that same field. So one script serves both agents.
     CMD="$(echo "$INPUT" | jq -r '.tool_input.command // empty')"
     [[ -z "$CMD" ]] && exit 0
+
+    # apply_patch pass 0 — a patch that CREATES a denied file has no existing
+    # path for the token scan below to catch, so match the patch's declared
+    # targets on pattern alone. Only the `*** <verb> File:` headers are read;
+    # matching the whole patch body would trip on any content that merely looks
+    # like a key name.
+    if [[ "$TOOL_NAME" == "apply_patch" ]]; then
+      while IFS= read -r patch_target; do
+        [[ -z "$patch_target" ]] && continue
+        if is_denied_path "$patch_target"; then
+          deny "$(basename "$(expand_path "$patch_target")")"
+        fi
+      done < <(echo "$CMD" | sed -nE 's/^\*\*\* (Add|Update|Delete) File: (.*)$/\2/p')
+    fi
 
     # Pass 1 — every token in the whole command, not just arguments to a
     # hand-maintained list of reader commands. The old command-list approach

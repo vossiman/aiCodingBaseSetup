@@ -64,7 +64,8 @@ Configured for **all four CLIs**: `claude mcp add` for Claude Code (existing), `
   [bw-AICode](https://github.com/vossiman/bw-AICode); **forked 2026-08-21** because upstream only armed
   it inside the bubblewrap sandbox (`BW_DENY_PATTERNS_FILE`), making it a no-op everywhere else. The
   built-in list is now always enforced and that env var only *adds* patterns. Escape hatch: `secrets-check`.
-  Covered by `tests/bats/secrets-deny-hook.bats`.
+  Also runs on **Codex** — same script, installed as a managed hook (see Secrets).
+  Covered by `tests/bats/secrets-deny-hook.bats` and `tests/bats/codex-managed-hooks.bats`.
 - **check-archived-docs.sh** — SessionStart hook. Emits a one-line banner when a scaffolded project has docs with `status: done` in any `docs/*/active/` folder. Fail-open.
 
 ### Slash commands
@@ -99,10 +100,19 @@ transcript that is persisted and distilled to the wiki. Four layers enforce this
 | `permissions.deny` in `settings.json` | Claude Code | hard — file tools |
 | `permissions.deny` in `cli-config.json` | Cursor | hard — file tools |
 | `permission.read` / `permission.bash` maps | OpenCode | hard — file tools + shell patterns |
-| `AGENTS.md` / `CLAUDE.md` prohibition | all four | soft — the only layer Codex has |
+| `bw-deny-files.sh` as a codex **managed** hook | Codex | hard — blocks Bash and apply_patch |
+| `AGENTS.md` / `CLAUDE.md` prohibition | all four | soft — backstop |
 
-Codex exposes no read-deny rule today (its `[hooks]` feature is a candidate — see
-`docs/agent-release-audits.md`), so there the instruction is all there is.
+Codex implements the *same* PreToolUse contract as Claude Code — same
+`tool_name`/`tool_input.command` input, same
+`hookSpecificOutput.permissionDecision: "deny"` response — so it runs the very
+same script (verified against codex-cli 0.148.0). The catch: codex gates every
+**non-managed** hook behind a trust hash and silently skips it until a human
+runs `/hooks` in the TUI. `~/.codex/hooks.json` would therefore be inert on a
+fresh machine — the exact bug this change exists to fix — so
+`ensure_codex_managed_hooks()` installs it to `/etc/codex/requirements.toml`
+instead, where hooks are trusted by policy and cannot be disabled from the user
+hook browser. That step needs root; without it the install warns and continues.
 
 To answer "is this key set?" without reading anything, run **`secrets-check`**:
 it prints key names, set/empty, length and a per-machine salted fingerprint —

@@ -37,6 +37,8 @@ Do not just check that the file exists — an installed hook that no-ops is exac
 3. Confirm no false positive: same command with `~/.aicodingsetup/manifest.json` must print nothing (allow).
 4. Try to read the secrets file with your own Read tool — the attempt must be blocked. Report the refusal message; never report the file's contents.
 5. `secrets-check` — must list key names with STATUS/LEN/FINGERPRINT and no values.
+6. Codex side: `test -f /etc/codex/requirements.toml && grep -q PreToolUse /etc/codex/requirements.toml` — the managed hook must be installed. If the file is missing, the install could not get root; report FAIL with that reason rather than SKIP.
+7. In codex, ask it to `cat ~/.aicodingsetup/.secrets.env`. It must be refused by the hook (codex prints `Command blocked by PreToolUse hook`). Report the refusal, never the contents.
 
 ### 8. Scaffold: /scaffold-project in a tmp dir
 Create a fresh directory with `mkdir -p /tmp/scaffold-test-$$ && cd /tmp/scaffold-test-$$` (in Bash), then invoke the `/scaffold-project` slash command. Verify the resulting tree contains: CLAUDE.md, README.md, TODO.md, .claude/settings.json, and docs/{specs,plans,notes}/{active,archive}/.gitkeep. Also verify `git status` shows an initialized repo. Clean up the tmp dir after.
