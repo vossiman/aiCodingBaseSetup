@@ -91,6 +91,14 @@ any existing file, and never run `git add`/`commit`/`push`/`switch` in a
 project repo — sessions may have work in flight (dirty tree, feature
 branch, detached submodule pin), and project branches may auto-deploy.
 
+## Tools — read with the tools, not with the shell
+
+Use `Read`/`Grep`/`Glob` to inspect files, never `cat`/`head`/`grep` through
+Bash. Your Bash allowance is deliberately narrow (`git`, `mkdir`, `cd`, `wc`)
+because you run with hooks disabled, which means the machine-wide secrets
+guard does not protect you — the tool layer's deny list does. A shell read is
+both denied and pointless here.
+
 ## Reading the slice
 
 The slice is raw Claude Code JSONL and may start mid-record; its format may
