@@ -30,8 +30,15 @@ Invoke the brainstorming skill and confirm it loads successfully. You don't need
 - In Claude Code: invoke superpowers:brainstorming via the Skill tool
 - In opencode: the skill should be auto-discovered from ~/.claude/skills/ — check if brainstorming SKILL.md is available
 
-### 7. Hook: bubblewrap (bw-deny-files)
-Verify the hook is installed by checking that ~/.claude/hooks/bw-deny-files.sh exists and is executable. Run: ls -la ~/.claude/hooks/bw-deny-files.sh
+### 7. Hook: secrets deny (bw-deny-files)
+Do not just check that the file exists — an installed hook that no-ops is exactly the bug this test now guards (see docs/agent-release-audits.md, 2026-08-21).
+1. `ls -la ~/.claude/hooks/bw-deny-files.sh` — present and executable.
+2. Exercise it: `echo '{"tool_name":"Bash","tool_input":{"command":"cat ~/.aicodingsetup/.secrets.env"}}' | bash ~/.claude/hooks/bw-deny-files.sh` — must print a JSON object with `"permissionDecision": "deny"`. Empty output is a FAIL.
+3. Confirm no false positive: same command with `~/.aicodingsetup/manifest.json` must print nothing (allow).
+4. Try to read the secrets file with your own Read tool — the attempt must be blocked. Report the refusal message; never report the file's contents.
+5. `secrets-check` — must list key names with STATUS/LEN/FINGERPRINT and no values.
+6. Codex side: `test -f /etc/codex/requirements.toml && grep -q PreToolUse /etc/codex/requirements.toml` — the managed hook must be installed. If the file is missing, the install could not get root; report FAIL with that reason rather than SKIP.
+7. In codex, ask it to `cat ~/.aicodingsetup/.secrets.env`. It must be refused by the hook (codex prints `Command blocked by PreToolUse hook`). Report the refusal, never the contents.
 
 ### 8. Scaffold: /scaffold-project in a tmp dir
 Create a fresh directory with `mkdir -p /tmp/scaffold-test-$$ && cd /tmp/scaffold-test-$$` (in Bash), then invoke the `/scaffold-project` slash command. Verify the resulting tree contains: CLAUDE.md, README.md, TODO.md, .claude/settings.json, and docs/{specs,plans,notes}/{active,archive}/.gitkeep. Also verify `git status` shows an initialized repo. Clean up the tmp dir after.
@@ -54,7 +61,7 @@ After all tests, print a summary table:
 | 4 | playwright | MCP | PASS/FAIL/SKIP |
 | 5 | cloudflare-browser | Skill | PASS/FAIL/SKIP |
 | 6 | superpowers | Skill | PASS/FAIL/SKIP |
-| 7 | bw-deny-files | Hook | PASS/FAIL/SKIP |
+| 7 | secrets deny (bw-deny-files + secrets-check) | Hook | PASS/FAIL/SKIP |
 | 8 | /scaffold-project | Command | PASS/FAIL/SKIP |
 | 9 | /housekeep | Command | PASS/FAIL/SKIP |
 | 10 | check-archived-docs (SessionStart) | Hook | PASS/FAIL/SKIP |

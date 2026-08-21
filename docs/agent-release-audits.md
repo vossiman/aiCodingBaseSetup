@@ -87,6 +87,14 @@ checkpoint, measured against how `configs/` actually uses each tool.
 - 2.1.224 added sandbox credential-masking options (`extract`,
   `decode: "jwt"`, SigV4 re-signing; needs `network.tlsTerminate`) — skipped,
   the `bw-deny-files.sh` PreToolUse hook already guards the secrets path.
+  **Correction 2026-08-21: that premise was false when written.** The hook
+  self-disabled unless `BW_DENY_PATTERNS_FILE` was set, which only happens
+  inside the bubblewrap sandbox — so in the container and on hosts it guarded
+  nothing, and any agent could `cat ~/.aicodingsetup/.secrets.env`. Fixed by
+  forking the hook to always enforce a built-in deny list (see README →
+  Secrets). The skip itself still stands, but now on a true premise. Lesson:
+  do not record a control as "already covered" without exercising it — feed
+  the hook a sample tool call and read the decision it emits.
 - Research-agent claims **refuted** during verification (recorded so the
   next audit doesn't re-import them): "2.1.222 fixed hook exit-code-2 /
   timeout / glob semantics" — not in the real changelog;

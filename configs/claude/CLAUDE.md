@@ -100,3 +100,23 @@ message unrelated sessions — cross-project chatter just burns tokens.
   page (date, repo, branches, overlapping files, cleanup cost). Notable
   saves — a message that demonstrably prevented a conflict — get a row in
   the saves table.
+## Secrets — never read them
+
+`~/.aicodingsetup/.secrets.env` and any private key (`*.pem`, `*.key`,
+`id_rsa`/`id_ed25519`, `~/.aicodingsetup/*-ship`) are off-limits. Reading one
+copies live credentials into the transcript, which is persisted and distilled
+to the wiki — a leak that outlives the session.
+
+- To find out whether a secret is configured, run **`secrets-check`** (or
+  `secrets-check GH_TOKEN`). It prints key names, set/empty, length and a
+  salted fingerprint — never a value — and exits non-zero if a requested key
+  is empty.
+- If you genuinely need a value, ask the user. Do not cat, source, grep,
+  `base64`, or otherwise echo these files, and never route around a deny hook
+  or permission rule that blocks them.
+
+All four CLIs enforce this at the tool layer: Claude Code and Codex run the
+same PreToolUse deny hook (Codex's is installed as a *managed* hook in
+`/etc/codex/requirements.toml`, so it is trusted by policy and cannot be
+switched off), and Cursor/OpenCode use deny rules. Attempts are refused, not
+silently ignored.

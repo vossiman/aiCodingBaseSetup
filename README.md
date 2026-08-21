@@ -58,7 +58,14 @@ Configured for **all four CLIs**: `claude mcp add` for Claude Code (existing), `
 ### Hooks
 
 - **custom-statusline.js** — Powerline-style status bar with context window, rate limits, git branch
-- **bw-deny-files.sh** — Blocks AI access to sensitive files (vendored into `configs/claude/hooks/`; origin [bw-AICode](https://github.com/vossiman/bw-AICode))
+- **bw-deny-files.sh** — PreToolUse hook that blocks agent access to secrets and private keys
+  (`~/.aicodingsetup/.secrets.env`, `*-ship`, `*.pem`, `*.key`, `id_rsa`/`id_ed25519`, `.netrc`, `.pgpass`)
+  across Read/Edit/Write/Grep/Glob **and** Bash. Originally vendored from
+  [bw-AICode](https://github.com/vossiman/bw-AICode); **forked 2026-08-21** because upstream only armed
+  it inside the bubblewrap sandbox (`BW_DENY_PATTERNS_FILE`), making it a no-op everywhere else. The
+  built-in list is now always enforced and that env var only *adds* patterns. Escape hatch: `secrets-check`.
+  Also runs on **Codex** — same script, installed as a managed hook (see Secrets).
+  Covered by `tests/bats/secrets-deny-hook.bats` and `tests/bats/codex-managed-hooks.bats`.
 - **check-archived-docs.sh** — SessionStart hook. Emits a one-line banner when a scaffolded project has docs with `status: done` in any `docs/*/active/` folder. Fail-open.
 
 ### Slash commands
@@ -83,6 +90,39 @@ Installed to `~/.aicodingsetup/templates/project/`. Used by `/scaffold-project` 
 ## Secrets
 
 Secrets are stored at `~/.aicodingsetup/.secrets.env` (outside the repo).
+
+**Agents must never read that file.** Reading it copies live credentials into a
+transcript that is persisted and distilled to the wiki. Four layers enforce this:
+
+| Layer | Agent | Kind |
+|-------|-------|------|
+| `bw-deny-files.sh` PreToolUse hook | Claude Code | hard — blocks Bash too |
+| `permissions.deny` in `settings.json` | Claude Code | hard — file tools |
+| `permissions.deny` in `cli-config.json` | Cursor | hard — file tools |
+| `permission.read` / `permission.bash` maps | OpenCode | hard — file tools + shell patterns |
+| `bw-deny-files.sh` as a codex **managed** hook | Codex | hard — blocks Bash and apply_patch |
+| `AGENTS.md` / `CLAUDE.md` prohibition | all four | soft — backstop |
+
+Codex implements the *same* PreToolUse contract as Claude Code — same
+`tool_name`/`tool_input.command` input, same
+`hookSpecificOutput.permissionDecision: "deny"` response — so it runs the very
+same script (verified against codex-cli 0.148.0). The catch: codex gates every
+**non-managed** hook behind a trust hash and silently skips it until a human
+runs `/hooks` in the TUI. `~/.codex/hooks.json` would therefore be inert on a
+fresh machine — the exact bug this change exists to fix — so
+`ensure_codex_managed_hooks()` installs it to `/etc/codex/requirements.toml`
+instead, where hooks are trusted by policy and cannot be disabled from the user
+hook browser. That step needs root; without it the install warns and continues.
+
+To answer "is this key set?" without reading anything, run **`secrets-check`**:
+it prints key names, set/empty, length and a per-machine salted fingerprint —
+never a value — and exits non-zero if a requested key is empty.
+
+```
+$ secrets-check GH_TOKEN
+KEY                          STATUS       LEN  FINGERPRINT
+GH_TOKEN                     set           93  d8ee9caf
+```
 
 | Key | Used By |
 |-----|---------|

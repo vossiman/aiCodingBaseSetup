@@ -4,30 +4,49 @@
   "mcp": {
     "firecrawl": {
       "type": "local",
-      "command": ["firecrawl-mcp"],
-      "environment": { "FIRECRAWL_API_KEY": "{{FIRECRAWL_API_KEY}}" },
+      "command": [
+        "firecrawl-mcp"
+      ],
+      "environment": {
+        "FIRECRAWL_API_KEY": "{{FIRECRAWL_API_KEY}}"
+      },
       "enabled": true
     },
     "brave-search": {
       "type": "local",
-      "command": ["brave-search-mcp-server"],
-      "environment": { "BRAVE_API_KEY": "{{BRAVE_API_KEY}}" },
+      "command": [
+        "brave-search-mcp-server"
+      ],
+      "environment": {
+        "BRAVE_API_KEY": "{{BRAVE_API_KEY}}"
+      },
       "enabled": true
     },
     "context7": {
       "type": "local",
-      "command": ["npx", "-y", "@upstash/context7-mcp"],
+      "command": [
+        "npx",
+        "-y",
+        "@upstash/context7-mcp"
+      ],
       "enabled": true
     },
     "playwright": {
       "type": "local",
-      "command": ["npx", "@playwright/mcp@latest", "--browser", "chromium"],
+      "command": [
+        "npx",
+        "@playwright/mcp@latest",
+        "--browser",
+        "chromium"
+      ],
       "enabled": true
     },
     "memory-router": {
       "type": "remote",
       "url": "http://10.0.0.249:8091/mcp",
-      "headers": { "Authorization": "Bearer {{MEMORY_ROUTER_TOKEN}}" },
+      "headers": {
+        "Authorization": "Bearer {{MEMORY_ROUTER_TOKEN}}"
+      },
       "oauth": false,
       "enabled": true
     }
@@ -35,6 +54,25 @@
   "agent": {},
   "permission": {
     "*": "allow",
-    "doom_loop": "ask"
+    "doom_loop": "ask",
+    "read": {
+      "*": "allow",
+      "**/.aicodingsetup/.secrets.env": "deny",
+      "**/.secrets.env": "deny",
+      "**/.aicodingsetup/*-ship": "deny",
+      "**/*.pem": "deny",
+      "**/*.key": "deny",
+      "**/id_rsa": "deny",
+      "**/id_ed25519": "deny",
+      "**/.netrc": "deny",
+      "**/.pgpass": "deny"
+    },
+    "bash": {
+      "*": "allow",
+      "*secrets.env*": "deny",
+      "*.pem*": "deny",
+      "*id_rsa*": "deny",
+      "*id_ed25519*": "deny"
+    }
   }
 }
