@@ -32,6 +32,12 @@ to the wiki — a leak that outlives the session.
 - If you genuinely need a value, ask the user. Do not cat, source, grep,
   `base64`, or otherwise echo these files, and never route around a deny hook
   or permission rule that blocks them.
+- **The file is not the only route, and the others are blocked too**: the
+  process environment (`printenv GH_TOKEN` — the token is no longer exported),
+  the git credential helper (`git credential fill`, `git-credential-*`), and
+  `gh auth token`. Don't reach for them.
+- **You do not need the token to use GitHub.** `git` and `gh` are already
+  authenticated from the secrets file — just run them.
 
 All four CLIs enforce this at the tool layer: Claude Code and Codex run the
 same PreToolUse deny hook (Codex's is installed as a *managed* hook in

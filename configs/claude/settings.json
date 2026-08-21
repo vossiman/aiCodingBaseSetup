@@ -11,6 +11,11 @@
       "Read(**/.secrets.env)",
       "Read(~/.aicodingsetup/*-ship)",
       "Read(~/.aicodingsetup/.secrets.env)",
+      "Read(~/.claude.json)",
+      "Read(~/.codex/config.toml)",
+      "Read(~/.config/gh/**)",
+      "Read(~/.config/opencode/opencode.json)",
+      "Read(~/.cursor/mcp.json)",
       "Read(~/.ssh/id_*)"
     ]
   },

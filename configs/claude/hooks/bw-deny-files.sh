@@ -47,6 +47,29 @@ SENSITIVE_DIRS=(
   '*/.aicodingsetup/*'
   '*/.ssh'
   '*/.ssh/*'
+  # gh stores its token in ~/.config/gh/hosts.yml in plaintext. That file is
+  # what lets gh work without GH_TOKEN in the environment, so it has to exist
+  # — and therefore has to be unreadable to agents, exactly like .secrets.env.
+  '*/.config/gh'
+  '*/.config/gh/*'
+)
+
+# Individual files that carry LIVE secrets, matched on the full path.
+#
+# The secrets file is not the only copy on disk: the blueprint substitutes API
+# keys into every agent's MCP config at deploy time, so firecrawl, brave and
+# memory-router credentials sit in plaintext in each of these. Denying
+# .secrets.env while leaving them readable protected nothing (found 2026-08-21
+# — all five were wide open after the first two rounds of this work).
+#
+# Cost of this rule: an agent can no longer read its own MCP config to debug
+# it. `claude mcp list` / `codex mcp list` still work and do not print
+# credentials, and aicoding-sync reports config drift itself.
+DENY_PATHS=(
+  '*/.codex/config.toml'
+  '*/.config/opencode/opencode.json'
+  '*/.cursor/mcp.json'
+  '*/.claude.json'
 )
 
 # Basenames that stay readable even inside a sensitive dir: deploy-state and
@@ -60,6 +83,34 @@ DIR_ALLOW=(
   'known_hosts2'
   'authorized_keys'
   '*.pub'
+)
+
+# Commands that hand an agent a secret VALUE without ever touching a denied
+# file. Blocking the files alone was never enough: the GitHub token also
+# reaches an agent through the git credential helper, through `gh auth token`,
+# and through the process environment.
+#
+# These match on PRINTING or EXPANDING a value, not on mentioning a name —
+# `grep -rn GH_TOKEN lib/` and editing a script that documents the variable
+# stay allowed, while `echo $GH_TOKEN` does not. Git's own internal call to a
+# credential helper is not a tool call and is unaffected; only an agent typing
+# the helper's name is blocked.
+SECRET_COMMAND_PATTERNS=(
+  'git-credential-[A-Za-z0-9_-]+'
+  'git[[:space:]]+credential[[:space:]]+(fill|approve|reject)'
+  'gh[[:space:]]+auth[[:space:]]+token'
+  '/proc/[^[:space:]]*/environ'
+  '\$\{?(GH_TOKEN|GITHUB_TOKEN|[A-Z0-9]+(_[A-Z0-9]+)*_(TOKEN|KEY|SECRET|PASSWORD))\}?([^A-Za-z0-9_]|$)'
+  'printenv[[:space:]]+[^|;&]*(TOKEN|KEY|SECRET|PASSWORD)'
+)
+
+# Same idea, matched case-INSENSITIVELY. Kept separate because the patterns
+# above must stay case-sensitive: env var names are uppercase, and matching
+# them loosely would deny `grep -rn gh_token docs/`. Here the filter word is
+# whatever the user typed, so `env | grep -i token` has to match too. The
+# leading boundary keeps `cat env.sh | grep key` out of it.
+SECRET_COMMAND_PATTERNS_I=(
+  '(^|[;&|[:space:]])(env|printenv|set)([[:space:]]|\|)[^;&]*\|[^;&]*(token|key|secret|password)'
 )
 
 # Extra patterns from the bubblewrap sandbox, when present. Additive.
@@ -96,10 +147,14 @@ expand_path() {
 is_denied_path() {
   local filepath base pattern
   filepath="$(expand_path "$1")"
-  base="$(basename "$filepath")"
+  base="$(basename -- "$filepath")"
 
   for pattern in "${DENY_BASENAMES[@]}"; do
     glob_match "$base" "$pattern" && return 0
+  done
+
+  for pattern in "${DENY_PATHS[@]}"; do
+    glob_match "$filepath" "$pattern" && return 0
   done
 
   local dir_hit=false
@@ -116,6 +171,100 @@ is_denied_path() {
   fi
 
   return 1
+}
+
+# strip_heredoc_bodies — drop `<<EOF ... EOF` payloads from a command before
+# the token scan.
+#
+# A heredoc body is DATA, not command arguments: writing a doc, a test, or a
+# script that mentions ~/.aicodingsetup/.secrets.env is not reading it, and
+# denying that is the kind of false positive that makes people work around the
+# hook. Real access still gets caught — `cat ~/.aicodingsetup/.secrets.env` is
+# not a heredoc, and `cat <<EOF > secrets.pem` puts its target in the command
+# part, where pass 2 sees it.
+strip_heredoc_bodies() {
+  printf '%s' "$1" | awk '
+    {
+      if (in_body) { if ($0 == marker) { in_body = 0 }; next }
+      line = $0
+      if (match(line, /<<-?[[:space:]]*"?'"'"'?[A-Za-z_][A-Za-z0-9_]*"?'"'"'?/)) {
+        marker = substr(line, RSTART, RLENGTH)
+        gsub(/^<<-?[[:space:]]*/, "", marker)
+        gsub(/["'"'"']/, "", marker)
+        in_body = 1
+      }
+      print line
+    }
+  '
+}
+
+# is_env_dump — true when a command prints the WHOLE environment.
+#
+# `env | grep -i token` was already denied, but a bare `env`, `printenv` or
+# `set` dumps every secret at once and slipped straight through — the worst of
+# the three holes found on 2026-08-21. The distinction that matters is dump vs
+# prefix: `env` alone prints secrets, `env -u GH_TOKEN gh auth status` runs a
+# command and is used all over this repo. So strip the option words; if no
+# command is left to run, it was a dump.
+is_env_dump() {
+  local segment
+  # Split on the operators that start a new command, so `foo && env` is caught.
+  # `|| [[ -n ... ]]`: the last segment has no trailing newline, and plain
+  # `read` would discard it — which silently exempted every single-segment
+  # command, i.e. exactly the bare `env` this is here to catch.
+  while IFS= read -r segment || [[ -n "$segment" ]]; do
+    # trim
+    segment="${segment#"${segment%%[![:space:]]*}"}"
+    segment="${segment%"${segment##*[![:space:]]}"}"
+    [[ -z "$segment" ]] && continue
+
+    local head=${segment%%[[:space:]]*}
+    case "$head" in
+      env|printenv|/usr/bin/env|/usr/bin/printenv|set|export|declare|typeset) ;;
+      *) continue ;;
+    esac
+
+    # Everything after the command word.
+    local rest=""
+    [[ "$segment" == *[[:space:]]* ]] && rest="${segment#*[[:space:]]}"
+
+    # Drop option words and VAR=VALUE assignments; `-u NAME` also eats NAME.
+    local -a words=() w
+    read -r -a words <<< "$rest"
+    local i=0 remaining=0 saw_assignment=0
+    while (( i < ${#words[@]} )); do
+      w="${words[$i]}"
+      case "$w" in
+        -u|--unset) (( i += 2 )); continue ;;
+        -*)         (( i += 1 )); continue ;;
+        *=*)        saw_assignment=1; (( i += 1 )); continue ;;
+        *)          remaining=1; break ;;
+      esac
+    done
+    # `export PATH=...` / `declare -x FOO=bar` SET a variable, they do not
+    # print the environment. Only env/printenv still dump when handed an
+    # assignment and no command to run.
+    if (( saw_assignment == 1 )); then
+      case "$head" in
+        set|export|declare|typeset) continue ;;
+      esac
+    fi
+    # No command left to run (and no filter argument) => it printed everything.
+    (( remaining == 0 )) && return 0
+  done < <(printf '%s' "$1" | sed -E 's/(\|\||&&|[;|&])/\n/g')
+  return 1
+}
+
+deny_secret_command() {
+  local reason="This command would print a live credential into the transcript, so it is blocked. The token is reachable this way even though the secrets file itself is denied — that is the hole this rule closes. Do not work around it. Use 'secrets-check' to see which keys are set (names and status only, never values); git and gh are already authenticated, so run them directly instead of handling the token yourself."
+  jq -n --arg r "$reason" '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: $r
+    }
+  }'
+  exit 0
 }
 
 deny() {
@@ -144,7 +293,7 @@ case "$TOOL_NAME" in
   Read|Edit|Write|MultiEdit|NotebookEdit)
     FILE_PATH="$(echo "$INPUT" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty')"
     if [[ -n "$FILE_PATH" ]] && is_denied_path "$FILE_PATH"; then
-      deny "$(basename "$FILE_PATH")"
+      deny "$(basename -- "$FILE_PATH")"
     fi
     ;;
 
@@ -154,7 +303,7 @@ case "$TOOL_NAME" in
     # every directory search would make the tool useless).
     TARGET="$(echo "$INPUT" | jq -r '.tool_input.path // empty')"
     if [[ -n "$TARGET" && ! -d "$(expand_path "$TARGET")" ]] && is_denied_path "$TARGET"; then
-      deny "$(basename "$TARGET")"
+      deny "$(basename -- "$TARGET")"
     fi
     ;;
 
@@ -166,6 +315,19 @@ case "$TOOL_NAME" in
     CMD="$(echo "$INPUT" | jq -r '.tool_input.command // empty')"
     [[ -z "$CMD" ]] && exit 0
 
+    # Pass -1 — token oracles that never name a denied file.
+    for secret_pattern in "${SECRET_COMMAND_PATTERNS[@]}"; do
+      if echo "$CMD" | grep -qE "$secret_pattern"; then
+        deny_secret_command
+      fi
+    done
+    for secret_pattern in "${SECRET_COMMAND_PATTERNS_I[@]}"; do
+      if echo "$CMD" | grep -qiE "$secret_pattern"; then
+        deny_secret_command
+      fi
+    done
+    is_env_dump "$CMD" && deny_secret_command
+
     # apply_patch pass 0 — a patch that CREATES a denied file has no existing
     # path for the token scan below to catch, so match the patch's declared
     # targets on pattern alone. Only the `*** <verb> File:` headers are read;
@@ -175,7 +337,7 @@ case "$TOOL_NAME" in
       while IFS= read -r patch_target; do
         [[ -z "$patch_target" ]] && continue
         if is_denied_path "$patch_target"; then
-          deny "$(basename "$(expand_path "$patch_target")")"
+          deny "$(basename -- "$(expand_path "$patch_target")")"
         fi
       done < <(echo "$CMD" | sed -nE 's/^\*\*\* (Add|Update|Delete) File: (.*)$/\2/p')
     fi
@@ -193,18 +355,21 @@ case "$TOOL_NAME" in
       expanded="$(expand_path "$token")"
       [[ -e "$expanded" ]] || continue
       if is_denied_path "$token"; then
-        deny "$(basename "$expanded")"
+        deny "$(basename -- "$expanded")"
       fi
-    done < <(echo "$CMD" | tr ' \t\n|;&()<>,' '\n' | sed -E 's/^["'\'']+//; s/["'\'']+$//')
+    done < <(strip_heredoc_bodies "$CMD" | tr ' \t\n|;&()<>,' '\n' | sed -E 's/^["'\'']+//; s/["'\'']+$//')
 
     # Pass 2 — redirection targets are checked on pattern alone, since the
     # file being created (`... > new.pem`) does not exist yet.
     while IFS= read -r target; do
       [[ -z "$target" ]] && continue
       if is_denied_path "$target"; then
-        deny "$(basename "$(expand_path "$target")")"
+        deny "$(basename -- "$(expand_path "$target")")"
       fi
-    done < <(echo "$CMD" | grep -oE '[<>]{1,2}[[:space:]]*[^[:space:]|;&]+' | sed -E 's/^[<>]{1,2}[[:space:]]*//' || true)
+    # `<<` is a heredoc marker, not a file — matching it here fed things like
+    # `<<-'MARK'` to basename as an option and broke the hook's output.
+    done < <(echo "$CMD" | grep -oE '(^|[^<>])[<>]{1,2}[[:space:]]*[^[:space:]|;&<>-][^[:space:]|;&]*' \
+               | grep -vE '<<' | sed -E 's/^[^<>]?[<>]{1,2}[[:space:]]*//' || true)
     ;;
 esac
 

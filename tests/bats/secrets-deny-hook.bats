@@ -206,3 +206,196 @@ allowed() { [ "$status" -eq 0 ] && [ -z "$output" ]; }
   bash_hook "cat $HOME/.aicodingsetup/.secrets.env"
   denied
 }
+
+# --- token oracles: paths to the VALUE that never name a denied file --------
+# Blocking the secrets file is not enough on its own. The GitHub token is also
+# reachable through the git credential helper, `gh auth token`, and the process
+# environment — closed 2026-08-21.
+
+@test "invoking the git credential helper directly is denied" {
+  bash_hook 'printf "protocol=https\nhost=github.com\n\n" | git-credential-aicoding get'
+  denied
+}
+
+@test "git credential fill is denied" {
+  bash_hook 'git credential fill'
+  denied
+}
+
+@test "gh auth token is denied" {
+  bash_hook 'gh auth token'
+  denied
+}
+
+@test "reading a process environment is denied" {
+  bash_hook 'cat /proc/self/environ'
+  denied
+}
+
+@test "expanding a secret variable is denied" {
+  bash_hook 'echo $GH_TOKEN'
+  denied
+  bash_hook 'curl -H "Authorization: Bearer ${GH_TOKEN}" https://api.github.com'
+  denied
+  bash_hook 'echo $FIRECRAWL_API_KEY'
+  denied
+}
+
+@test "dumping the environment through a filter is denied, either case" {
+  bash_hook 'printenv GH_TOKEN'
+  denied
+  bash_hook 'env | grep -i token'
+  denied
+}
+
+@test "gh's stored credential file is denied" {
+  mkdir -p "$HOME/.config/gh"
+  printf 'github.com:\n  oauth_token: ghp_x\n' > "$HOME/.config/gh/hosts.yml"
+  bash_hook "cat $HOME/.config/gh/hosts.yml"
+  denied
+  file_hook Read "$HOME/.config/gh/hosts.yml"
+  denied
+}
+
+# --- and the ordinary work that must keep running ---------------------------
+
+@test "using git and gh normally is allowed" {
+  bash_hook 'git push origin main'
+  allowed
+  bash_hook 'gh pr create --title x --body y'
+  allowed
+  bash_hook 'gh auth status'
+  allowed
+}
+
+@test "mentioning a secret name without expanding it is allowed" {
+  bash_hook 'grep -rn "GH_TOKEN" lib/'
+  allowed
+  bash_hook 'git config --get-all credential.https://github.com.helper'
+  allowed
+}
+
+@test "a variable that merely contains SECRET in its name is allowed" {
+  bash_hook 'echo "$AICODING_SECRETS_FILE"'
+  allowed
+}
+
+# --- heredoc bodies are data, not arguments ---------------------------------
+# Writing a doc or a test that MENTIONS the secrets path is not reading it.
+# Denying that is the false positive that teaches people to route around the
+# hook — hit for real while documenting this very change.
+
+@test "a heredoc that merely mentions the secrets path is allowed" {
+  bash_hook "cat > doc.md <<'EOF'
+The secrets live at $HOME/.aicodingsetup/.secrets.env and are denied to agents.
+EOF"
+  allowed
+}
+
+@test "a heredoc script that writes docs about the path is allowed" {
+  bash_hook "python3 - <<'PYEOF'
+sub('README.md', 'old', 'see $HOME/.aicodingsetup/.secrets.env for details')
+PYEOF"
+  allowed
+}
+
+@test "a heredoc REDIRECTED into the secrets file is still denied" {
+  bash_hook "cat <<'EOF' > $HOME/.aicodingsetup/.secrets.env
+GH_TOKEN=overwritten
+EOF"
+  denied
+}
+
+@test "quoted, unquoted and dash heredoc markers all get stripped" {
+  bash_hook "cat > a.md <<EOF
+mentions $HOME/.aicodingsetup/.secrets.env
+EOF"
+  allowed
+  bash_hook "cat > b.md <<-'MARK'
+mentions $HOME/.aicodingsetup/.secrets.env
+MARK"
+  allowed
+}
+
+@test "a plain read is unaffected by the heredoc stripping" {
+  bash_hook "cat $HOME/.aicodingsetup/.secrets.env"
+  denied
+}
+
+# --- whole-environment dumps ------------------------------------------------
+# `env | grep token` was already denied, but a BARE `env` prints every secret
+# at once and slipped through (found 2026-08-21). The line to draw is dump vs
+# prefix: `env` alone leaks, `env -u GH_TOKEN gh auth status` is normal usage.
+
+@test "a bare environment dump is denied in all its spellings" {
+  bash_hook 'env'
+  denied
+  bash_hook 'printenv'
+  denied
+  bash_hook 'set'
+  denied
+  bash_hook 'env -0'
+  denied
+  bash_hook 'env -u GH_TOKEN'
+  denied
+}
+
+@test "a dump later in the command line is denied too" {
+  bash_hook 'cd /tmp && env'
+  denied
+  bash_hook 'env | head -50'
+  denied
+}
+
+@test "env as a command PREFIX keeps working" {
+  bash_hook 'env -u GH_TOKEN gh auth status'
+  allowed
+  bash_hook 'env -i bash -c "echo hi"'
+  allowed
+  bash_hook 'env FOO=bar make test'
+  allowed
+}
+
+@test "setting variables is not dumping them" {
+  bash_hook 'set -euo pipefail'
+  allowed
+  bash_hook 'export PATH=/usr/bin:$PATH'
+  allowed
+}
+
+# --- MCP configs carry live keys too ----------------------------------------
+# The blueprint substitutes API keys into every agent's MCP config at deploy
+# time, so the secrets file is one of six copies on disk. Denying only the
+# secrets file protected nothing.
+
+@test "each agent's MCP config is denied" {
+  mkdir -p "$HOME/.codex" "$HOME/.config/opencode" "$HOME/.cursor"
+  printf 'x\n' > "$HOME/.codex/config.toml"
+  printf '{}\n'  > "$HOME/.config/opencode/opencode.json"
+  printf '{}\n'  > "$HOME/.cursor/mcp.json"
+  printf '{}\n'  > "$HOME/.claude.json"
+
+  bash_hook "cat $HOME/.codex/config.toml"
+  denied
+  bash_hook "cat $HOME/.config/opencode/opencode.json"
+  denied
+  bash_hook "cat $HOME/.cursor/mcp.json"
+  denied
+  bash_hook "cat $HOME/.claude.json"
+  denied
+  file_hook Read "$HOME/.codex/config.toml"
+  denied
+}
+
+@test "their non-secret neighbours stay readable" {
+  mkdir -p "$HOME/.codex" "$HOME/.claude"
+  printf 'conventions\n' > "$HOME/.codex/AGENTS.md"
+  printf '{}\n' > "$HOME/.claude/settings.json"
+
+  bash_hook "cat $HOME/.codex/AGENTS.md"
+  allowed
+  bash_hook "cat $HOME/.claude/settings.json"
+  allowed
+  bash_hook 'claude mcp list'
+  allowed
+}

@@ -138,6 +138,30 @@ KEY                          STATUS       LEN  FINGERPRINT
 GH_TOKEN                     set           93  d8ee9caf
 ```
 
+### The token is not only in the file
+
+Denying the secrets file alone still left three routes to the same GitHub
+token. All closed 2026-08-21:
+
+- **The environment.** `GH_TOKEN` used to be exported into every shell, so
+  `printenv GH_TOKEN` handed it straight over. No longer exported — see
+  `unset GH_TOKEN GITHUB_TOKEN` in `configs/bash/env.sh`.
+- **The credential helper.** `git-credential-aicoding get` and
+  `git credential fill` print the token by design. Agent-typed invocations
+  are denied; git's own internal calls are not tool calls and still work.
+- **`gh auth token`**, likewise denied.
+
+Nothing lost GitHub access, because neither client actually needed the
+variable: **git** authenticates through `git-credential-aicoding`, which
+reads the secrets file directly, and **gh** now has its own stored login,
+refreshed from that same file on every boot sync by
+`ensure_gh_stored_auth()`. Its `~/.config/gh/hosts.yml` is deny-listed too.
+
+The ceiling is unchanged and worth stating plainly: a devpod is not a
+security boundary, and anything that can run `git` can still make it produce
+a credential. This stops a cooperative agent from copying a live token into a
+transcript — the failure that actually happens — not a determined attacker.
+
 | Key | Used By |
 |-----|---------|
 | `FIRECRAWL_API_KEY` | firecrawl MCP |
@@ -227,7 +251,8 @@ Re-running the installer on an initialized container (manifest exists) re-runs t
 For a laptop or server that isn't a devpod container, `install-host.sh` deploys a thin, core-only profile: the `claude` CLI, the managed Claude layer (CLAUDE.md, hooks, MCPs/plugins), the homelab-wiki clone, and terminal-open auto-sync (6h-throttled) — plus the sandbox prereq (`bwrap`) and `bw-AICode` tooling. It skips everything container-only: codex/opencode/cursor, Playwright, Go, tmux. Day-2 commands are identical to the container flow — `aicoding-sync` and `aicoding-install` both read the manifest's `.profile` and stay on the host installer.
 
 ```bash
-gh auth login          # or place GH_TOKEN in ~/.aicodingsetup/.secrets.env
+gh auth login          # or put GH_TOKEN in the secrets file and run
+                       # aicoding-sync, which logs gh in from it
 git clone https://github.com/vossiman/aiCodingBaseSetup && cd aiCodingBaseSetup
 ./install-host.sh
 ```
