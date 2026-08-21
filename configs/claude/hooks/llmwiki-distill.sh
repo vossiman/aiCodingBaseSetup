@@ -328,7 +328,7 @@ log="$HOME/.cache/aicoding/llmwiki-distill.log"
     "$(date -Is)" "$slug" "$session_id" "$offset" "$size"
   LLMWIKI_DISTILLER=1 claude -p \
     --agent llmwiki-distiller \
-    --settings '{"disableAllHooks": true, "permissions": {"allow": ["Write", "Bash(git:*)", "Bash(mkdir:*)"]}}' \
+    --settings '{"disableAllHooks": true, "permissions": {"allow": ["Write", "Bash(git:*)", "Bash(mkdir:*)", "Bash(grep:*)", "Bash(rg:*)", "Bash(ls:*)", "Bash(cat:*)", "Bash(wc:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(python3:*)", "mcp__memory-router__memory_search", "mcp__memory-router__memory_feedback"]}}' \
     "Review the new session activity in $slice (project root: $root; this is the tail of a longer Claude Code session transcript in JSONL format). Follow your instructions: file durable lessons; if nothing durable emerged, do nothing."
   rc=$?
   printf '%s done session=%s exit=%s\n' "$(date -Is)" "$session_id" "$rc"

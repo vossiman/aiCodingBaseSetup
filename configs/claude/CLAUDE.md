@@ -24,12 +24,27 @@ Managed by the aiCodingBaseSetup blueprint (`configs/claude/CLAUDE.md`);
   project's CLAUDE.md and `docs/` are for deliberate, reviewed
   documentation — specs, plans, READMEs — via the normal PR flow, not a
   memory store. Don't record what code, git history, or docs already show.
-  That is the **write path**.
+  **Search before you write:** call `memory_search` with a one-sentence
+  statement of the lesson — phrased as the *lesson*, not the session —
+  before editing any page. The read path knows which page and section
+  already own it, and that is usually not the page you would guess. A query
+  written from raw session text finds the right page 54% of the time; one
+  phrased from the distilled lesson, 92% (61 replayed runs, 2026-08-21). A
+  hit that is already correct means write nothing; a hit that is wrong or
+  partial is the entry you rewrite; an empty result is a real answer. There
+  is no `log.md` — the wiki's central changelog was deleted 2026-08-21
+  because it restated every page and out-ranked the real owner in
+  retrieval; provenance goes in the commit message as a `Source: <repo/
+  session, date>` trailer. That is the **write path**.
 - **Read path — retrieval.** A persistent memory system indexes durable
   knowledge from all past sessions and the homelab wiki. Matching memories
   are auto-injected into context as `<memory-hints>` blocks — treat them as
-  leads, verify before relying on them, and report decisive or wrong hints
-  via `memory_feedback`. Independently of hints, call the `memory_search`
+  leads, verify before relying on them, and send `memory_feedback` whenever
+  you learn the answer they were guessing at: `confirmed` when a hint
+  located the entry you relied on or rewrote, `wrong` (with a one-line note
+  saying where it actually was) when they were irrelevant or contradicted
+  what you verified. Verdicts are the only signal that says whether
+  retrieval works — an unreported hint teaches the router nothing. Independently of hints, call the `memory_search`
   MCP tool (the `memory-router` server) whenever the answer may live outside
   the current repo and conversation — prior decisions, past incidents,
   environment facts, "have we solved this before" — BEFORE re-deriving it or
