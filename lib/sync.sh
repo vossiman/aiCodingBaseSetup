@@ -72,6 +72,55 @@ ensure_gh_credential_helper() {
   ) 2>/dev/null || printf 'WARN: %s\n' "gh auth setup-git failed — git over HTTPS may prompt for credentials" >&2
 }
 
+# ensure_gh_stored_auth — give gh its OWN stored credentials, so it no longer
+# depends on GH_TOKEN being exported into every shell.
+#
+# Until 2026-08-21 the token was exported into every interactive shell
+# (configs/bash/env.sh) precisely because it outranks ~/.config/gh/hosts.yml in
+# gh's lookup order. That also meant any agent could read it with `printenv
+# GH_TOKEN` — a leak path the file deny rules could not touch. Moving gh onto
+# its own stored login lets us stop exporting the variable: git was never
+# affected (it authenticates through git-credential-aicoding, which reads the
+# secrets file directly), and hosts.yml is deny-listed in bw-deny-files.sh the
+# same way .secrets.env is.
+#
+# ~/.config/gh is container-local and every rebuild wipes it, which is why this
+# runs on each boot sync rather than once at install: the secrets file is the
+# host bind mount, so re-establishing the login from it is cheap and idempotent.
+# --insecure-storage forces the plaintext file instead of a system keyring,
+# which headless containers do not have (the fragility the env var avoided).
+# Fail-open: a failure here leaves gh unauthenticated, never breaks the sync.
+ensure_gh_stored_auth() {
+  command -v gh >/dev/null 2>&1 || return 0
+  # `gh auth status` and `gh auth login` both talk to GitHub. Without this the
+  # bats suite (which does NOT stub gh) made a network round trip per sync
+  # test and slowed the run to a crawl — the guard every other network-touching
+  # step here already carries.
+  [ "${AICODINGSETUP_SKIP_NETWORK:-}" = 1 ] && return 0
+
+  # Already logged in on gh's own credentials? Check with the environment
+  # stripped, otherwise a still-exported GH_TOKEN masks the real state.
+  env -u GH_TOKEN -u GITHUB_TOKEN gh auth status >/dev/null 2>&1 && return 0
+
+  local secrets token
+  secrets="${AICODING_SECRETS_FILE:-$HOME/.aicodingsetup/.secrets.env}"
+  [ -r "$secrets" ] || return 0
+  token=$(sed -n 's/^GH_TOKEN=//p' "$secrets" | tail -1)
+  token=${token%\"}; token=${token#\"}
+  token=${token%\'}; token=${token#\'}
+  [ -n "$token" ] || return 0
+
+  printf '%s' "$token" | env -u GH_TOKEN -u GITHUB_TOKEN \
+    gh auth login --hostname github.com --with-token --insecure-storage >/dev/null 2>&1 \
+    || { printf 'WARN: %s\n' "gh auth login --with-token failed — gh may be unauthenticated" >&2; return 0; }
+
+  if env -u GH_TOKEN -u GITHUB_TOKEN gh auth status >/dev/null 2>&1; then
+    printf 'OK: %s\n' "gh authenticated from its own stored credentials (no GH_TOKEN needed)"
+  else
+    printf 'WARN: %s\n' "gh auth login reported success but gh is still unauthenticated" >&2
+  fi
+}
+
 # Register the file-based GH_TOKEN fallback AFTER the gh helper: agent CLIs
 # (codex) strip *TOKEN* env vars from spawned commands, so gh's env-based
 # helper fails inside those sessions and git falls through to this one,
@@ -229,6 +278,7 @@ _sync_plumbing() {            # never throttled — must be correct now
   command -v aicoding-ssh-agent-watch >/dev/null 2>&1 && aicoding-ssh-agent-watch --ensure 2>/dev/null || true
   command -v seed_github_known_host >/dev/null 2>&1 && seed_github_known_host || true
   command -v ensure_gh_credential_helper >/dev/null 2>&1 && ensure_gh_credential_helper || true
+  command -v ensure_gh_stored_auth >/dev/null 2>&1 && ensure_gh_stored_auth || true
   command -v ensure_git_credential_file_fallback >/dev/null 2>&1 && ensure_git_credential_file_fallback || true
   command -v ensure_agents_skills_symlink >/dev/null 2>&1 && ensure_agents_skills_symlink || true
   command -v ensure_claude_runtime_scope >/dev/null 2>&1 && ensure_claude_runtime_scope || true

@@ -172,6 +172,7 @@ main() {
   # need them, and on a bare host nothing else has ever registered them
   # (2026-08-12 Mint field failure: clone prompted for a username).
   ensure_gh_credential_helper
+  ensure_gh_stored_auth
   ensure_git_credential_file_fallback
   ensure_claude_code
   report_unmanaged

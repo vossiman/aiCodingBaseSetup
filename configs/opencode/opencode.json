@@ -65,7 +65,12 @@
       "**/id_rsa": "deny",
       "**/id_ed25519": "deny",
       "**/.netrc": "deny",
-      "**/.pgpass": "deny"
+      "**/.pgpass": "deny",
+      "**/.config/gh/**": "deny",
+      "**/.claude.json": "deny",
+      "**/.codex/config.toml": "deny",
+      "**/.config/opencode/opencode.json": "deny",
+      "**/.cursor/mcp.json": "deny"
     },
     "bash": {
       "*": "allow",
