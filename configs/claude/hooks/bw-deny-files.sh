@@ -102,6 +102,19 @@ SECRET_COMMAND_PATTERNS=(
   '/proc/[^[:space:]]*/environ'
   '\$\{?(GH_TOKEN|GITHUB_TOKEN|[A-Z0-9]+(_[A-Z0-9]+)*_(TOKEN|KEY|SECRET|PASSWORD))\}?([^A-Za-z0-9_]|$)'
   'printenv[[:space:]]+[^|;&]*(TOKEN|KEY|SECRET|PASSWORD)'
+  # `declare -p VAR` prints VAR's value just like `$VAR` does (found by
+  # review 2026-08-21: -p counts as an option word, the var name as an
+  # argument, so nothing else matched).
+  '(declare|typeset)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-[a-zA-Z]*p[a-zA-Z]*[[:space:]]+([^|;&]*[[:space:]])?\{?(\$)?[A-Z0-9_]*(TOKEN|KEY|SECRET|PASSWORD)\}?([^A-Za-z0-9_]|$)'
+)
+
+# Commands whose arguments are FILE CONTENTS, not listings or names. A bare
+# sensitive-directory argument to one of these exfiltrates everything inside
+# (`tar czf /tmp/a.tgz -C ~ .aicodingsetup`) — found by review 2026-08-21,
+# where is_denied_path's "listing is fine" carve-out let them through.
+# Listing (`ls`, completion) stays allowed; this list is about reading bytes.
+CONTENT_COMMANDS=(
+  tar cp mv rsync scp find zip unzip 7z 7za dd cpio pax
 )
 
 # Same idea, matched case-INSENSITIVELY. Kept separate because the patterns
@@ -173,6 +186,54 @@ is_denied_path() {
   return 1
 }
 
+# in_sensitive_dir <path> — pattern check only, NO existence requirement.
+# True when the path is, or sits inside, a known-sensitive directory.
+# Used where existence cannot be trusted: a glob token (`~/.aicodingsetup/*`)
+# resolves to nothing at scan time yet expands to everything at run time, and
+# a relative token after `cd ~/.aicodingsetup` resolves against the shell's
+# CWD, not this hook's (both bypassed pass 1 — review 2026-08-21).
+in_sensitive_dir() {
+  local filepath pattern
+  filepath="$(expand_path "$1")"
+  for pattern in "${SENSITIVE_DIRS[@]}"; do
+    glob_match "$filepath" "$pattern" && return 0
+  done
+  return 1
+}
+
+# base_is_allowed <basename> — the DIR_ALLOW carve-out (deploy-state files,
+# ssh public keys) stays readable even inside a sensitive directory.
+base_is_allowed() {
+  local pattern
+  for pattern in "${DIR_ALLOW[@]}"; do
+    glob_match "$1" "$pattern" && return 0
+  done
+  return 1
+}
+
+# basename_is_denied <basename> — known-secret FILE names, used when a bare
+# relative token cannot be resolved against the shell's CWD.
+basename_is_denied() {
+  local pattern
+  for pattern in "${DENY_BASENAMES[@]}"; do
+    glob_match "$1" "$pattern" && return 0
+  done
+  return 1
+}
+
+# is_sensitive_root <path> — true when the path IS a known-sensitive
+# directory itself, not its contents. Listing one (`ls ~/.ssh`) stays
+# allowed by design; handing one to a content command does not.
+is_sensitive_root() {
+  local p pattern
+  p="$(expand_path "$1")"
+  p="${p%/}"
+  for pattern in "${SENSITIVE_DIRS[@]}"; do
+    case "$pattern" in *'*') ;; *) glob_match "$p" "$pattern" && return 0 ;; esac
+  done
+  return 1
+}
+
 # strip_heredoc_bodies — drop `<<EOF ... EOF` payloads from a command before
 # the token scan.
 #
@@ -228,17 +289,24 @@ is_env_dump() {
     local rest=""
     [[ "$segment" == *[[:space:]]* ]] && rest="${segment#*[[:space:]]}"
 
-    # Drop option words and VAR=VALUE assignments; `-u NAME` also eats NAME.
+    # Drop option words, VAR=VALUE assignments, and redirection operators
+    # with their targets. Redirections mattered: `env > /tmp/e.txt` left `>`
+    # as a remaining command word, so the dump went undetected and the Read
+    # tool — which nothing denied for /tmp — picked the file up afterwards
+    # (review 2026-08-21). `2>&1` has no target word; skip it whole.
     local -a words=() w
     read -r -a words <<< "$rest"
-    local i=0 remaining=0 saw_assignment=0
+    local i=0 remaining=0 saw_assignment=0 skip_target=0
     while (( i < ${#words[@]} )); do
       w="${words[$i]}"
       case "$w" in
         -u|--unset) (( i += 2 )); continue ;;
+        \>*|\<*|\>\>*|\<\<*|\>\&*|[0-9]*\&*|[0-9]*\>*|[0-9]*\>\>*|[0-9]*\<*) skip_target=1; (( i += 1 )); continue ;;
         -*)         (( i += 1 )); continue ;;
         *=*)        saw_assignment=1; (( i += 1 )); continue ;;
-        *)          remaining=1; break ;;
+        *)
+          if (( skip_target )); then skip_target=0; (( i += 1 )); continue; fi
+          remaining=1; break ;;
       esac
     done
     # `export PATH=...` / `declare -x FOO=bar` SET a variable, they do not
@@ -298,12 +366,18 @@ case "$TOOL_NAME" in
     ;;
 
   Grep|Glob)
-    # Only block when targeting a specific file; searching a directory is fine
-    # (the hook cannot know what a recursive search will surface, and denying
-    # every directory search would make the tool useless).
+    # Only block when targeting a specific file — EXCEPT for sensitive
+    # directories: a recursive search rooted inside one surfaces the very
+    # contents this hook exists to protect, so the "searching a directory
+    # is fine" exemption must not apply there (review 2026-08-21).
     TARGET="$(echo "$INPUT" | jq -r '.tool_input.path // empty')"
-    if [[ -n "$TARGET" && ! -d "$(expand_path "$TARGET")" ]] && is_denied_path "$TARGET"; then
-      deny "$(basename -- "$TARGET")"
+    if [[ -n "$TARGET" ]]; then
+      if in_sensitive_dir "$TARGET"; then
+        deny "$(basename -- "$(expand_path "$TARGET")")"
+      fi
+      if [[ ! -d "$(expand_path "$TARGET")" ]] && is_denied_path "$TARGET"; then
+        deny "$(basename -- "$TARGET")"
+      fi
     fi
     ;;
 
@@ -344,20 +418,98 @@ case "$TOOL_NAME" in
 
     # Pass 1 — every token in the whole command, not just arguments to a
     # hand-maintained list of reader commands. The old command-list approach
-    # missed anything unusual (python -c, dd, a shell function, ...). To keep
-    # false positives down, a token only counts if it actually resolves to an
-    # existing file: `grep -rn ".secrets.env" docs/` stays allowed because the
-    # bare string is not a file, while `cat ~/.aicodingsetup/.secrets.env` is
-    # denied because it is.
-    while IFS= read -r token; do
-      [[ -z "$token" ]] && continue
-      [[ "$token" == -* ]] && continue
-      expanded="$(expand_path "$token")"
-      [[ -e "$expanded" ]] || continue
-      if is_denied_path "$token"; then
-        deny "$(basename -- "$expanded")"
-      fi
-    done < <(strip_heredoc_bodies "$CMD" | tr ' \t\n|;&()<>,' '\n' | sed -E 's/^["'\'']+//; s/["'\'']+$//')
+    # missed anything unusual (python -c, dd, a shell function, ...).
+    #
+    # Existence gating is deliberately asymmetric (review 2026-08-21): a
+    # token that lands inside a known-sensitive directory is denied on
+    # PATTERN alone. Requiring existence let two bypasses through:
+    #   - `cat ~/.aicodingsetup/*` — the hook sees pre-expansion globs, no
+    #     single token resolves to a file, then the shell expands at runtime;
+    #   - `cd ~/.aicodingsetup && cat .secrets.env` — relative tokens were
+    #     tested against this hook's CWD instead of the shell's.
+    # Bare basename mentions still must exist on disk, so writing docs or
+    # grepping source for ".secrets.env" stays allowed.
+    scan_tokens() {
+      local cmd="$1"
+      local token stripped expanded base exp_cd
+      local prev_cd=0 secret_cwd=""
+      while IFS= read -r token || [[ -n "$token" ]]; do
+        [[ -z "$token" ]] && continue
+        [[ "$token" == -* ]] && continue
+        stripped="${token//\"/}"
+        stripped="${stripped//\'}"
+        if (( prev_cd )); then
+          prev_cd=0
+          exp_cd="$(expand_path "$stripped")"
+          if in_sensitive_dir "$exp_cd"; then
+            secret_cwd="${exp_cd%/}/"
+          fi
+          continue
+        fi
+        if [[ "$stripped" == "cd" ]]; then prev_cd=1; continue; fi
+        expanded="$(expand_path "$stripped")"
+        relative_to_secret_dir=0
+        if [[ -n "$secret_cwd" && "$expanded" != /* ]]; then
+          expanded="$secret_cwd$expanded"
+          relative_to_secret_dir=1
+        fi
+        base="$(basename -- "${expanded%/}")"
+        if in_sensitive_dir "$expanded" && ! base_is_allowed "$base" \
+           && ! is_sensitive_root "$expanded"; then
+          # Absolute tokens inside a sensitive dir are denied on pattern
+          # alone (glob bypass). A RELATIVE token after `cd` into the dir
+          # needs more care: `cat .secrets.env` must be denied but `ls` and
+          # other bare command words must survive — so deny only when the
+          # basename names a known-secret file or actually resolves.
+          if [[ "$relative_to_secret_dir" == 0 ]] \
+             || basename_is_denied "$base" || [[ -e "$expanded" ]]; then
+            deny "$base"
+          fi
+        fi
+        [[ -e "$expanded" ]] || continue
+        if is_denied_path "$token"; then
+          deny "$(basename -- "$expanded")"
+        fi
+      done < <(printf '%s' "$cmd" | tr ' \t\n|;&()<>,{}' '\n' | sed -E 's/^["'\'']+//; s/["'\'']+$//')
+    }
+
+    scan_tokens "$(strip_heredoc_bodies "$CMD")"
+
+    # Pass 1b — heredoc bodies are DATA when they are written somewhere, but
+    # an EXECUTION CHANNEL when the same command feeds them to a SHELL:
+    # `bash <<'X' … X` runs exactly what stripping removed (review
+    # 2026-08-21). When both are present, scan the raw command too. Only
+    # shell interpreters count — a python heredoc whose body mentions a path
+    # is overwhelmingly a string literal being written, and denying those is
+    # the false positive the stripping exists to prevent.
+    if [[ "$CMD" != "$(strip_heredoc_bodies "$CMD")" ]] \
+       && echo "$CMD" | grep -qE '(^|[[:space:]/;&|])(bash|sh|zsh|dash|ksh|eval|source)([[:space:]]|$)'; then
+      scan_tokens "$CMD"
+    fi
+
+    # Pass 1c — the sensitive directories THEMSELVES as arguments to content
+    # commands. is_denied_path allows directories ("listing is fine"), but
+    # `tar czf /tmp/a.tgz -C ~ .aicodingsetup`, `cp -r`, and
+    # `find <dir> -exec cat {} ;` read bytes, not listings (review
+    # 2026-08-21). `ls` and `cd` stay allowed.
+    while IFS= read -r segment || [[ -n "$segment" ]]; do
+      segment="${segment#"${segment%%[![:space:]]*}"}"
+      segment="${segment%"${segment##*[![:space:]]}"}"
+      [[ -z "$segment" ]] && continue
+      seg_head=${segment%%[[:space:]]*}
+      case "$seg_head" in
+        tar|cp|mv|rsync|scp|find|zip|unzip|7z|7za|dd|cpio|pax|gpg|openssl) ;;
+        *) continue ;;
+      esac
+      while IFS= read -r token || [[ -n "$token" ]]; do
+        [[ -z "$token" ]] && continue
+        [[ "$token" == -* ]] && continue
+        expanded="$(expand_path "${token//\"/}")"
+        if is_sensitive_root "$expanded" || is_sensitive_root "$HOME/$expanded"; then
+          deny "$(basename -- "${expanded%/}")"
+        fi
+      done < <(printf '%s' "${segment#"$seg_head"}" | tr ' \t\n|;&()<>,{}' '\n')
+    done < <(printf '%s' "$CMD" | sed -E 's/(\|\||&&|[;|&])/\n/g')
 
     # Pass 2 — redirection targets are checked on pattern alone, since the
     # file being created (`... > new.pem`) does not exist yet.
