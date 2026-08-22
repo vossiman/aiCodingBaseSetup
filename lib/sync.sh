@@ -72,6 +72,27 @@ ensure_gh_credential_helper() {
   ) 2>/dev/null || printf 'WARN: %s\n' "gh auth setup-git failed — git over HTTPS may prompt for credentials" >&2
 }
 
+# _gh_auth_log — append a one-line reason to the boot-sync log.
+#
+# ensure_gh_stored_auth below is fail-open at five separate points, and until
+# 2026-08-22 most of them returned 0 without saying anything. On a container
+# that made the failure undiagnosable: configs/bash/boot-sync.sh, which owns
+# ~/.cache/aicoding/boot-sync.log, is deployed on host-profile machines only,
+# so the container's only attempt runs from on-start.sh, whose stderr goes to
+# devpod's postStart output — which nobody reads. Three separate containers
+# reached an agent with `gh auth status` reporting "not logged into any GitHub
+# hosts" and no evidence of which branch had fired. Record every outcome,
+# success included: "the boot sync skipped gh" and "the boot sync never ran"
+# look identical otherwise. Fail-open itself — a log that cannot be written
+# must never break a sync.
+_gh_auth_log() {
+  local log="${AICODING_BOOT_SYNC_LOG:-$HOME/.cache/aicoding/boot-sync.log}"
+  mkdir -p "$(dirname "$log")" 2>/dev/null || return 0
+  printf '%s ensure_gh_stored_auth: %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo -)" "$*" >> "$log" 2>/dev/null || true
+  return 0
+}
+
 # ensure_gh_stored_auth — give gh its OWN stored credentials, so it no longer
 # depends on GH_TOKEN being exported into every shell.
 #
@@ -91,7 +112,7 @@ ensure_gh_credential_helper() {
 # which headless containers do not have (the fragility the env var avoided).
 # Fail-open: a failure here leaves gh unauthenticated, never breaks the sync.
 ensure_gh_stored_auth() {
-  command -v gh >/dev/null 2>&1 || return 0
+  command -v gh >/dev/null 2>&1 || { _gh_auth_log "skipped — gh is not installed"; return 0; }
   # `gh auth status` and `gh auth login` both talk to GitHub. Without this the
   # bats suite (which does NOT stub gh) made a network round trip per sync
   # test and slowed the run to a crawl — the guard every other network-touching
@@ -104,20 +125,23 @@ ensure_gh_stored_auth() {
 
   local secrets token
   secrets="${AICODING_SECRETS_FILE:-$HOME/.aicodingsetup/.secrets.env}"
-  [ -r "$secrets" ] || return 0
+  [ -r "$secrets" ] || { _gh_auth_log "skipped — secrets file not readable: $secrets"; return 0; }
   token=$(sed -n 's/^GH_TOKEN=//p' "$secrets" | tail -1)
   token=${token%\"}; token=${token#\"}
   token=${token%\'}; token=${token#\'}
-  [ -n "$token" ] || return 0
+  [ -n "$token" ] || { _gh_auth_log "skipped — no GH_TOKEN in $secrets"; return 0; }
 
   printf '%s' "$token" | env -u GH_TOKEN -u GITHUB_TOKEN \
     gh auth login --hostname github.com --with-token --insecure-storage >/dev/null 2>&1 \
-    || { printf 'WARN: %s\n' "gh auth login --with-token failed — gh may be unauthenticated" >&2; return 0; }
+    || { printf 'WARN: %s\n' "gh auth login --with-token failed — gh may be unauthenticated" >&2
+         _gh_auth_log "gh auth login --with-token failed — gh is unauthenticated"; return 0; }
 
   if env -u GH_TOKEN -u GITHUB_TOKEN gh auth status >/dev/null 2>&1; then
     printf 'OK: %s\n' "gh authenticated from its own stored credentials (no GH_TOKEN needed)"
+    _gh_auth_log "gh authenticated from its own stored credentials"
   else
     printf 'WARN: %s\n' "gh auth login reported success but gh is still unauthenticated" >&2
+    _gh_auth_log "gh auth login reported success but gh is still unauthenticated"
   fi
 }
 

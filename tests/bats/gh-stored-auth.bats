@@ -107,3 +107,46 @@ teardown() { rm -rf "$TMPD"; }
   [ "$status" -eq 0 ]
   [ ! -f "$TMPD/gh.log" ]
 }
+
+# --- Diagnosability -----------------------------------------------------
+# Every branch above is fail-open, and until 2026-08-22 most returned 0 in
+# silence. In a container that mattered: configs/bash/boot-sync.sh (which owns
+# ~/.cache/aicoding/boot-sync.log) is deployed on host-profile machines only,
+# so the container path's single attempt runs from on-start.sh, whose stderr
+# lands in devpod's postStart output and is read by nobody. Three containers
+# reached an agent with gh unauthenticated and no evidence of which branch
+# fired. Each outcome now appends a reason to the log.
+
+@test "logs the reason when gh auth login fails" {
+  export AICODING_BOOT_SYNC_LOG="$TMPD/boot-sync.log"
+  cat > "$TMPD/bin/gh" <<'STUB'
+#!/bin/bash
+exit 1
+STUB
+  chmod +x "$TMPD/bin/gh"
+  run ensure_gh_stored_auth
+  [ "$status" -eq 0 ]
+  grep -q 'gh auth login --with-token failed' "$AICODING_BOOT_SYNC_LOG"
+}
+
+@test "logs the reason when the secrets file carries no GH_TOKEN" {
+  export AICODING_BOOT_SYNC_LOG="$TMPD/boot-sync.log"
+  printf 'OTHER=x\n' > "$AICODING_SECRETS_FILE"
+  run ensure_gh_stored_auth
+  [ "$status" -eq 0 ]
+  grep -q 'no GH_TOKEN' "$AICODING_BOOT_SYNC_LOG"
+}
+
+@test "logs success too, so a healthy boot is distinguishable from a skipped one" {
+  export AICODING_BOOT_SYNC_LOG="$TMPD/boot-sync.log"
+  run ensure_gh_stored_auth
+  [ "$status" -eq 0 ]
+  grep -q 'authenticated' "$AICODING_BOOT_SYNC_LOG"
+}
+
+@test "logging never breaks the sync when the log is unwritable" {
+  export AICODING_BOOT_SYNC_LOG=/proc/nonexistent/boot-sync.log
+  run ensure_gh_stored_auth
+  [ "$status" -eq 0 ]
+  grep -q -- '--with-token' "$TMPD/gh.log"
+}

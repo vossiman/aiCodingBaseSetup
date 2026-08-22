@@ -100,6 +100,18 @@ main() {
   fi
 
   load_or_prompt_secrets
+  # Authenticate git and gh HERE, not only at sync time. install-host.sh has
+  # done this since the 2026-08-12 Mint field failure; the container profile
+  # never did, so the ONLY path that ever logged gh in was _sync_plumbing on
+  # boot — one unretried network call per container start, fail-open at five
+  # points. Three containers were found with gh unauthenticated after a
+  # rebuild, each needing a manual `aicoding-sync --yes` to recover, because a
+  # rebuild runs install.sh and install.sh did not do this. All three are
+  # idempotent and fail-open, so running them here and again on the next boot
+  # sync costs nothing and makes a rebuild a second chance instead of a hole.
+  ensure_gh_credential_helper
+  ensure_gh_stored_auth
+  ensure_git_credential_file_fallback
   report_unmanaged
   install_mcp_packages
   install_claude_mcps
