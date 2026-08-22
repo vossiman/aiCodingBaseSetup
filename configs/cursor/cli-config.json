@@ -3,17 +3,23 @@
     "deny": [
       "Read(**/*.key)",
       "Read(**/*.pem)",
+      "Read(**/*.secrets.env)",
       "Read(**/.aicodingsetup/**)",
       "Read(**/.claude.json)",
       "Read(**/.codex/config.toml)",
       "Read(**/.config/gh/**)",
       "Read(**/.config/opencode/opencode.json)",
       "Read(**/.cursor/mcp.json)",
+      "Read(**/.env.secrets)",
       "Read(**/.netrc)",
       "Read(**/.pgpass)",
       "Read(**/.secrets.env)",
+      "Read(**/.ssh/**)",
+      "Read(**/id_dsa)",
+      "Read(**/id_ecdsa)",
       "Read(**/id_ed25519)",
       "Read(**/id_rsa)",
+      "Read(**/secrets.env)",
       "Write(**/.aicodingsetup/**)",
       "Write(**/.config/gh/**)"
     ]
