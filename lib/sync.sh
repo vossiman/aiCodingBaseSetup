@@ -121,7 +121,8 @@ ensure_gh_stored_auth() {
 
   # Already logged in on gh's own credentials? Check with the environment
   # stripped, otherwise a still-exported GH_TOKEN masks the real state.
-  env -u GH_TOKEN -u GITHUB_TOKEN gh auth status >/dev/null 2>&1 && return 0
+  env -u GH_TOKEN -u GITHUB_TOKEN gh auth status >/dev/null 2>&1 \
+    && { _gh_auth_log "already authenticated — nothing to do"; return 0; }
 
   local secrets token
   secrets="${AICODING_SECRETS_FILE:-$HOME/.aicodingsetup/.secrets.env}"
