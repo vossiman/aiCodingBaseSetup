@@ -2,7 +2,9 @@
   "permissions": {
     "deny": [
       "Read(**/*.key)",
+      "Read(**/*.p12)",
       "Read(**/*.pem)",
+      "Read(**/*.pfx)",
       "Read(**/*.secrets.env)",
       "Read(**/.aicodingsetup/**)",
       "Read(**/.claude.json)",
@@ -20,6 +22,12 @@
       "Read(**/id_ed25519)",
       "Read(**/id_rsa)",
       "Read(**/secrets.env)",
+      "Shell(declare)",
+      "Shell(env)",
+      "Shell(export)",
+      "Shell(printenv)",
+      "Shell(set)",
+      "Shell(typeset)",
       "Write(**/.aicodingsetup/**)",
       "Write(**/.config/gh/**)"
     ]

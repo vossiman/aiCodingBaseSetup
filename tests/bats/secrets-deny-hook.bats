@@ -458,6 +458,62 @@ X"
   denied
 }
 
+@test "cd tracking follows chained relative and nested directories" {
+  local sensitive="$HOME/.""aicodingsetup"
+  local secret_name=".secrets"".env"
+  bash_hook "cd $HOME && cd $(basename "$sensitive") && cat $secret_name"
+  denied
+
+  mkdir -p "$sensitive/sub"
+  touch "$sensitive/sub/opaque"
+  bash_hook "cd $sensitive && cd sub && cat opaque"
+  denied
+}
+
+@test "a quoted cd literal does not alter scanner state" {
+  local sensitive="$HOME/.""aicodingsetup"
+  local secret_name=".secrets"".env"
+  bash_hook "printf '%s\\n' 'cd' '$sensitive' '$secret_name'"
+  allowed
+}
+
+@test "shell heredocs without whitespace before redirection are denied" {
+  local sensitive="$HOME/.""aicodingsetup"
+  local secret_name=".secrets"".env"
+  bash_hook "bash<<'X'
+cat $sensitive/$secret_name
+X"
+  denied
+  bash_hook "/bin/bash<<'X'
+cat $sensitive/$secret_name
+X"
+  denied
+}
+
+@test "qualified and wrapped content commands are denied" {
+  local sensitive="$HOME/.""aicodingsetup"
+  bash_hook "/bin/tar czf /tmp/a.tgz -C $HOME $(basename "$sensitive")"
+  denied
+  bash_hook "command cp -r $sensitive /tmp/exfil"
+  denied
+  bash_hook "env find $sensitive -type f -print"
+  denied
+}
+
+@test "fallback configs deny whole-environment and shell-oracle commands" {
+  local cursor="$BLUEPRINT_ROOT/configs/cursor/cli-config.json"
+  local opencode="$BLUEPRINT_ROOT/configs/opencode/opencode.json"
+  local claude="$BLUEPRINT_ROOT/configs/claude/settings.json" rule path
+  jq -e '.permissions.deny | contains(["Shell(declare)", "Shell(env)", "Shell(export)", "Shell(printenv)", "Shell(set)", "Shell(typeset)"])' "$cursor"
+  jq -e '.permission.bash | .env == "deny" and .printenv == "deny" and .set == "deny" and .export == "deny" and .declare == "deny" and .typeset == "deny"' "$opencode"
+  jq -e '.permission.bash | ([keys[] | select(startswith("*declare -p ")) | sub("declare"; "typeset")] - keys | length) == 0' "$opencode"
+  while IFS= read -r rule; do
+    jq -e --arg rule "$rule" '.permissions.deny | index($rule)' "$cursor"
+    path="${rule#Read(}"; path="${path%)}"
+    jq -e --arg path "$path" '.permission.read[$path] == "deny"' "$opencode"
+  done < <(jq -r '.permissions.deny[] | select(test("p12|pfx"))' "$claude")
+}
+
 @test "listing and cd still work on sensitive directories" {
   bash_hook "ls $HOME/.aicodingsetup .aicodingsetup"
   allowed

@@ -114,7 +114,7 @@ SECRET_COMMAND_PATTERNS=(
 # where is_denied_path's "listing is fine" carve-out let them through.
 # Listing (`ls`, completion) stays allowed; this list is about reading bytes.
 CONTENT_COMMANDS=(
-  tar cp mv rsync scp find zip unzip 7z 7za dd cpio pax
+  tar cp mv rsync scp find zip unzip 7z 7za dd cpio pax gpg openssl
 )
 
 # Same idea, matched case-INSENSITIVELY. Kept separate because the patterns
@@ -432,7 +432,7 @@ case "$TOOL_NAME" in
     scan_tokens() {
       local cmd="$1"
       local token stripped expanded base exp_cd
-      local prev_cd=0 secret_cwd=""
+      local prev_cd=0 scan_cwd="$PWD" relative_to_sensitive=0
       while IFS= read -r token || [[ -n "$token" ]]; do
         [[ -z "$token" ]] && continue
         [[ "$token" == -* ]] && continue
@@ -441,17 +441,20 @@ case "$TOOL_NAME" in
         if (( prev_cd )); then
           prev_cd=0
           exp_cd="$(expand_path "$stripped")"
-          if in_sensitive_dir "$exp_cd"; then
-            secret_cwd="${exp_cd%/}/"
-          fi
+          [[ "$exp_cd" == /* ]] || exp_cd="$scan_cwd/$exp_cd"
+          # Lexically normalize the complete shell cwd. Remembering only a
+          # sensitive cwd missed `cd $HOME && cd .aicodingsetup`, nested cds,
+          # and leaving a sensitive directory again.
+          scan_cwd="$(realpath -m -- "$exp_cd")"
           continue
         fi
-        if [[ "$stripped" == "cd" ]]; then prev_cd=1; continue; fi
+        # A quoted `cd` is documentation/data, not shell state.
+        if [[ "$token" == "cd" ]]; then prev_cd=1; continue; fi
         expanded="$(expand_path "$stripped")"
-        relative_to_secret_dir=0
-        if [[ -n "$secret_cwd" && "$expanded" != /* ]]; then
-          expanded="$secret_cwd$expanded"
-          relative_to_secret_dir=1
+        relative_to_sensitive=0
+        if [[ "$expanded" != /* ]]; then
+          in_sensitive_dir "$scan_cwd" && relative_to_sensitive=1
+          expanded="$(realpath -m -- "$scan_cwd/$expanded")"
         fi
         base="$(basename -- "${expanded%/}")"
         if in_sensitive_dir "$expanded" && ! base_is_allowed "$base" \
@@ -461,16 +464,19 @@ case "$TOOL_NAME" in
           # needs more care: `cat .secrets.env` must be denied but `ls` and
           # other bare command words must survive — so deny only when the
           # basename names a known-secret file or actually resolves.
-          if [[ "$relative_to_secret_dir" == 0 ]] \
+          if [[ "$relative_to_sensitive" == 0 ]] \
              || basename_is_denied "$base" || [[ -e "$expanded" ]]; then
             deny "$base"
           fi
         fi
         [[ -e "$expanded" ]] || continue
-        if is_denied_path "$token"; then
+        if is_denied_path "$expanded"; then
           deny "$(basename -- "$expanded")"
         fi
-      done < <(printf '%s' "$cmd" | tr ' \t\n|;&()<>,{}' '\n' | sed -E 's/^["'\'']+//; s/["'\'']+$//')
+      # Keep quote characters until after command-word classification so a
+      # quoted literal `"cd"` cannot alter cwd tracking. `stripped` above is
+      # still used for path matching.
+      done < <(printf '%s' "$cmd" | tr ' \t\n|;&()<>,{}' '\n')
     }
 
     scan_tokens "$(strip_heredoc_bodies "$CMD")"
@@ -483,7 +489,7 @@ case "$TOOL_NAME" in
     # is overwhelmingly a string literal being written, and denying those is
     # the false positive the stripping exists to prevent.
     if [[ "$CMD" != "$(strip_heredoc_bodies "$CMD")" ]] \
-       && echo "$CMD" | grep -qE '(^|[[:space:]/;&|])(bash|sh|zsh|dash|ksh|eval|source)([[:space:]]|$)'; then
+       && echo "$CMD" | grep -qE '(^|[[:space:]/;&|])(bash|sh|zsh|dash|ksh|eval|source)([[:space:]<]|$)'; then
       scan_tokens "$CMD"
     fi
 
@@ -496,11 +502,42 @@ case "$TOOL_NAME" in
       segment="${segment#"${segment%%[![:space:]]*}"}"
       segment="${segment%"${segment##*[![:space:]]}"}"
       [[ -z "$segment" ]] && continue
-      seg_head=${segment%%[[:space:]]*}
-      case "$seg_head" in
-        tar|cp|mv|rsync|scp|find|zip|unzip|7z|7za|dd|cpio|pax|gpg|openssl) ;;
-        *) continue ;;
-      esac
+      seg_words=()
+      seg_i=0
+      seg_word=""
+      seg_cmd=""
+      content_cmd=""
+      read -r -a seg_words <<< "$segment"
+      # Resolve the real command through common wrappers and absolute paths;
+      # `/bin/tar`, `command cp`, and `env find` read exactly the same bytes as
+      # their previously-covered unqualified forms.
+      while (( seg_i < ${#seg_words[@]} )); do
+        seg_word="${seg_words[$seg_i]}"
+        case "${seg_word##*/}" in
+          command|builtin|sudo|doas|nohup)
+            (( seg_i += 1 ))
+            while (( seg_i < ${#seg_words[@]} )) && [[ "${seg_words[$seg_i]}" == -* ]]; do
+              (( seg_i += 1 ))
+            done
+            ;;
+          env)
+            (( seg_i += 1 ))
+            while (( seg_i < ${#seg_words[@]} )); do
+              case "${seg_words[$seg_i]}" in
+                -u|--unset) (( seg_i += 2 )) ;;
+                -*|*=*) (( seg_i += 1 )) ;;
+                *) break ;;
+              esac
+            done
+            ;;
+          *) seg_cmd="${seg_word##*/}"; break ;;
+        esac
+      done
+      is_content=1
+      for content_cmd in "${CONTENT_COMMANDS[@]}"; do
+        if [[ "$seg_cmd" == "$content_cmd" ]]; then is_content=0; break; fi
+      done
+      (( is_content == 0 )) || continue
       while IFS= read -r token || [[ -n "$token" ]]; do
         [[ -z "$token" ]] && continue
         [[ "$token" == -* ]] && continue
@@ -508,7 +545,7 @@ case "$TOOL_NAME" in
         if is_sensitive_root "$expanded" || is_sensitive_root "$HOME/$expanded"; then
           deny "$(basename -- "${expanded%/}")"
         fi
-      done < <(printf '%s' "${segment#"$seg_head"}" | tr ' \t\n|;&()<>,{}' '\n')
+      done < <(printf '%s' "$segment" | tr ' \t\n|;&()<>,{}' '\n')
     done < <(printf '%s' "$CMD" | sed -E 's/(\|\||&&|[;|&])/\n/g')
 
     # Pass 2 — redirection targets are checked on pattern alone, since the

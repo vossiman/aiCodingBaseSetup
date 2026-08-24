@@ -322,6 +322,17 @@ if [ "${MEMORY_LANES_TEE:-1}" != "0" ]; then
 fi
 # --- end memory-lanes slice tee --------------------------------------------
 
+# Hooks are disabled for this nested agent, so carry the managed native deny
+# array into its isolated settings instead of maintaining a second literal
+# copy that silently drifts whenever the blueprint adds a protected format.
+distiller_settings=$(jq -c '{
+  disableAllHooks: true,
+  permissions: {
+    allow: ["Write", "Bash(git:*)", "Bash(mkdir:*)", "Bash(cd:*)", "Bash(wc:*)", "mcp__memory-router__memory_search", "mcp__memory-router__memory_feedback"],
+    deny: .permissions.deny
+  }
+}' "$HOME/.claude/settings.json" 2>/dev/null) || exit 1
+
 log="$HOME/.cache/aicoding/llmwiki-distill.log"
 {
   printf '%s launch project=%s session=%s bytes=%s-%s\n' \
@@ -331,13 +342,12 @@ log="$HOME/.cache/aicoding/llmwiki-distill.log"
   # never fires for it. That makes the allow-list the only thing standing
   # between a headless agent and the credential files on disk, so it stays
   # narrow on purpose: no `cat`/`head`/`tail`/`grep`/`python3` here. The agent
-  # reads with the Read/Grep/Glob TOOLS instead, which the deny list below
-  # does cover. The deny list duplicates ~/.claude/settings.json rather than
-  # relying on it, because a settings-merge change upstream must not silently
-  # unprotect a hookless agent whose transcript is spooled and shipped.
+  # reads with the Read/Grep/Glob TOOLS instead, which the deny array copied
+  # from the managed settings above covers. Deriving it keeps the hookless
+  # agent aligned when protected formats are added to the blueprint.
   LLMWIKI_DISTILLER=1 claude -p \
     --agent llmwiki-distiller \
-    --settings '{"disableAllHooks": true, "permissions": {"allow": ["Write", "Bash(git:*)", "Bash(mkdir:*)", "Bash(cd:*)", "Bash(wc:*)", "mcp__memory-router__memory_search", "mcp__memory-router__memory_feedback"], "deny": ["Read(**/*.key)", "Read(**/*.pem)", "Read(**/.netrc)", "Read(**/.pgpass)", "Read(**/.secrets.env)", "Read(~/.aicodingsetup/*-ship)", "Read(~/.aicodingsetup/.secrets.env)", "Read(~/.claude.json)", "Read(~/.codex/config.toml)", "Read(~/.config/gh/**)", "Read(~/.config/opencode/opencode.json)", "Read(~/.cursor/mcp.json)", "Read(~/.ssh/id_*)"]}}' \
+    --settings "$distiller_settings" \
     "Review the new session activity in $slice (project root: $root; this is the tail of a longer Claude Code session transcript in JSONL format). Follow your instructions: file durable lessons; if nothing durable emerged, do nothing."
   rc=$?
   printf '%s done session=%s exit=%s\n' "$(date -Is)" "$session_id" "$rc"
