@@ -441,6 +441,23 @@ X"
   denied
 }
 
+@test "an env dump with no whitespace before the redirect is denied" {
+  # `env>/tmp/x` fused the operator onto the command word, so head extraction
+  # saw `env>/tmp/x` and the dump-vs-prefix case never fired (review 2026-08-24).
+  bash_hook 'env>/tmp/x'
+  denied
+  bash_hook 'env>>/tmp/x'
+  denied
+  bash_hook 'printenv>/tmp/x'
+  denied
+  bash_hook 'set>/tmp/x'
+  denied
+  bash_hook 'env>/tmp/x 2>&1'
+  denied
+  bash_hook 'true && env>/tmp/x'
+  denied
+}
+
 @test "declare -p on a secret variable is denied" {
   bash_hook 'declare -p GH_TOKEN'
   denied

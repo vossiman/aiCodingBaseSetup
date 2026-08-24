@@ -279,6 +279,13 @@ is_env_dump() {
     segment="${segment%"${segment##*[![:space:]]}"}"
     [[ -z "$segment" ]] && continue
 
+    # A redirection fused to the command word (`env>/tmp/x`, no space) left the
+    # operator glued onto `head`, so the case below never matched `env` and the
+    # dump slipped through (review 2026-08-24). Space out an operator welded to
+    # an ordinary word while leaving fd-qualified/doubled forms (`2>&1`, `>>`,
+    # `>&`) intact — those are preceded by a digit or another operator char.
+    segment=$(printf '%s' "$segment" | sed -E 's/([^[:space:]0-9<>&])([<>])/\1 \2/g')
+
     local head=${segment%%[[:space:]]*}
     case "$head" in
       env|printenv|/usr/bin/env|/usr/bin/printenv|set|export|declare|typeset) ;;
