@@ -1177,3 +1177,19 @@ LDD
   grep -q 'manifest_stamp_provision "$(git -C "$SCRIPT_DIR" rev-parse HEAD' "$BLUEPRINT_ROOT/install.sh"
   rm -rf "$TMP"
 }
+
+@test "install.sh main(): registers the git credential helpers and logs gh in" {
+  # Deliberately structural. A full network-enabled install.sh run is exactly
+  # what the suite's AICODINGSETUP_SKIP_NETWORK=1 exists to prevent (and
+  # ensure_gh_stored_auth honours that flag, so it would no-op anyway). The
+  # regression being guarded is pure wiring — main() simply never called these,
+  # so a container rebuild left gh unauthenticated until someone ran
+  # aicoding-sync by hand — and an absent call cannot survive this assertion.
+  export _AICODINGSETUP_NVS_STRIPPED=1   # or sourcing re-execs $0, which is bats
+  source "$BLUEPRINT_ROOT/install.sh"
+  run declare -f main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ensure_gh_credential_helper"* ]]
+  [[ "$output" == *"ensure_gh_stored_auth"* ]]
+  [[ "$output" == *"ensure_git_credential_file_fallback"* ]]
+}
