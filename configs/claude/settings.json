@@ -5,7 +5,11 @@
     ],
     "deny": [
       "Read(**/*.key)",
+      "Read(**/*.p12)",
       "Read(**/*.pem)",
+      "Read(**/*.pfx)",
+      "Read(**/*.secrets.env)",
+      "Read(**/.env.secrets)",
       "Read(**/.netrc)",
       "Read(**/.pgpass)",
       "Read(**/.secrets.env)",

@@ -15,6 +15,8 @@ setup() {
   unset MEMORY_LANES_TEE MEMORY_LANES_SPOOL
   unset MEMORY_LANES_SHIP MEMORY_LANES_SHIP_KEY MEMORY_LANES_SHIP_TARGET
 
+  mkdir -p "$HOME/.claude"
+  cp "$BLUEPRINT_ROOT/configs/claude/settings.json" "$HOME/.claude/settings.json"
   mkdir -p "$TMPDIR/stubs"
   cat > "$TMPDIR/stubs/claude" <<'STUB'
 #!/bin/sh

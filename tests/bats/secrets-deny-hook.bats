@@ -123,9 +123,15 @@ allowed() { [ "$status" -eq 0 ] && [ -z "$output" ]; }
   allowed
 }
 
-@test "Grep tool: searching a whole directory is allowed" {
+@test "Grep tool: a recursive search rooted IN a sensitive directory is denied" {
+  # Was "allowed" until 2026-08-21: the directory exemption let Grep return
+  # file CONTENTS from ~/.aicodingsetup — a native-tool bypass needing no
+  # shell at all (review 2026-08-21). Only non-sensitive dirs stay searchable.
   hook "$(jq -nc --arg p "$HOME/.aicodingsetup" \
     '{tool_name:"Grep",tool_input:{pattern:"profile",path:$p}}')"
+  denied
+  hook "$(jq -nc --arg p "$HOME/work" \
+    '{tool_name:"Grep",tool_input:{pattern:"hello",path:$p}}')"
   allowed
 }
 
@@ -397,5 +403,137 @@ MARK"
   bash_hook "cat $HOME/.claude/settings.json"
   allowed
   bash_hook 'claude mcp list'
+  allowed
+}
+
+# --- bypasses closed after the 2026-08-21 review -----------------------------
+# Each of these was verified ALLOW by the review before the fix.
+
+@test "glob: pre-expansion glob over the secrets dir is denied" {
+  # The hook sees `~/.aicodingsetup/*` — no single token resolves to a file,
+  # the existence gate passed it, then the shell expanded at runtime.
+  bash_hook "cat $HOME/.aicodingsetup/*"
+  denied
+}
+
+@test "cd + relative path is denied" {
+  # Tokens were resolved against the hook's CWD, not the command's.
+  bash_hook "cd $HOME/.aicodingsetup && cat .secrets.env"
+  denied
+}
+
+@test "a heredoc fed to a shell interpreter has its body scanned" {
+  # Stripping killed false positives but created an execution channel.
+  bash_hook "bash <<'X'
+cat $HOME/.aicodingsetup/.secrets.env
+X"
+  denied
+}
+
+@test "an env dump redirected to a file is denied" {
+  # `>` counted as a remaining command word, so is_env_dump passed it and
+  # nothing denied reading /tmp afterwards.
+  bash_hook 'env > /tmp/envdump.txt'
+  denied
+  bash_hook 'printenv > "$TMPDIR/e.txt" 2>&1'
+  denied
+  bash_hook 'set > /tmp/state.txt'
+  denied
+}
+
+@test "an env dump with no whitespace before the redirect is denied" {
+  # `env>/tmp/x` fused the operator onto the command word, so head extraction
+  # saw `env>/tmp/x` and the dump-vs-prefix case never fired (review 2026-08-24).
+  bash_hook 'env>/tmp/x'
+  denied
+  bash_hook 'env>>/tmp/x'
+  denied
+  bash_hook 'printenv>/tmp/x'
+  denied
+  bash_hook 'set>/tmp/x'
+  denied
+  bash_hook 'env>/tmp/x 2>&1'
+  denied
+  bash_hook 'true && env>/tmp/x'
+  denied
+}
+
+@test "declare -p on a secret variable is denied" {
+  bash_hook 'declare -p GH_TOKEN'
+  denied
+  bash_hook 'declare GH_TOKEN=ok'
+  allowed
+}
+
+@test "content commands over a sensitive directory are denied" {
+  # Directories were allowed ("listing is fine") but these read contents.
+  bash_hook "tar czf /tmp/a.tgz -C $HOME .aicodingsetup"
+  denied
+  bash_hook "cp -r $HOME/.aicodingsetup /tmp/exfil"
+  denied
+  bash_hook "find $HOME/.aicodingsetup -type f -exec cat {} ;"
+  denied
+}
+
+@test "cd tracking follows chained relative and nested directories" {
+  local sensitive="$HOME/.""aicodingsetup"
+  local secret_name=".secrets"".env"
+  bash_hook "cd $HOME && cd $(basename "$sensitive") && cat $secret_name"
+  denied
+
+  mkdir -p "$sensitive/sub"
+  touch "$sensitive/sub/opaque"
+  bash_hook "cd $sensitive && cd sub && cat opaque"
+  denied
+}
+
+@test "a quoted cd literal does not alter scanner state" {
+  local sensitive="$HOME/.""aicodingsetup"
+  local secret_name=".secrets"".env"
+  bash_hook "printf '%s\\n' 'cd' '$sensitive' '$secret_name'"
+  allowed
+}
+
+@test "shell heredocs without whitespace before redirection are denied" {
+  local sensitive="$HOME/.""aicodingsetup"
+  local secret_name=".secrets"".env"
+  bash_hook "bash<<'X'
+cat $sensitive/$secret_name
+X"
+  denied
+  bash_hook "/bin/bash<<'X'
+cat $sensitive/$secret_name
+X"
+  denied
+}
+
+@test "qualified and wrapped content commands are denied" {
+  local sensitive="$HOME/.""aicodingsetup"
+  bash_hook "/bin/tar czf /tmp/a.tgz -C $HOME $(basename "$sensitive")"
+  denied
+  bash_hook "command cp -r $sensitive /tmp/exfil"
+  denied
+  bash_hook "env find $sensitive -type f -print"
+  denied
+}
+
+@test "fallback configs deny whole-environment and shell-oracle commands" {
+  local cursor="$BLUEPRINT_ROOT/configs/cursor/cli-config.json"
+  local opencode="$BLUEPRINT_ROOT/configs/opencode/opencode.json"
+  local claude="$BLUEPRINT_ROOT/configs/claude/settings.json" rule path
+  jq -e '.permissions.deny | contains(["Shell(declare)", "Shell(env)", "Shell(export)", "Shell(printenv)", "Shell(set)", "Shell(typeset)"])' "$cursor"
+  jq -e '.permission.bash | .env == "deny" and .printenv == "deny" and .set == "deny" and .export == "deny" and .declare == "deny" and .typeset == "deny"' "$opencode"
+  jq -e '.permission.bash | ([keys[] | select(startswith("*declare -p ")) | sub("declare"; "typeset")] - keys | length) == 0' "$opencode"
+  while IFS= read -r rule; do
+    jq -e --arg rule "$rule" '.permissions.deny | index($rule)' "$cursor"
+    path="${rule#Read(}"; path="${path%)}"
+    jq -e --arg path "$path" '.permission.read[$path] == "deny"' "$opencode"
+  done < <(jq -r '.permissions.deny[] | select(test("p12|pfx"))' "$claude")
+}
+
+@test "listing and cd still work on sensitive directories" {
+  bash_hook "ls $HOME/.aicodingsetup .aicodingsetup"
+  allowed
+  bash_hook "cd $HOME/.aicodingsetup && ls"
   allowed
 }
