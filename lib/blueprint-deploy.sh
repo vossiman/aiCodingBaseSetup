@@ -815,7 +815,9 @@ apply_managed_buckets() {
         _apply_deploy "$mode" "$dest" "$src"
         ;;
       drifted_and_updating|will_update_owned|new_file_existing)
-        [[ -e "$dest" ]] && _backup_file "$dest"
+        if [[ -e "$dest" ]] && ! _incoming_matches_dest "$mode" "$src" "$dest"; then
+          _backup_file "$dest"
+        fi
         _apply_deploy "$mode" "$dest" "$src"
         ;;
       drifted_but_aligned)
@@ -874,6 +876,23 @@ _apply_deploy() {
         "$(managed_marker_block_start)" "$(managed_marker_block_end)"
       ;;
   esac
+}
+
+# Internal: true when the incoming rendered content is byte-identical to what
+# is already on disk — a backup would only duplicate the live file (seen live:
+# 7 identical bw-deny-files.sh.bak.* accumulated on one container). Only the
+# overwrite path can predict its result cheaply; merge and marker_block stay
+# conservative (always back up).
+_incoming_matches_dest() {
+  local mode=$1 src=$2 dest=$3
+  [[ "$mode" == overwrite && -f "$src" ]] || return 1
+  local tmp rc
+  tmp=$(mktemp)
+  _substitute_file_to "$src" "$tmp" 2>/dev/null
+  cmp -s "$tmp" "$dest"
+  rc=$?
+  rm -f "$tmp"
+  return "$rc"
 }
 
 # Internal: timestamped sibling backup. Caller already verified file exists.

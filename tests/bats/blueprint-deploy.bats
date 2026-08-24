@@ -252,6 +252,35 @@ EOF
   jq -e '.files["'"$HOME"'/.codex/config.toml"]' "$AICODING_MANIFEST"
 }
 
+@test "apply_managed_buckets: no backup when disk already matches incoming content" {
+  # Regression: a newly managed path whose on-disk file already equals the
+  # rendered blueprint content got a .bak byte-identical to the live file on
+  # every run (7 identical bw-deny-files.sh.bak.* piled up on one container,
+  # 2026-08-21..23). A backup that duplicates what deploy is about to write
+  # protects nothing — skip it.
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs/codex" "$HOME/.codex"
+  echo "identical content" > "$AICODING_BLUEPRINT_CLONE/configs/codex/config.toml"
+  echo "identical content" > "$HOME/.codex/config.toml"
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE
+  BUCKETS[$HOME/.codex/config.toml]=new_file_existing
+  FILE_MODE[$HOME/.codex/config.toml]=overwrite
+  FILE_SOURCE[$HOME/.codex/config.toml]=configs/codex/config.toml
+
+  manifest_stage_begin
+  apply_managed_buckets "new_file_existing"
+  manifest_stage_commit
+
+  grep -q "identical content" "$HOME/.codex/config.toml"
+  # No .bak sibling — it would only duplicate the live file.
+  if ls "$HOME"/.codex/config.toml.bak.* 2>/dev/null; then false; fi
+  # The file is still adopted into the manifest.
+  jq -e '.files["'"$HOME"'/.codex/config.toml"]' "$AICODING_MANIFEST"
+}
+
 @test "apply_managed_buckets: drifted_but_aligned records the MANAGED hash (codex trust sections)" {
   # Regression: the refresh used compute_hash, so a codex config.toml with
   # [projects.*] trust sections stored a hash the next classify (which strips

@@ -109,6 +109,8 @@ report_unmanaged() {
       [[ ! -f "$hook_file" ]] && continue
       local hook_name
       hook_name="$(basename "$hook_file")"
+      # Skip the installer's own timestamped backups (_backup_file siblings).
+      [[ "$hook_name" == *.bak.* ]] && continue
       local managed=false
       for m in "${MANAGED_HOOKS[@]}"; do
         [[ "$hook_name" == "$m" ]] && managed=true && break

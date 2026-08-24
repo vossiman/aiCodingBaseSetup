@@ -1193,3 +1193,20 @@ LDD
   [[ "$output" == *"ensure_gh_stored_auth"* ]]
   [[ "$output" == *"ensure_git_credential_file_fallback"* ]]
 }
+
+@test "report_unmanaged: ignores the installer's own .bak.<stamp> backups" {
+  # Regression: _backup_file leaves timestamped siblings next to managed
+  # hooks; the unmanaged-components scan then reported every one as a
+  # foreign hook ("Found hook 'bw-deny-files.sh.bak.20260821-191316' ...").
+  export _AICODINGSETUP_NVS_STRIPPED=1   # or sourcing re-execs $0, which is bats
+  source "$BLUEPRINT_ROOT/install.sh"
+  mkdir -p "$CLAUDE_DIR/hooks"
+  printf '#!/bin/sh\n' > "$CLAUDE_DIR/hooks/bw-deny-files.sh.bak.20260821-191316"
+  printf '#!/bin/sh\n' > "$CLAUDE_DIR/hooks/my-own-hook.sh"
+  run report_unmanaged
+  [ "$status" -eq 0 ]
+  # A genuinely personal hook is still reported…
+  [[ "$output" == *"my-own-hook.sh"* ]]
+  # …but the installer's own backups are not.
+  if echo "$output" | grep -q "bak"; then false; fi
+}
