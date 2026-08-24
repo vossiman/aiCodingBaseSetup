@@ -150,3 +150,16 @@ STUB
   [ "$status" -eq 0 ]
   grep -q -- '--with-token' "$TMPD/gh.log"
 }
+
+@test "logs the already-authenticated case too, or a healthy boot looks like no boot" {
+  # The common outcome on a healthy container. Without a line here the log is
+  # empty exactly when everything worked, so "gh was fine" and "the sync never
+  # ran" stay indistinguishable — the thing #99 set out to fix, missed because
+  # the no-login assertion above says nothing about logging.
+  export AICODING_BOOT_SYNC_LOG="$TMPD/boot-sync.log"
+  touch "$TMPD/logged-in"
+  run ensure_gh_stored_auth
+  [ "$status" -eq 0 ]
+  grep -q 'already authenticated' "$AICODING_BOOT_SYNC_LOG"
+  if grep -q -- 'auth login' "$TMPD/gh.log"; then false; fi
+}
