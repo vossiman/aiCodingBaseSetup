@@ -92,13 +92,39 @@ teardown() { rm -rf "$TMPD"; }
   if grep -q -- 'auth login' "$TMPD/gh.log"; then false; fi
 }
 
-@test "env.sh stops exporting GH_TOKEN but still exports the other keys" {
+@test "env.sh exports no secret from the secrets file" {
   mkdir -p "$HOME/.aicodingsetup"
-  printf 'GH_TOKEN=ghp_x\nBRAVE_API_KEY=brave123\n' > "$HOME/.aicodingsetup/.secrets.env"
-  run bash -c ". '$BLUEPRINT_ROOT/configs/bash/env.sh'; echo \"gh=[\${GH_TOKEN:-}] brave=[\${BRAVE_API_KEY:-}]\""
+  printf 'GH_TOKEN=ghp_x\nBRAVE_API_KEY=brave123\nOPENROUTER_API_KEY=sk-or-x\nFIRECRAWL_API_KEY=fc_x\nMEMORY_ROUTER_TOKEN=mrt_x\nCLOUDFLARE_API_TOKEN=cf_x\nLOGFIRE_TOKEN=lf_x\nDOKPLOY_API_TOKEN=dk_x\nKANBAN_TOKEN=kb_x\n' \
+    > "$HOME/.aicodingsetup/.secrets.env"
+  run bash -c ". '$BLUEPRINT_ROOT/configs/bash/env.sh'; \
+    for k in GH_TOKEN BRAVE_API_KEY OPENROUTER_API_KEY FIRECRAWL_API_KEY \
+             MEMORY_ROUTER_TOKEN CLOUDFLARE_API_TOKEN LOGFIRE_TOKEN \
+             DOKPLOY_API_TOKEN KANBAN_TOKEN; do \
+      echo \"\$k=[\${!k:-}]\"; done"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"gh=[]"* ]]
-  [[ "$output" == *"brave=[brave123]"* ]]
+  # Every key must render empty. A non-empty one means env.sh leaked it into
+  # the shell, which is the whole leak path this file exists to close.
+  # Asserted per key rather than with `grep -qv '=\[\]$'`: this container's
+  # `grep` is ugrep 7.8.4, where `-qv` exits 1 on input that plain `-v` both
+  # prints and exits 0 for — an assertion written that way passes no matter
+  # what env.sh does. Verified 2026-08-27.
+  local k
+  for k in GH_TOKEN BRAVE_API_KEY OPENROUTER_API_KEY FIRECRAWL_API_KEY \
+           MEMORY_ROUTER_TOKEN CLOUDFLARE_API_TOKEN LOGFIRE_TOKEN \
+           DOKPLOY_API_TOKEN KANBAN_TOKEN; do
+    [[ "$output" == *"$k=[]"* ]] || { echo "leaked into the environment: $k"; return 1; }
+  done
+}
+
+@test "env.sh clears a secret exported by something else (remoteEnv, parent shell)" {
+  mkdir -p "$HOME/.aicodingsetup"
+  : > "$HOME/.aicodingsetup/.secrets.env"
+  run bash -c "export OPENROUTER_API_KEY=sk-or-leaked CLOUDFLARE_API_TOKEN=cf-leaked; \
+    . '$BLUEPRINT_ROOT/configs/bash/env.sh'; \
+    echo \"or=[\${OPENROUTER_API_KEY:-}] cf=[\${CLOUDFLARE_API_TOKEN:-}]\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"or=[]"* ]]
+  [[ "$output" == *"cf=[]"* ]]
 }
 
 @test "respects the offline guard so the suite never calls the real gh" {
