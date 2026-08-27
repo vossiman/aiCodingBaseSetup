@@ -1210,3 +1210,12 @@ LDD
   # …but the installer's own backups are not.
   if echo "$output" | grep -q "bak"; then false; fi
 }
+
+@test "install.sh symlinks the clipboard-bridge shims (xclip, wl-paste)" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  for name in xclip wl-paste; do
+    [ -L "$HOME/.local/bin/$name" ]
+    [ -x "$HOME/.local/bin/$name" ]
+    readlink "$HOME/.local/bin/$name" | grep -q "bin/clip-shim"
+  done
+}

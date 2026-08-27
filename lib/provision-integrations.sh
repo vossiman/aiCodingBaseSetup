@@ -69,6 +69,23 @@ install_agent_notify_symlink() {
   ok "agent-notify installed at $dest -> $src"
 }
 
+# --- clipboard-bridge shims (container only) ---
+# Fake xclip/wl-paste that answer agent CLIs' image-paste reads from the dvw
+# clipboard bridge socket (/tmp/dvw-clip.sock, reverse-forwarded to the
+# client's dvw-clipd). Containers have no real clipboard tools, so shadowing
+# the names is safe; NEVER install these on a host profile — hosts have real
+# clipboards and real tools.
+install_clip_shim_symlinks() {
+  header "clipboard-bridge shims (xclip, wl-paste)"
+  local src="$SCRIPT_DIR/bin/clip-shim" name
+  [[ -f "$src" ]] || { warn "bin/clip-shim not found — skipping"; return; }
+  mkdir -p "$HOME/.local/bin"; chmod +x "$src"
+  for name in xclip wl-paste; do
+    ln -sf "$src" "$HOME/.local/bin/$name"
+  done
+  ok "clip shims installed at ~/.local/bin/{xclip,wl-paste} -> $src"
+}
+
 # --- SSH agent socket self-heal watcher (container only) ---
 # Deploys the watcher onto PATH. We only DEPLOY here (a pure symlink); the
   # daemon is *started* by on-start.sh on each container start — that keeps full

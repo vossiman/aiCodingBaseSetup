@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# clip-shim — container half of the dvw clipboard bridge.
+#
+# Symlinked into ~/.local/bin as `xclip` AND `wl-paste` (real tools are not
+# installed in containers). Agent CLIs (Claude Code's Ctrl+V) exec these to
+# read a clipboard that doesn't exist here; the shim answers from the
+# bridge socket instead — a reverse ssh forward to dvw-clipd on the client
+# machine, which serves images only. dvw spec:
+# dvw:docs/superpowers/specs/2026-08-27-clipboard-bridge-design.md
+#
+# Contract: translate exactly the paste invocations agents use; anything
+# else fails like "no image in clipboard" (exit 1) so callers show their
+# normal empty-clipboard message instead of hanging or half-working.
+
+set -euo pipefail
+
+SOCK="${DVW_CLIP_SOCK:-/tmp/dvw-clip.sock}"
+
+_fail() {
+  echo "clip-shim: no image in clipboard (clipboard bridge: $1)" >&2
+  exit 1
+}
+
+_get() {
+  # -f: non-2xx → rc 22; dead/absent socket → rc 7. Either way: _fail.
+  curl -sf --max-time 3 --unix-socket "$SOCK" "http://localhost$1" || _fail "$SOCK unreachable or refused"
+}
+
+name=$(basename "$0")
+case "$name" in
+  xclip)
+    # Recognized: xclip -selection clipboard -t TARGETS -o
+    #             xclip -selection clipboard -t <mime> -o
+    sel="" target="" out=0
+    while (($#)); do
+      case "$1" in
+        -selection) sel="${2:-}"; shift 2 ;;
+        -t) target="${2:-}"; shift 2 ;;
+        -o|-out) out=1; shift ;;
+        *) _fail "unsupported xclip argument '$1'" ;;
+      esac
+    done
+    [[ "$sel" == clipboard && $out -eq 1 && -n "$target" ]] || _fail "unsupported xclip invocation"
+    if [[ "$target" == TARGETS ]]; then
+      _get /targets
+    else
+      _get "/clip?type=$target"
+    fi
+    ;;
+  wl-paste)
+    # Recognized: wl-paste -l | --list-types
+    #             wl-paste [-n|--no-newline] --type|-t <mime>
+    mime="" list=0
+    while (($#)); do
+      case "$1" in
+        -l|--list-types) list=1; shift ;;
+        --type|-t) mime="${2:-}"; shift 2 ;;
+        --type=*) mime="${1#--type=}"; shift ;;
+        -n|--no-newline) shift ;;
+        *) _fail "unsupported wl-paste argument '$1'" ;;
+      esac
+    done
+    if (( list )); then
+      _get /targets
+    elif [[ -n "$mime" ]]; then
+      _get "/clip?type=$mime"
+    else
+      _fail "unsupported wl-paste invocation"
+    fi
+    ;;
+  *)
+    _fail "unknown shim name '$name'"
+    ;;
+esac
