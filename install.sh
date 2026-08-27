@@ -121,6 +121,7 @@ main() {
   install_aicoding_install_symlink
   install_update_status_symlink
   install_agent_notify_symlink
+  install_clip_shim_symlinks
   remove_deprecated_shims
   install_ssh_agent_watch_symlink
 
