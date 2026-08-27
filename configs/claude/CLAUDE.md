@@ -56,6 +56,36 @@ Managed by the aiCodingBaseSetup blueprint (`configs/claude/CLAUDE.md`);
 - Integrate via PR — never commit or force-push to a protected `main`. Ask
   before merging; delete merged branches.
 
+## The backlog board — file work you find, don't just report it
+
+`https://kanban.dataprospectors.at` is the estate's shared backlog. Every
+repo files against it, tagged with its own repo name, so work found in one
+project is visible from the phone instead of dying in a transcript.
+
+**Write to it with `kanban-post`, never `curl`.** The board authenticates
+agents with a bearer token in the shared secrets store, and the secrets deny
+hook refuses any command that expands `$KANBAN_TOKEN` — it cannot tell
+"send it in a header" from "print it". `kanban-post` is the same answer
+`git` got: a helper that reads the store itself, so no credential ever
+appears in a command you write. It redacts the credential from everything it
+prints, refuses redirects, and refuses plaintext destinations.
+
+```bash
+kanban-post "title" [--repo NAME] [--body TEXT] [--status KEY]
+kanban-post --list-repos | --list-tickets
+```
+
+`--repo` defaults to `devMachine`; pass the repo you are actually working
+in. If it is not registered yet, the 400 lists the valid names — register a
+new one once with `POST /api/repos` and it is permanent. Unknown statuses
+answer the same way, so an error tells you how to fix it rather than
+guessing.
+
+**When to file one:** a real defect or follow-up you found but were not
+asked to fix, and that would otherwise only exist in this transcript. Not
+for work you are about to do in this session, and not as a substitute for
+telling the user what you found — file it *and* say so.
+
 ## Parallel-session coordination
 
 Other sessions on this host are the user's own — but not necessarily on this

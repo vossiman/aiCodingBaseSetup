@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""Write to the kanban board without any agent handling the bearer token.
+
+Same shape as git-credential-aicoding: the credential is read from the
+estate's secrets store inside this process and used to build one request. It
+never appears in argv, in a file, or in this program's output -- which is
+what lets an agent use it under the secrets deny rules, instead of expanding
+$KANBAN_TOKEN into a shell command the hook (correctly) refuses.
+
+This file is intended to ship in a PUBLIC repo. It contains no credential:
+only the path to the store, and the rules below that keep the value from
+escaping.
+
+  1. The destination host is pinned. KANBAN_URL may override it for testing,
+     but only to an https URL or an explicit loopback address -- so the token
+     cannot be redirected to an attacker's host by setting an env var, and is
+     never sent in plaintext.
+  2. Redirects are refused. urllib re-sends Authorization to whatever a
+     redirect names, including another origin; that is the classic way a
+     bearer token leaks. A 3xx is an error here, not something to follow.
+  3. Nothing prints a traceback. An unexpected exception exits with a short
+     message, so no frame dump can carry the request object into a log.
+
+Usage:
+  kanban-post "title" [--repo NAME] [--body TEXT] [--status KEY]
+  kanban-post --list-repos | --list-tickets
+  kanban-post --selftest        # proves the token cannot reach the output
+"""
+import argparse
+import json
+import os
+import pathlib
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+DEFAULT_URL = "https://kanban.dataprospectors.at"
+SECRETS = pathlib.Path.home() / ".aicodingsetup" / ".secrets.env"
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+
+def die(message: str) -> "NoReturn":  # noqa: F821
+    """Exit with a short message. Never raises through to a traceback, and
+    never carries a credential: callers pass their own text, and scrub() is
+    deliberately NOT used here because die() is what scrub() falls back to
+    when the store is unreadable."""
+    sys.exit(f"kanban-post: {message}")
+
+
+def base_url() -> str:
+    """The board's address, refusing anything that would expose the token."""
+    url = os.environ.get("KANBAN_URL", DEFAULT_URL).rstrip("/")
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme == "https":
+        return url
+    if parts.scheme == "http" and (parts.hostname or "") in LOOPBACK:
+        return url
+    die(
+        "KANBAN_URL must be https, or http on loopback for testing; "
+        f"refusing to send a bearer token to a {parts.scheme or 'schemeless'} URL"
+    )
+
+
+def token() -> str:
+    """Read KANBAN_TOKEN out of the secrets store. The value is returned to
+    exactly one caller, which puts it in a header and drops it."""
+    if not SECRETS.is_file():
+        die(f"no secrets store at {SECRETS}")
+    for line in SECRETS.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("KANBAN_TOKEN="):
+            value = line.split("=", 1)[1].strip().strip('"').strip("'")
+            if value:
+                return value
+            break
+    die("KANBAN_TOKEN is not set in the secrets store")
+
+
+def scrub(text: str) -> str:
+    """Last line of defence before anything is printed.
+
+    A server can put the credential back in front of us -- an error page that
+    dumps request headers, a proxy that echoes them, a validation error
+    quoting the request. Everything this program prints goes through here, so
+    a spill needs the redaction to fail, not merely a server to misbehave.
+    """
+    try:
+        secret = token()
+    except SystemExit:
+        return text
+    return text.replace(secret, "<redacted>") if secret else text
+
+
+def emit(value) -> None:
+    text = json.dumps(value, indent=2) if isinstance(value, (dict, list)) else str(value)
+    print(scrub(text))
+
+
+class NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect. Following one would re-send Authorization to
+    whatever host the response named."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        die(f"refusing to follow a {code} redirect to another location")
+
+
+def call(method: str, path: str, payload: dict | None = None):
+    req = urllib.request.Request(
+        f"{base_url()}{path}",
+        data=json.dumps(payload).encode() if payload is not None else None,
+        headers={
+            "Authorization": f"Bearer {token()}",
+            "Content-Type": "application/json",
+        },
+        method=method,
+    )
+    opener = urllib.request.build_opener(NoRedirects)
+    try:
+        with opener.open(req, timeout=30) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        try:
+            body = json.loads(body)
+        except ValueError:
+            pass
+        return e.code, body
+    except urllib.error.URLError as e:
+        die(f"cannot reach the board: {e.reason}")
+    except Exception as e:  # deliberately broad: never surface a traceback
+        die(f"request failed: {type(e).__name__}")
+
+
+def selftest() -> int:
+    """Prove the token cannot reach stdout/stderr, and that a redirect to
+    another origin is refused rather than followed.
+
+    Runs against a throwaway local server with a fake credential; touches
+    neither the real board nor the real secrets store.
+    """
+    import http.server
+    import subprocess
+    import tempfile
+    import threading
+
+    fake = "FAKE-TOKEN-cf4d1a9e-do-not-use"
+    seen: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _record(self):
+            seen.append(self.headers.get("Authorization", ""))
+
+        def do_GET(self):
+            self._record()
+            if self.path.startswith("/redirect"):
+                self.send_response(302)
+                self.send_header("Location", "http://127.0.0.1:1/stolen")
+                self.end_headers()
+                return
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            # A hostile or buggy server echoing the credential back must not
+            # end up printed either.
+            self.wfile.write(json.dumps({"detail": self.headers.get("Authorization")}).encode())
+
+        do_POST = do_GET
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+
+    home = tempfile.mkdtemp()
+    store = pathlib.Path(home) / ".aicodingsetup"
+    store.mkdir()
+    (store / ".secrets.env").write_text(f"OTHER=x\nKANBAN_TOKEN={fake}\n")
+
+    env = {**os.environ, "HOME": home, "KANBAN_URL": f"http://127.0.0.1:{port}"}
+    failures = []
+
+    def run(args, label):
+        p = subprocess.run(
+            [sys.executable, __file__, *args],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        out = p.stdout + p.stderr
+        if fake in out:
+            failures.append(f"{label}: the token appeared in the output")
+        return out
+
+    run(["--list-tickets"], "error body echoing the credential")
+    run(["a title"], "POST error path")
+
+    env["KANBAN_URL"] = f"http://127.0.0.1:{port}/redirect"
+    before = len(seen)
+    out = run(["--list-tickets"], "redirect")
+    if "refusing to follow" not in out:
+        failures.append("redirect: was not refused")
+    if len(seen) > before + 1:
+        failures.append("redirect: Authorization was re-sent to the new location")
+
+    env["KANBAN_URL"] = "http://kanban.example.com"
+    out = run(["--list-tickets"], "plaintext")
+    if "must be https" not in out:
+        failures.append("plaintext: a non-loopback http URL was not refused")
+
+    srv.shutdown()
+    for f in failures:
+        print("FAIL", f)
+    if failures:
+        return 1
+    print("selftest: ok — token never reached the output; "
+          "redirects refused; plaintext destinations refused")
+    return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(prog="kanban-post")
+    p.add_argument("title", nargs="?")
+    p.add_argument("--repo", default="devMachine")
+    p.add_argument("--body", default=None)
+    p.add_argument("--status", default=None)
+    p.add_argument("--list-repos", action="store_true")
+    p.add_argument("--list-tickets", action="store_true")
+    p.add_argument("--selftest", action="store_true")
+    a = p.parse_args()
+
+    if a.selftest:
+        return selftest()
+    if a.list_repos:
+        status, out = call("GET", "/api/repos")
+    elif a.list_tickets:
+        status, out = call("GET", "/api/tickets")
+    else:
+        if not a.title:
+            p.error("a title is required")
+        ticket = {"title": a.title, "repo": a.repo}
+        if a.body:
+            ticket["body"] = a.body
+        if a.status:
+            ticket["status"] = a.status
+        status, out = call("POST", "/api/tickets", ticket)
+
+    print(status)
+    emit(out)
+    return 0 if status < 400 else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
