@@ -109,7 +109,10 @@ class H(http.server.BaseHTTPRequestHandler):
                 return self._reply(400, {"detail": "Unknown status 'nonesuch'. Valid statuses: backlog, done"})
             if payload["repo"] not in registered:
                 return self._reply(400, {"detail": f"Unknown repo '{payload['repo']}'. Valid repos: {', '.join(sorted(registered))}"})
-            return self._reply(201, {"id": "new-id", **payload})
+            # The real board derives a key this way and returns it; kanban-post
+            # surfaces whatever comes back rather than deriving its own.
+            key = "".join(c for c in payload["repo"] if c.isalnum()).upper() + "-1"
+            return self._reply(201, {"id": "new-id", "key": key, **payload})
         if self.command == "PATCH" and self.path.startswith("/api/tickets/"):
             return self._reply(200, {"id": self.path.rsplit("/", 1)[1], **payload})
         self._reply(404, {"detail": "not found"})
@@ -341,6 +344,44 @@ EOF
   [ "$status" -ne 0 ]
   [[ "$output" == *"--repo"* ]]
   [ ! -f "$TMPDIR/requests" ]
+}
+
+# Issue keys (DEVMACHINE-12)
+#
+# The board accepts a key anywhere it accepts a uuid, so kanban-post needs no
+# parsing of its own — but it must pass the key through untouched, and must
+# not swallow the key the board sends back.
+
+@test "an issue key is passed through to the board verbatim" {
+  _start_api_server myrepo
+  run "$KP" --done DEVMACHINE-12
+  [ "$status" -eq 0 ]
+  # Not url-encoded, not uppercased, not rewritten into a uuid lookup.
+  grep -q "PATCH /api/tickets/DEVMACHINE-12 " "$TMPDIR/requests"
+}
+
+@test "a lowercase key is left for the board to normalise" {
+  _start_api_server myrepo
+  run "$KP" --patch devmachine-12 --status doing
+  [ "$status" -eq 0 ]
+  grep -q "PATCH /api/tickets/devmachine-12 " "$TMPDIR/requests"
+}
+
+@test "the key is printed on its own line, not buried in the body" {
+  _start_api_server myrepo
+  _fake_checkout myrepo
+  run "$KP" "a title" --repo myrepo
+  [ "$status" -eq 0 ]
+  # The fake board echoes the payload back; a real one adds "key".
+  [[ "${lines[1]}" == "MYREPO-1" ]]
+}
+
+@test "a board that sends no key still works" {
+  # Until the issue-keys release is deployed, responses have no key field.
+  _start_api_server myrepo
+  run "$KP" --done abc123
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"None"* ]]
 }
 
 @test "--patch and --done together is refused" {
