@@ -20,6 +20,7 @@ setup() {
   DISPLAY_NUM=":$((9300 + BATS_TEST_NUMBER))"
   TMPDIR=$(mktemp -d)
   export TMPDIR
+  CLIPX_TMPDIR="$TMPDIR"   # teardown's only license to delete (see below)
   # Keep uv's package cache across the HOME override — the daemon runs via
   # `uv run --with python-xlib`, and a cold cache per test means a network
   # download inside the selection-ownership wait window.
@@ -54,12 +55,19 @@ EOF
 }
 
 teardown() {
+  # setup() can `skip` BEFORE creating anything (uv/xclip/Xvfb missing —
+  # the bare CI runner). teardown still runs then, and an unguarded
+  # `rm -rf "$TMPDIR"` deletes whatever TMPDIR the environment handed us —
+  # on CI that held bats's own run dir and killed the whole suite
+  # (2026-08-28, run 33156070786). Only ever remove the dir WE created.
+  [[ -n "${CLIPX_TMPDIR:-}" ]] || return 0
   [[ -n "${BRIDGE_PID:-}" ]] && kill "$BRIDGE_PID" 2>/dev/null || true
   if [[ -f "$HOME/.dvw/x11-bridge.pid" ]]; then
     kill "$(cat "$HOME/.dvw/x11-bridge.pid")" 2>/dev/null || true
   fi
-  kill "$STUB_PID" "$XVFB_PID" 2>/dev/null || true
-  rm -rf "$TMPDIR"
+  [[ -n "${STUB_PID:-}" ]] && kill "$STUB_PID" 2>/dev/null || true
+  [[ -n "${XVFB_PID:-}" ]] && kill "$XVFB_PID" 2>/dev/null || true
+  rm -rf "$CLIPX_TMPDIR"
 }
 
 _start_bridge() {
