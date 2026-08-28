@@ -71,15 +71,26 @@ appears in a command you write. It redacts the credential from everything it
 prints, refuses redirects, and refuses plaintext destinations.
 
 ```bash
-kanban-post "title" [--repo NAME] [--body TEXT] [--status KEY]
+kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P]
+kanban-post --patch ID ["new title"] [--body TEXT] [--status KEY] [--priority P]
+kanban-post --done ID
 kanban-post --list-repos | --list-tickets
 ```
 
-`--repo` defaults to `devMachine`; pass the repo you are actually working
-in. If it is not registered yet, the 400 lists the valid names — register a
-new one once with `POST /api/repos` and it is permanent. Unknown statuses
-answer the same way, so an error tells you how to fix it rather than
-guessing.
+**`--repo` is required, and must name the repo you are standing in** — it is
+checked against the `github.com` origin of the current checkout, case and
+all. So file from the checkout the work belongs to: `cd` into the submodule
+or sibling repo first, rather than tagging someone else's finding with your
+own repo. A mismatch, and a directory that is no github.com checkout at all,
+are both refusals that make no request. There is no default: everything used
+to land in `devMachine`, which made the per-repo filter on the phone useless.
+
+A repo the board has not seen yet registers itself on first use — the name
+comes from the remote, so it cannot be a typo. Statuses are
+`backlog|todo|doing|done`; an unknown one is a 400 that lists the valid keys.
+
+`--done ID` closes a ticket (shorthand for `--patch ID --status done`). Close
+what you finish: the board only stays useful if it drains.
 
 **When to file one:** a real defect or follow-up you found but were not
 asked to fix, and that would otherwise only exist in this transcript. Not

@@ -68,6 +68,65 @@ EOF
   export KANBAN_URL="http://127.0.0.1:$PORT"
 }
 
+# A checkout whose github.com origin names $1, and cd into it. The repo
+# name kanban-post derives is read from this remote, so the tests that care
+# about --repo need a real one rather than whatever directory bats sits in.
+_fake_checkout() {
+  local dir="$TMPDIR/checkout-$1"
+  mkdir -p "$dir"
+  git init -q "$dir"
+  git -C "$dir" remote add origin "${2:-https://github.com/vossiman/$1.git}"
+  cd "$dir" || return 1
+}
+
+# A board-shaped server: it knows which repos are registered, 400s an
+# unknown one the way resolve_repo does, and appends "METHOD PATH BODY" to
+# $TMPDIR/requests so a test can assert what was actually sent.
+_start_api_server() {
+  python3 - "$TMPDIR" "$1" <<'EOF' &
+import http.server, json, os, sys
+tmp, registered = sys.argv[1], set(filter(None, sys.argv[2].split(",")))
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _reply(self, code, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def _handle(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(n).decode() if n else ""
+        with open(os.path.join(tmp, "requests"), "a") as f:
+            f.write(f"{self.command} {self.path} {raw}\n")
+        payload = json.loads(raw) if raw else {}
+        if self.command == "POST" and self.path == "/api/repos":
+            registered.add(payload["name"])
+            return self._reply(201, {"name": payload["name"], "archived": False})
+        if self.command == "POST" and self.path == "/api/tickets":
+            if payload.get("status") == "nonesuch":
+                return self._reply(400, {"detail": "Unknown status 'nonesuch'. Valid statuses: backlog, done"})
+            if payload["repo"] not in registered:
+                return self._reply(400, {"detail": f"Unknown repo '{payload['repo']}'. Valid repos: {', '.join(sorted(registered))}"})
+            return self._reply(201, {"id": "new-id", **payload})
+        if self.command == "PATCH" and self.path.startswith("/api/tickets/"):
+            return self._reply(200, {"id": self.path.rsplit("/", 1)[1], **payload})
+        self._reply(404, {"detail": "not found"})
+    do_GET = do_POST = do_PATCH = _handle
+srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+with open(os.path.join(tmp, "port"), "w") as f:
+    f.write(str(srv.server_address[1]))
+srv.serve_forever()
+EOF
+  SERVER_PID=$!
+  for _ in $(seq 1 50); do
+    [[ -s "$TMPDIR/port" ]] && break
+    sleep 0.1
+  done
+  export KANBAN_URL="http://127.0.0.1:$(cat "$TMPDIR/port")"
+}
+
 @test "a server echoing the credential back does not get it printed" {
   _start_server
   run "$KP" --list-tickets
@@ -77,7 +136,14 @@ EOF
 
 @test "the POST path redacts too" {
   _start_server
-  run "$KP" "a title"
+  _fake_checkout myrepo
+  run "$KP" "a title" --repo myrepo
+  [[ "$output" != *"$FAKE_TOKEN"* ]]
+}
+
+@test "the PATCH path redacts too" {
+  _start_server
+  run "$KP" --done some-ticket-id
   [[ "$output" != *"$FAKE_TOKEN"* ]]
 }
 
@@ -130,4 +196,156 @@ EOF
   run "$KP" --selftest
   [ "$status" -eq 0 ]
   [[ "$output" == *"selftest: ok"* ]]
+}
+
+# --repo: mandatory, and checked against the checkout
+#
+# The board tags every ticket with a repo, and that tag is the filter the
+# phone view leans on. A default silently made everything devMachine, so
+# --repo is required AND must equal the name derived from the checkout's
+# github.com origin -- the flag states the intent, the remote proves it.
+
+@test "filing without --repo is refused before any request is made" {
+  _start_api_server myrepo
+  _fake_checkout myrepo
+  run "$KP" "a title"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--repo"* ]]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "a --repo that does not match the checkout is refused, and says what would" {
+  _start_api_server myrepo,devMachine
+  _fake_checkout dataEnv
+  run "$KP" "a title" --repo devMachine
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"does not match this checkout"* ]]
+  [[ "$output" == *"dataEnv"* ]]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "the match is case-sensitive: dataenv is not dataEnv" {
+  _start_api_server dataEnv
+  _fake_checkout dataEnv
+  run "$KP" "a title" --repo dataenv
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"does not match this checkout"* ]]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "a directory that is not a git repo cannot file at all" {
+  _start_api_server myrepo
+  mkdir -p "$TMPDIR/plain"
+  cd "$TMPDIR/plain"
+  run "$KP" "a title" --repo myrepo
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"github.com"* ]]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "a checkout whose origin is not github.com cannot file either" {
+  _start_api_server myrepo
+  _fake_checkout myrepo "https://gitlab.com/vossiman/myrepo.git"
+  run "$KP" "a title" --repo myrepo
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"github.com"* ]]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "an ssh remote derives the same name as an https one" {
+  _start_api_server myrepo
+  _fake_checkout myrepo "git@github.com:vossiman/myrepo.git"
+  run "$KP" "a title" --repo myrepo
+  [ "$status" -eq 0 ]
+  grep -q "POST /api/tickets" "$TMPDIR/requests"
+}
+
+@test "a matching --repo files the ticket" {
+  _start_api_server myrepo
+  _fake_checkout myrepo
+  run "$KP" "a title" --repo myrepo --body "some detail"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"201"* ]]
+  grep -q '"repo": "myrepo"' "$TMPDIR/requests"
+  grep -q '"body": "some detail"' "$TMPDIR/requests"
+}
+
+# Registering a repo the board does not know yet
+#
+# Safe only because --repo is already proven equal to the remote: the name
+# that gets created can never be a typo, it is whatever GitHub calls this
+# checkout.
+
+@test "an unknown repo is registered from the checkout, then the ticket lands" {
+  _start_api_server devMachine
+  _fake_checkout dataEnv
+  run "$KP" "a finding" --repo dataEnv
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"registered repo dataEnv"* ]]
+  # tried, registered, retried -- in that order
+  run cat "$TMPDIR/requests"
+  [[ "${lines[0]}" == "POST /api/tickets"* ]]
+  [[ "${lines[1]}" == "POST /api/repos"*'"name": "dataEnv"'* ]]
+  [[ "${lines[2]}" == "POST /api/tickets"* ]]
+}
+
+@test "a 400 that is not about the repo never registers anything" {
+  _start_api_server myrepo
+  _fake_checkout myrepo
+  run "$KP" "a title" --repo myrepo --status nonesuch
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Unknown status"* ]]
+  run grep -c "POST /api/repos" "$TMPDIR/requests"
+  [ "$output" -eq 0 ]
+}
+
+# Updating a ticket
+#
+# Takes a ticket id, not a repo, so the checkout rule above does not apply.
+
+@test "--done moves a ticket to done" {
+  _start_api_server myrepo
+  run "$KP" --done abc123
+  [ "$status" -eq 0 ]
+  grep -q 'PATCH /api/tickets/abc123 .*"status": "done"' "$TMPDIR/requests"
+}
+
+@test "--patch sends only the fields given" {
+  _start_api_server myrepo
+  run "$KP" --patch abc123 --priority high
+  [ "$status" -eq 0 ]
+  grep -q '"priority": "high"' "$TMPDIR/requests"
+  run grep -c '"status"\|"title"\|"body"' "$TMPDIR/requests"
+  [ "$output" -eq 0 ]
+}
+
+@test "--patch takes a new title as the positional argument" {
+  _start_api_server myrepo
+  run "$KP" --patch abc123 "a better title" --body "and a new body"
+  [ "$status" -eq 0 ]
+  grep -q '"title": "a better title"' "$TMPDIR/requests"
+  grep -q '"body": "and a new body"' "$TMPDIR/requests"
+}
+
+@test "--patch with no fields to change is refused" {
+  _start_api_server myrepo
+  run "$KP" --patch abc123
+  [ "$status" -ne 0 ]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "--patch does not accept --repo: moving repos is not its job" {
+  _start_api_server myrepo
+  _fake_checkout myrepo
+  run "$KP" --patch abc123 --repo myrepo
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--repo"* ]]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "--patch and --done together is refused" {
+  _start_api_server myrepo
+  run "$KP" --patch abc123 --done abc123
+  [ "$status" -ne 0 ]
+  [ ! -f "$TMPDIR/requests" ]
 }
