@@ -140,3 +140,28 @@ checkpoint, measured against how `configs/` actually uses each tool.
   (1.18.16); MCP reconnect fixes (1.18.8–1.18.11) benefit our servers
   automatically; `share` stays at default `"manual"` (user chose not to
   disable); window was dominated by Desktop-app work.
+
+## Out-of-band adoptions
+
+Settings adopted outside an audit window. Listed here so a future audit
+recognises them as deliberate rather than drift.
+
+### `CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT=0` (2026-08-28, claude 2.1.250)
+
+Forces Claude Code's **long** system-prompt preset on every model. Claude
+Code ships two presets and picks per model; Opus 5 gets the short one
+(~11k chars), which omits nearly all the response-shaping rules, so the
+`Concise` output style and CLAUDE.md's `Be concise` line had no scaffold to
+reinforce. `"0"` is a supported override (verified against the 2.1.250
+binary's selector); left unset the choice defers to a **server-side flag**,
+so pinning it also prevents the default moving silently.
+
+Trade-off, accepted: global key, so models already on the long preset are
+unaffected and any on the short preset by design pay ~18k extra prompt
+chars — cached, marginal.
+
+**Do not remove without a replacement.** Full diagnosis, the binary's
+selector, the evidence, and the two parked follow-ups (a model-conditional
+`UserPromptSubmit` hook; a prune of the verification/self-check
+instructions the Opus 5 guide says backfire) are in
+[`docs/opus5-verbosity.md`](opus5-verbosity.md).

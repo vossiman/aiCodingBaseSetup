@@ -25,7 +25,8 @@
   },
   "env": {
     "CLAUDE_CODE_NO_FLICKER": "1",
-    "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"
+    "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1",
+    "CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT": "0"
   },
   "effortLevel": "medium",
   "outputStyle": "Concise",
