@@ -16,6 +16,7 @@
 
 setup() {
   : "${BLUEPRINT_ROOT:?unset — run via tests/bats/run.sh}"
+  REAL_HOME="$HOME"
   TMPDIR_T=$(mktemp -d)
   export HOME="$TMPDIR_T"
   export SCRIPT_DIR="$BLUEPRINT_ROOT"
@@ -23,7 +24,8 @@ setup() {
 
   HOOK_SRC="$BLUEPRINT_ROOT/configs/claude/hooks/bw-deny-files.sh"
   PI_SRC="$BLUEPRINT_ROOT/configs/pi/extensions/bw-deny-files.ts"
-  VENDOR="$BLUEPRINT_ROOT/vendor/bw-AICode"
+  # Same default install_bubblewrap uses; the real checkout on this machine.
+  VENDOR="${AICODING_VENDOR_DIR:-$REAL_HOME/.local/share/aicoding/vendor}/bw-AICode"
 }
 
 teardown() { rm -rf "$TMPDIR_T"; }
@@ -77,6 +79,16 @@ _inventory() {
   # installer instead of failing the test above.
   run grep -n "redeploy_bw_clobbered\|restored .* over bw" "$BLUEPRINT_ROOT/lib/provision-integrations.sh"
   [ "$status" -ne 0 ]
+}
+
+@test "the bw checkout lives outside the blueprint, so /tmp cannot orphan it" {
+  # bw's installer symlinks ~/.local/bin/*-bw straight into this checkout. In a
+  # container the blueprint is /tmp/aicoding, so keeping it there meant a /tmp
+  # wipe left three dangling wrappers until the next full aicoding-install.
+  run bash -c "grep -n 'vendor_root=' '$BLUEPRINT_ROOT/lib/provision-integrations.sh'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'$HOME/.local/share/aicoding/vendor'* ]]
+  [[ "$output" != *'SCRIPT_DIR'* ]]
 }
 
 @test "vendored bw-AICode guards both paths this blueprint owns" {
