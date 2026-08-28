@@ -1219,3 +1219,10 @@ LDD
     readlink "$HOME/.local/bin/$name" | grep -q "bin/clip-shim"
   done
 }
+
+@test "install.sh symlinks the kanban board client" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ -L "$HOME/.local/bin/kanban-post" ]
+  [ -x "$HOME/.local/bin/kanban-post" ]
+  readlink "$HOME/.local/bin/kanban-post" | grep -q "bin/kanban-post"
+}

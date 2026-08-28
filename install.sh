@@ -122,6 +122,7 @@ main() {
   install_update_status_symlink
   install_agent_notify_symlink
   install_clip_shim_symlinks
+  install_kanban_post_symlink
   remove_deprecated_shims
   install_ssh_agent_watch_symlink
 
