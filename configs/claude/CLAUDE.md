@@ -74,6 +74,7 @@ prints, refuses redirects, and refuses plaintext destinations.
 kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P]
 kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority P]
 kanban-post --done TICKET
+kanban-post --comment TICKET "text"
 kanban-post --list-repos | --list-tickets
 ```
 
@@ -99,6 +100,13 @@ comes from the remote, so it cannot be a typo. Statuses are
 
 `--done ID` closes a ticket (shorthand for `--patch ID --status done`). Close
 what you finish: the board only stays useful if it drains.
+
+`--comment ID "text"` adds a comment without touching the card. Use it when
+there is progress but no state change — a blocker, a decision, a partial
+result — instead of moving the card to signal intent. The text can also come
+from `--body` when it is long; giving it both ways is a refusal. This is the
+channel the owner reads on their phone, so write for a human who lacks your
+context.
 
 **When to file one:** a real defect or follow-up you found but were not
 asked to fix, and that would otherwise only exist in this transcript. Not

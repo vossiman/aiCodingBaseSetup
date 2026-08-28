@@ -25,6 +25,7 @@ Usage:
   kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P]
   kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority P]
   kanban-post --done TICKET
+  kanban-post --comment TICKET "text" | --comment TICKET --body TEXT
   kanban-post --list-repos | --list-tickets
   kanban-post --selftest        # proves the token cannot reach the output
 
@@ -278,6 +279,8 @@ def main() -> int:
                    help="issue key (DEVMACHINE-12) or ticket uuid")
     p.add_argument("--done", metavar="TICKET", default=None,
                    help="issue key (DEVMACHINE-12) or ticket uuid")
+    p.add_argument("--comment", metavar="TICKET", default=None,
+                   help="issue key (DEVMACHINE-12) or ticket uuid")
     p.add_argument("--list-repos", action="store_true")
     p.add_argument("--list-tickets", action="store_true")
     p.add_argument("--selftest", action="store_true")
@@ -289,6 +292,21 @@ def main() -> int:
         status, out = call("GET", "/api/repos")
     elif a.list_tickets:
         status, out = call("GET", "/api/tickets")
+    elif a.comment:
+        # The board's rules tell an agent to comment rather than move a card
+        # when there is progress but no state change -- and forbid reaching
+        # for curl. Without this the only sanctioned client could not do the
+        # one thing those rules ask for most often.
+        if a.patch or a.done:
+            p.error("--comment adds a comment; it does not also change the ticket")
+        if a.repo:
+            p.error("--repo applies to filing a new ticket, not to commenting on one")
+        if a.title and a.body:
+            p.error("give the comment text once, as the positional argument or --body")
+        text = a.title or a.body
+        if not text:
+            p.error("--comment needs the comment text, positionally or via --body")
+        status, out = call("POST", f"/api/tickets/{a.comment}/comments", {"body": text})
     elif a.patch or a.done:
         if a.patch and a.done:
             p.error("--patch and --done are alternatives; --done T means --patch T --status done")
