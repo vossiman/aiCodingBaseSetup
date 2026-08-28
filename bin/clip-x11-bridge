@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# clip-x11-bridge — lifecycle for the X11 half of the dvw clipboard bridge
+# (makes codex image paste work; see bin/clip-x11-bridge.py for the why).
+#
+#   --ensure   idempotent: start Xvfb on $DISPLAY if no X socket, then the
+#              selection-owner daemon (pidfile ~/.dvw/x11-bridge.pid).
+#              Containers only; silently no-ops elsewhere. Never fails the
+#              caller's boot.
+#   --status   report daemon/Xvfb state
+#   --stop     stop the daemon (Xvfb is left running; it is shared state)
+#   --run      foreground daemon (used by --ensure and the tests)
+
+set -euo pipefail
+
+PIDFILE="$HOME/.dvw/x11-bridge.pid"
+LOGFILE="$HOME/.dvw/x11-bridge.log"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+DAEMON="$SCRIPT_DIR/clip-x11-bridge.py"
+
+_live_pid() {
+  local pid
+  [[ -f "$PIDFILE" ]] || return 0
+  pid=$(cat "$PIDFILE" 2>/dev/null)
+  [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && echo "$pid"
+  return 0
+}
+
+_in_container() { [[ -d /var/devpod || -f /.dockerenv ]]; }
+
+_display_socket() {
+  local n="${DISPLAY#:}"
+  n="${n%%.*}"
+  echo "/tmp/.X11-unix/X${n}"
+}
+
+_ensure_xvfb() {
+  [[ -S "$(_display_socket)" ]] && return 0
+  command -v Xvfb >/dev/null || return 1
+  ( setsid Xvfb "$DISPLAY" -screen 0 64x64x24 -nolisten tcp \
+      >> "$LOGFILE" 2>&1 & ) </dev/null
+  local i
+  for i in $(seq 1 50); do
+    [[ -S "$(_display_socket)" ]] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+cmd_ensure() {
+  # Bats guard rail: the suite runs the real sync.sh, and an ungated daemon
+  # start under tests spawns real Xvfb fleets (see CLAUDE.md, 2026-06-12).
+  [[ -n "${AICODINGSETUP_SKIP_NETWORK:-}" ]] && return 0
+  _in_container || return 0
+  [[ -n "${DISPLAY:-}" ]] || return 0
+  command -v uv >/dev/null || return 0
+  [[ -n "$(_live_pid)" ]] && return 0
+  mkdir -p "$HOME/.dvw"; chmod 700 "$HOME/.dvw"
+  _ensure_xvfb || { echo "clip-x11-bridge: no X display available" >> "$LOGFILE"; return 0; }
+  ( setsid "$0" --run >> "$LOGFILE" 2>&1 & echo $! > "$PIDFILE" ) </dev/null
+  sleep 0.3
+  [[ -n "$(_live_pid)" ]] || { rm -f "$PIDFILE"; echo "clip-x11-bridge: daemon failed to start" >> "$LOGFILE"; }
+  return 0
+}
+
+case "${1:---ensure}" in
+  --run)
+    exec uv run --quiet --with python-xlib python3 "$DAEMON" ;;
+  --ensure)
+    cmd_ensure ;;
+  --status)
+    pid=$(_live_pid)
+    if [[ -n "$pid" ]]; then echo "clip-x11-bridge: running (pid $pid, DISPLAY ${DISPLAY:-unset})"
+    else echo "clip-x11-bridge: not running"; fi
+    [[ -S "$(_display_socket)" ]] && echo "X display: up" || echo "X display: down" ;;
+  --stop)
+    pid=$(_live_pid)
+    if [[ -n "$pid" ]]; then
+      # setsid at start makes pid the process-group leader — kill the group
+      # so the uv->python chain dies with it, and wait so callers can rely
+      # on the process being gone when we return.
+      kill -TERM -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+      for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+      kill -0 "$pid" 2>/dev/null && kill -KILL -- "-$pid" 2>/dev/null
+      echo "clip-x11-bridge: stopped (pid $pid)"
+    else echo "clip-x11-bridge: not running"; fi
+    rm -f "$PIDFILE" ;;
+  *)
+    echo "usage: clip-x11-bridge [--ensure|--status|--stop|--run]" >&2; exit 1 ;;
+esac

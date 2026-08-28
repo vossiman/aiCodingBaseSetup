@@ -1226,3 +1226,10 @@ LDD
   [ -x "$HOME/.local/bin/kanban-post" ]
   readlink "$HOME/.local/bin/kanban-post" | grep -q "bin/kanban-post"
 }
+
+@test "install.sh symlinks clip-x11-bridge into ~/.local/bin" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ -L "$HOME/.local/bin/clip-x11-bridge" ]
+  [ -x "$HOME/.local/bin/clip-x11-bridge" ]
+  readlink "$HOME/.local/bin/clip-x11-bridge" | grep -q "bin/clip-x11-bridge"
+}

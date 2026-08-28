@@ -102,6 +102,21 @@ install_kanban_post_symlink() {
   ok "kanban-post installed at ~/.local/bin/kanban-post -> $src"
 }
 
+# --- clipboard-bridge X11 half (container only) ---
+# Selection-owner daemon that makes codex (arboard, direct X11) paste work
+# against the dvw clipboard bridge. Deploy-only symlink; the daemon is
+# ensured by the boot sync (_sync_plumbing), same split as the ssh-agent
+# watcher. bin/clip-x11-bridge.py resolves relative to the real script, so
+# one symlink suffices.
+install_clip_x11_bridge_symlink() {
+  header "clipboard-bridge X11 daemon (clip-x11-bridge)"
+  local src="$SCRIPT_DIR/bin/clip-x11-bridge" dest="$HOME/.local/bin/clip-x11-bridge"
+  [[ -f "$src" ]] || { warn "bin/clip-x11-bridge not found — skipping"; return; }
+  mkdir -p "$HOME/.local/bin"; chmod +x "$src" "$SCRIPT_DIR/bin/clip-x11-bridge.py" 2>/dev/null || true
+  ln -sf "$src" "$dest"
+  ok "clip-x11-bridge installed at $dest -> $src"
+}
+
 # --- SSH agent socket self-heal watcher (container only) ---
 # Deploys the watcher onto PATH. We only DEPLOY here (a pure symlink); the
   # daemon is *started* by on-start.sh on each container start — that keeps full
