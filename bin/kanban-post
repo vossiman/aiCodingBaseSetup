@@ -23,13 +23,16 @@ escaping.
 
 Usage:
   kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P]
-  kanban-post --patch ID ["new title"] [--body TEXT] [--status KEY] [--priority P]
-  kanban-post --done ID
+  kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority P]
+  kanban-post --done TICKET
   kanban-post --list-repos | --list-tickets
   kanban-post --selftest        # proves the token cannot reach the output
 
 --repo is required and must name the repo this checkout belongs to; see
 derive_repo() for why it is both stated and proved.
+
+TICKET is an issue key (DEVMACHINE-12, case-insensitive) or the ticket's
+uuid. The board accepts either; quote the key when writing for a human.
 """
 import argparse
 import json
@@ -271,8 +274,10 @@ def main() -> int:
     p.add_argument("--body", default=None)
     p.add_argument("--status", default=None)
     p.add_argument("--priority", default=None)
-    p.add_argument("--patch", metavar="TICKET_ID", default=None)
-    p.add_argument("--done", metavar="TICKET_ID", default=None)
+    p.add_argument("--patch", metavar="TICKET", default=None,
+                   help="issue key (DEVMACHINE-12) or ticket uuid")
+    p.add_argument("--done", metavar="TICKET", default=None,
+                   help="issue key (DEVMACHINE-12) or ticket uuid")
     p.add_argument("--list-repos", action="store_true")
     p.add_argument("--list-tickets", action="store_true")
     p.add_argument("--selftest", action="store_true")
@@ -286,7 +291,7 @@ def main() -> int:
         status, out = call("GET", "/api/tickets")
     elif a.patch or a.done:
         if a.patch and a.done:
-            p.error("--patch and --done are alternatives; --done ID means --patch ID --status done")
+            p.error("--patch and --done are alternatives; --done T means --patch T --status done")
         if a.repo:
             p.error("--patch does not move a ticket between repos; --repo applies to filing a new one")
         ticket_id = a.patch or a.done
@@ -335,6 +340,11 @@ def main() -> int:
             status, out = call("POST", "/api/tickets", ticket)
 
     print(status)
+    # The issue key is the reference a human will quote, and it is one field
+    # in a long JSON body. Surfacing it saves reading the body for it.
+    # .get() rather than [] so a board without keys still works.
+    if isinstance(out, dict) and out.get("key"):
+        print(out["key"])
     emit(out)
     return 0 if status < 400 else 1
 

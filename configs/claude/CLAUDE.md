@@ -72,10 +72,18 @@ prints, refuses redirects, and refuses plaintext destinations.
 
 ```bash
 kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P]
-kanban-post --patch ID ["new title"] [--body TEXT] [--status KEY] [--priority P]
-kanban-post --done ID
+kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority P]
+kanban-post --done TICKET
 kanban-post --list-repos | --list-tickets
 ```
+
+**Every ticket has an issue key — `DEVMACHINE-12`** — the repo name
+uppercased plus a number counted per repo. `TICKET` above is that key
+(case-insensitive) or the ticket's uuid; both work. **Quote the key, not the
+uuid,** in commits, PRs and anything a human reads — that is what it is for.
+Filing prints the new key on its own line. Numbers are never reused, so a key
+keeps meaning the same work; the one thing that changes it is moving a ticket
+to another repo, which re-keys it.
 
 **`--repo` is required, and must name the repo you are standing in** — it is
 checked against the `github.com` origin of the current checkout, case and
