@@ -148,50 +148,20 @@ recognises them as deliberate rather than drift.
 
 ### `CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT=0` (2026-08-28, claude 2.1.250)
 
-Forces Claude Code's **long** system-prompt preset on every model.
-Claude Code ships two presets and picks per model; Opus 5 gets the short
-one (~11k chars) while Sonnet 5 gets the long one (~29k), and nearly all
-the response-shaping rules — verbosity, narration cadence, lead-with-the-
-outcome — live only in the long one. Result: on Opus 5 the `Concise`
-output style and the `Be concise` line in `configs/claude/CLAUDE.md` were
-competing against a missing scaffold rather than reinforcing one, and
-user-facing answers came back stuffed with function names, line numbers
-and library internals, with no closing summary.
+Forces Claude Code's **long** system-prompt preset on every model. Claude
+Code ships two presets and picks per model; Opus 5 gets the short one
+(~11k chars), which omits nearly all the response-shaping rules, so the
+`Concise` output style and CLAUDE.md's `Be concise` line had no scaffold to
+reinforce. `"0"` is a supported override (verified against the 2.1.250
+binary's selector); left unset the choice defers to a **server-side flag**,
+so pinning it also prevents the default moving silently.
 
-The selector in the 2.1.250 binary:
+Trade-off, accepted: global key, so models already on the long preset are
+unaffected and any on the short preset by design pay ~18k extra prompt
+chars — cached, marginal.
 
-```js
-function B(e){ if(!e) return !1;
-  if(Pe(a.CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT)) return !0;   // truthy  -> short preset
-  if(Eo(a.CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT)) return !1;   // "0"     -> long preset
-  if(!w(e)) return !0;
-  if(x("tengu_velvet_tide",!1)) return !0;
-  return L("simple_system_prompt", Ye(e)); }              // else: server-side flag
-```
-
-So `"0"` is a supported override, not a hack — but note the third line:
-unset, the choice is a **server-side flag**, so the default can move under
-us without a release note. That is the second reason to pin it.
-
-Corroborating evidence, not just the code: a session running
-`claude-opus-5` had the short preset verbatim in context (single line
-`Write code that reads like the surrounding code…` in place of the long
-preset's verbosity ruleset). Anthropic's own [Opus 5 prompting
-guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5)
-confirms the behaviour is model-specific ("Claude Opus 5's default
-user-facing responses run longer than prior Opus models'… narrates readily
-during agentic work") and that **effort level is not the lever** — effort
-controls thinking, not visible output. Setting `effortLevel` lower will
-not fix verbosity.
-
-Trade-off, accepted knowingly: the key is global, so models that were
-already getting the long preset see no change, and any that were on the
-short preset by design now pay ~18k extra prompt chars. Cached, so the
-marginal cost is small.
-
-**Do not remove without a replacement.** If a future audit wants this
-gone, the fallback is a `UserPromptSubmit` hook that reads the model from
-`transcript_path` and injects the anti-verbosity guidance only for
-`claude-opus-5` — deliberately *not* a `CLAUDE.md` edit, since codex,
-cursor-agent and opencode read those files unconditionally and would
-inherit Opus-specific tuning they don't need.
+**Do not remove without a replacement.** Full diagnosis, the binary's
+selector, the evidence, and the two parked follow-ups (a model-conditional
+`UserPromptSubmit` hook; a prune of the verification/self-check
+instructions the Opus 5 guide says backfire) are in
+[`docs/opus5-verbosity.md`](opus5-verbosity.md).
