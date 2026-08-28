@@ -204,7 +204,15 @@ install_bubblewrap() {
     return
   fi
 
-  local vendor_dir="$SCRIPT_DIR/vendor/bw-AICode"
+  # NOT under $SCRIPT_DIR. bw's installer symlinks ~/.local/bin/{claude,pi,
+  # opencode}-bw straight into this checkout, and in a container $SCRIPT_DIR is
+  # /tmp/aicoding — so a /tmp wipe left three dangling wrappers that only a
+  # full `aicoding-install` could restore (found 2026-08-28: all three broken
+  # in a running container). A durable location outside /tmp keeps them
+  # working, and matches install-host.sh's own $HOME/.local/share/aicoding
+  # convention for state that must outlive a blueprint refresh.
+  local vendor_root="${AICODING_VENDOR_DIR:-$HOME/.local/share/aicoding/vendor}"
+  local vendor_dir="$vendor_root/bw-AICode"
 
   if [[ -d "$vendor_dir/.git" ]]; then
     info "Updating bw-AICode..."
@@ -212,7 +220,7 @@ install_bubblewrap() {
       ok "bw-AICode updated" || warn "bw-AICode update failed — check manually"
   else
     info "Cloning bw-AICode..."
-    mkdir -p "$SCRIPT_DIR/vendor"
+    mkdir -p "$vendor_root"
     git clone https://github.com/vossiman/bw-AICode.git "$vendor_dir" 2>/dev/null && \
       ok "bw-AICode cloned" || { err "Failed to clone bw-AICode"; return; }
   fi
