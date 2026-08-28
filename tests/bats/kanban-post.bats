@@ -104,6 +104,8 @@ class H(http.server.BaseHTTPRequestHandler):
         if self.command == "POST" and self.path == "/api/repos":
             registered.add(payload["name"])
             return self._reply(201, {"name": payload["name"], "archived": False})
+        if self.command == "POST" and self.path.endswith("/comments"):
+            return self._reply(201, {"id": "new-comment", **payload})
         if self.command == "POST" and self.path == "/api/tickets":
             if payload.get("status") == "nonesuch":
                 return self._reply(400, {"detail": "Unknown status 'nonesuch'. Valid statuses: backlog, done"})
@@ -389,4 +391,53 @@ EOF
   run "$KP" --patch abc123 --done abc123
   [ "$status" -ne 0 ]
   [ ! -f "$TMPDIR/requests" ]
+}
+
+# Commenting
+#
+# AGENTS.md rule 4 tells an agent to comment instead of moving a card when
+# there is progress but no state change, and the same document forbids curl.
+# So this path has to exist for the rules to be followable at all.
+
+@test "--comment posts the positional text to the ticket's comments" {
+  _start_api_server myrepo
+  run "$KP" --comment DEVMACHINE-12 "blocked on the infrabox rebuild"
+  [ "$status" -eq 0 ]
+  grep -q 'POST /api/tickets/DEVMACHINE-12/comments .*"body": "blocked on the infrabox rebuild"' "$TMPDIR/requests"
+}
+
+@test "--comment takes the text via --body as well" {
+  _start_api_server myrepo
+  run "$KP" --comment abc123 --body "a longer note"
+  [ "$status" -eq 0 ]
+  grep -q 'POST /api/tickets/abc123/comments .*"body": "a longer note"' "$TMPDIR/requests"
+}
+
+@test "--comment with the text given twice is refused" {
+  _start_api_server myrepo
+  run "$KP" --comment abc123 "one" --body "two"
+  [ "$status" -ne 0 ]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "--comment with no text is refused before any request is made" {
+  _start_api_server myrepo
+  run "$KP" --comment abc123
+  [ "$status" -ne 0 ]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "--comment does not also move the ticket" {
+  _start_api_server myrepo
+  run "$KP" --comment abc123 "note" --done abc123
+  [ "$status" -ne 0 ]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "--comment does not accept --repo" {
+  _start_api_server myrepo
+  _fake_checkout myrepo
+  run "$KP" --comment abc123 "note" --repo myrepo
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--repo"* ]]
 }
