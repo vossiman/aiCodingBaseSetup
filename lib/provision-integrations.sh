@@ -217,9 +217,25 @@ install_bubblewrap() {
       ok "bw-AICode cloned" || { err "Failed to clone bw-AICode"; return; }
   fi
 
-  # Run bw-AICode's own installer (bw CLI / sandbox tooling). The
-  # bw-deny-files PreToolUse hook is owned by managed_inventory_overwrite
-  # (configs/claude/hooks/bw-deny-files.sh); bw's copy is the same content.
+  # Run bw-AICode's own installer (bw CLI / sandbox tooling).
+  #
+  # It also installs a deny hook (~/.claude/hooks/bw-deny-files.sh) and a pi
+  # extension (~/.pi/agent/extensions/bw-deny-files.ts) at paths this
+  # blueprint owns — see managed_inventory_overwrite. Its versions are
+  # sandbox-scoped: they no-op unless BW_DENY_PATTERNS_FILE is set. Ours
+  # enforce always and read that variable only for EXTRA patterns.
+  #
+  # This step runs after the managed-file deploy in both install.sh and
+  # install-host.sh, so until bw-AICode PR #2 those copies won and the
+  # secrets deny hook was off until the next sync reconcile — found
+  # 2026-08-28 via twelve identical bw-deny-files.sh.bak.* files, each one a
+  # sync undoing an install. (An earlier comment here asserted "bw's copy is
+  # the same content"; it was not, and that is what let it sit unnoticed.)
+  #
+  # bw-AICode now installs those two only when the path is absent, so the
+  # deploy-then-bw order is what keeps ours in place. tests/bats/
+  # bw-installer-clobber.bats is the tripwire: vendor/ is re-pulled from
+  # bw-AICode main on every run, so a regression there lands here silently.
   if [[ -f "$vendor_dir/install.sh" ]]; then
     info "Running bw-AICode installer..."
     bash "$vendor_dir/install.sh" && \
