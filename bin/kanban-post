@@ -22,14 +22,21 @@ escaping.
      message, so no frame dump can carry the request object into a log.
 
 Usage:
-  kanban-post "title" [--repo NAME] [--body TEXT] [--status KEY]
+  kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P]
+  kanban-post --patch ID ["new title"] [--body TEXT] [--status KEY] [--priority P]
+  kanban-post --done ID
   kanban-post --list-repos | --list-tickets
   kanban-post --selftest        # proves the token cannot reach the output
+
+--repo is required and must name the repo this checkout belongs to; see
+derive_repo() for why it is both stated and proved.
 """
 import argparse
 import json
 import os
 import pathlib
+import re
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -75,6 +82,42 @@ def token() -> str:
                 return value
             break
     die("KANBAN_TOKEN is not set in the secrets store")
+
+
+GITHUB_REMOTE = re.compile(
+    r"^(?:https://|ssh://git@|git@)github\.com[:/]"
+    r"[^/]+/(?P<name>[^/]+?)(?:\.git)?/?$"
+)
+
+
+def derive_repo() -> str | None:
+    """The repo name this checkout belongs to, from its github.com origin.
+
+    Every ticket carries a repo tag, and that tag is what the phone view
+    filters on -- so a wrong one is worse than no ticket. --repo says which
+    repo the caller means; this says which repo they are actually in, and
+    the two must agree. An agent that has lost track of its own cwd fails
+    loudly instead of filing into someone else's backlog.
+
+    It is also the authority on spelling. The board's names come from
+    `gh repo list` (kanban backend/app/cli.py, seed-repos), so `dataEnv` is
+    the canonical form and a registered `dataenv` would be a second repo
+    that looks like the first.
+
+    None means "no github.com origin here", which is a refusal rather than
+    a guess -- filing needs a checkout.
+    """
+    try:
+        p = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return None
+    if p.returncode != 0:
+        return None
+    match = GITHUB_REMOTE.match(p.stdout.strip())
+    return match.group("name") if match else None
 
 
 def scrub(text: str) -> str:
@@ -193,7 +236,10 @@ def selftest() -> int:
         return out
 
     run(["--list-tickets"], "error body echoing the credential")
-    run(["a title"], "POST error path")
+    # A write path, chosen over filing a ticket because --done needs no
+    # checkout to derive a repo name from -- the redaction it exercises is
+    # the same call()/emit() pair either way.
+    run(["--done", "some-ticket-id"], "PATCH error path")
 
     env["KANBAN_URL"] = f"http://127.0.0.1:{port}/redirect"
     before = len(seen)
@@ -221,9 +267,12 @@ def selftest() -> int:
 def main() -> int:
     p = argparse.ArgumentParser(prog="kanban-post")
     p.add_argument("title", nargs="?")
-    p.add_argument("--repo", default="devMachine")
+    p.add_argument("--repo", default=None)
     p.add_argument("--body", default=None)
     p.add_argument("--status", default=None)
+    p.add_argument("--priority", default=None)
+    p.add_argument("--patch", metavar="TICKET_ID", default=None)
+    p.add_argument("--done", metavar="TICKET_ID", default=None)
     p.add_argument("--list-repos", action="store_true")
     p.add_argument("--list-tickets", action="store_true")
     p.add_argument("--selftest", action="store_true")
@@ -235,15 +284,55 @@ def main() -> int:
         status, out = call("GET", "/api/repos")
     elif a.list_tickets:
         status, out = call("GET", "/api/tickets")
+    elif a.patch or a.done:
+        if a.patch and a.done:
+            p.error("--patch and --done are alternatives; --done ID means --patch ID --status done")
+        if a.repo:
+            p.error("--patch does not move a ticket between repos; --repo applies to filing a new one")
+        ticket_id = a.patch or a.done
+        fields = {"status": "done"} if a.done else {}
+        for name in ("title", "body", "status", "priority"):
+            if getattr(a, name) is not None:
+                fields[name] = getattr(a, name)
+        if not fields:
+            p.error("--patch needs at least one of a new title, --body, --status or --priority")
+        status, out = call("PATCH", f"/api/tickets/{ticket_id}", fields)
     else:
         if not a.title:
             p.error("a title is required")
+        if not a.repo:
+            p.error("--repo is required: every ticket is filed against a named repo")
+        here = derive_repo()
+        if here is None:
+            p.error(
+                "this directory is not a checkout with a github.com origin, "
+                "so there is no repo to file against"
+            )
+        if here != a.repo:
+            p.error(f"--repo {a.repo} does not match this checkout ({here})")
+
         ticket = {"title": a.title, "repo": a.repo}
         if a.body:
             ticket["body"] = a.body
         if a.status:
             ticket["status"] = a.status
+        if a.priority:
+            ticket["priority"] = a.priority
+
         status, out = call("POST", "/api/tickets", ticket)
+        # A repo the board has never seen. Registering it here is safe only
+        # because --repo was just proved equal to the remote: the name that
+        # gets created is whatever GitHub calls this checkout, never a typo.
+        if status == 400 and f"Unknown repo '{a.repo}'" in str(
+            out.get("detail", "") if isinstance(out, dict) else out
+        ):
+            rstatus, rout = call("POST", "/api/repos", {"name": a.repo})
+            if rstatus >= 400:
+                print(rstatus)
+                emit(rout)
+                return 1
+            print(f"registered repo {a.repo}")
+            status, out = call("POST", "/api/tickets", ticket)
 
     print(status)
     emit(out)
