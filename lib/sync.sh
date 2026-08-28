@@ -301,6 +301,9 @@ ensure_kvm_group_access() {
 
 _sync_plumbing() {            # never throttled — must be correct now
   command -v aicoding-ssh-agent-watch >/dev/null 2>&1 && aicoding-ssh-agent-watch --ensure 2>/dev/null || true
+  # Clipboard-bridge X11 daemon (codex paste). Internally gated: no-op under
+  # AICODINGSETUP_SKIP_NETWORK, outside containers, or without DISPLAY/uv.
+  command -v clip-x11-bridge >/dev/null 2>&1 && clip-x11-bridge --ensure 2>/dev/null || true
   command -v seed_github_known_host >/dev/null 2>&1 && seed_github_known_host || true
   command -v ensure_gh_credential_helper >/dev/null 2>&1 && ensure_gh_credential_helper || true
   command -v ensure_gh_stored_auth >/dev/null 2>&1 && ensure_gh_stored_auth || true
