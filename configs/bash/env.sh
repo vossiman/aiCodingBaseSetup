@@ -51,3 +51,12 @@ unset FIRECRAWL_API_KEY BRAVE_API_KEY
 unset CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID
 unset MEMORY_ROUTER_TOKEN OPENROUTER_API_KEY
 unset LOGFIRE_TOKEN DOKPLOY_API_TOKEN KANBAN_TOKEN
+
+# DISPLAY default for the dvw clipboard bridge (2026-08-28). cursor-agent
+# only tries its `xclip ... -o` paste candidates when DISPLAY is set, so a
+# container without one never consults the clip-shim at all. There is no X
+# server here — :0 is a signpost, not a promise; tools that exec xclip get
+# the shim, tools that speak X11 directly fail exactly as before. If a
+# future codex route runs Xvfb, :0 is where it will live. Only defaulted,
+# never overridden (X11-forwarded sessions keep theirs).
+export DISPLAY="${DISPLAY:-:0}"
