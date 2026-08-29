@@ -309,14 +309,21 @@ classify_file() {
 
   local current new deployed
   current=$(compute_managed_hash "$dest")
-  # Hash the SUBSTITUTED source — that's what the deploy path writes to disk
-  # and records as deployed_hash. Hashing the raw source leaves any file with
-  # a {{PLACEHOLDER}} permanently classified will_update (phantom drift).
-  local subst_tmp
-  subst_tmp=$(mktemp)
-  _substitute_file_to "$src" "$subst_tmp" 2>/dev/null
-  new=$(compute_hash "$subst_tmp")
-  rm -f "$subst_tmp"
+  if [ "$mode" = "overwrite_raw" ]; then
+    # Verbatim files (skill assets/references): classify against the raw
+    # source — running the sed substitution over binaries corrupts them.
+    new=$(compute_hash "$src")
+  else
+    # Hash the SUBSTITUTED source — that's what the deploy path writes to
+    # disk and records as deployed_hash. Hashing the raw source leaves any
+    # file with a {{PLACEHOLDER}} permanently classified will_update
+    # (phantom drift).
+    local subst_tmp
+    subst_tmp=$(mktemp)
+    _substitute_file_to "$src" "$subst_tmp" 2>/dev/null
+    new=$(compute_hash "$subst_tmp")
+    rm -f "$subst_tmp"
+  fi
   deployed=$(printf '%s' "$entry" | jq -r '.deployed_hash // empty')
 
   if [ "$current" = "$deployed" ] && [ "$current" = "$new" ]; then
@@ -881,6 +888,9 @@ _apply_deploy() {
     overwrite)
       deploy_overwrite_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
       ;;
+    overwrite_raw)
+      deploy_overwrite_file "$src" "$dest" "${FILE_SOURCE[$dest]}"
+      ;;
     merge)
       [[ -f "$dest" ]] || { mkdir -p "$(dirname "$dest")"; echo '{}' > "$dest"; }
       deploy_merge_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
@@ -900,14 +910,22 @@ _apply_deploy() {
 # conservative (always back up).
 _incoming_matches_dest() {
   local mode=$1 src=$2 dest=$3
-  [[ "$mode" == overwrite && -f "$src" ]] || return 1
-  local tmp rc
-  tmp=$(mktemp)
-  _substitute_file_to "$src" "$tmp" 2>/dev/null
-  cmp -s "$tmp" "$dest"
-  rc=$?
-  rm -f "$tmp"
-  return "$rc"
+  [[ -f "$src" ]] || return 1
+  case "$mode" in
+    overwrite)
+      local tmp rc
+      tmp=$(mktemp)
+      _substitute_file_to "$src" "$tmp" 2>/dev/null
+      cmp -s "$tmp" "$dest"
+      rc=$?
+      rm -f "$tmp"
+      return "$rc"
+      ;;
+    overwrite_raw)
+      cmp -s "$src" "$dest"
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 # Internal: timestamped sibling backup. Caller already verified file exists.

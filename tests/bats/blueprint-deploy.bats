@@ -954,3 +954,48 @@ EOF
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
+
+@test "classify_file: overwrite_raw does not substitute placeholders" {
+  printf 'binary-ish {{HOME}} content' > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/dest" "skills/x/a.png"
+  manifest_stage_commit
+  run classify_file "$TMPDIR/dest" "$TMPDIR/src" overwrite_raw
+  [ "$status" -eq 0 ]
+  [ "$output" = "up_to_date" ]
+  cmp -s "$TMPDIR/src" "$TMPDIR/dest"
+}
+
+@test "classify_file: overwrite (substituted) sees drift for same placeholder file" {
+  printf 'binary-ish {{HOME}} content' > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/dest" "skills/x/a.png"
+  manifest_stage_commit
+  run classify_file "$TMPDIR/dest" "$TMPDIR/src" overwrite
+  [ "$status" -eq 0 ]
+  [ "$output" = "will_update" ]
+}
+
+@test "_apply_deploy: overwrite_raw copies bytes verbatim" {
+  printf 'raw {{HOME}} bytes' > "$TMPDIR/clone-src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  declare -A FILE_SOURCE
+  FILE_SOURCE[$TMPDIR/dest]="skills/x/a.png"
+  manifest_stage_begin
+  _apply_deploy overwrite_raw "$TMPDIR/dest" "$TMPDIR/clone-src"
+  manifest_stage_commit
+  cmp -s "$TMPDIR/clone-src" "$TMPDIR/dest"
+}
+
+@test "_incoming_matches_dest: overwrite_raw compares raw bytes" {
+  printf 'raw {{HOME}} bytes' > "$TMPDIR/src"
+  printf 'raw {{HOME}} bytes' > "$TMPDIR/dest"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run _incoming_matches_dest overwrite_raw "$TMPDIR/src" "$TMPDIR/dest"
+  [ "$status" -eq 0 ]
+  printf 'different' > "$TMPDIR/dest"
+  run _incoming_matches_dest overwrite_raw "$TMPDIR/src" "$TMPDIR/dest"
+  [ "$status" -ne 0 ]
+}
