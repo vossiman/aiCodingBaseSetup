@@ -98,13 +98,22 @@ Categorical, fixed order; validated with the dataviz six-checks script
 deploy exactly one file per skill: `skills/<name>/SKILL.md`. This skill
 ships references and binary assets, so skill deployment becomes:
 
-- Enumerate **all files** under `skills/<name>/` recursively.
-- `SKILL.md` (and any `.md`) keeps the existing substituted-overwrite path;
-  binary and non-md files deploy as verbatim overwrite copies (no
-  placeholder substitution — substitution would corrupt PNGs).
-- The blueprint inventory (`blueprint-deploy.sh`) lists each deployed file
-  individually so the manifest/removal logic keeps working; existing
-  single-file skills (`cloudflare-browser`) are unaffected.
+- Enumerate **all files** under `skills/<name>/` recursively, via ONE
+  shared helper used by both deploy paths (`provision-managed-files.sh`
+  install loop and the `blueprint-deploy.sh` inventory). This is a safety
+  requirement, not style: the sync-side `to_remove` sweep deletes any
+  manifest entry absent from the inventory, so divergent enumeration would
+  make `aicoding-sync` delete files `aicoding-install` just deployed.
+- `.md` files keep the existing substituted-overwrite path
+  (`deploy_overwrite_file_substituted`); all other files deploy via the
+  existing verbatim `deploy_overwrite_file` (plain cp + sha256 manifest
+  entry — substitution's sed pass would corrupt PNGs).
+- Add `dataprospectors-design` to `MANAGED_SKILLS`
+  (`provision-managed-files.sh`) so the unmanaged-components scan doesn't
+  flag it.
+- Existing single-file skills (`cloudflare-browser`) are unaffected; the
+  per-file manifest entries mean files later removed from a skill are
+  cleaned up by the normal `to_remove` bucket.
 
 ## Out of scope
 
