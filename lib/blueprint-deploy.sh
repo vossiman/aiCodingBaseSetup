@@ -227,6 +227,20 @@ _is_owned_overwrite() {
   esac
 }
 
+# enumerate_skill_files <skills_root> — one file path per line, relative to
+# <skills_root>, sorted. The single source of truth for what a skill dir
+# ships: install (provision-managed-files.sh) and sync inventory
+# (classify_managed_files) both consume this, and MUST stay on it — if the
+# two ever enumerate differently, the sync-side to_remove sweep deletes
+# whatever install deployed.
+enumerate_skill_files() {
+  local root=$1 f
+  [[ -d "$root" ]] || return 0
+  while IFS= read -r f; do
+    printf '%s\n' "${f#"$root"/}"
+  done < <(find "$root" -type f | LC_ALL=C sort)
+}
+
 # classify_file <dest_path> <src_path> <mode> — echoes one of:
 #   up_to_date, will_update, drifted_but_aligned, drifted_and_updating,
 #   new_file, new_file_existing, to_remove, merge.

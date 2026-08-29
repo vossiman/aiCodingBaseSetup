@@ -934,3 +934,23 @@ EOF
   [[ "$output" == *"/.cursor/cli-config.json|"* ]]
   unset AICODING_PROFILE
 }
+
+@test "enumerate_skill_files: lists nested files relative to root, sorted" {
+  mkdir -p "$TMPDIR/skills/b-skill/assets" "$TMPDIR/skills/a-skill"
+  echo x > "$TMPDIR/skills/a-skill/SKILL.md"
+  echo y > "$TMPDIR/skills/b-skill/SKILL.md"
+  echo z > "$TMPDIR/skills/b-skill/assets/logo.png"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run enumerate_skill_files "$TMPDIR/skills"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "a-skill/SKILL.md" ]
+  [ "${lines[1]}" = "b-skill/SKILL.md" ]
+  [ "${lines[2]}" = "b-skill/assets/logo.png" ]
+}
+
+@test "enumerate_skill_files: empty for missing root" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run enumerate_skill_files "$TMPDIR/no-such-dir"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
