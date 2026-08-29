@@ -441,3 +441,27 @@ EOF
   [ "$status" -ne 0 ]
   [[ "$output" == *"--repo"* ]]
 }
+
+# Due dates
+
+@test "--due is sent as due_date when filing" {
+  _start_api_server myrepo
+  _fake_checkout myrepo
+  run "$KP" "a title" --repo myrepo --due 2026-09-15
+  [ "$status" -eq 0 ]
+  grep -q '"due_date": "2026-09-15"' "$TMPDIR/requests"
+}
+
+@test "--patch --due sets the due date" {
+  _start_api_server myrepo
+  run "$KP" --patch abc123 --due 2026-09-15
+  [ "$status" -eq 0 ]
+  grep -q 'PATCH /api/tickets/abc123 .*"due_date": "2026-09-15"' "$TMPDIR/requests"
+}
+
+@test "--patch --due none clears the due date with an explicit null" {
+  _start_api_server myrepo
+  run "$KP" --patch abc123 --due none
+  [ "$status" -eq 0 ]
+  grep -q '"due_date": null' "$TMPDIR/requests"
+}

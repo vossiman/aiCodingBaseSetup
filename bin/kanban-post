@@ -22,8 +22,8 @@ escaping.
      message, so no frame dump can carry the request object into a log.
 
 Usage:
-  kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P]
-  kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority P]
+  kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P] [--due DATE]
+  kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority P] [--due DATE|none]
   kanban-post --done TICKET
   kanban-post --comment TICKET "text" | --comment TICKET --body TEXT
   kanban-post --list-repos | --list-tickets
@@ -275,6 +275,8 @@ def main() -> int:
     p.add_argument("--body", default=None)
     p.add_argument("--status", default=None)
     p.add_argument("--priority", default=None)
+    p.add_argument("--due", metavar="DATE", default=None,
+                   help="due date, YYYY-MM-DD; with --patch, 'none' clears it")
     p.add_argument("--patch", metavar="TICKET", default=None,
                    help="issue key (DEVMACHINE-12) or ticket uuid")
     p.add_argument("--done", metavar="TICKET", default=None,
@@ -317,8 +319,12 @@ def main() -> int:
         for name in ("title", "body", "status", "priority"):
             if getattr(a, name) is not None:
                 fields[name] = getattr(a, name)
+        if a.due is not None:
+            # The API clears on an explicit null and ignores an absent field,
+            # so the flag needs a spelling for "no due date".
+            fields["due_date"] = None if a.due.lower() == "none" else a.due
         if not fields:
-            p.error("--patch needs at least one of a new title, --body, --status or --priority")
+            p.error("--patch needs at least one of a new title, --body, --status, --priority or --due")
         status, out = call("PATCH", f"/api/tickets/{ticket_id}", fields)
     else:
         if not a.title:
@@ -341,6 +347,8 @@ def main() -> int:
             ticket["status"] = a.status
         if a.priority:
             ticket["priority"] = a.priority
+        if a.due:
+            ticket["due_date"] = a.due
 
         status, out = call("POST", "/api/tickets", ticket)
         # A repo the board has never seen. Registering it here is safe only
