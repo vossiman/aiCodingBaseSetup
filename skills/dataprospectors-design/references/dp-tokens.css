@@ -1,0 +1,139 @@
+/* dataprospectors design system — framework-free tokens.
+ * For plain-HTML surfaces (status pages, internal tools, artifacts): link or
+ * inline this file; no Tailwind, no React. Three-state theming: bare :root is
+ * light, OS dark applies unless data-theme="light", data-theme="dark" forces.
+ * Same values as references/theme.css (validated 2026-08-29). */
+
+:root {
+  --radius: 0.5rem;
+  --background: #f8f8f6;
+  --foreground: #171c1f;
+  --card: #ffffff;
+  --card-foreground: #171c1f;
+  --popover: #ffffff;
+  --popover-foreground: #171c1f;
+  --primary: #243943;
+  --primary-foreground: #f8f8f6;
+  --secondary: #dce6ea;
+  --secondary-foreground: #1a2b33;
+  --muted: #edeeea;
+  --muted-foreground: #5c6a70;
+  --accent: #fdf3d7;
+  --accent-foreground: #5c4504;
+  --destructive: #b3372f;
+  --destructive-foreground: #fdf6f5;
+  --success: #2e7d4f;
+  --success-foreground: #f2faf5;
+  --warning: #b08312;
+  --warning-foreground: #241c02;
+  --border: #dcdfda;
+  --input: #c9cec9;
+  --ring: #f5c249;
+  --link: #7a5c05;
+  --chart-1: #0f7fbe;
+  --chart-2: #d99a08;
+  --chart-3: #279a58;
+  --chart-4: #8a70da;
+  --chart-5: #cb5a28;
+  --sidebar: #1a2b33;
+  --sidebar-foreground: #dce6ea;
+  --sidebar-primary: #f5c249;
+  --sidebar-primary-foreground: #1a2b33;
+  --sidebar-accent: #243943;
+  --sidebar-accent-foreground: #f8d476;
+  --sidebar-border: #30505c;
+  --sidebar-ring: #f5c249;
+  /* brand scales */
+  --navy-50: #eef3f5;  --navy-100: #dce6ea; --navy-200: #b6ccd4;
+  --navy-300: #8badb9; --navy-400: #5d8797; --navy-500: #3f6675;
+  --navy-600: #30505c; --navy-700: #243943; --navy-800: #1a2b33;
+  --navy-900: #121e24; --navy-950: #0c1519;
+  --gold-100: #fdf3d7; --gold-200: #fae3a3; --gold-300: #f8d476;
+  --gold-400: #f5c249; --gold-500: #dfa81f; --gold-600: #b08312;
+  --gold-700: #7a5c05;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --background: #0c1519;
+    --foreground: #eceae2;
+    --card: #15232a;
+    --card-foreground: #eceae2;
+    --popover: #1a2b33;
+    --popover-foreground: #eceae2;
+    --primary: #f5c249;
+    --primary-foreground: #1a2b33;
+    --secondary: #30505c;
+    --secondary-foreground: #dce6ea;
+    --muted: #1c2c34;
+    --muted-foreground: #93a6ad;
+    --accent: #2b3f49;
+    --accent-foreground: #f8d476;
+    --destructive: #e05d54;
+    --destructive-foreground: #1c0f0e;
+    --success: #4caf7d;
+    --success-foreground: #0c1a12;
+    --warning: #f5c249;
+    --warning-foreground: #241c02;
+    --border: #2b3d46;
+    --input: #3a4f59;
+    --ring: #f5c249;
+    --link: #f5c249;
+    --chart-1: #2f8ec7;
+    --chart-2: #bd880c;
+    --chart-3: #33ad68;
+    --chart-4: #8f77dd;
+    --chart-5: #d0632f;
+    --sidebar: #10181d;
+    --sidebar-foreground: #c9d4d9;
+    --sidebar-primary: #f5c249;
+    --sidebar-primary-foreground: #1a2b33;
+    --sidebar-accent: #1c2c34;
+    --sidebar-accent-foreground: #f8d476;
+    --sidebar-border: #22323a;
+    --sidebar-ring: #f5c249;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --background: #0c1519;
+  --foreground: #eceae2;
+  --card: #15232a;
+  --card-foreground: #eceae2;
+  --popover: #1a2b33;
+  --popover-foreground: #eceae2;
+  --primary: #f5c249;
+  --primary-foreground: #1a2b33;
+  --secondary: #30505c;
+  --secondary-foreground: #dce6ea;
+  --muted: #1c2c34;
+  --muted-foreground: #93a6ad;
+  --accent: #2b3f49;
+  --accent-foreground: #f8d476;
+  --destructive: #e05d54;
+  --destructive-foreground: #1c0f0e;
+  --success: #4caf7d;
+  --success-foreground: #0c1a12;
+  --warning: #f5c249;
+  --warning-foreground: #241c02;
+  --border: #2b3d46;
+  --input: #3a4f59;
+  --ring: #f5c249;
+  --link: #f5c249;
+  --chart-1: #2f8ec7;
+  --chart-2: #bd880c;
+  --chart-3: #33ad68;
+  --chart-4: #8f77dd;
+  --chart-5: #d0632f;
+  --sidebar: #10181d;
+  --sidebar-foreground: #c9d4d9;
+  --sidebar-primary: #f5c249;
+  --sidebar-primary-foreground: #1a2b33;
+  --sidebar-accent: #1c2c34;
+  --sidebar-accent-foreground: #f8d476;
+  --sidebar-border: #22323a;
+  --sidebar-ring: #f5c249;
+  color-scheme: dark;
+}
