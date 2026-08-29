@@ -71,8 +71,8 @@ appears in a command you write. It redacts the credential from everything it
 prints, refuses redirects, and refuses plaintext destinations.
 
 ```bash
-kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P]
-kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority P]
+kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P] [--due DATE]
+kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority P] [--due DATE|none]
 kanban-post --done TICKET
 kanban-post --comment TICKET "text"
 kanban-post --list-repos | --list-tickets
