@@ -999,3 +999,31 @@ EOF
   run _incoming_matches_dest overwrite_raw "$TMPDIR/src" "$TMPDIR/dest"
   [ "$status" -ne 0 ]
 }
+
+@test "classify_managed_files: inventories every skill file with per-mode routing" {
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE/skills/demo/assets"
+  echo '# demo' > "$AICODING_BLUEPRINT_CLONE/skills/demo/SKILL.md"
+  printf 'png {{HOME}} bytes' > "$AICODING_BLUEPRINT_CLONE/skills/demo/assets/logo.png"
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE
+  classify_managed_files
+  [ "${FILE_MODE[$HOME/.claude/skills/demo/SKILL.md]}" = "overwrite" ]
+  [ "${FILE_MODE[$HOME/.claude/skills/demo/assets/logo.png]}" = "overwrite_raw" ]
+  [ "${FILE_SOURCE[$HOME/.claude/skills/demo/assets/logo.png]}" = "skills/demo/assets/logo.png" ]
+  [ "${BUCKETS[$HOME/.claude/skills/demo/assets/logo.png]}" = "new_file" ]
+
+  # Apply and verify the binary lands verbatim while SKILL.md is substituted.
+  manifest_stage_begin
+  apply_managed_buckets "new_file"
+  manifest_stage_commit
+  cmp -s "$AICODING_BLUEPRINT_CLONE/skills/demo/assets/logo.png" "$HOME/.claude/skills/demo/assets/logo.png"
+
+  # Re-classify: everything up_to_date (idempotent, no phantom drift).
+  declare -gA BUCKETS2 FILE_MODE2
+  BUCKETS=() ; FILE_MODE=() ; FILE_SOURCE=()
+  classify_managed_files
+  [ "${BUCKETS[$HOME/.claude/skills/demo/assets/logo.png]}" = "up_to_date" ]
+  [ "${BUCKETS[$HOME/.claude/skills/demo/SKILL.md]}" = "up_to_date" ]
+}

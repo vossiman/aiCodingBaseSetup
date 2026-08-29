@@ -764,17 +764,22 @@ classify_managed_files() {
   FILE_SOURCE[$bashrc_dest]="(composed)"
   BUCKETS[$bashrc_dest]=$(classify_marker_block "$bashrc_dest")
 
-  # Skills enumerated from the blueprint clone.
-  local skill_dir skill_name
-  for skill_dir in "$AICODING_BLUEPRINT_CLONE/skills"/*/; do
-    [[ ! -d "$skill_dir" ]] && continue
-    skill_name=$(basename "$skill_dir")
-    dest="$HOME/.claude/skills/$skill_name/SKILL.md"
-    source="skills/$skill_name/SKILL.md"
-    FILE_MODE[$dest]=overwrite
+  # Skills enumerated from the blueprint clone — every file, not just
+  # SKILL.md. Markdown keeps substitution; everything else is verbatim
+  # (overwrite_raw), because the sed substitution corrupts binaries.
+  local skill_rel
+  while IFS= read -r skill_rel; do
+    [[ -z "$skill_rel" ]] && continue
+    dest="$HOME/.claude/skills/$skill_rel"
+    source="skills/$skill_rel"
+    if [[ "$skill_rel" == *.md ]]; then
+      FILE_MODE[$dest]=overwrite
+    else
+      FILE_MODE[$dest]=overwrite_raw
+    fi
     FILE_SOURCE[$dest]=$source
-    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" overwrite)
-  done
+    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" "${FILE_MODE[$dest]}")
+  done < <(enumerate_skill_files "$AICODING_BLUEPRINT_CLONE/skills")
 
   # Slash commands enumerated from the blueprint clone.
   local cmd_file cmd_name

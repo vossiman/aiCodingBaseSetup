@@ -33,20 +33,28 @@ deploy_all_managed_files() {
     "$BASHRC_BLOCK_START" "$BASHRC_BLOCK_END"
   ok "managed block written to ~/.bashrc"
 
-  # Skills — dynamic enumeration.
+  # Skills — every file of every skill dir, via the same enumeration the
+  # sync inventory uses (enumerate_skill_files in blueprint-deploy.sh).
+  # Divergence between the two paths would get files to_remove'd by sync.
+  # Markdown is substituted; everything else (binaries, CSS, JSON) deploys
+  # verbatim — the sed substitution pass corrupts non-text files.
   mkdir -p "$CLAUDE_DIR/skills"
-  local skill_dir skill_name src_skill dest_dir dest_skill
+  local skill_dir skill_rel src_file dest_file
   for skill_dir in "$SCRIPT_DIR/skills"/*/; do
-    [[ ! -d "$skill_dir" ]] && continue
-    skill_name=$(basename "$skill_dir")
-    src_skill="$skill_dir/SKILL.md"
-    dest_dir="$CLAUDE_DIR/skills/$skill_name"
-    dest_skill="$dest_dir/SKILL.md"
-    [[ ! -f "$src_skill" ]] && { warn "no SKILL.md in $skill_dir"; continue; }
-    mkdir -p "$dest_dir"
-    deploy_overwrite_file_substituted "$src_skill" "$dest_skill" "skills/$skill_name/SKILL.md"
-    ok "skill $skill_name installed"
+    [[ -d "$skill_dir" && ! -f "$skill_dir/SKILL.md" ]] && warn "no SKILL.md in $skill_dir"
   done
+  while IFS= read -r skill_rel; do
+    [[ -z "$skill_rel" ]] && continue
+    src_file="$SCRIPT_DIR/skills/$skill_rel"
+    dest_file="$CLAUDE_DIR/skills/$skill_rel"
+    mkdir -p "$(dirname "$dest_file")"
+    if [[ "$skill_rel" == *.md ]]; then
+      deploy_overwrite_file_substituted "$src_file" "$dest_file" "skills/$skill_rel"
+    else
+      deploy_overwrite_file "$src_file" "$dest_file" "skills/$skill_rel"
+    fi
+    ok "skill file $skill_rel installed"
+  done < <(enumerate_skill_files "$SCRIPT_DIR/skills")
 
   # Slash commands — dynamic enumeration, parallel to skills.
   mkdir -p "$CLAUDE_DIR/commands"
@@ -72,7 +80,7 @@ deploy_all_managed_files() {
 # after the colored loggers are defined) — shared with aicoding-sync so both
 # reconcile the same MCP/plugin set.
 MANAGED_HOOKS=("custom-statusline.js" "bw-deny-files.sh" "check-archived-docs.sh" "llmwiki-distill.sh" "agent-waiting.sh" "memory-hint.sh")
-MANAGED_SKILLS=("cloudflare-browser")
+MANAGED_SKILLS=("cloudflare-browser" "dataprospectors-design")
 # JSON merge lives in lib/blueprint-deploy.sh as _json_merge_into (unions both
 # permissions.allow and permissions.deny). Do not reintroduce a local merger.
 
