@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 260">
+  <!-- dataprospectors favicon: the gold find. Works on light and dark tabs. -->
+  <g stroke="#dfa81f" stroke-width="9" stroke-linecap="round">
+    <line x1="52" y1="88" x2="72" y2="106"/>
+    <line x1="92" y1="52" x2="102" y2="78"/>
+    <line x1="130" y1="38" x2="132" y2="66"/>
+    <line x1="168" y1="50" x2="158" y2="76"/>
+    <line x1="208" y1="86" x2="188" y2="104"/>
+  </g>
+  <g stroke="#8a5f06" stroke-width="8" stroke-linejoin="round">
+    <g>
+      <polygon points="118,108 178,122 192,166 144,196 96,162" fill="#f5c249"/>
+      <polygon points="118,108 178,122 138,152 96,162" fill="#f8d476" stroke="none"/>
+      <polygon points="138,152 192,166 144,196" fill="#dfa81f" stroke="none"/>
+      <path d="M118 108 L 138 152 M192 166 L 138 152" fill="none" stroke-width="6"/>
+    </g>
+    <g>
+      <polygon points="66,148 100,138 116,168 84,186 58,168" fill="#f5c249"/>
+      <polygon points="66,148 100,138 88,164" fill="#f8d476" stroke="none"/>
+    </g>
+    <g>
+      <polygon points="150,206 184,198 196,222 162,232" fill="#dfa81f"/>
+      <polygon points="150,206 184,198 168,212" fill="#f5c249" stroke="none"/>
+    </g>
+  </g>
+</svg>

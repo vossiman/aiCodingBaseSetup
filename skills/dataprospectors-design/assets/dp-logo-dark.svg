@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 682 521">
+  <!-- dataprospectors mark. Recolor by overriding the logo-stroke / logo-fill
+       CSS custom properties (inline usage), or string-replace the literal
+       fallback colors. Keep XML comments free of double hyphens. -->
+  <style>
+    .stroke { stroke: var(--logo-stroke, #eceae2); }
+    .fill { fill: var(--logo-fill, #1a2b33); }
+    .dot { fill: var(--logo-stroke, #eceae2); }
+  </style>
+  <defs>
+    <radialGradient id="rayfade" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse"
+      gradientTransform="translate(402 193) scale(330)">
+      <stop offset="0" stop-color="#f5c249" stop-opacity="0.8"/>
+      <stop offset="0.4" stop-color="#f5c249" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#f8d476" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- rays: fan up and to the right from the nugget cluster -->
+  <g fill="url(#rayfade)" transform="translate(-23 -27)">
+    <polygon points="382,210 322,84 348,72 400,206"/>
+    <polygon points="408,202 376,58 406,52 428,200"/>
+    <polygon points="438,200 452,54 484,58 458,202"/>
+    <polygon points="468,208 528,92 556,106 484,218"/>
+    <polygon points="490,226 616,124 638,146 500,242"/>
+    <polygon points="502,252 674,200 682,228 508,272"/>
+  </g>
+
+  <!-- database cylinder -->
+  <g class="stroke fill" stroke-width="15" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M166 228 V 423 A 166 50 0 0 0 498 423 V 228" />
+    <path d="M166 293 A 166 50 0 0 0 498 293" fill="none"/>
+    <path d="M166 358 A 166 50 0 0 0 498 358" fill="none"/>
+    <ellipse cx="332" cy="228" rx="166" ry="48"/>
+  </g>
+  <g class="dot">
+    <circle cx="332" cy="325" r="13"/>
+    <circle cx="332" cy="390" r="13"/>
+    <circle cx="332" cy="455" r="13"/>
+  </g>
+
+  <!-- pickaxe -->
+  <g class="stroke fill" stroke-width="15" stroke-linejoin="round" stroke-linecap="round"
+     transform="translate(4 14) scale(0.93)">
+    <!-- poll (small block on top of the head) -->
+    <path d="M128 60 L 120 20 Q 118 9 130 8 L 148 7 Q 159 7 159 18 L 158 58 Z"/>
+    <!-- head: smooth crescent, tips down-left and down-right -->
+    <path d="M15 168
+             C 42 92 96 46 146 42
+             C 200 46 246 106 262 176
+             C 220 118 180 98 143 96
+             C 104 99 55 126 15 168 Z"/>
+    <!-- handle: from under the head down to the lower left, rounded end -->
+    <path d="M60 302 L 138 110 L 165 121 L 87 314 Q 82 327 69 322 Q 55 316 60 302 Z"/>
+  </g>
+
+  <!-- nuggets: faceted gems on the top face -->
+  <g stroke="var(--logo-stroke, #eceae2)" stroke-width="7" stroke-linejoin="round"
+     transform="translate(-23 -27)">
+    <g>
+      <polygon points="430,190 482,204 494,244 452,272 408,240" fill="#f5c249"/>
+      <polygon points="430,190 482,204 446,232 408,240" fill="#f8d476" stroke="none"/>
+      <polygon points="446,232 494,244 452,272" fill="#dfa81f" stroke="none"/>
+      <path d="M430 190 L 446 232 M494 244 L 446 232" fill="none" stroke-width="5"/>
+    </g>
+    <g>
+      <polygon points="322,208 354,232 330,262 292,240" fill="#f5c249"/>
+      <polygon points="322,208 354,232 324,238" fill="#f8d476" stroke="none"/>
+      <polygon points="324,238 330,262 292,240" fill="#dfa81f" stroke="none"/>
+      <path d="M322 208 L 324 238 M292 240 L 324 238" fill="none" stroke-width="5"/>
+    </g>
+    <g>
+      <polygon points="376,192 396,210 380,226 358,212" fill="#f5c249"/>
+      <path d="M376 192 L 378 212" fill="none" stroke-width="5"/>
+    </g>
+    <g>
+      <polygon points="352,246 378,254 362,276 336,262" fill="#dfa81f"/>
+      <polygon points="352,246 378,254 358,262" fill="#f5c249" stroke="none"/>
+    </g>
+  </g>
+</svg>
