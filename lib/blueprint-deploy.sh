@@ -227,6 +227,20 @@ _is_owned_overwrite() {
   esac
 }
 
+# enumerate_skill_files <skills_root> — one file path per line, relative to
+# <skills_root>, sorted. The single source of truth for what a skill dir
+# ships: install (provision-managed-files.sh) and sync inventory
+# (classify_managed_files) both consume this, and MUST stay on it — if the
+# two ever enumerate differently, the sync-side to_remove sweep deletes
+# whatever install deployed.
+enumerate_skill_files() {
+  local root=$1 f
+  [[ -d "$root" ]] || return 0
+  while IFS= read -r f; do
+    printf '%s\n' "${f#"$root"/}"
+  done < <(find "$root" -type f | LC_ALL=C sort)
+}
+
 # classify_file <dest_path> <src_path> <mode> — echoes one of:
 #   up_to_date, will_update, drifted_but_aligned, drifted_and_updating,
 #   new_file, new_file_existing, to_remove, merge.
@@ -295,14 +309,21 @@ classify_file() {
 
   local current new deployed
   current=$(compute_managed_hash "$dest")
-  # Hash the SUBSTITUTED source — that's what the deploy path writes to disk
-  # and records as deployed_hash. Hashing the raw source leaves any file with
-  # a {{PLACEHOLDER}} permanently classified will_update (phantom drift).
-  local subst_tmp
-  subst_tmp=$(mktemp)
-  _substitute_file_to "$src" "$subst_tmp" 2>/dev/null
-  new=$(compute_hash "$subst_tmp")
-  rm -f "$subst_tmp"
+  if [ "$mode" = "overwrite_raw" ]; then
+    # Verbatim files (skill assets/references): classify against the raw
+    # source — running the sed substitution over binaries corrupts them.
+    new=$(compute_hash "$src")
+  else
+    # Hash the SUBSTITUTED source — that's what the deploy path writes to
+    # disk and records as deployed_hash. Hashing the raw source leaves any
+    # file with a {{PLACEHOLDER}} permanently classified will_update
+    # (phantom drift).
+    local subst_tmp
+    subst_tmp=$(mktemp)
+    _substitute_file_to "$src" "$subst_tmp" 2>/dev/null
+    new=$(compute_hash "$subst_tmp")
+    rm -f "$subst_tmp"
+  fi
   deployed=$(printf '%s' "$entry" | jq -r '.deployed_hash // empty')
 
   if [ "$current" = "$deployed" ] && [ "$current" = "$new" ]; then
@@ -743,17 +764,22 @@ classify_managed_files() {
   FILE_SOURCE[$bashrc_dest]="(composed)"
   BUCKETS[$bashrc_dest]=$(classify_marker_block "$bashrc_dest")
 
-  # Skills enumerated from the blueprint clone.
-  local skill_dir skill_name
-  for skill_dir in "$AICODING_BLUEPRINT_CLONE/skills"/*/; do
-    [[ ! -d "$skill_dir" ]] && continue
-    skill_name=$(basename "$skill_dir")
-    dest="$HOME/.claude/skills/$skill_name/SKILL.md"
-    source="skills/$skill_name/SKILL.md"
-    FILE_MODE[$dest]=overwrite
+  # Skills enumerated from the blueprint clone — every file, not just
+  # SKILL.md. Markdown keeps substitution; everything else is verbatim
+  # (overwrite_raw), because the sed substitution corrupts binaries.
+  local skill_rel
+  while IFS= read -r skill_rel; do
+    [[ -z "$skill_rel" ]] && continue
+    dest="$HOME/.claude/skills/$skill_rel"
+    source="skills/$skill_rel"
+    if [[ "$skill_rel" == *.md ]]; then
+      FILE_MODE[$dest]=overwrite
+    else
+      FILE_MODE[$dest]=overwrite_raw
+    fi
     FILE_SOURCE[$dest]=$source
-    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" overwrite)
-  done
+    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" "${FILE_MODE[$dest]}")
+  done < <(enumerate_skill_files "$AICODING_BLUEPRINT_CLONE/skills")
 
   # Slash commands enumerated from the blueprint clone.
   local cmd_file cmd_name
@@ -867,6 +893,9 @@ _apply_deploy() {
     overwrite)
       deploy_overwrite_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
       ;;
+    overwrite_raw)
+      deploy_overwrite_file "$src" "$dest" "${FILE_SOURCE[$dest]}"
+      ;;
     merge)
       [[ -f "$dest" ]] || { mkdir -p "$(dirname "$dest")"; echo '{}' > "$dest"; }
       deploy_merge_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
@@ -886,14 +915,22 @@ _apply_deploy() {
 # conservative (always back up).
 _incoming_matches_dest() {
   local mode=$1 src=$2 dest=$3
-  [[ "$mode" == overwrite && -f "$src" ]] || return 1
-  local tmp rc
-  tmp=$(mktemp)
-  _substitute_file_to "$src" "$tmp" 2>/dev/null
-  cmp -s "$tmp" "$dest"
-  rc=$?
-  rm -f "$tmp"
-  return "$rc"
+  [[ -f "$src" ]] || return 1
+  case "$mode" in
+    overwrite)
+      local tmp rc
+      tmp=$(mktemp)
+      _substitute_file_to "$src" "$tmp" 2>/dev/null
+      cmp -s "$tmp" "$dest"
+      rc=$?
+      rm -f "$tmp"
+      return "$rc"
+      ;;
+    overwrite_raw)
+      cmp -s "$src" "$dest"
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 # Internal: timestamped sibling backup. Caller already verified file exists.

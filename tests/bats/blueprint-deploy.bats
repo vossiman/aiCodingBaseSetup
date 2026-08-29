@@ -934,3 +934,96 @@ EOF
   [[ "$output" == *"/.cursor/cli-config.json|"* ]]
   unset AICODING_PROFILE
 }
+
+@test "enumerate_skill_files: lists nested files relative to root, sorted" {
+  mkdir -p "$TMPDIR/skills/b-skill/assets" "$TMPDIR/skills/a-skill"
+  echo x > "$TMPDIR/skills/a-skill/SKILL.md"
+  echo y > "$TMPDIR/skills/b-skill/SKILL.md"
+  echo z > "$TMPDIR/skills/b-skill/assets/logo.png"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run enumerate_skill_files "$TMPDIR/skills"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "a-skill/SKILL.md" ]
+  [ "${lines[1]}" = "b-skill/SKILL.md" ]
+  [ "${lines[2]}" = "b-skill/assets/logo.png" ]
+}
+
+@test "enumerate_skill_files: empty for missing root" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run enumerate_skill_files "$TMPDIR/no-such-dir"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "classify_file: overwrite_raw does not substitute placeholders" {
+  printf 'binary-ish {{HOME}} content' > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/dest" "skills/x/a.png"
+  manifest_stage_commit
+  run classify_file "$TMPDIR/dest" "$TMPDIR/src" overwrite_raw
+  [ "$status" -eq 0 ]
+  [ "$output" = "up_to_date" ]
+  cmp -s "$TMPDIR/src" "$TMPDIR/dest"
+}
+
+@test "classify_file: overwrite (substituted) sees drift for same placeholder file" {
+  printf 'binary-ish {{HOME}} content' > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/dest" "skills/x/a.png"
+  manifest_stage_commit
+  run classify_file "$TMPDIR/dest" "$TMPDIR/src" overwrite
+  [ "$status" -eq 0 ]
+  [ "$output" = "will_update" ]
+}
+
+@test "_apply_deploy: overwrite_raw copies bytes verbatim" {
+  printf 'raw {{HOME}} bytes' > "$TMPDIR/clone-src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  declare -A FILE_SOURCE
+  FILE_SOURCE[$TMPDIR/dest]="skills/x/a.png"
+  manifest_stage_begin
+  _apply_deploy overwrite_raw "$TMPDIR/dest" "$TMPDIR/clone-src"
+  manifest_stage_commit
+  cmp -s "$TMPDIR/clone-src" "$TMPDIR/dest"
+}
+
+@test "_incoming_matches_dest: overwrite_raw compares raw bytes" {
+  printf 'raw {{HOME}} bytes' > "$TMPDIR/src"
+  printf 'raw {{HOME}} bytes' > "$TMPDIR/dest"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run _incoming_matches_dest overwrite_raw "$TMPDIR/src" "$TMPDIR/dest"
+  [ "$status" -eq 0 ]
+  printf 'different' > "$TMPDIR/dest"
+  run _incoming_matches_dest overwrite_raw "$TMPDIR/src" "$TMPDIR/dest"
+  [ "$status" -ne 0 ]
+}
+
+@test "classify_managed_files: inventories every skill file with per-mode routing" {
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE/skills/demo/assets"
+  echo '# demo' > "$AICODING_BLUEPRINT_CLONE/skills/demo/SKILL.md"
+  printf 'png {{HOME}} bytes' > "$AICODING_BLUEPRINT_CLONE/skills/demo/assets/logo.png"
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE
+  classify_managed_files
+  [ "${FILE_MODE[$HOME/.claude/skills/demo/SKILL.md]}" = "overwrite" ]
+  [ "${FILE_MODE[$HOME/.claude/skills/demo/assets/logo.png]}" = "overwrite_raw" ]
+  [ "${FILE_SOURCE[$HOME/.claude/skills/demo/assets/logo.png]}" = "skills/demo/assets/logo.png" ]
+  [ "${BUCKETS[$HOME/.claude/skills/demo/assets/logo.png]}" = "new_file" ]
+
+  # Apply and verify the binary lands verbatim while SKILL.md is substituted.
+  manifest_stage_begin
+  apply_managed_buckets "new_file"
+  manifest_stage_commit
+  cmp -s "$AICODING_BLUEPRINT_CLONE/skills/demo/assets/logo.png" "$HOME/.claude/skills/demo/assets/logo.png"
+
+  # Re-classify: everything up_to_date (idempotent, no phantom drift).
+  declare -gA BUCKETS2 FILE_MODE2
+  BUCKETS=() ; FILE_MODE=() ; FILE_SOURCE=()
+  classify_managed_files
+  [ "${BUCKETS[$HOME/.claude/skills/demo/assets/logo.png]}" = "up_to_date" ]
+  [ "${BUCKETS[$HOME/.claude/skills/demo/SKILL.md]}" = "up_to_date" ]
+}
