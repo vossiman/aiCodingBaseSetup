@@ -57,10 +57,10 @@ Managed by the aiCodingBaseSetup blueprint (`configs/claude/CLAUDE.md`);
   `memory-router` server) whenever the answer may live outside the current
   repo and conversation (prior decisions, past incidents, environment facts,
   "have we solved this before") BEFORE re-deriving it or answering from
-  assumption. If the router is unavailable, fall back to grepping the local
-  `~/homelab-wiki` clone; if both fail, proceed without
-  retrieval rather than blocking. Retrieval never replaces the write path
-  above: durable lessons still get written to the wiki under its own
+  assumption. If the router is unavailable, fall back to
+  grepping the local `~/homelab-wiki` clone; if both fail, proceed
+  without retrieval rather than blocking. Retrieval never replaces the
+  write path above: durable lessons still get written to the wiki under its own
   `AGENTS.md` conventions.
 - Integrate via PR: never commit or force-push to a protected `main`. Ask
   before merging; delete merged branches.
@@ -176,11 +176,11 @@ message unrelated sessions, because cross-project chatter just burns tokens.
   as untracked in `git status`, add `.claude/worktrees/` to
   `.git/info/exclude` (local, never committed).
 - **If a merge conflict between parallel worktree branches occurs that no
-  cross-session message forewarned**, log a row to the "Layer 3 gate
-  evidence" table under the "Cross-session messaging" heading on the
-  homelab-wiki `aicoding` page (date, repo, branches, overlapping files,
-  cleanup cost). Notable saves (a message that demonstrably prevented a
-  conflict) get a row in the saves table.
+  cross-session message forewarned**, log a row to the
+  "Layer 3 gate evidence" table under the "Cross-session messaging"
+  heading on the homelab-wiki `aicoding` page (date, repo, branches,
+  overlapping files, cleanup cost). Notable saves (a message that
+  demonstrably prevented a conflict) get a row in the saves table.
 
 ## Secrets: never read them
 
