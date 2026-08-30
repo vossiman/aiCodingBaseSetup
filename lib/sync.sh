@@ -161,6 +161,35 @@ ensure_git_credential_file_fallback() {
     || printf 'WARN: %s\n' "could not register git-credential-aicoding fallback" >&2
 }
 
+# Rewrite SSH github origins under /workspaces to HTTPS. A container has no
+# SSH key or agent for github (HTTPS-only auth since 2026-06), so a workspace
+# cloned from an SSH URL fetches through devpod's client tunnel but every
+# push dies with "Permission denied (publickey)" (foodbot-env 2026-08-21,
+# MiniUndClaus 2026-08-25, ersteWorkshop 2026-08-30). Container profile only:
+# host clones use SSH remotes deliberately. Origin only, top-level checkouts
+# only. Idempotent, fail-open.
+ensure_https_origin() {
+  [ "$(_sync_profile)" != host ] || return 0
+  local root="${AICODING_WORKSPACES_ROOT:-/workspaces}" repo url slug
+  [ -d "$root" ] || return 0
+  for repo in "$root"/*/; do
+    [ -e "${repo}.git" ] || continue
+    url=$(git -C "$repo" remote get-url origin 2>/dev/null) || continue
+    case "$url" in
+      git@github.com:*)       slug="${url#git@github.com:}" ;;
+      ssh://git@github.com/*) slug="${url#ssh://git@github.com/}" ;;
+      *) continue ;;
+    esac
+    slug="${slug%.git}"
+    if git -C "$repo" remote set-url origin "https://github.com/${slug}.git" 2>/dev/null; then
+      declare -F ok >/dev/null && ok "rewrote SSH origin to HTTPS in $repo (containers cannot push over SSH)"
+    else
+      printf 'WARN: %s\n' "could not rewrite SSH origin in $repo" >&2
+    fi
+  done
+  return 0
+}
+
 # Expose Claude skills to codex via the Agent Skills standard location.
 # Cursor already scans ~/.claude/skills for compatibility, but codex only
 # reads ~/.agents/skills (plus repo-level .agents/skills) — one symlink
@@ -308,6 +337,7 @@ _sync_plumbing() {            # never throttled — must be correct now
   command -v ensure_gh_credential_helper >/dev/null 2>&1 && ensure_gh_credential_helper || true
   command -v ensure_gh_stored_auth >/dev/null 2>&1 && ensure_gh_stored_auth || true
   command -v ensure_git_credential_file_fallback >/dev/null 2>&1 && ensure_git_credential_file_fallback || true
+  command -v ensure_https_origin >/dev/null 2>&1 && ensure_https_origin || true
   command -v ensure_agents_skills_symlink >/dev/null 2>&1 && ensure_agents_skills_symlink || true
   command -v ensure_claude_runtime_scope >/dev/null 2>&1 && ensure_claude_runtime_scope || true
   command -v ensure_kvm_group_access >/dev/null 2>&1 && ensure_kvm_group_access || true
