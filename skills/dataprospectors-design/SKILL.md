@@ -58,8 +58,10 @@ All files referenced below live next to this SKILL.md in
    `'IBM Plex Mono', ui-monospace, monospace`.
 7. **Logo** (`assets/`): prefer the SVG masters — `dp-logo.svg` (ink
    strokes + paper fill, for light surfaces) and `dp-logo-dark.svg`
-   (paper strokes + navy fill, for navy/dark surfaces); both are traced
-   from the approved raster masters, so the linework matches exactly.
+   (paper strokes + navy fill, for navy/dark surfaces); the linework is
+   traced from the approved raster masters and shared by both variants
+   (the dark file is the same trace recolored), so the drawing matches
+   exactly.
    Light variant on light surfaces ONLY, dark on navy/dark ONLY — never
    ink-on-navy. Clear space at least one barrel-ring height; minimum
    height 24px; never recolor strokes or gold. Favicon/app icon:
