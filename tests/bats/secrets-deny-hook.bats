@@ -537,3 +537,105 @@ X"
   bash_hook "cd $HOME/.aicodingsetup && ls"
   allowed
 }
+
+# --- naming a credential is not reading one (AICODINGBASESETUP-6) -----------
+#
+# Four real refusals: ticket bodies that named a variable or a protected
+# filename, with no read and no expansion anywhere. Documentation about
+# credential handling is exactly the text that has to name credentials, and a
+# hook that fires on a mention teaches an agent to reword until something
+# passes. The blocks below each one are the floor this must not sink through.
+
+_seed_codex_config() {
+  mkdir -p "$HOME/.codex"
+  printf 'bearer = "live"\n' > "$HOME/.codex/config.toml"
+}
+
+@test "a placeholder credential name in a quoted argument is allowed" {
+  bash_hook 'kanban-post "t" --repo r --body "placeholder {{CLOUDFLARE_API_TOKEN}} is substituted at deploy time"'
+  allowed
+}
+
+@test "grepping for a credential name is allowed" {
+  bash_hook 'grep -rn CLOUDFLARE_API_TOKEN lib/'
+  allowed
+}
+
+@test "a protected filename mentioned in a quoted argument is allowed" {
+  _seed_codex_config
+  bash_hook "kanban-post \"t\" --repo r --body \"the deployed $HOME/.codex/config.toml carries a bearer header\""
+  allowed
+}
+
+@test "the secrets path mentioned in a quoted argument is allowed" {
+  bash_hook "kanban-post \"t\" --repo r --body \"the store is $HOME/.aicodingsetup/.secrets.env and containers mount it read-only\""
+  allowed
+}
+
+@test "an unquoted protected path is still denied even without a reader" {
+  _seed_codex_config
+  bash_hook "kanban-post t --repo r --body $HOME/.codex/config.toml"
+  denied
+}
+
+@test "a quoted protected path handed to a reader is still denied" {
+  _seed_codex_config
+  bash_hook "cat \"$HOME/.codex/config.toml\""
+  denied
+  bash_hook "base64 \"$HOME/.aicodingsetup/.secrets.env\""
+  denied
+  bash_hook "tar czf /tmp/a.tgz -C \"$HOME\" .aicodingsetup"
+  denied
+}
+
+@test "a reader anywhere in the command keeps the strict rule" {
+  # The mention is quoted and kanban-post is not a reader, but the second
+  # segment reads the file for real.
+  _seed_codex_config
+  bash_hook "kanban-post \"t\" --repo r --body \"about $HOME/.codex/config.toml\" ; cat $HOME/.codex/config.toml"
+  denied
+}
+
+@test "a quoted command substitution that reads is still denied" {
+  # `echo \"\$(cat ...)\"` puts the path inside quotes; the reader is found by
+  # splitting command substitutions out into their own segment.
+  bash_hook "echo \"\$(cat $HOME/.aicodingsetup/.secrets.env)\""
+  denied
+}
+
+@test "a quoted protected path as a redirection target is still denied" {
+  bash_hook "printf hi > \"$HOME/.aicodingsetup/.secrets.env\""
+  denied
+}
+
+@test "credential VALUE oracles are untouched by the prose carve-out" {
+  bash_hook 'kanban-post "t" --repo r --body "cites Bearer $DVW_CATALOG_TOKEN from catalog-http-lib.sh"'
+  denied
+  bash_hook 'kanban-post "t" --repo r --body "$GH_TOKEN"'
+  denied
+  bash_hook 'printenv GH_TOKEN'
+  denied
+  bash_hook 'gh auth token'
+  denied
+  bash_hook 'git credential fill'
+  denied
+  bash_hook 'env > /tmp/e.txt'
+  denied
+}
+
+@test "a private key named in prose is allowed but reading it is not" {
+  bash_hook "kanban-post \"t\" --repo r --body \"rotate $HOME/.ssh/id_ed25519 next\""
+  allowed
+  bash_hook "cat \"$HOME/.ssh/id_ed25519\""
+  denied
+}
+
+@test "apply_patch keeps the strict rule regardless of quoting" {
+  patch_hook "*** Begin Patch
+*** Update File: $HOME/work/README.md
+@@
+-hello
++see \"$HOME/.aicodingsetup/.secrets.env\"
+*** End Patch"
+  denied
+}
