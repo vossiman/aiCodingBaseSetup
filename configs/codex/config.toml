@@ -2,7 +2,7 @@
 # edits will be classified as "drifted" by aicoding-sync.
 #
 # {{HOME}} / {{*_API_KEY}} placeholders are substituted at deploy time by
-# lib/blueprint-deploy.sh's deploy_overwrite_file_substituted pipeline.
+# lib/blueprint-deploy.sh's deploy_overwrite_file_rendered pipeline.
 
 model = "gpt-5.6-sol"
 
