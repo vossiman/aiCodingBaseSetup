@@ -211,3 +211,12 @@ EOF
   echo "$output"
   [ "$status" -ne 0 ]
 }
+
+@test "no doc claims main is protected" {
+  # Verified 2026-08-31 with admin visibility: .protected is false and
+  # rulesets are empty on every repo in the estate. Branch protection is not
+  # wanted (spec decision 4), so a doc asserting it is a false guarantee.
+  run grep -rn 'main` is protected\|main is protected\|protected baseline' \
+    "$BLUEPRINT_ROOT/CLAUDE.md"
+  [ "$status" -eq 1 ]
+}
