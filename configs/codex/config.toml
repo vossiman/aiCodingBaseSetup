@@ -22,20 +22,27 @@ notify = ["{{HOME}}/.local/bin/agent-notify", "--source", "codex", "--title", "�
 # compute_managed_hash in lib/blueprint-deploy.sh strips [projects.*]
 # sections before drift comparison, so those writes are ignored.
 #
-# Automode (2026-07-14): the devpod container is the isolation boundary, so no
-# prompts and no codex sandbox — same posture as claude's skip-permissions.
-# Dial back to sandbox_mode = "workspace-write" for a write fence (then also
-# set [sandbox_workspace_write] network_access = true or sandboxed commands
-# lose network). Values — approval_policy: untrusted|on-request|never;
-# sandbox_mode: read-only|workspace-write|danger-full-access.
+# Automode is PROFILE-GATED (2026-08-31). In the devpod container the
+# container itself is the isolation boundary, so codex runs with no prompts
+# and no sandbox -- same posture as claude's skip-permissions. A host
+# profile (WSL, the Mint desktop) has no such boundary: it holds the real
+# home directory, real keys and a forwarded ssh-agent, so it gets
+# workspace-write + on-request instead. The two values are substituted at
+# deploy time from the manifest profile; see _substitute_file_to in
+# lib/blueprint-deploy.sh. Values -- approval_policy:
+# untrusted|on-request|never; sandbox_mode:
+# read-only|workspace-write|danger-full-access.
+#
+# The deny hook filters agent TOOL CALLS but does not confine child
+# processes, so it is not a substitute for the sandbox on a host.
 #
 # Secrets: codex's default shell_environment_policy strips env vars whose
 # names contain KEY/SECRET/TOKEN from commands it runs. Keep that default
 # (never set ignore_default_excludes = true). Side effect: `git push` from
 # inside codex may fail because the gh credential helper reads GH_TOKEN from
 # the (stripped) environment.
-approval_policy = "never"
-sandbox_mode = "danger-full-access"
+approval_policy = "{{CODEX_APPROVAL_POLICY}}"
+sandbox_mode = "{{CODEX_SANDBOX_MODE}}"
 
 # Codex-side subagent delegation (stable since 0.145 but default-off;
 # adopted 2026-08-18, see docs/agent-release-audits.md). Sub-agent model,

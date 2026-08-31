@@ -496,9 +496,13 @@ remove_managed_file() {
 # "dest|overwrite|blueprint-relative-source" lines. Profile-aware: hosts
 # (manifest_get_profile = host) skip container-only environment wiring
 # (tmux, ssh-agent watcher) and gain the boot-sync trigger. Agent CLI
-# configs (codex) are managed on BOTH profiles (user decision 2026-08-19:
-# every machine behaves the same; repo-level AGENTS.md/config still
-# overrides globals per each CLI's own precedence rules).
+# configs (codex) are managed on BOTH profiles, but codex's own
+# approval_policy/sandbox_mode values inside that file are further
+# profile-gated by _substitute_file_to (user decision 2026-08-31, revising
+# 2026-08-19: containers keep automode, host profiles get
+# workspace-write + on-request since they have no container isolation
+# boundary; repo-level AGENTS.md/config still overrides globals per each
+# CLI's own precedence rules).
 managed_inventory_overwrite() {
   local profile
   profile=$(manifest_get_profile)
@@ -588,6 +592,13 @@ substitute_secrets() {
   content="${content//\{\{FIRECRAWL_API_KEY\}\}/${FIRECRAWL_API_KEY:-}}"
   content="${content//\{\{BRAVE_API_KEY\}\}/${BRAVE_API_KEY:-}}"
   content="${content//\{\{MEMORY_ROUTER_TOKEN\}\}/${MEMORY_ROUTER_TOKEN:-}}"
+  if [[ "$(manifest_get_profile)" == host ]]; then
+    content="${content//\{\{CODEX_APPROVAL_POLICY\}\}/on-request}"
+    content="${content//\{\{CODEX_SANDBOX_MODE\}\}/workspace-write}"
+  else
+    content="${content//\{\{CODEX_APPROVAL_POLICY\}\}/never}"
+    content="${content//\{\{CODEX_SANDBOX_MODE\}\}/danger-full-access}"
+  fi
   printf '%s' "$content"
 }
 
@@ -651,12 +662,24 @@ _substitute_file_to() {
   local fc_v="${FIRECRAWL_API_KEY:-}"
   local br_v="${BRAVE_API_KEY:-}"
   local mr_v="${MEMORY_ROUTER_TOKEN:-}"
+  # Codex sandbox posture is PROFILE-GATED, not a secret: fixed literals from
+  # this function, never user input, so no _esc call needed for these two.
+  local codex_approval_v codex_sandbox_v
+  if [[ "$(manifest_get_profile)" == host ]]; then
+    codex_approval_v="on-request"
+    codex_sandbox_v="workspace-write"
+  else
+    codex_approval_v="never"
+    codex_sandbox_v="danger-full-access"
+  fi
   _esc() { printf '%s' "$1" | sed -e 's/[\/&\\]/\\&/g'; }
   sed \
     -e "s/{{HOME}}/$(_esc "$home_v")/g" \
     -e "s/{{FIRECRAWL_API_KEY}}/$(_esc "$fc_v")/g" \
     -e "s/{{BRAVE_API_KEY}}/$(_esc "$br_v")/g" \
     -e "s/{{MEMORY_ROUTER_TOKEN}}/$(_esc "$mr_v")/g" \
+    -e "s/{{CODEX_APPROVAL_POLICY}}/$codex_approval_v/g" \
+    -e "s/{{CODEX_SANDBOX_MODE}}/$codex_sandbox_v/g" \
     "$src" > "$out"
   _strip_absent_secret_servers "$src" "$out"
 }

@@ -756,6 +756,14 @@ EOF
   [ "$hash" != "null" ]
 }
 
+@test "container profile keeps codex automode" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  run grep -E '^approval_policy = "never"$' "$HOME/.codex/config.toml"
+  [ "$status" -eq 0 ]
+  run grep -E '^sandbox_mode = "danger-full-access"$' "$HOME/.codex/config.toml"
+  [ "$status" -eq 0 ]
+}
+
 @test "first-deploy: cursor mcp.json merges 5 blueprint servers without dropping user adds" {
   # Pre-create ~/.cursor/mcp.json with one user-added server. The merge
   # pipeline must preserve it while adding the blueprint's 5 servers.
