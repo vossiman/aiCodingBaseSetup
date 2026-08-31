@@ -1,0 +1,37 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:best-practices"],
+  "dependencyDashboard": true,
+  "prCreation": "immediate",
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"]
+  },
+  "packageRules": [
+    {
+      "description": "Everything is off by default. PR #94 was closed over weekly PR noise, so routine version bumps do not raise PRs; the dashboard still lists them.",
+      "matchPackagePatterns": ["*"],
+      "enabled": false
+    },
+    {
+      "description": "Security advisories always raise a PR, whatever the ecosystem.",
+      "matchPackagePatterns": ["*"],
+      "isVulnerabilityAlert": true,
+      "enabled": true
+    },
+    {
+      "description": "Action digest pins: grouped into one PR and automerged, so Task 7's SHA pins cannot rot into stale commits.",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["pinDigest", "digest"],
+      "enabled": true,
+      "groupName": "action digests",
+      "automerge": true,
+      "automergeType": "branch"
+    },
+    {
+      "description": "Majors are never automatic.",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    }
+  ]
+}
