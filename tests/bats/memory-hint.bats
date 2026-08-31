@@ -206,3 +206,91 @@ PY
   # "Bearer test-token" here instead, which this catches either way.
   [ ! -s "$seen" ]
 }
+
+@test "a redirect is refused: the token never reaches the second host, silent exit 0" {
+  # Both sibling brokers (bin/kanban-post, configs/cloudflare/cloudflare-render)
+  # refuse 3xx because following one re-sends Authorization to whatever host
+  # the response names, and this router's default is PLAINTEXT http. Unlike
+  # them, memory-hint must degrade SILENTLY: it runs on the prompt path.
+  seen="$TMPDIR/seen-auth"
+  first=$(python3 - <<'PY'
+import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()
+PY
+)
+  second=$(python3 - <<'PY'
+import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()
+PY
+)
+  # The redirect target: records any Authorization header it is handed.
+  python3 - "$second" "$seen" <<'PY' &
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+port, seen_path = int(sys.argv[1]), sys.argv[2]
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        with open(seen_path, "a") as f:
+            f.write((self.headers.get("Authorization") or "-") + "\n")
+        self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
+    do_GET = do_POST
+    def log_message(self, *a): pass
+srv = HTTPServer(("127.0.0.1", port), H); srv.timeout = 3; srv.handle_request()
+PY
+  sink=$!
+  python3 - "$first" "$second" <<'PY' &
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+first, second = int(sys.argv[1]), int(sys.argv[2])
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.send_response(302)
+        self.send_header("Location", f"http://127.0.0.1:{second}/hint")
+        self.end_headers()
+    def log_message(self, *a): pass
+HTTPServer(("127.0.0.1", first), H).handle_request()
+PY
+  redirector=$!
+  export MEMORY_ROUTER_URL="http://127.0.0.1:$first"
+  run bash -c "printf 'which ports are in use on vossisrv' | '$CLI' --client hook:test"
+  wait "$redirector" 2>/dev/null || true
+  wait "$sink" 2>/dev/null || true
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  # The redirect target must never have seen the bearer token.
+  [ ! -s "$seen" ]
+}
+
+@test "memory-hint builds a redirect-refusing opener, like its sibling brokers" {
+  grep -q 'build_opener(NoRedirects)' "$CLI"
+  run grep -n 'urllib.request.urlopen' "$CLI"
+  [ "$status" -eq 1 ]
+}
+
+@test "a router that echoes the bearer token back has it scrubbed from stdout" {
+  # memory-hint's stdout is injected straight into agent context, so an
+  # error page or proxy that quotes request headers would otherwise put a
+  # live credential in the transcript.
+  port=$(python3 - <<'PY'
+import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()
+PY
+)
+  python3 - "$port" <<'PY' &
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        echoed = self.headers.get("Authorization") or ""
+        body = json.dumps({"query_id": "qid-echo", "results": [
+            {"citation": "router.md", "text": "your request said " + echoed}]})
+        self.send_response(200); self.end_headers(); self.wfile.write(body.encode())
+    def log_message(self, *a): pass
+HTTPServer(("127.0.0.1", int(sys.argv[1])), H).handle_request()
+PY
+  server=$!
+  export MEMORY_ROUTER_URL="http://127.0.0.1:$port"
+  run bash -c "printf 'which ports are in use on vossisrv' | '$CLI' --client hook:test"
+  wait "$server"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"<memory-hints"* ]]
+  [[ "$output" != *"test-token"* ]]
+  [[ "$output" == *"<redacted>"* ]]
+}

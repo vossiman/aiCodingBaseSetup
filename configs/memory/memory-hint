@@ -62,6 +62,36 @@ def router_base() -> str:
     return ""
 
 
+class RedirectRefused(Exception):
+    """Raised instead of following a 3xx. See NoRedirects."""
+
+
+class NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect. Following one would re-send the Authorization
+    header to whatever host the response named, and the default router is
+    PLAINTEXT http, so any hop can name one.
+
+    Deliberate difference from the sibling brokers (bin/kanban-post,
+    configs/cloudflare/cloudflare-render), which die() loudly here: this runs
+    on the agent prompt path and must print nothing and exit 0 on ANY
+    failure. So it raises, and main()'s broad except swallows it silently.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise RedirectRefused(f"refusing to follow a {code} redirect")
+
+
+def scrub(text: str, secret: str) -> str:
+    """Last line of defence before anything is printed.
+
+    memory-hint's stdout is injected straight into agent context, so a router
+    that echoes request headers back -- an error page, a proxy, a validation
+    message quoting the request -- would otherwise put the bearer token into
+    the transcript. Everything printed goes through here.
+    """
+    return text.replace(secret, "<redacted>") if secret else text
+
+
 def main() -> int:
     class SilentArgumentParser(argparse.ArgumentParser):
         """ArgumentParser that exits silently on error."""
@@ -90,8 +120,9 @@ def main() -> int:
         data=json.dumps({"query": prompt, "k": args.k, "client": args.client}).encode(),
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
     )
+    opener = urllib.request.build_opener(NoRedirects)
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
+        with opener.open(request, timeout=TIMEOUT_S) as response:
             data = json.load(response)
         results = data.get("results") or []
         if not results:
@@ -107,8 +138,10 @@ def main() -> int:
             f"(If a hint was decisive or wrong, report it: memory_feedback query_id={data.get('query_id', '')})"
         )
         lines.append("</memory-hints>")
-        print("\n".join(lines))
-    except Exception:  # any failure: stay silent, never block the agent
+        print(scrub("\n".join(lines), token))
+    # Any failure, a refused redirect included: stay silent, never block the
+    # agent. RedirectRefused is an Exception subclass, so it lands here.
+    except Exception:
         return 0
     return 0
 
