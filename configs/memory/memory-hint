@@ -13,17 +13,25 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 import urllib.request
 
 SECRETS = os.path.expanduser("~/.aicodingsetup/.secrets.env")
 MIN_WORDS = 4          # shorter prompts are commands/ack noise, not questions
 TIMEOUT_S = 3
 
+DEFAULT_ROUTER = "http://10.0.0.249:8091"
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
 
 def read_token() -> str:
-    env = os.environ.get("MEMORY_ROUTER_TOKEN")
-    if env:
-        return env
+    """The router credential.
+
+    Under a test override the protected store is not read at all: the value
+    must be injected. Production reads the store, as before.
+    """
+    if os.environ.get("MEMORY_ROUTER_URL"):
+        return os.environ.get("MEMORY_ROUTER_TEST_TOKEN", "")
     token = ""
     try:
         with open(SECRETS, encoding="utf-8") as fh:
@@ -34,6 +42,24 @@ def read_token() -> str:
     except Exception:
         pass
     return token
+
+
+def router_base() -> str:
+    """The router's address. Pinned, like kanban-post's.
+
+    MEMORY_ROUTER_URL used to be honoured verbatim with no scheme or host
+    check, so one environment variable sent the bearer token anywhere. It is
+    now a loopback-only test hook. Returning "" means "refuse", and every
+    refusal here is silent: this runs on the prompt path and must never
+    break a turn.
+    """
+    override = os.environ.get("MEMORY_ROUTER_URL")
+    if not override:
+        return DEFAULT_ROUTER
+    parts = urllib.parse.urlsplit(override)
+    if (parts.hostname or "") in LOOPBACK:
+        return override.rstrip("/")
+    return ""
 
 
 def main() -> int:
@@ -56,8 +82,9 @@ def main() -> int:
     token = read_token()
     if not token:
         return 0
-
-    base = os.environ.get("MEMORY_ROUTER_URL", "http://10.0.0.249:8091").rstrip("/")
+    base = router_base()
+    if not base:
+        return 0
     request = urllib.request.Request(
         base + "/hint",
         data=json.dumps({"query": prompt, "k": args.k, "client": args.client}).encode(),
