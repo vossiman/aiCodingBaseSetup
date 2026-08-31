@@ -1233,3 +1233,40 @@ LDD
   [ -x "$HOME/.local/bin/clip-x11-bridge" ]
   readlink "$HOME/.local/bin/clip-x11-bridge" | grep -q "bin/clip-x11-bridge"
 }
+
+@test "no deployed skill or command markdown contains a substituted secret" {
+  # The regression test that would have caught CAF-003: every *.md skill went
+  # through the secret-substitution path, so the live Cloudflare token sat in
+  # a file an agent must READ to use the skill.
+  blueprint_copy
+  # Fingerprinted fakes, seeded into the STORE rather than the environment:
+  # load_or_prompt_secrets re-exports every key from the secrets file, so an
+  # exported value is clobbered to empty before substitution ever runs and
+  # the assertion below would pass for the wrong reason.
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<'EOF'
+CLOUDFLARE_API_TOKEN=FPRINT-CF-TOKEN-2b9d41
+CLOUDFLARE_ACCOUNT_ID=FPRINT-CF-ACCT-2b9d41
+FIRECRAWL_API_KEY=FPRINT-FC-2b9d41
+BRAVE_API_KEY=FPRINT-BR-2b9d41
+MEMORY_ROUTER_TOKEN=FPRINT-MR-2b9d41
+EOF
+  chmod 600 "$HOME/.aicodingsetup/.secrets.env"
+
+  run bash "$BP/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+
+  [ -d "$HOME/.claude/skills" ]
+  [ -d "$HOME/.claude/commands" ]
+  run grep -rl 'FPRINT-' "$HOME/.claude/skills" "$HOME/.claude/commands"
+  # grep exits 1 when it finds nothing, which is the passing case.
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "install.sh deploys the cloudflare-render broker as an executable" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ -x "$HOME/.local/bin/cloudflare-render" ]
+  # The skill documents the command; the command owns the credential.
+  grep -q 'cloudflare-render' "$HOME/.claude/skills/cloudflare-browser/SKILL.md"
+}

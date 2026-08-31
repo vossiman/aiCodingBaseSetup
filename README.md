@@ -166,8 +166,8 @@ transcript — the failure that actually happens — not a determined attacker.
 |-----|---------|
 | `FIRECRAWL_API_KEY` | firecrawl MCP |
 | `BRAVE_API_KEY` | brave-search MCP |
-| `CLOUDFLARE_API_TOKEN` | cloudflare-browser skill |
-| `CLOUDFLARE_ACCOUNT_ID` | cloudflare-browser skill |
+| `CLOUDFLARE_API_TOKEN` | `cloudflare-render` broker (read in-process, never rendered into the skill) |
+| `CLOUDFLARE_ACCOUNT_ID` | `cloudflare-render` broker (read in-process, never rendered into the skill) |
 - **Install:** prompts for all keys (Enter to skip)
 - **Update:** only prompts for new keys, never overwrites existing values
 - MCP keys are injected into MCP config blocks

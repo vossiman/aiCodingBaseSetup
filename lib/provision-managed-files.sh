@@ -36,7 +36,9 @@ deploy_all_managed_files() {
   # Skills — every file of every skill dir, via the same enumeration the
   # sync inventory uses (enumerate_skill_files in blueprint-deploy.sh).
   # Divergence between the two paths would get files to_remove'd by sync.
-  # Markdown is substituted; everything else (binaries, CSS, JSON) deploys
+  # Markdown gets {{HOME}} expanded and NOTHING else (CAF-003: an agent must
+  # read a skill to use it, so a substituted credential landed in model
+  # context on every use). Everything else (binaries, CSS, JSON) deploys
   # verbatim — the sed substitution pass corrupts non-text files.
   mkdir -p "$CLAUDE_DIR/skills"
   local skill_dir skill_rel src_file dest_file
@@ -49,7 +51,7 @@ deploy_all_managed_files() {
     dest_file="$CLAUDE_DIR/skills/$skill_rel"
     mkdir -p "$(dirname "$dest_file")"
     if [[ "$skill_rel" == *.md ]]; then
-      deploy_overwrite_file_substituted "$src_file" "$dest_file" "skills/$skill_rel"
+      deploy_overwrite_file_prose "$src_file" "$dest_file" "skills/$skill_rel"
     else
       deploy_overwrite_file "$src_file" "$dest_file" "skills/$skill_rel"
     fi
@@ -62,7 +64,7 @@ deploy_all_managed_files() {
   for cmd_file in "$SCRIPT_DIR/commands"/*.md; do
     [[ ! -f "$cmd_file" ]] && continue
     cmd_name=$(basename "$cmd_file")
-    deploy_overwrite_file_substituted "$cmd_file" "$CLAUDE_DIR/commands/$cmd_name" "commands/$cmd_name"
+    deploy_overwrite_file_prose "$cmd_file" "$CLAUDE_DIR/commands/$cmd_name" "commands/$cmd_name"
     ok "command $cmd_name installed"
   done
 

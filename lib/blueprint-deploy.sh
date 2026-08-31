@@ -320,7 +320,7 @@ classify_file() {
     # (phantom drift).
     local subst_tmp
     subst_tmp=$(mktemp)
-    _substitute_file_to "$src" "$subst_tmp" 2>/dev/null
+    _render_managed_source "$src" "$dest" "$subst_tmp" 2>/dev/null
     new=$(compute_hash "$subst_tmp")
     rm -f "$subst_tmp"
   fi
@@ -480,6 +480,7 @@ $HOME/.bashrc.d/aicoding-update-notify.sh|overwrite|configs/bash/update-notify.s
 $HOME/.bashrc.d/aicoding-aliases.sh|overwrite|configs/bash/aliases.sh
 $HOME/.local/bin/git-credential-aicoding|overwrite|configs/git/git-credential-aicoding
 $HOME/.local/bin/memory-hint|overwrite|configs/memory/memory-hint
+$HOME/.local/bin/cloudflare-render|overwrite|configs/cloudflare/cloudflare-render
 $HOME/.local/bin/secrets-check|overwrite|configs/secrets/secrets-check
 $HOME/.codex/config.toml|overwrite|configs/codex/config.toml
 $HOME/.codex/AGENTS.md|overwrite|configs/codex/AGENTS.md
@@ -549,34 +550,66 @@ substitute_secrets() {
   content="${content//\{\{HOME\}\}/$HOME}"
   content="${content//\{\{FIRECRAWL_API_KEY\}\}/${FIRECRAWL_API_KEY:-}}"
   content="${content//\{\{BRAVE_API_KEY\}\}/${BRAVE_API_KEY:-}}"
-  content="${content//\{\{CLOUDFLARE_API_TOKEN\}\}/${CLOUDFLARE_API_TOKEN:-}}"
-  content="${content//\{\{CLOUDFLARE_ACCOUNT_ID\}\}/${CLOUDFLARE_ACCOUNT_ID:-}}"
   content="${content//\{\{MEMORY_ROUTER_TOKEN\}\}/${MEMORY_ROUTER_TOKEN:-}}"
   printf '%s' "$content"
+}
+
+# _substitute_home_only <src> <dest_tmp> — expand {{HOME}} and NOTHING else.
+# Agent-readable prose (skills, commands) goes through this instead of
+# _substitute_file_to: a credential in a file an agent must read to use it
+# lands in model context and transcripts on every use (CAF-003). {{HOME}}
+# is kept because it is a path, not a secret, and skills genuinely need it.
+_substitute_home_only() {
+  local src=$1 out=$2
+  local home_esc
+  home_esc=$(printf '%s' "$HOME" | sed -e 's/[\/&\\]/\\&/g')
+  sed -e "s/{{HOME}}/$home_esc/g" "$src" > "$out"
+}
+
+# _is_prose_dest <dest> — true when the destination is markdown an agent
+# reads as instructions: a deployed skill or slash command. Those are the
+# files that must never be on the secret-substitution path.
+_is_prose_dest() {
+  case "$1" in
+    */.claude/skills/*.md|*/.claude/commands/*.md) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# _render_managed_source <src> <dest> <out> — render src exactly as it will
+# land at dest. The deploy path, classify's simulation and the backup check
+# all go through here: if any of them decided prose-vs-config differently,
+# every skill file would report phantom drift forever.
+_render_managed_source() {
+  local src=$1 dest=$2 out=$3
+  if _is_prose_dest "$dest"; then
+    _substitute_home_only "$src" "$out"
+  else
+    _substitute_file_to "$src" "$out"
+  fi
 }
 
 # _substitute_file_to <src> <dest_tmp> — like substitute_secrets but reads
 # from a file and writes to another file, preserving the source's exact byte
 # content (including any trailing newline). Uses sed to avoid bash command
 # substitution's "strip trailing newlines" behavior.
+#
+# CONFIGS ONLY. Never point this at markdown an agent reads; see
+# _substitute_home_only above.
 _substitute_file_to() {
   local src=$1 out=$2
-  # The six placeholders are mutually independent; one sed pipeline handles
+  # The four placeholders are mutually independent; one sed pipeline handles
   # all of them with each value safely quoted (we escape `&`, `/`, and `\`
   # because they're sed-replacement metacharacters).
   local home_v="$HOME"
   local fc_v="${FIRECRAWL_API_KEY:-}"
   local br_v="${BRAVE_API_KEY:-}"
-  local cf_t_v="${CLOUDFLARE_API_TOKEN:-}"
-  local cf_a_v="${CLOUDFLARE_ACCOUNT_ID:-}"
   local mr_v="${MEMORY_ROUTER_TOKEN:-}"
   _esc() { printf '%s' "$1" | sed -e 's/[\/&\\]/\\&/g'; }
   sed \
     -e "s/{{HOME}}/$(_esc "$home_v")/g" \
     -e "s/{{FIRECRAWL_API_KEY}}/$(_esc "$fc_v")/g" \
     -e "s/{{BRAVE_API_KEY}}/$(_esc "$br_v")/g" \
-    -e "s/{{CLOUDFLARE_API_TOKEN}}/$(_esc "$cf_t_v")/g" \
-    -e "s/{{CLOUDFLARE_ACCOUNT_ID}}/$(_esc "$cf_a_v")/g" \
     -e "s/{{MEMORY_ROUTER_TOKEN}}/$(_esc "$mr_v")/g" \
     "$src" > "$out"
   _strip_absent_secret_servers "$src" "$out"
@@ -631,6 +664,17 @@ deploy_overwrite_file_substituted() {
   # that must be runnable. Propagate +x when the blueprint source is
   # executable so cp carries it onto the deployed file.
   [[ -x "$src" ]] && chmod +x "$tmp"
+  deploy_overwrite_file "$tmp" "$dest" "$label"
+  rm -f "$tmp"
+}
+
+# deploy_overwrite_file_prose <src> <dest> <label> — deploy agent-readable
+# markdown. Same as deploy_overwrite_file_substituted except only {{HOME}}
+# is expanded, so no credential can reach the deployed file.
+deploy_overwrite_file_prose() {
+  local src=$1 dest=$2 label=$3
+  local tmp; tmp=$(mktemp)
+  _substitute_home_only "$src" "$tmp"
   deploy_overwrite_file "$tmp" "$dest" "$label"
   rm -f "$tmp"
 }
@@ -891,7 +935,11 @@ _apply_deploy() {
   local mode=$1 dest=$2 src=$3
   case "$mode" in
     overwrite)
-      deploy_overwrite_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
+      if _is_prose_dest "$dest"; then
+        deploy_overwrite_file_prose "$src" "$dest" "${FILE_SOURCE[$dest]}"
+      else
+        deploy_overwrite_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
+      fi
       ;;
     overwrite_raw)
       deploy_overwrite_file "$src" "$dest" "${FILE_SOURCE[$dest]}"
@@ -920,7 +968,7 @@ _incoming_matches_dest() {
     overwrite)
       local tmp rc
       tmp=$(mktemp)
-      _substitute_file_to "$src" "$tmp" 2>/dev/null
+      _render_managed_source "$src" "$dest" "$tmp" 2>/dev/null
       cmp -s "$tmp" "$dest"
       rc=$?
       rm -f "$tmp"
