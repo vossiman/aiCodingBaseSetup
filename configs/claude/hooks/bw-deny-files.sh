@@ -117,37 +117,46 @@ CONTENT_COMMANDS=(
   tar cp mv rsync scp find zip unzip 7z 7za dd cpio pax gpg openssl
 )
 
-# Everything that READS BYTES or RUNS CODE, a superset of CONTENT_COMMANDS.
+# The ONLY commands allowed to name a protected path inside a quoted argument
+# without that counting as a read.
 #
-# 2026-08-31: used only to decide whether a protected path named inside a
-# QUOTED argument is prose or an argument to a reader. Writing about a
-# protected path is not reading it: refusing
+# 2026-08-31: writing about a protected path is not reading it. Refusing
 # `kanban-post --body "...~/.codex/config.toml..."` blocked incident
 # write-ups and ticket bodies, which are exactly the texts that have to name
-# these files. Four such refusals paid for this list; see
-# AICODINGBASESETUP-6.
+# these files, and a hook that fires on a harmless mention trains an agent to
+# reword until something passes. See AICODINGBASESETUP-6.
 #
-# Over-inclusive on purpose. A name in here only ever RESTORES the old strict
-# behaviour for the whole command, so a wrong guess costs a false positive,
-# never a leak. Anything not listed still blocks unless the path sits inside
-# quotes.
-READER_COMMANDS=(
-  "${CONTENT_COMMANDS[@]}"
-  cat less more head tail od xxd hexdump strings source . eval
-  bash sh zsh dash ksh fish
-  python python2 python3 perl ruby node deno bun php lua
-  awk gawk mawk sed grep egrep fgrep rg ag ack jq yq xargs tee
-  base64 base32 uuencode uudecode gpg2
-  md5sum sha1sum sha256sum sha512sum cksum sum
-  wc sort uniq cut tr nl fold rev tac shuf split csplit iconv
-  expand unexpand paste join comm diff cmp patch
-  vim vi view nano emacs ed
-  curl wget nc ncat socat ssh sftp ftp
-  install ln readlink realpath
+# This is an ALLOWLIST, and the first cut of this change got that backwards.
+# It shipped a denylist of ~90 reader names instead, on the theory that an
+# omission costs only a false positive. The opposite is true: an omission
+# costs a LEAK. Review found `git diff --no-index`, `git hash-object`,
+# `gzip -c`, `xz -c`, `bat`, `column`, `pandoc`, `docker cp`, `aws s3 cp`,
+# `rclone copy`, `go run`, `make -f`, `busybox cat` and `ugrep` all missing,
+# every one of them a real read that the pre-change hook denied. A denylist of
+# things that read bytes can never be complete, so the question is inverted:
+# not "does this command read?" but "is this one of the handful of commands we
+# have positively established does not?".
+#
+# Keep this list SHORT and add to it only for an observed false positive.
+# Anything unrecognised keeps the strict rule, which is merely the behaviour
+# every command had before this change.
+NON_READER_COMMANDS=(
+  kanban-post
+  echo
+  printf
+  true
+  false
+  :
 )
 
-# Set per tool call. 1 only for Bash commands that invoke no reader at all;
-# every other path keeps the pre-2026-08-31 strict behaviour.
+# `gh` is allowlisted only for the two subcommands that post prose, and only
+# when no option hands it a file to read. `gh issue create --body-file X`
+# would otherwise slurp X straight into a public issue.
+GH_PROSE_SUBCOMMANDS=(issue pr)
+
+# Set per tool call. 1 only for a Bash command whose every segment is headed
+# by an allowlisted non-reader; every other path keeps the pre-2026-08-31
+# strict behaviour.
 PROSE_MENTION_OK=0
 
 # Same idea, matched case-INSENSITIVELY. Kept separate because the patterns
@@ -267,55 +276,71 @@ is_sensitive_root() {
   return 1
 }
 
-# segment_head <segment> — the real command word of one command segment, with
-# any directory prefix removed. Skips the wrappers that only prefix another
-# command (`sudo`, `command`, `env FOO=bar`, leading VAR=VALUE assignments), so
-# `/bin/cat`, `command cat` and `env cat` all report `cat`. Non-zero when the
-# segment has no command word at all.
+# segment_head <segment> — the command word of one command segment, as WRITTEN.
+# Skips leading VAR=VALUE assignments and nothing else: with an allowlist there
+# is no need to see through `sudo`/`env`/`timeout` wrappers, because a wrapper
+# is not on the allowlist and so fails closed all by itself. Removing that
+# resolution also removed a bug — bare `timeout cat "$SECRETS"` (no duration)
+# skipped two words and resolved the head past `cat`.
+#
+# Quotes are NOT stripped here. The caller must reject a quoted head outright,
+# because `"cat" "$SECRETS"` runs cat exactly like `cat "$SECRETS"` does, and
+# comparing the literal `"cat"` against an allowlist would silently exempt it.
+# Non-zero when the segment has no command word at all.
 segment_head() {
   local -a w=()
   local i=0 word
   read -r -a w <<< "$1"
   while (( i < ${#w[@]} )); do
     word="${w[$i]}"
-    case "${word##*/}" in
-      command|builtin|sudo|doas|nohup|exec|time|stdbuf|nice|ionice)
-        (( i += 1 ))
-        while (( i < ${#w[@]} )) && [[ "${w[$i]}" == -* ]]; do (( i += 1 )); done
-        ;;
-      timeout)
-        (( i += 2 ))
-        ;;
-      env)
-        (( i += 1 ))
-        while (( i < ${#w[@]} )); do
-          case "${w[$i]}" in
-            -u|--unset) (( i += 2 )) ;;
-            -*|*=*)     (( i += 1 )) ;;
-            *)          break ;;
-          esac
-        done
-        ;;
-      *=*) (( i += 1 )) ;;
-      *)   printf '%s' "${word##*/}"; return 0 ;;
+    case "$word" in
+      *[\"\'\\]*) printf '%s' "$word"; return 0 ;;
+      *=*)        (( i += 1 )) ;;
+      *)          printf '%s' "$word"; return 0 ;;
     esac
   done
   return 1
 }
 
-# command_has_reader <command> — true when ANY segment of the command runs one
-# of READER_COMMANDS. Command substitutions and backticks are split out too, so
-# `echo "$(cat ~/.codex/config.toml)"` reports the `cat`, not the `echo`.
-command_has_reader() {
-  local segment head reader
+# segment_is_non_reader <segment> — true only for a command positively known
+# not to read file contents. Anything else, including anything unrecognised,
+# is treated as a reader.
+segment_is_non_reader() {
+  local segment="$1" head base allowed sub
+  head="$(segment_head "$segment")" || return 0   # no command word: harmless
+  # A head carrying any quoting character is refused outright. Stripping and
+  # then matching would make `"cat"`, `'cat'` and `\cat` all pass, which is a
+  # one-character bypass of the whole allowlist.
+  case "$head" in *[\"\'\\]*) return 1 ;; esac
+  base="${head##*/}"
+  # A path-qualified head is fine (`/usr/local/bin/kanban-post`), but only the
+  # basename is compared, so it must still be on the list.
+  for allowed in "${NON_READER_COMMANDS[@]}"; do
+    [[ "$base" == "$allowed" ]] && return 0
+  done
+  if [[ "$base" == "gh" ]]; then
+    # Any option that hands gh a file to read disqualifies the whole segment.
+    case "$segment" in
+      *--body-file*|*--file*|*" -F "*|*" -F"[!-]*) return 1 ;;
+    esac
+    for sub in "${GH_PROSE_SUBCOMMANDS[@]}"; do
+      case "$segment" in *" $sub "*) return 0 ;; esac
+    done
+  fi
+  return 1
+}
+
+# command_is_prose_safe <command> — true when EVERY segment is headed by an
+# allowlisted non-reader. Command substitutions and backticks are split out
+# into their own segments, so `echo "$(cat ~/.codex/config.toml)"` is judged on
+# the `cat`, not the `echo`.
+command_is_prose_safe() {
+  local segment
   while IFS= read -r segment || [[ -n "$segment" ]]; do
     [[ -z "${segment//[[:space:]]/}" ]] && continue
-    head="$(segment_head "$segment")" || continue
-    for reader in "${READER_COMMANDS[@]}"; do
-      [[ "$head" == "$reader" ]] && return 0
-    done
-  done < <(printf '%s' "$1" | sed -E 's/(\|\||&&|\$\(|[;|&()`])/\n/g')
-  return 1
+    segment_is_non_reader "$segment" || return 1
+  done < <(printf '%s' "$1" | sed -E 's/(\|\||&&|\$\(|[;|&`])/\n/g')
+  return 0
 }
 
 # quoted_regions <command> — the contents of every single- or double-quoted
@@ -523,8 +548,9 @@ case "$TOOL_NAME" in
     [[ -z "$CMD" ]] && exit 0
 
     # Only a real shell command can be prose about a path; an apply_patch body
-    # keeps the strict rule, and so does any command that runs a reader.
-    if [[ "$TOOL_NAME" == "Bash" ]] && ! command_has_reader "$CMD"; then
+    # keeps the strict rule, and so does anything not on the non-reader
+    # allowlist.
+    if [[ "$TOOL_NAME" == "Bash" ]] && command_is_prose_safe "$CMD"; then
       PROSE_MENTION_OK=1
     fi
 
