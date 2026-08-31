@@ -158,3 +158,36 @@ IMAGE_DIR="$BLUEPRINT_ROOT/image"
   grep -q 'DEVBOX_BASE_SHA.*localEnv:DEVBOX_BASE_SHA' "$BLUEPRINT_ROOT/image/devcontainer.json"
   grep -q 'DEVBOX_BASE_SHA:.*github.sha' "$BLUEPRINT_ROOT/.github/workflows/build-base-image.yml"
 }
+
+@test "every workflow action is pinned to a full commit SHA" {
+  local bad
+  bad=$(grep -rhoE '^\s*(- )?uses:\s*\S+' "$BLUEPRINT_ROOT/.github/workflows" \
+        | grep -vE 'uses:\s*\S+@[0-9a-f]{40}$' || true)
+  [ -z "$bad" ]
+}
+
+@test "no workflow grants write permission at workflow scope" {
+  # Workflow-scope writes apply to every job, including ones that only build.
+  # Writes belong on the single job that needs them.
+  local f
+  for f in "$BLUEPRINT_ROOT"/.github/workflows/*.yml; do
+    run awk '/^jobs:/{exit} /^permissions:/{p=1;next} p&&/^[^ ]/{p=0} p&&/write/{print FILENAME": "$0}' "$f"
+    [ -z "$output" ]
+  done
+}
+
+@test "renovate config raises no scheduled PRs" {
+  run jq -e '.extends | index("config:best-practices")' "$BLUEPRINT_ROOT/renovate.json"
+  [ "$status" -eq 0 ]
+  # The closed PR #94 was rejected for weekly PR noise. A schedule key or an
+  # enabled non-security update set brings that back.
+  run jq -e 'has("schedule")' "$BLUEPRINT_ROOT/renovate.json"
+  [ "$status" -ne 0 ]
+  run jq -e '.vulnerabilityAlerts.enabled == true' "$BLUEPRINT_ROOT/renovate.json"
+  [ "$status" -eq 0 ]
+}
+
+@test "renovate workflow has no cron trigger" {
+  run grep -c 'schedule:' "$BLUEPRINT_ROOT/.github/workflows/renovate.yml"
+  [ "$status" -eq 1 ]
+}
