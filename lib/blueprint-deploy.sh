@@ -337,13 +337,50 @@ classify_file() {
   fi
 }
 
+# _write_atomic <src> <dest> [mode] — THE writer for every deployed file.
+#
+# Deploys used a bare `cp`, which preserves the mode of an EXISTING
+# destination: a file that was once 664 stayed 664 through every later
+# deploy, and several deployed files carry credentials. Writing through a
+# temp file in the destination directory and renaming also means a reader
+# never observes a half-written credential file.
+#
+# Mode defaults to 0600. Callers pass 0700 for executables; nothing gets a
+# group or world bit.
+_write_atomic() {
+  local src=$1 dest=$2 mode=${3:-0600}
+  local dir tmp
+  dir=$(dirname "$dest")
+  mkdir -p "$dir"
+  # Same filesystem as dest, so the rename below is atomic.
+  tmp=$(mktemp "$dir/.aicoding-deploy.XXXXXX")
+  cat "$src" > "$tmp"
+  chmod "$mode" "$tmp"
+  mv -f "$tmp" "$dest"
+}
+
+# _ensure_merge_dest <dest> — create an empty JSON merge target at 0600.
+# Was `echo '{}' > "$dest"` under the ambient umask in three places.
+_ensure_merge_dest() {
+  local dest=$1
+  [[ -f "$dest" ]] && return 0
+  local dir tmp
+  dir=$(dirname "$dest")
+  mkdir -p "$dir"
+  tmp=$(mktemp "$dir/.aicoding-deploy.XXXXXX")
+  printf '{}' > "$tmp"
+  chmod 0600 "$tmp"
+  mv -f "$tmp" "$dest"
+}
+
 # deploy_overwrite_file <src> <dest> <source_label_relative_to_blueprint>
 # Copies src to dest and records {mode: overwrite, source, deployed_hash}
 # in the pending manifest. Caller must wrap with manifest_stage_begin/commit.
 deploy_overwrite_file() {
   local src=$1 dest=$2 label=$3
-  mkdir -p "$(dirname "$dest")"
-  cp "$src" "$dest"
+  local mode=0600
+  [[ -x "$src" ]] && mode=0700
+  _write_atomic "$src" "$dest" "$mode"
   local h
   h=$(compute_managed_hash "$dest")
   local entry
@@ -968,7 +1005,7 @@ _apply_deploy() {
       deploy_overwrite_file "$src" "$dest" "${FILE_SOURCE[$dest]}"
       ;;
     merge)
-      [[ -f "$dest" ]] || { mkdir -p "$(dirname "$dest")"; echo '{}' > "$dest"; }
+      _ensure_merge_dest "$dest"
       deploy_merge_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
       ;;
     marker_block)
@@ -1009,8 +1046,11 @@ _incoming_matches_dest() {
 # "      backup: <path>" line the original bin/aicoding-update backup_drifted
 # emitted, so users still see exactly where the backup landed.
 _backup_file() {
-  local dest=$1 stamp
+  local dest=$1 stamp mode
   stamp=$(date +%Y%m%d-%H%M%S)
-  cp "$dest" "$dest.bak.$stamp"
+  # A backup of a credential-bearing file is a second copy of the
+  # credential; it gets the source's mode, never the ambient umask.
+  mode=$(stat -c '%a' "$dest")
+  _write_atomic "$dest" "$dest.bak.$stamp" "$mode"
   echo "      backup: $dest.bak.$stamp"
 }

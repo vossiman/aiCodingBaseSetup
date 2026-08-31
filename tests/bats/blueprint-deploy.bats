@@ -4,6 +4,9 @@ setup() {
   TMPDIR=$(mktemp -d)
   export AICODING_MANIFEST="$TMPDIR/manifest.json"
   export HOME="$TMPDIR"
+  # umask 0002 is the container default and the condition under which the
+  # 664 modes were observed live.
+  umask 0002
 }
 
 teardown() {
@@ -520,6 +523,64 @@ EOF
   deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/nested/dir/dest" "configs/x"
   manifest_stage_commit
   [ -f "$TMPDIR/nested/dir/dest" ]
+}
+
+@test "deploy_overwrite_file: creates the destination at 0600" {
+  echo hello > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/out/dest" "label"
+  manifest_stage_commit
+  [ "$(stat -c '%a' "$TMPDIR/out/dest")" = "600" ]
+}
+
+@test "deploy_overwrite_file: narrows a permissive existing destination" {
+  echo hello > "$TMPDIR/src"
+  echo stale > "$TMPDIR/dest"
+  chmod 664 "$TMPDIR/dest"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/dest" "label"
+  manifest_stage_commit
+  # A bare cp preserves 664 here, which is how the credential-bearing skill
+  # file ended up group-readable.
+  [ "$(stat -c '%a' "$TMPDIR/dest")" = "600" ]
+}
+
+@test "deploy_overwrite_file: keeps the executable bit at 0700" {
+  printf '#!/bin/sh\n' > "$TMPDIR/src"
+  chmod +x "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/dest" "label"
+  manifest_stage_commit
+  [ "$(stat -c '%a' "$TMPDIR/dest")" = "700" ]
+  [ -x "$TMPDIR/dest" ]
+}
+
+@test "_backup_file: a backup inherits the restrictive mode" {
+  echo secret > "$TMPDIR/dest"
+  chmod 600 "$TMPDIR/dest"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run _backup_file "$TMPDIR/dest"
+  [ "$status" -eq 0 ]
+  local bak; bak=$(ls "$TMPDIR"/dest.bak.* | head -1)
+  [ "$(stat -c '%a' "$bak")" = "600" ]
+}
+
+@test "_ensure_merge_dest: an empty merge destination is created at 0600" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  _ensure_merge_dest "$TMPDIR/merge/target.json"
+  [ "$(stat -c '%a' "$TMPDIR/merge/target.json")" = "600" ]
+  [ "$(cat "$TMPDIR/merge/target.json")" = "{}" ]
+}
+
+@test "_ensure_merge_dest: leaves an existing destination untouched" {
+  mkdir -p "$TMPDIR/merge"
+  echo '{"k":"v"}' > "$TMPDIR/merge/target.json"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  _ensure_merge_dest "$TMPDIR/merge/target.json"
+  jq -e '.k == "v"' "$TMPDIR/merge/target.json"
 }
 
 @test "deploy_merge_file: preserves user-added top-level keys" {

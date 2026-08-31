@@ -24,8 +24,7 @@ deploy_all_managed_files() {
   while IFS='|' read -r dest mode source; do
     [[ -z "$dest" ]] && continue
     if [[ -f "$SCRIPT_DIR/$source" ]]; then
-      mkdir -p "$(dirname "$dest")"
-      [[ -f "$dest" ]] || echo '{}' > "$dest"
+      _ensure_merge_dest "$dest"
       deploy_merge_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
       ok "merged $dest"
     fi
@@ -218,8 +217,7 @@ adopt_existing_files() {
         "$(jq -n --arg s "$source" '{mode:"merge",source:$s}')"
       adopted+=("$dest")
     elif [[ -f "$SCRIPT_DIR/$source" ]]; then
-      mkdir -p "$(dirname "$dest")"
-      echo '{}' > "$dest"
+      _ensure_merge_dest "$dest"
       deploy_merge_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
       deployed+=("$dest")
     fi
