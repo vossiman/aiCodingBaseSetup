@@ -166,11 +166,43 @@ print(mod['read_token']())
 }
 
 @test "an override refuses to read the protected store" {
-  # A loopback override with no injected credential must not fall back to
-  # the store, and must stay silent about it.
-  export MEMORY_ROUTER_URL="http://127.0.0.1:9"
+  # A closed port would prove nothing here: a regressed read_token() that
+  # fell back to the store (seeded by setup() with MEMORY_ROUTER_TOKEN=
+  # test-token) would also throw on connect and get swallowed silently,
+  # passing this test for the wrong reason. Use a real loopback listener
+  # that records the Authorization header it receives instead, the same
+  # pattern bin/kanban-post's --selftest uses to prove a credential never
+  # travels somewhere it shouldn't.
+  seen="$TMPDIR/seen-auth"
+  port=$(python3 - <<'PY'
+import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()
+PY
+)
+  python3 - "$port" "$seen" <<'PY' &
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+port, seen_path = int(sys.argv[1]), sys.argv[2]
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        with open(seen_path, "a") as f:
+            f.write((self.headers.get("Authorization") or "-") + "\n")
+        self.send_response(200); self.end_headers()
+        self.wfile.write(b"{}")
+    def log_message(self, *a): pass
+srv = HTTPServer(("127.0.0.1", port), H)
+srv.timeout = 3
+srv.handle_request()  # returns after one request, or after the timeout
+PY
+  server=$!
+  export MEMORY_ROUTER_URL="http://127.0.0.1:$port"
   unset MEMORY_ROUTER_TEST_TOKEN
   run bash -c 'printf "what did we decide about backups" | "$1" --client test' _ "$MH"
+  wait "$server" 2>/dev/null || true
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+  # The listener must never have been contacted at all: with no injected
+  # override token, read_token() returns "" and main() returns before ever
+  # building a request. A regression that fell back to the store would send
+  # "Bearer test-token" here instead, which this catches either way.
+  [ ! -s "$seen" ]
 }
