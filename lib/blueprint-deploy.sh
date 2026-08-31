@@ -359,6 +359,25 @@ _write_atomic() {
   mv -f "$tmp" "$dest"
 }
 
+# _write_text_atomic <dest> <content> [mode] — same contract as _write_atomic
+# but the payload is a string rather than a file. Temp file lives in the
+# DESTINATION directory (so the rename is atomic), gets an explicit chmod,
+# and only then replaces dest. Used by the JSON merge path, whose final
+# `printf > "$target"` used to be a plain redirect: that preserves an
+# ALREADY-EXISTING destination's mode, so every machine provisioned before
+# the 0600 work kept ~/.cursor/mcp.json and ~/.config/opencode/opencode.json
+# at 0664 forever — the two most credential-dense files in the deploy set.
+_write_text_atomic() {
+  local dest=$1 content=$2 mode=${3:-0600}
+  local dir tmp
+  dir=$(dirname "$dest")
+  mkdir -p "$dir"
+  tmp=$(mktemp "$dir/.aicoding-deploy.XXXXXX")
+  printf '%s\n' "$content" > "$tmp"
+  chmod "$mode" "$tmp"
+  mv -f "$tmp" "$dest"
+}
+
 # _ensure_merge_dest <dest> — create an empty JSON merge target at 0600.
 # Was `echo '{}' > "$dest"` under the ambient umask in three places.
 _ensure_merge_dest() {
@@ -402,7 +421,9 @@ deploy_overwrite_file() {
 _json_merge_into() {
   local target=$1 source=$2
   if [ ! -f "$target" ]; then
-    cp "$source" "$target"
+    # Not `cp`: a first install of a credential-bearing merge target would
+    # land under the ambient umask (0664 under umask 0002).
+    _write_atomic "$source" "$target" 0600
     return
   fi
   # If jq can't parse either side, fail WITHOUT touching the target — the
@@ -429,7 +450,7 @@ _json_merge_into() {
       else .[0] end;
     [.[0],.[1]] | deep_merge("")
   ' "$target" "$source") || return 1
-  printf '%s\n' "$merged" > "$target"
+  _write_text_atomic "$target" "$merged" 0600
 }
 
 # deploy_merge_file <src> <dest> <source_label>
@@ -570,7 +591,7 @@ EOF
 }
 
 # load_secrets_env — source ~/.aicodingsetup/.secrets.env if present so that
-# substitute_secrets has the API-key env vars it needs. Idempotent and safe
+# _substitute_file_to has the API-key env vars it needs. Idempotent and safe
 # to call with no file present (no-op).
 load_secrets_env() {
   local f="${AICODING_SECRETS_FILE:-$HOME/.aicodingsetup/.secrets.env}"
@@ -582,25 +603,12 @@ load_secrets_env() {
   fi
 }
 
-# substitute_secrets <content> — expand the {{HOME}} and {{*_API_KEY}}
-# placeholders shipped in configs/claude/settings.json and skill SKILL.md
-# files. Missing env vars expand to the empty string (same behavior as
-# install.sh's old definition).
-substitute_secrets() {
-  local content="$1"
-  content="${content//\{\{HOME\}\}/$HOME}"
-  content="${content//\{\{FIRECRAWL_API_KEY\}\}/${FIRECRAWL_API_KEY:-}}"
-  content="${content//\{\{BRAVE_API_KEY\}\}/${BRAVE_API_KEY:-}}"
-  content="${content//\{\{MEMORY_ROUTER_TOKEN\}\}/${MEMORY_ROUTER_TOKEN:-}}"
-  if [[ "$(manifest_get_profile)" == host ]]; then
-    content="${content//\{\{CODEX_APPROVAL_POLICY\}\}/on-request}"
-    content="${content//\{\{CODEX_SANDBOX_MODE\}\}/workspace-write}"
-  else
-    content="${content//\{\{CODEX_APPROVAL_POLICY\}\}/never}"
-    content="${content//\{\{CODEX_SANDBOX_MODE\}\}/danger-full-access}"
-  fi
-  printf '%s' "$content"
-}
+# NOTE: a `substitute_secrets <content>` string helper used to live here. It
+# had no callers left, and it substituted credentials with no _is_prose_dest
+# gate — so the first future caller would have reintroduced CAF-003 (a live
+# key in a file an agent reads as prose) in a public repo. Deleted rather
+# than kept as a loaded gun. Use _render_managed_source / the deploy_*
+# wrappers below, which decide prose-vs-config from the DESTINATION.
 
 # _substitute_home_only <src> <dest_tmp> — expand {{HOME}} and NOTHING else.
 # Agent-readable prose (skills, commands) goes through this instead of
@@ -646,8 +654,9 @@ _render_managed_source() {
   fi
 }
 
-# _substitute_file_to <src> <dest_tmp> — like substitute_secrets but reads
-# from a file and writes to another file, preserving the source's exact byte
+# _substitute_file_to <src> <dest_tmp> — expand {{HOME}}, {{*_API_KEY}} and
+# the profile-gated codex placeholders, reading from a file and writing to
+# another file, preserving the source's exact byte
 # content (including any trailing newline). Uses sed to avoid bash command
 # substitution's "strip trailing newlines" behavior.
 #
@@ -720,25 +729,14 @@ _strip_absent_secret_servers() {
   return 0
 }
 
-# deploy_overwrite_file_substituted <src> <dest> <label>
-# Like deploy_overwrite_file, but expands {{HOME}} / {{*_API_KEY}} placeholders
-# in src before writing. The recorded deployed_hash is the hash of the
-# substituted-content file (matches what's actually on disk).
-deploy_overwrite_file_substituted() {
-  local src=$1 dest=$2 label=$3
-  local tmp; tmp=$(mktemp)
-  _substitute_file_to "$src" "$tmp"
-  # Substitution writes through a 0600 mktemp, which strips the source's
-  # executable bit — fatal for hook scripts (e.g. check-archived-docs.sh)
-  # that must be runnable. Propagate +x when the blueprint source is
-  # executable so cp carries it onto the deployed file.
-  [[ -x "$src" ]] && chmod +x "$tmp"
-  deploy_overwrite_file "$tmp" "$dest" "$label"
-  rm -f "$tmp"
-}
+# NOTE: `deploy_overwrite_file_substituted` used to live here. It had no
+# production callers (only tests), and it substituted credentials
+# unconditionally, with no _is_prose_dest gate — the exact shape of CAF-003.
+# Deleted; deploy_overwrite_file_rendered below is the replacement and lets
+# the destination decide.
 
 # deploy_overwrite_file_prose <src> <dest> <label> — deploy agent-readable
-# markdown. Same as deploy_overwrite_file_substituted except only {{HOME}}
+# markdown. Same as deploy_overwrite_file_rendered except only {{HOME}}
 # is expanded, so no credential can reach the deployed file.
 deploy_overwrite_file_prose() {
   local src=$1 dest=$2 label=$3
@@ -760,7 +758,7 @@ deploy_overwrite_file_rendered() {
   _render_managed_source "$src" "$dest" "$tmp"
   # Substitution writes through a 0600 mktemp, which strips the source's
   # executable bit — fatal for hook scripts. Propagate +x, same as
-  # deploy_overwrite_file_substituted.
+  # deploy_overwrite_file_rendered.
   [[ -x "$src" ]] && chmod +x "$tmp"
   deploy_overwrite_file "$tmp" "$dest" "$label"
   rm -f "$tmp"
