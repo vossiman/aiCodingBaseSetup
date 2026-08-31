@@ -171,7 +171,12 @@ transcript — the failure that actually happens — not a determined attacker.
 - **Install:** prompts for all keys (Enter to skip)
 - **Update:** only prompts for new keys, never overwrites existing values
 - MCP keys are injected into MCP config blocks
-- Skill keys are substituted directly into SKILL.md files
+- Agent-readable markdown (skills, slash commands, subagents, `CLAUDE.md`,
+  `AGENTS.md`) gets `{{HOME}}` expanded and **nothing else** — no key is ever
+  substituted into a file an agent reads as prose. A skill that needs a
+  credential calls a broker (`cloudflare-render`, `kanban-post`,
+  `git-credential-aicoding`), which reads the value in-process and never
+  prints it.
 
 In devcontainers the file is bind-mounted **read-only** (a single-file mount
 stacked over the rw `~/.aicodingsetup` mount) so no in-container tooling or

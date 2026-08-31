@@ -11,7 +11,10 @@ deploy_all_managed_files() {
   while IFS='|' read -r dest mode source; do
     [[ -z "$dest" ]] && continue
     if [[ -f "$SCRIPT_DIR/$source" ]]; then
-      deploy_overwrite_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
+      # _rendered, not _substituted: the inventory mixes configs with
+      # markdown every agent reads (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md,
+      # ~/.claude/agents/*.md), and the destination decides which is which.
+      deploy_overwrite_file_rendered "$SCRIPT_DIR/$source" "$dest" "$source"
       ok "deployed $dest"
     else
       warn "missing source in blueprint: $source — skipping $dest"
@@ -201,7 +204,9 @@ adopt_existing_files() {
             '{mode:"overwrite",source:$s,deployed_hash:$h}')"
       adopted+=("$dest")
     elif [[ -f "$SCRIPT_DIR/$source" ]]; then
-      deploy_overwrite_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
+      # Same dest-driven choice as deploy_all_managed_files above; adopt must
+      # not be the one path that still substitutes secrets into prose.
+      deploy_overwrite_file_rendered "$SCRIPT_DIR/$source" "$dest" "$source"
       deployed+=("$dest")
     fi
   done < <(managed_inventory_overwrite)

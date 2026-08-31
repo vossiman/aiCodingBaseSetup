@@ -567,11 +567,20 @@ _substitute_home_only() {
 }
 
 # _is_prose_dest <dest> — true when the destination is markdown an agent
-# reads as instructions: a deployed skill or slash command. Those are the
-# files that must never be on the secret-substitution path.
+# reads as instructions: a deployed skill, slash command, subagent
+# definition, or a global CLAUDE.md / AGENTS.md. Those are the files that
+# must never be on the secret-substitution path.
+#
+# The list is deliberately wider than the sources that carry a placeholder
+# today. Nothing in configs/claude/CLAUDE.md or configs/codex/AGENTS.md
+# substitutes right now, but adding one {{PLACEHOLDER}} there would put a
+# live credential back into a file every agent reads at session start --
+# exactly CAF-003 in a new location. The route, not the current content,
+# is what has to be safe.
 _is_prose_dest() {
   case "$1" in
-    */.claude/skills/*.md|*/.claude/commands/*.md) return 0 ;;
+    */.claude/skills/*.md|*/.claude/commands/*.md|*/.claude/agents/*.md) return 0 ;;
+    */CLAUDE.md|*/AGENTS.md) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -675,6 +684,24 @@ deploy_overwrite_file_prose() {
   local src=$1 dest=$2 label=$3
   local tmp; tmp=$(mktemp)
   _substitute_home_only "$src" "$tmp"
+  deploy_overwrite_file "$tmp" "$dest" "$label"
+  rm -f "$tmp"
+}
+
+# deploy_overwrite_file_rendered <src> <dest> <label> — deploy a managed
+# overwrite file, letting the DESTINATION decide whether it is prose or a
+# config. Use this for any loop that walks managed_inventory_overwrite: that
+# inventory mixes configs with markdown every agent reads (~/.claude/CLAUDE.md,
+# ~/.codex/AGENTS.md, ~/.claude/agents/*.md), and a single unconditional
+# substituted deploy over it is how a credential gets back into prose.
+deploy_overwrite_file_rendered() {
+  local src=$1 dest=$2 label=$3
+  local tmp; tmp=$(mktemp)
+  _render_managed_source "$src" "$dest" "$tmp"
+  # Substitution writes through a 0600 mktemp, which strips the source's
+  # executable bit — fatal for hook scripts. Propagate +x, same as
+  # deploy_overwrite_file_substituted.
+  [[ -x "$src" ]] && chmod +x "$tmp"
   deploy_overwrite_file "$tmp" "$dest" "$label"
   rm -f "$tmp"
 }
@@ -935,11 +962,7 @@ _apply_deploy() {
   local mode=$1 dest=$2 src=$3
   case "$mode" in
     overwrite)
-      if _is_prose_dest "$dest"; then
-        deploy_overwrite_file_prose "$src" "$dest" "${FILE_SOURCE[$dest]}"
-      else
-        deploy_overwrite_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
-      fi
+      deploy_overwrite_file_rendered "$src" "$dest" "${FILE_SOURCE[$dest]}"
       ;;
     overwrite_raw)
       deploy_overwrite_file "$src" "$dest" "${FILE_SOURCE[$dest]}"
