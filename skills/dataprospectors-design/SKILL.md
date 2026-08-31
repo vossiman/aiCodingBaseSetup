@@ -56,19 +56,15 @@ All files referenced below live next to this SKILL.md in
    HTML → Google Fonts `<link>` with `display=swap`. Always declare
    fallbacks: `'Archivo', system-ui, sans-serif` /
    `'IBM Plex Mono', ui-monospace, monospace`.
-7. **Logo** (`assets/`): prefer the SVG masters — `dp-logo.svg` (ink
-   strokes + paper fill, for light surfaces) and `dp-logo-dark.svg`
-   (paper strokes + navy fill, for navy/dark surfaces); the linework is
-   traced from the approved raster masters and shared by both variants
-   (the dark file is the same trace recolored), so the drawing matches
-   exactly.
-   Light variant on light surfaces ONLY, dark on navy/dark ONLY — never
-   ink-on-navy. Clear space at least one barrel-ring height; minimum
-   height 24px; never recolor strokes or gold. Favicon/app icon:
-   `dp-favicon.svg` (gold nuggets; works on light and dark tabs), with
-   `dp-favicon-512.png` / `-192` / `-32` for consumers that need raster.
-   The `dp-logo-*.png` files are the original raster masters, kept for
-   compatibility.
+7. **Logo** (`assets/`): `dp-logo-light.png` (ink strokes, paper fill) on
+   light surfaces ONLY; `dp-logo-dark.png` (paper strokes, navy fill) on
+   navy/dark ONLY — never ink-on-navy. The logo stays raster on purpose:
+   vectorizing the painterly mark was tried and rejected (2026-08-31).
+   Clear space at least one barrel-ring height; minimum height 24px;
+   never recolor the strokes. Favicon/app icon: prefer `dp-favicon.svg`
+   (flat vector gold nuggets; crisp at any size, works on light and dark
+   tabs), with `dp-favicon-512.png` / `-192` / `-32` for consumers that
+   need raster.
 8. **Radius** is 0.5rem (`--radius`); shadows stay soft and small. Don't
    introduce new grays — derive surfaces from the navy scale (in
    dp-tokens.css) or the muted/accent tokens.
