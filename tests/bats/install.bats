@@ -1305,6 +1305,34 @@ EOF
   # The install path and the sync path must agree on prose-vs-config, or
   # every agent-readable file reports phantom drift forever (and a sync would
   # re-substitute secrets into files install.sh had kept clean).
+  #
+  # This is the only test in this file that runs the REAL sync.sh, so it owns
+  # two obligations the rest of the file does not have:
+  #
+  #  1. _sync_binaries (lib/sync.sh) runs `agent update` / `cursor-agent
+  #     update` / the codex updater whenever those binaries are on PATH.
+  #     setup() deliberately leaves codex/agent/cursor-agent unstubbed so the
+  #     dedicated ensure_codex / ensure_cursor_agent tests can stage their own
+  #     present/absent scenarios, so the stubs go HERE rather than there.
+  #     Unstubbed, this test makes live agent-CLI network calls (2026-08-08,
+  #     #56: five tests hitting a live CLI at 146-175s each set the suite
+  #     wall). CI has no such binaries, so an unstubbed reference fails there.
+  #  2. _sync_devcontainer_pin sed -i's the CWD repo's
+  #     .devcontainer/devcontainer.json, and run.sh leaves the cwd at
+  #     $BLUEPRINT_ROOT. See the cd below.
+  local cmd
+  for cmd in codex agent cursor-agent; do
+    printf '#!/bin/sh\nexit 0\n' > "$TMPDIR/stubs/$cmd"
+    chmod +x "$TMPDIR/stubs/$cmd"
+  done
+
+  # cwd must leave the real checkout: _sync_devcontainer_pin targets the
+  # cwd's repo, and tests must never write into $BLUEPRINT_ROOT. It is inert
+  # only because this repo happens to have no .devcontainer/ — luck, not
+  # design. (Same guard as tests/bats/e2e.bats.) Everything below uses
+  # absolute paths, so this is safe from here on.
+  cd "$TMPDIR"
+
   blueprint_copy
   mkdir -p "$HOME/.aicodingsetup"
   printf 'BRAVE_API_KEY=FPRINT-BR-2b9d41\n' > "$HOME/.aicodingsetup/.secrets.env"
@@ -1327,6 +1355,8 @@ EOF
   grep -qF '{{BRAVE_API_KEY}}' "$HOME/.claude/skills/cloudflare-browser/SKILL.md"
   run grep -rl 'FPRINT-' "$HOME/.claude/CLAUDE.md" "$HOME/.claude/skills"
   [ "$status" -eq 1 ]
+  # teardown rm -rf's $TMPDIR; do not sit in it.
+  cd /
 }
 
 @test "install.sh deploys the cloudflare-render broker as an executable" {
