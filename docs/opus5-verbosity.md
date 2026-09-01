@@ -13,9 +13,13 @@ Layer 3 was audited and needs no change in this blueprint.
 
 ## Diagnosis
 
+**This section describes the stock default, which Layer 1 now overrides.
+It is history, not current state: on this devbox Opus 5 gets the long
+preset.** Keep reading it as the reason Layer 1 exists.
+
 Claude Code ships **two system-prompt presets** and selects one per model.
-Opus 5 gets the short preset (~11k chars); Sonnet 5 gets the long one
-(~29k). Nearly all the response-shaping rules — verbosity limits,
+By default Opus 5 got the short preset (~11k chars); Sonnet 5 got the long
+one (~29k). Nearly all the response-shaping rules — verbosity limits,
 narration cadence, lead-with-the-outcome — exist **only in the long
 preset**.
 
@@ -23,7 +27,9 @@ So on Opus 5 the `Concise` output style and the `Be concise` line in
 `configs/claude/CLAUDE.md` were not being ignored; they were reinforcing a
 scaffold that wasn't there.
 
-The selector, from the installed 2.1.250 binary:
+The selector, as found in the 2.1.250 binary and still present in 2.1.252
+(the env var and the `simple_system_prompt` gate name both still appear in
+the shipped binary, so the pin below still bites):
 
 ```js
 function B(e){ if(!e) return !1;
