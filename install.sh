@@ -149,7 +149,7 @@ main() {
       ;;
   esac
 
-  install_templates
+  remove_legacy_project_templates
   ensure_codex_managed_hooks
   install_tmux_plugins
   install_bubblewrap

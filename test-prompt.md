@@ -40,14 +40,14 @@ Do not just check that the file exists — an installed hook that no-ops is exac
 6. Codex side: `test -f /etc/codex/requirements.toml && grep -q PreToolUse /etc/codex/requirements.toml` — the managed hook must be installed. If the file is missing, the install could not get root; report FAIL with that reason rather than SKIP.
 7. In codex, ask it to `cat ~/.aicodingsetup/.secrets.env`. It must be refused by the hook (codex prints `Command blocked by PreToolUse hook`). Report the refusal, never the contents.
 
-### 8. Scaffold: /scaffold-project in a tmp dir
-Create a fresh directory with `mkdir -p /tmp/scaffold-test-$$ && cd /tmp/scaffold-test-$$` (in Bash), then invoke the `/scaffold-project` slash command. Verify the resulting tree contains: CLAUDE.md, README.md, TODO.md, .claude/settings.json, and docs/{specs,plans,notes}/{active,archive}/.gitkeep. Also verify `git status` shows an initialized repo. Clean up the tmp dir after.
+### 8. Project layout: copy the reference templates
+Create a fresh directory with `mkdir -p /tmp/layout-test-$$ && cd /tmp/layout-test-$$` (in Bash), then ask the agent to set up the project layout per the global CLAUDE.md (copy `templates/project/` from `/tmp/aicoding`, substitute placeholders, strip `.tpl`, rename `dot-claude/` to `.claude/`). Verify the resulting tree contains: CLAUDE.md, AGENTS.md, README.md, TODO.md, .claude/settings.json, and docs/{specs,plans,notes}/{active,archive}/.gitkeep. Clean up the tmp dir after.
 
 ### 9. Housekeep: mark a doc done and sweep
-Inside a scaffolded project, create a file `docs/specs/active/fake-spec.md` with YAML frontmatter including `status: done`. Invoke the `/housekeep` slash command. Verify the file is now at `docs/specs/archive/fake-spec.md` and is no longer in `active/`.
+Inside a project with the reference layout, create a file `docs/specs/active/fake-spec.md` with YAML frontmatter including `status: done`. Invoke the `/housekeep` slash command. Verify the file is now at `docs/specs/archive/fake-spec.md` and is no longer in `active/`.
 
 ### 10. SessionStart hook: archive banner
-In a scaffolded project that has at least one `status: done` doc in `docs/*/active/`, start a new Claude Code session. Verify the SessionStart banner appears: `📦 N docs ready to archive — run /housekeep to sweep.` (Cannot be tested from within the same session — note as PASS if mechanism verified another way, e.g., by running `bash ~/.claude/hooks/check-archived-docs.sh` with `CLAUDE_PROJECT_DIR` set and seeing the banner on stdout.)
+In a project (reference layout) that has at least one `status: done` doc in `docs/*/active/`, start a new Claude Code session. Verify the SessionStart banner appears: `📦 N docs ready to archive — run /housekeep to sweep.` (Cannot be tested from within the same session — note as PASS if mechanism verified another way, e.g., by running `bash ~/.claude/hooks/check-archived-docs.sh` with `CLAUDE_PROJECT_DIR` set and seeing the banner on stdout.)
 
 ---
 
@@ -62,7 +62,7 @@ After all tests, print a summary table:
 | 5 | cloudflare-browser | Skill | PASS/FAIL/SKIP |
 | 6 | superpowers | Skill | PASS/FAIL/SKIP |
 | 7 | secrets deny (bw-deny-files + secrets-check) | Hook | PASS/FAIL/SKIP |
-| 8 | /scaffold-project | Command | PASS/FAIL/SKIP |
+| 8 | project layout templates | Layout | PASS/FAIL/SKIP |
 | 9 | /housekeep | Command | PASS/FAIL/SKIP |
 | 10 | check-archived-docs (SessionStart) | Hook | PASS/FAIL/SKIP |
 
