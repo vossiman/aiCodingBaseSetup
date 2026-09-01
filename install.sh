@@ -121,6 +121,7 @@ main() {
   install_aicoding_install_symlink
   install_update_status_symlink
   install_agent_notify_symlink
+  install_dvw_probe_symlink
   install_clip_shim_symlinks
   install_kanban_post_symlink
   install_clip_x11_bridge_symlink

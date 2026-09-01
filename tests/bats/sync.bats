@@ -154,6 +154,20 @@ teardown() { cd /; rm -rf "$TMP"; }
   [ ! -e "$HOME/.local/bin/update-status" ]
 }
 
+@test "sync --boot restores a missing dvw-probe symlink" {
+  # Regression: the dvw catalog service execs `dvw-probe` inside the
+  # container through its docker proxy. install.sh only creates the
+  # symlink at container creation; a restart that wipes the tmpfs
+  # blueprint clone (or a dropped ~/.local/bin entry) must not strand it
+  # until someone re-runs install.sh by hand.
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  rm -f "$HOME/.local/bin/dvw-probe"
+  AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  [ -L "$HOME/.local/bin/dvw-probe" ]
+  [ -x "$HOME/.local/bin/dvw-probe" ]
+  readlink "$HOME/.local/bin/dvw-probe" | grep -q "bin/dvw-probe"
+}
+
 @test "sync right after install reports Nothing to do (no phantom drift)" {
   # Regression: substituted files (raw-source hash compare) and merge targets
   # (unconditional re-merge bucket) used to classify as actionable on every

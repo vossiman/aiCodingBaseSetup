@@ -69,6 +69,19 @@ install_agent_notify_symlink() {
   ok "agent-notify installed at $dest -> $src"
 }
 
+# --- dvw-probe CLI symlink ---
+# One exec, one JSON document: the dvw catalog service runs `dvw-probe`
+# inside each workspace container through its docker proxy, which allows
+# exactly that command. Lives here (not in the image) so a running
+# container gets it on the next boot sync without a rebuild.
+install_dvw_probe_symlink() {
+  header "dvw-probe CLI"
+  local src="$SCRIPT_DIR/bin/dvw-probe" dest="$HOME/.local/bin/dvw-probe"
+  [[ -f "$src" ]] || { warn "bin/dvw-probe not found, skipping"; return; }
+  mkdir -p "$HOME/.local/bin"; chmod +x "$src"; ln -sf "$src" "$dest"
+  ok "dvw-probe installed at $dest -> $src"
+}
+
 # --- clipboard-bridge shims (container only) ---
 # Fake xclip/wl-paste that answer agent CLIs' image-paste reads from the dvw
 # clipboard bridge socket (/tmp/dvw-clip.sock, reverse-forwarded to the
