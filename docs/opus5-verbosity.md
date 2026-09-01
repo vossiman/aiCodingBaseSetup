@@ -6,8 +6,10 @@ library internals, narration of every step, and no closing summary. This
 page records the diagnosis, what has shipped, and the follow-ups that are
 deliberately parked.
 
-Status as of 2026-08-28: **Layer 1 shipped** (PR #108). Layers 2 and 3 are
-unstarted and may never be needed — evaluate Layer 1 alone first.
+Status as of 2026-09-01: **Layers 1 and 2 shipped.** Layer 1 (PR #108) was
+not enough on its own: with the long preset confirmed live in an Opus 5
+session, the user's verdict was still "SO wordy", so Layer 2 was built.
+Layer 3 was audited and needs no change in this blueprint.
 
 ## Diagnosis
 
@@ -65,9 +67,16 @@ read at launch, so a running session keeps whichever preset it started
 with. From an agent shell `--yes` is mandatory: without a TTY,
 `aicoding-sync` prints "will update" and exits without touching anything.
 
-## Layer 2 — model-conditional hook (PARKED)
+## Layer 2 — model-conditional hook (SHIPPED)
 
-Only if Layer 1 proves insufficient after real use.
+Layer 1 proved insufficient after real use, so this shipped as designed
+below, with one addition: the hook prefers a `model` field on the hook
+payload when one is present and only falls back to the transcript grep.
+The match is `*opus-5*`, so context-window variants like
+`claude-opus-5[1m]` are covered. Registered in three places, all covered
+by `tests/bats/opus-verbosity-hook.bats`: `configs/claude/settings.json`
+(second `UserPromptSubmit` hook, after `memory-hint.sh`), the
+`blueprint-deploy.sh` manifest, and `MANAGED_HOOKS`.
 
 A `UserPromptSubmit` hook, `configs/claude/hooks/opus-verbosity.sh`, that:
 
@@ -101,7 +110,21 @@ Plus a line for the estate-specific complaint: cite function names, line
 numbers and library internals only where they change a decision, and close
 every multi-step task with a short summary.
 
-## Layer 3 — prune counter-productive instructions (PARKED)
+## Layer 3 — prune counter-productive instructions (AUDITED, no change)
+
+Audited 2026-09-01: `configs/claude/CLAUDE.md` carries none of the
+instruction classes below. It has no "verify your work" or "use a subagent
+to verify" step, no self-check line, and no correction-narration rule. The
+one line that mentions verification ("say plainly when something is
+unverified") is a truthfulness rule about claims, not an instruction to
+re-check work, so it stays. Nothing to prune here.
+
+What remains is outside this blueprint: the superpowers
+`verification-before-completion` skill, and the `using-superpowers`
+preamble's "1% chance a skill applies, you MUST invoke it". Both are
+third-party. If Layer 2 leaves narration heavy, that pressure is the next
+suspect, and the lever is which superpowers skills get installed rather
+than an edit to their text.
 
 The Opus 5 guide explicitly says several instruction *classes* backfire on
 this model, compounding with built-in behaviour to burn tokens with no
@@ -128,10 +151,18 @@ Also available if subagent spend becomes the complaint rather than
 verbosity: `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` and
 `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` are deterministic caps (2.1.217+).
 
-## How to judge whether Layer 1 was enough
+## How to judge whether Layer 2 was enough
 
-Subjective, and that is fine — the symptom is subjective. After the sync,
-in a fresh session, on an ordinary task: does the answer lead with the
-outcome, and does a multi-step task end with a summary? If yes, stop here
-and leave Layers 2–3 parked. If the padding is gone but narration is still
-heavy, that is specifically Layer 2's target.
+Subjective, and that is fine — the symptom is subjective. After
+`aicoding-sync --yes`, in a **fresh** Opus 5 session (hook config is read at
+launch), on an ordinary task: does the answer lead with the outcome, and
+does a multi-step task end with a short summary?
+
+Unlike Layer 1, this one is directly observable: the injected block shows
+up in the session as a `UserPromptSubmit hook success:` line. If it is
+absent in an Opus 5 session, the hook is not matching, and the first thing
+to check is what model string the payload or transcript actually carries.
+
+If the block is present and the answers are still padded, the remaining
+suspect is the superpowers instruction load described under Layer 3, not
+another conciseness rule stacked on top.
