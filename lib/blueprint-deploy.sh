@@ -286,7 +286,20 @@ classify_file() {
       # plain new_file would silently clobber that file with no backup —
       # classify it separately so apply backs it up and unattended modes
       # can leave it for a human decision.
-      [ -e "$dest" ] && { echo "new_file_existing"; return 0; }
+      #
+      # Unless it already IS the blueprint content: ~/.claude is one host
+      # mount shared by every devpod container while the manifest is
+      # container-local, so a sibling container's deploy shows up here as
+      # "untracked but present". Backing up and rewriting an identical file
+      # once per workspace protects nothing; adopt it into the manifest.
+      if [ -e "$dest" ]; then
+        if _incoming_matches_dest "$mode" "$src" "$dest"; then
+          echo "drifted_but_aligned"
+        else
+          echo "new_file_existing"
+        fi
+        return 0
+      fi
       echo "new_file"
       return 0
     fi
