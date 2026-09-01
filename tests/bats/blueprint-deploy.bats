@@ -228,6 +228,25 @@ EOF
   [ "$output" = "new_file_existing" ]
 }
 
+@test "classify_file: untracked dest identical to blueprint is drifted_but_aligned, not new_file_existing" {
+  # ~/.claude is one host mount shared by every devpod container, but the
+  # manifest is container-local. After a sibling container deploys a new
+  # managed file, this container sees "not in my manifest, dest exists" and
+  # would back up + rewrite a byte-identical file on every workspace. Adopt
+  # it silently instead: the aligned bucket records the hash without a write.
+  echo "same content" > "$TMPDIR/dest"
+  echo "same content" > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  manifest_stage_commit
+  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
+  [ "$status" -eq 0 ]
+  [ "$output" = "drifted_but_aligned" ]
+  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite_raw"
+  [ "$status" -eq 0 ]
+  [ "$output" = "drifted_but_aligned" ]
+}
+
 @test "apply_managed_buckets: new_file_existing backs up before deploying" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
