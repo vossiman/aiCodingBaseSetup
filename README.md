@@ -66,16 +66,15 @@ Configured for **all four CLIs**: `claude mcp add` for Claude Code (existing), `
   built-in list is now always enforced and that env var only *adds* patterns. Escape hatch: `secrets-check`.
   Also runs on **Codex** — same script, installed as a managed hook (see Secrets).
   Covered by `tests/bats/secrets-deny-hook.bats` and `tests/bats/codex-managed-hooks.bats`.
-- **check-archived-docs.sh** — SessionStart hook. Emits a one-line banner when a scaffolded project has docs with `status: done` in any `docs/*/active/` folder. Fail-open.
+- **check-archived-docs.sh** — SessionStart hook. Emits a one-line banner when a project using the reference docs layout has docs with `status: done` in any `docs/*/active/` folder. Fail-open.
 
 ### Slash commands
 
-- **/scaffold-project** — Drops the canonical project layout (`CLAUDE.md`, `TODO.md`, `docs/{specs,plans,notes}/{active,archive}/`, project `.claude/settings.json`) into the current directory. Interactive: asks for name and one-line purpose. Refuses to clobber existing files.
 - **/housekeep** — Sweeps `docs/*/active/` for docs with `status: done` frontmatter and moves them into the sibling `archive/`. Also prunes `[x]` items older than 14 days from `TODO.md`.
 
 ### Project templates
 
-Installed to `~/.aicodingsetup/templates/project/`. Used by `/scaffold-project` to materialize a new project. **Intentional scaffold material outside the manifest:** `install_templates()` rsyncs with `--delete` every run — the repo tree is always SoT; these are not user-edited managed dotfiles, so they skip classify/hash tracking.
+`templates/project/` in this repo is the reference layout for a new project (`CLAUDE.md`, `AGENTS.md`, `TODO.md`, `docs/{specs,plans,notes}/{active,archive}/`, project `.claude/settings.json`). It is not deployed anywhere: agents copy it from the blueprint checkout (`/tmp/aicoding` in containers) and substitute the `{{PROJECT_NAME}}`/`{{PURPOSE}}` placeholders, per the global CLAUDE.md. The former `/scaffold-project` command and its `~/.aicodingsetup/templates/` mirror were retired (the secrets deny hook blankets `~/.aicodingsetup`, so the command could never read its own templates); `remove_legacy_project_templates()` cleans the old mirror up.
 
 ### Container-side helpers
 

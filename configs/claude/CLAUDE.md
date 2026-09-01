@@ -64,6 +64,12 @@ Managed by the aiCodingBaseSetup blueprint (`configs/claude/CLAUDE.md`);
   `AGENTS.md` conventions.
 - Integrate via PR: never commit or force-push to a protected `main`. Ask
   before merging; delete merged branches.
+- **Starting a brand-new project?** Copy the reference layout from
+  `templates/project/` in the aiCodingBaseSetup checkout (`/tmp/aicoding` in
+  containers, refreshed on boot): substitute `{{PROJECT_NAME}}` and
+  `{{PURPOSE}}`, strip the `.tpl` suffixes, and rename `dot-claude/` to
+  `.claude/`. There is no scaffold command; the templates in the repo are the
+  source of truth.
 
 ## The backlog board: file work you find, don't just report it
 

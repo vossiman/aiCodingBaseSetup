@@ -1003,22 +1003,32 @@ EOF
   [ "$h" != "null" ] && [ -n "$h" ]
 }
 
-@test "install.sh first-deploy: mirrors project templates into ~/.aicodingsetup" {
+@test "install.sh: removes the legacy project-template mirror from ~/.aicodingsetup" {
+  # /scaffold-project is retired; the templates stay in the repo only. A
+  # pre-existing mirror (from an older install) must be cleaned up, since it
+  # lives outside the manifest and would otherwise persist in the host mount.
+  local legacy="$HOME/.aicodingsetup/templates/project"
+  mkdir -p "$legacy/dot-claude"
+  echo "stale" > "$legacy/CLAUDE.md.tpl"
+
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  local dest="$HOME/.aicodingsetup/templates/project"
-  [ -d "$dest" ]
-  [ -f "$dest/CLAUDE.md.tpl" ]
-  [ -f "$dest/AGENTS.md.tpl" ]
-  [ -f "$dest/dot-claude/settings.json.tpl" ]
-  # The docs scaffold dirs (carried by .gitkeep) must survive the mirror so
-  # /scaffold-project can walk them.
-  [ -f "$dest/docs/specs/active/.gitkeep" ]
+  [ ! -e "$legacy" ]
+  [ ! -e "$HOME/.aicodingsetup/templates" ]
+}
+
+@test "reference templates: repo tree keeps the canonical layout" {
+  # No deploy step involved anymore; agents copy these straight from the
+  # blueprint checkout. Guard the contract the global CLAUDE.md documents.
+  local src="$BLUEPRINT_ROOT/templates/project"
+  [ -f "$src/CLAUDE.md.tpl" ]
+  [ -f "$src/AGENTS.md.tpl" ]
+  [ -f "$src/dot-claude/settings.json.tpl" ]
+  [ -f "$src/docs/specs/active/.gitkeep" ]
   # AGENTS.md is the canonical, agent-agnostic conventions file; CLAUDE.md
   # imports it via `@AGENTS.md` so Claude Code and the other CLIs share one
   # source of truth.
-  grep -q "@AGENTS.md" "$dest/CLAUDE.md.tpl"
-  # Scaffold-time placeholders must NOT be expanded at install time.
-  grep -q "{{PROJECT_NAME}}" "$dest/AGENTS.md.tpl"
+  grep -q "@AGENTS.md" "$src/CLAUDE.md.tpl"
+  grep -q "{{PROJECT_NAME}}" "$src/AGENTS.md.tpl"
 }
 
 @test "install.sh reconcile mode: restores a deleted slash command" {

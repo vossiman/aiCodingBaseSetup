@@ -345,28 +345,16 @@ _print_install_summary() {
   fi
 }
 
-# install_templates — mirror the project-scaffold templates into
-# ~/.aicodingsetup/templates/project. INTENTIONAL: outside the manifest.
-# Scaffold source for /scaffold-project (not user-edited managed dotfiles), so
-# every run mirrors the repo tree over (rsync --delete; cp -r fallback).
-install_templates() {
-  header "Project Templates"
-
-  local src_dir="$SCRIPT_DIR/templates/project"
-  local dest_dir="$SECRETS_DIR/templates/project"
-
-  if [[ ! -d "$src_dir" ]]; then
-    warn "No templates/project directory in repo — skipping"
-    return
-  fi
-
-  mkdir -p "$dest_dir"
-  if command -v rsync &>/dev/null; then
-    rsync -a --delete "$src_dir/" "$dest_dir/"
-  else
-    rm -rf "$dest_dir"
-    mkdir -p "$dest_dir"
-    cp -r "$src_dir/." "$dest_dir/"
-  fi
-  ok "templates/project mirrored to $dest_dir"
+# remove_legacy_project_templates: /scaffold-project was retired (it never
+# worked in-container: the secrets deny hook blankets ~/.aicodingsetup, so the
+# command could not read its own template mirror there). The reference layout
+# stays in the repo at templates/project/; agents copy it from the blueprint
+# checkout instead. This cleans up the old mirror, which lived outside the
+# manifest and would otherwise persist forever in the host mount.
+remove_legacy_project_templates() {
+  local legacy_dir="$SECRETS_DIR/templates/project"
+  [[ -d "$legacy_dir" ]] || return 0
+  rm -rf "$legacy_dir"
+  rmdir "$SECRETS_DIR/templates" 2>/dev/null || true
+  ok "removed legacy project-template mirror ($legacy_dir)"
 }
