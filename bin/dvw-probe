@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+"""dvw-probe: describe this container from the inside as one JSON document.
+
+Run by the dvw catalog service through `docker exec` (one exec per container)
+so it can show tmux windows, running agent CLIs, git state and cgroup usage
+without any other Docker API access. Contract: no arguments, one JSON object
+on stdout, exit 0 in every case that reaches Python. Each section is null
+when it cannot be computed; a section that overran its share of the time
+budget is null and sets "partial": true.
+
+Test hooks: DVW_PROBE_PROC, DVW_PROBE_CGROUP, DVW_PROBE_WORKSPACE,
+DVW_PROBE_BUDGET (seconds). Spec: dvw docs/superpowers/specs/
+2026-09-01-docker-proxy-probe-design.md.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+
+SCHEMA = 1
+AGENT_CLIS = ("claude", "codex", "cursor-agent", "opencode")
+WRAPPERS = ("node", "python", "python3", "bun")
+
+
+class Budget:
+    def __init__(self, seconds):
+        self.end = time.monotonic() + seconds
+        self.partial = False
+
+    def remaining(self, cap):
+        return max(0.0, min(cap, self.end - time.monotonic()))
+
+
+def _run(argv, timeout):
+    if timeout <= 0:
+        raise subprocess.TimeoutExpired(argv, timeout)
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+
+
+def _int(s, default=None):
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return default
+
+
+def collect_tmux(budget):
+    per_call = budget.remaining(1.5)
+    try:
+        r = _run(["tmux", "list-sessions", "-F",
+                  "#{session_name}\t#{session_attached}\t#{session_activity}"], per_call)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        if isinstance(e, subprocess.TimeoutExpired):
+            budget.partial = True
+        return None
+    if r.returncode != 0:
+        return None
+    sessions = []
+    for line in r.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        sessions.append({"name": parts[0], "attached": _int(parts[1], 0),
+                         "activity": _int(parts[2], -1)})
+    windows = []
+    if any(s["name"] == "work" for s in sessions):
+        try:
+            r = _run(["tmux", "list-windows", "-t", "work", "-F",
+                      "#{window_id}\t#{window_name}\t#{window_active}"
+                      "\t#{window_activity}\t#{@waiting}\t#{pane_current_command}"],
+                     budget.remaining(1.5))
+        except (OSError, subprocess.TimeoutExpired) as e:
+            if isinstance(e, subprocess.TimeoutExpired):
+                budget.partial = True
+            return {"sessions": sessions, "windows": []}
+        if r.returncode == 0:
+            for line in r.stdout.splitlines():
+                parts = line.split("\t")
+                if len(parts) != 6 or not parts[0].startswith("@"):
+                    continue
+                waiting = _int(parts[4])
+                windows.append({
+                    "id": parts[0], "name": parts[1], "active": parts[2] == "1",
+                    "activity": _int(parts[3], -1),
+                    "waiting_since": waiting if waiting is not None and waiting >= 0 else None,
+                    "command": parts[5],
+                })
+    return {"sessions": sessions, "windows": windows}
+
+
+def _read(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def collect_agents(proc):
+    try:
+        btime = None
+        for line in _read(os.path.join(proc, "stat")).decode("ascii", "replace").splitlines():
+            if line.startswith("btime "):
+                btime = _int(line.split()[1])
+        hz = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+        my_uid = os.getuid()
+        agents = []
+        for name in os.listdir(proc):
+            if not name.isdigit():
+                continue
+            pdir = os.path.join(proc, name)
+            try:
+                if os.stat(pdir).st_uid != my_uid:
+                    continue
+            except OSError:
+                continue
+            try:
+                comm = _read(os.path.join(pdir, "comm")).decode("utf-8", "replace").strip()
+                argv = _read(os.path.join(pdir, "cmdline")).split(b"\0")
+            except OSError:
+                continue
+            argv = [a.decode("utf-8", "replace") for a in argv if a]
+            cli = None
+            if comm in AGENT_CLIS:
+                cli = comm
+            elif argv and os.path.basename(argv[0]) in AGENT_CLIS:
+                cli = os.path.basename(argv[0])
+            elif len(argv) > 1 and os.path.basename(argv[0]) in WRAPPERS \
+                    and os.path.basename(argv[1]) in AGENT_CLIS:
+                cli = os.path.basename(argv[1])
+            if cli is None:
+                continue
+            started = None
+            try:
+                stat = _read(os.path.join(pdir, "stat")).decode("ascii", "replace")
+                fields = stat[stat.rindex(")") + 2:].split()
+                ticks = _int(fields[19])
+                if btime is not None and ticks is not None:
+                    started = btime + ticks // hz
+            except (OSError, ValueError, IndexError):
+                pass
+            try:
+                cwd = os.readlink(os.path.join(pdir, "cwd"))
+            except OSError:
+                cwd = None
+            agents.append({"cli": cli, "pid": int(name), "started": started, "cwd": cwd})
+        agents.sort(key=lambda a: a["pid"])
+        return agents
+    except OSError:
+        return None
+
+
+def _workspace_root():
+    env = os.environ.get("DVW_PROBE_WORKSPACE") or os.environ.get("WORKSPACE_FOLDER")
+    if env:
+        return env if os.path.isdir(env) else None
+    try:
+        entries = [e for e in os.listdir("/workspaces") if os.path.isdir(os.path.join("/workspaces", e))]
+    except OSError:
+        return None
+    return os.path.join("/workspaces", entries[0]) if len(entries) == 1 else None
+
+
+def collect_git(budget):
+    root = _workspace_root()
+    if root is None:
+        return None
+    out = {"root": root, "branch": None, "head": None, "dirty": None, "ahead": None, "behind": None}
+
+    def g(*args):
+        r = _run(["git", "-C", root, *args], budget.remaining(2.0))
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    try:
+        out["branch"] = g("rev-parse", "--abbrev-ref", "HEAD")
+        out["head"] = g("rev-parse", "--short", "HEAD")
+        status = g("status", "--porcelain")
+        out["dirty"] = bool(status) if status is not None else None
+        counts = g("rev-list", "--left-right", "--count", "HEAD...@{upstream}")
+        if counts:
+            a, b = counts.split()
+            out["ahead"], out["behind"] = _int(a), _int(b)
+    except subprocess.TimeoutExpired:
+        budget.partial = True
+        return None
+    except OSError:
+        return None
+    if out["branch"] is None and out["head"] is None:
+        return None
+    return out
+
+
+def collect_cgroup(cg):
+    try:
+        mem_max = _read(os.path.join(cg, "memory.max")).decode().strip()
+        cpu_usec = None
+        for line in _read(os.path.join(cg, "cpu.stat")).decode().splitlines():
+            if line.startswith("usage_usec "):
+                cpu_usec = _int(line.split()[1])
+        return {
+            "mem_current": _int(_read(os.path.join(cg, "memory.current")).decode().strip()),
+            "mem_max": None if mem_max == "max" else _int(mem_max),
+            "cpu_usec": cpu_usec,
+            "nr_procs": _int(_read(os.path.join(cg, "pids.current")).decode().strip()),
+        }
+    except OSError:
+        return None
+
+
+def main():
+    if len(sys.argv) > 1:
+        print(json.dumps({"schema": SCHEMA, "error": "dvw-probe takes no arguments"}))
+        return 0
+    budget = Budget(float(os.environ.get("DVW_PROBE_BUDGET", "3")))
+    proc = os.environ.get("DVW_PROBE_PROC", "/proc")
+    cg = os.environ.get("DVW_PROBE_CGROUP", "/sys/fs/cgroup")
+    doc = {"schema": SCHEMA, "ts": int(time.time()), "partial": False,
+           "tmux": None, "agents": None, "git": None, "cgroup": None}
+    for key, fn in (("cgroup", lambda: collect_cgroup(cg)),
+                    ("agents", lambda: collect_agents(proc)),
+                    ("tmux", lambda: collect_tmux(budget)),
+                    ("git", lambda: collect_git(budget))):
+        try:
+            doc[key] = fn()
+        except Exception:  # a collector must never take the document down
+            doc[key] = None
+    doc["partial"] = budget.partial
+    sys.stdout.write(json.dumps(doc, separators=(",", ":")) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
