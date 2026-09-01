@@ -1,0 +1,36 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:best-practices"],
+  "dependencyDashboard": true,
+  "prCreation": "immediate",
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"]
+  },
+  "packageRules": [
+    {
+      "description": "Everything is off by default. PR #94 was closed over weekly PR noise, so routine version bumps do not raise PRs; the dashboard still lists them.",
+      "matchPackageNames": ["*"],
+      "enabled": false
+    },
+    {
+      "description": "Security advisories always raise a PR, whatever the ecosystem.",
+      "matchPackageNames": ["*"],
+      "isVulnerabilityAlert": true,
+      "enabled": true
+    },
+    {
+      "description": "Action digest pins: grouped into one PR, but NEVER automerged. This repo has no branch protection, so an automerged digest bump is a compromised upstream tag landing on main with no human in the loop -- which turns the SHA pins back into tag-following. A human reviews the PR; the dashboard surfaces it.",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["pinDigest", "digest"],
+      "enabled": true,
+      "groupName": "action digests",
+      "automerge": false
+    },
+    {
+      "description": "Majors are never automatic.",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    }
+  ]
+}

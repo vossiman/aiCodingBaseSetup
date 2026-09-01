@@ -22,8 +22,8 @@ Look up the documentation for the "jq" library using context7. Return a snippet 
 Use playwright to navigate to https://example.com, take a screenshot, and describe what you see.
 
 ### 5. Skill: Cloudflare Browser Rendering
-Invoke the cloudflare-browser skill and use it to fetch https://example.com as markdown via the Cloudflare Browser Rendering REST API. Actually run the curl command and show the result.
-(If the API token placeholder {{CLOUDFLARE_API_TOKEN}} is still in the skill, report FAIL — tokens should have been substituted by the installer.)
+Invoke the cloudflare-browser skill and use it to fetch https://example.com as markdown. Actually run the `cloudflare-render` command and show the result.
+(If the skill contains a token, a token placeholder, or any `curl` with an `Authorization` header, report FAIL — the skill must document the broker command only, never a credential.)
 
 ### 6. Skill: Superpowers
 Invoke the brainstorming skill and confirm it loads successfully. You don't need to complete the brainstorming flow — just confirm it activates and gives you instructions. List at least 5 other superpowers skills you can see.

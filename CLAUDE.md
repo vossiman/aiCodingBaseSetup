@@ -1,8 +1,10 @@
 # aiCodingBaseSetup
 
 Devbox blueprint: machine provisioning (`install.sh`, `lib/`) plus the configs
-it deploys (`configs/`). `main` is protected — integrate via PR; ask before
-merging; delete merged branches.
+it deploys (`configs/`). Integrate via PR by convention; ask before merging;
+delete merged branches. Note `main` carries no branch protection and no
+ruleset (verified 2026-08-31): nothing enforces this, so it holds only as
+long as people and agents follow it.
 
 ## Delivery channels
 

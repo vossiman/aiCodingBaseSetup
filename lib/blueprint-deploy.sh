@@ -320,7 +320,7 @@ classify_file() {
     # (phantom drift).
     local subst_tmp
     subst_tmp=$(mktemp)
-    _substitute_file_to "$src" "$subst_tmp" 2>/dev/null
+    _render_managed_source "$src" "$dest" "$subst_tmp" 2>/dev/null
     new=$(compute_hash "$subst_tmp")
     rm -f "$subst_tmp"
   fi
@@ -337,13 +337,69 @@ classify_file() {
   fi
 }
 
+# _write_atomic <src> <dest> [mode] — THE writer for every deployed file.
+#
+# Deploys used a bare `cp`, which preserves the mode of an EXISTING
+# destination: a file that was once 664 stayed 664 through every later
+# deploy, and several deployed files carry credentials. Writing through a
+# temp file in the destination directory and renaming also means a reader
+# never observes a half-written credential file.
+#
+# Mode defaults to 0600. Callers pass 0700 for executables; nothing gets a
+# group or world bit.
+_write_atomic() {
+  local src=$1 dest=$2 mode=${3:-0600}
+  local dir tmp
+  dir=$(dirname "$dest")
+  mkdir -p "$dir"
+  # Same filesystem as dest, so the rename below is atomic.
+  tmp=$(mktemp "$dir/.aicoding-deploy.XXXXXX")
+  cat "$src" > "$tmp"
+  chmod "$mode" "$tmp"
+  mv -f "$tmp" "$dest"
+}
+
+# _write_text_atomic <dest> <content> [mode] — same contract as _write_atomic
+# but the payload is a string rather than a file. Temp file lives in the
+# DESTINATION directory (so the rename is atomic), gets an explicit chmod,
+# and only then replaces dest. Used by the JSON merge path, whose final
+# `printf > "$target"` used to be a plain redirect: that preserves an
+# ALREADY-EXISTING destination's mode, so every machine provisioned before
+# the 0600 work kept ~/.cursor/mcp.json and ~/.config/opencode/opencode.json
+# at 0664 forever — the two most credential-dense files in the deploy set.
+_write_text_atomic() {
+  local dest=$1 content=$2 mode=${3:-0600}
+  local dir tmp
+  dir=$(dirname "$dest")
+  mkdir -p "$dir"
+  tmp=$(mktemp "$dir/.aicoding-deploy.XXXXXX")
+  printf '%s\n' "$content" > "$tmp"
+  chmod "$mode" "$tmp"
+  mv -f "$tmp" "$dest"
+}
+
+# _ensure_merge_dest <dest> — create an empty JSON merge target at 0600.
+# Was `echo '{}' > "$dest"` under the ambient umask in three places.
+_ensure_merge_dest() {
+  local dest=$1
+  [[ -f "$dest" ]] && return 0
+  local dir tmp
+  dir=$(dirname "$dest")
+  mkdir -p "$dir"
+  tmp=$(mktemp "$dir/.aicoding-deploy.XXXXXX")
+  printf '{}' > "$tmp"
+  chmod 0600 "$tmp"
+  mv -f "$tmp" "$dest"
+}
+
 # deploy_overwrite_file <src> <dest> <source_label_relative_to_blueprint>
 # Copies src to dest and records {mode: overwrite, source, deployed_hash}
 # in the pending manifest. Caller must wrap with manifest_stage_begin/commit.
 deploy_overwrite_file() {
   local src=$1 dest=$2 label=$3
-  mkdir -p "$(dirname "$dest")"
-  cp "$src" "$dest"
+  local mode=0600
+  [[ -x "$src" ]] && mode=0700
+  _write_atomic "$src" "$dest" "$mode"
   local h
   h=$(compute_managed_hash "$dest")
   local entry
@@ -365,7 +421,9 @@ deploy_overwrite_file() {
 _json_merge_into() {
   local target=$1 source=$2
   if [ ! -f "$target" ]; then
-    cp "$source" "$target"
+    # Not `cp`: a first install of a credential-bearing merge target would
+    # land under the ambient umask (0664 under umask 0002).
+    _write_atomic "$source" "$target" 0600
     return
   fi
   # If jq can't parse either side, fail WITHOUT touching the target — the
@@ -392,7 +450,7 @@ _json_merge_into() {
       else .[0] end;
     [.[0],.[1]] | deep_merge("")
   ' "$target" "$source") || return 1
-  printf '%s\n' "$merged" > "$target"
+  _write_text_atomic "$target" "$merged" 0600
 }
 
 # deploy_merge_file <src> <dest> <source_label>
@@ -459,9 +517,13 @@ remove_managed_file() {
 # "dest|overwrite|blueprint-relative-source" lines. Profile-aware: hosts
 # (manifest_get_profile = host) skip container-only environment wiring
 # (tmux, ssh-agent watcher) and gain the boot-sync trigger. Agent CLI
-# configs (codex) are managed on BOTH profiles (user decision 2026-08-19:
-# every machine behaves the same; repo-level AGENTS.md/config still
-# overrides globals per each CLI's own precedence rules).
+# configs (codex) are managed on BOTH profiles, but codex's own
+# approval_policy/sandbox_mode values inside that file are further
+# profile-gated by _substitute_file_to (user decision 2026-08-31, revising
+# 2026-08-19: containers keep automode, host profiles get
+# workspace-write + on-request since they have no container isolation
+# boundary; repo-level AGENTS.md/config still overrides globals per each
+# CLI's own precedence rules).
 managed_inventory_overwrite() {
   local profile
   profile=$(manifest_get_profile)
@@ -480,6 +542,7 @@ $HOME/.bashrc.d/aicoding-update-notify.sh|overwrite|configs/bash/update-notify.s
 $HOME/.bashrc.d/aicoding-aliases.sh|overwrite|configs/bash/aliases.sh
 $HOME/.local/bin/git-credential-aicoding|overwrite|configs/git/git-credential-aicoding
 $HOME/.local/bin/memory-hint|overwrite|configs/memory/memory-hint
+$HOME/.local/bin/cloudflare-render|overwrite|configs/cloudflare/cloudflare-render
 $HOME/.local/bin/secrets-check|overwrite|configs/secrets/secrets-check
 $HOME/.codex/config.toml|overwrite|configs/codex/config.toml
 $HOME/.codex/AGENTS.md|overwrite|configs/codex/AGENTS.md
@@ -528,7 +591,7 @@ EOF
 }
 
 # load_secrets_env — source ~/.aicodingsetup/.secrets.env if present so that
-# substitute_secrets has the API-key env vars it needs. Idempotent and safe
+# _substitute_file_to has the API-key env vars it needs. Idempotent and safe
 # to call with no file present (no-op).
 load_secrets_env() {
   local f="${AICODING_SECRETS_FILE:-$HOME/.aicodingsetup/.secrets.env}"
@@ -540,44 +603,92 @@ load_secrets_env() {
   fi
 }
 
-# substitute_secrets <content> — expand the {{HOME}} and {{*_API_KEY}}
-# placeholders shipped in configs/claude/settings.json and skill SKILL.md
-# files. Missing env vars expand to the empty string (same behavior as
-# install.sh's old definition).
-substitute_secrets() {
-  local content="$1"
-  content="${content//\{\{HOME\}\}/$HOME}"
-  content="${content//\{\{FIRECRAWL_API_KEY\}\}/${FIRECRAWL_API_KEY:-}}"
-  content="${content//\{\{BRAVE_API_KEY\}\}/${BRAVE_API_KEY:-}}"
-  content="${content//\{\{CLOUDFLARE_API_TOKEN\}\}/${CLOUDFLARE_API_TOKEN:-}}"
-  content="${content//\{\{CLOUDFLARE_ACCOUNT_ID\}\}/${CLOUDFLARE_ACCOUNT_ID:-}}"
-  content="${content//\{\{MEMORY_ROUTER_TOKEN\}\}/${MEMORY_ROUTER_TOKEN:-}}"
-  printf '%s' "$content"
+# NOTE: a `substitute_secrets <content>` string helper used to live here. It
+# had no callers left, and it substituted credentials with no _is_prose_dest
+# gate — so the first future caller would have reintroduced CAF-003 (a live
+# key in a file an agent reads as prose) in a public repo. Deleted rather
+# than kept as a loaded gun. Use _render_managed_source / the deploy_*
+# wrappers below, which decide prose-vs-config from the DESTINATION.
+
+# _substitute_home_only <src> <dest_tmp> — expand {{HOME}} and NOTHING else.
+# Agent-readable prose (skills, commands) goes through this instead of
+# _substitute_file_to: a credential in a file an agent must read to use it
+# lands in model context and transcripts on every use (CAF-003). {{HOME}}
+# is kept because it is a path, not a secret, and skills genuinely need it.
+_substitute_home_only() {
+  local src=$1 out=$2
+  local home_esc
+  home_esc=$(printf '%s' "$HOME" | sed -e 's/[\/&\\]/\\&/g')
+  sed -e "s/{{HOME}}/$home_esc/g" "$src" > "$out"
 }
 
-# _substitute_file_to <src> <dest_tmp> — like substitute_secrets but reads
-# from a file and writes to another file, preserving the source's exact byte
+# _is_prose_dest <dest> — true when the destination is markdown an agent
+# reads as instructions: a deployed skill, slash command, subagent
+# definition, or a global CLAUDE.md / AGENTS.md. Those are the files that
+# must never be on the secret-substitution path.
+#
+# The list is deliberately wider than the sources that carry a placeholder
+# today. Nothing in configs/claude/CLAUDE.md or configs/codex/AGENTS.md
+# substitutes right now, but adding one {{PLACEHOLDER}} there would put a
+# live credential back into a file every agent reads at session start --
+# exactly CAF-003 in a new location. The route, not the current content,
+# is what has to be safe.
+_is_prose_dest() {
+  case "$1" in
+    */.claude/skills/*.md|*/.claude/commands/*.md|*/.claude/agents/*.md) return 0 ;;
+    */CLAUDE.md|*/AGENTS.md) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# _render_managed_source <src> <dest> <out> — render src exactly as it will
+# land at dest. The deploy path, classify's simulation and the backup check
+# all go through here: if any of them decided prose-vs-config differently,
+# every skill file would report phantom drift forever.
+_render_managed_source() {
+  local src=$1 dest=$2 out=$3
+  if _is_prose_dest "$dest"; then
+    _substitute_home_only "$src" "$out"
+  else
+    _substitute_file_to "$src" "$out"
+  fi
+}
+
+# _substitute_file_to <src> <dest_tmp> — expand {{HOME}}, {{*_API_KEY}} and
+# the profile-gated codex placeholders, reading from a file and writing to
+# another file, preserving the source's exact byte
 # content (including any trailing newline). Uses sed to avoid bash command
 # substitution's "strip trailing newlines" behavior.
+#
+# CONFIGS ONLY. Never point this at markdown an agent reads; see
+# _substitute_home_only above.
 _substitute_file_to() {
   local src=$1 out=$2
-  # The six placeholders are mutually independent; one sed pipeline handles
+  # The four placeholders are mutually independent; one sed pipeline handles
   # all of them with each value safely quoted (we escape `&`, `/`, and `\`
   # because they're sed-replacement metacharacters).
   local home_v="$HOME"
   local fc_v="${FIRECRAWL_API_KEY:-}"
   local br_v="${BRAVE_API_KEY:-}"
-  local cf_t_v="${CLOUDFLARE_API_TOKEN:-}"
-  local cf_a_v="${CLOUDFLARE_ACCOUNT_ID:-}"
   local mr_v="${MEMORY_ROUTER_TOKEN:-}"
+  # Codex sandbox posture is PROFILE-GATED, not a secret: fixed literals from
+  # this function, never user input, so no _esc call needed for these two.
+  local codex_approval_v codex_sandbox_v
+  if [[ "$(manifest_get_profile)" == host ]]; then
+    codex_approval_v="on-request"
+    codex_sandbox_v="workspace-write"
+  else
+    codex_approval_v="never"
+    codex_sandbox_v="danger-full-access"
+  fi
   _esc() { printf '%s' "$1" | sed -e 's/[\/&\\]/\\&/g'; }
   sed \
     -e "s/{{HOME}}/$(_esc "$home_v")/g" \
     -e "s/{{FIRECRAWL_API_KEY}}/$(_esc "$fc_v")/g" \
     -e "s/{{BRAVE_API_KEY}}/$(_esc "$br_v")/g" \
-    -e "s/{{CLOUDFLARE_API_TOKEN}}/$(_esc "$cf_t_v")/g" \
-    -e "s/{{CLOUDFLARE_ACCOUNT_ID}}/$(_esc "$cf_a_v")/g" \
     -e "s/{{MEMORY_ROUTER_TOKEN}}/$(_esc "$mr_v")/g" \
+    -e "s/{{CODEX_APPROVAL_POLICY}}/$codex_approval_v/g" \
+    -e "s/{{CODEX_SANDBOX_MODE}}/$codex_sandbox_v/g" \
     "$src" > "$out"
   _strip_absent_secret_servers "$src" "$out"
 }
@@ -618,18 +729,36 @@ _strip_absent_secret_servers() {
   return 0
 }
 
-# deploy_overwrite_file_substituted <src> <dest> <label>
-# Like deploy_overwrite_file, but expands {{HOME}} / {{*_API_KEY}} placeholders
-# in src before writing. The recorded deployed_hash is the hash of the
-# substituted-content file (matches what's actually on disk).
-deploy_overwrite_file_substituted() {
+# NOTE: `deploy_overwrite_file_substituted` used to live here. It had no
+# production callers (only tests), and it substituted credentials
+# unconditionally, with no _is_prose_dest gate — the exact shape of CAF-003.
+# Deleted; deploy_overwrite_file_rendered below is the replacement and lets
+# the destination decide.
+
+# deploy_overwrite_file_prose <src> <dest> <label> — deploy agent-readable
+# markdown. Same as deploy_overwrite_file_rendered except only {{HOME}}
+# is expanded, so no credential can reach the deployed file.
+deploy_overwrite_file_prose() {
   local src=$1 dest=$2 label=$3
   local tmp; tmp=$(mktemp)
-  _substitute_file_to "$src" "$tmp"
+  _substitute_home_only "$src" "$tmp"
+  deploy_overwrite_file "$tmp" "$dest" "$label"
+  rm -f "$tmp"
+}
+
+# deploy_overwrite_file_rendered <src> <dest> <label> — deploy a managed
+# overwrite file, letting the DESTINATION decide whether it is prose or a
+# config. Use this for any loop that walks managed_inventory_overwrite: that
+# inventory mixes configs with markdown every agent reads (~/.claude/CLAUDE.md,
+# ~/.codex/AGENTS.md, ~/.claude/agents/*.md), and a single unconditional
+# substituted deploy over it is how a credential gets back into prose.
+deploy_overwrite_file_rendered() {
+  local src=$1 dest=$2 label=$3
+  local tmp; tmp=$(mktemp)
+  _render_managed_source "$src" "$dest" "$tmp"
   # Substitution writes through a 0600 mktemp, which strips the source's
-  # executable bit — fatal for hook scripts (e.g. check-archived-docs.sh)
-  # that must be runnable. Propagate +x when the blueprint source is
-  # executable so cp carries it onto the deployed file.
+  # executable bit — fatal for hook scripts. Propagate +x, same as
+  # deploy_overwrite_file_rendered.
   [[ -x "$src" ]] && chmod +x "$tmp"
   deploy_overwrite_file "$tmp" "$dest" "$label"
   rm -f "$tmp"
@@ -891,13 +1020,13 @@ _apply_deploy() {
   local mode=$1 dest=$2 src=$3
   case "$mode" in
     overwrite)
-      deploy_overwrite_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
+      deploy_overwrite_file_rendered "$src" "$dest" "${FILE_SOURCE[$dest]}"
       ;;
     overwrite_raw)
       deploy_overwrite_file "$src" "$dest" "${FILE_SOURCE[$dest]}"
       ;;
     merge)
-      [[ -f "$dest" ]] || { mkdir -p "$(dirname "$dest")"; echo '{}' > "$dest"; }
+      _ensure_merge_dest "$dest"
       deploy_merge_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
       ;;
     marker_block)
@@ -920,7 +1049,7 @@ _incoming_matches_dest() {
     overwrite)
       local tmp rc
       tmp=$(mktemp)
-      _substitute_file_to "$src" "$tmp" 2>/dev/null
+      _render_managed_source "$src" "$dest" "$tmp" 2>/dev/null
       cmp -s "$tmp" "$dest"
       rc=$?
       rm -f "$tmp"
@@ -938,8 +1067,11 @@ _incoming_matches_dest() {
 # "      backup: <path>" line the original bin/aicoding-update backup_drifted
 # emitted, so users still see exactly where the backup landed.
 _backup_file() {
-  local dest=$1 stamp
+  local dest=$1 stamp mode
   stamp=$(date +%Y%m%d-%H%M%S)
-  cp "$dest" "$dest.bak.$stamp"
+  # A backup of a credential-bearing file is a second copy of the
+  # credential; it gets the source's mode, never the ambient umask.
+  mode=$(stat -c '%a' "$dest")
+  _write_atomic "$dest" "$dest.bak.$stamp" "$mode"
   echo "      backup: $dest.bak.$stamp"
 }

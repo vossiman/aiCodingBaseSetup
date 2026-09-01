@@ -6,9 +6,11 @@
 //
 // This is a SHIM, deliberately. It does not implement any deny rules of its
 // own: it pipes the tool call into configs/claude/hooks/bw-deny-files.sh —
-// the same 572-line script Claude Code and codex run — and honours the
-// decision that comes back. One implementation of the rules, so pi can never
-// drift from the other two harnesses.
+// the very same script Claude Code and codex run — and honours the decision
+// that comes back. One implementation of the rules, so pi can never drift
+// from the other two harnesses. That is also why the 2026-08-31 narrowing
+// (a protected path named inside a quoted argument to a non-reader is prose,
+// not a read; AICODINGBASESETUP-6) needed no edit here: pi inherits it.
 //
 // It replaces bw-AICode's vendored extension, which only activated when
 // BW_DENY_PATTERNS_FILE was set (i.e. inside the bubblewrap sandbox) and was

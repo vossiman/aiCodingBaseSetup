@@ -756,6 +756,14 @@ EOF
   [ "$hash" != "null" ]
 }
 
+@test "container profile keeps codex automode" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  run grep -E '^approval_policy = "never"$' "$HOME/.codex/config.toml"
+  [ "$status" -eq 0 ]
+  run grep -E '^sandbox_mode = "danger-full-access"$' "$HOME/.codex/config.toml"
+  [ "$status" -eq 0 ]
+}
+
 @test "first-deploy: cursor mcp.json merges 5 blueprint servers without dropping user adds" {
   # Pre-create ~/.cursor/mcp.json with one user-added server. The merge
   # pipeline must preserve it while adding the blueprint's 5 servers.
@@ -1232,4 +1240,136 @@ LDD
   [ -L "$HOME/.local/bin/clip-x11-bridge" ]
   [ -x "$HOME/.local/bin/clip-x11-bridge" ]
   readlink "$HOME/.local/bin/clip-x11-bridge" | grep -q "bin/clip-x11-bridge"
+}
+
+@test "no deployed agent-readable markdown contains a substituted secret" {
+  # The regression test that would have caught CAF-003: every *.md skill went
+  # through the secret-substitution path, so the live Cloudflare token sat in
+  # a file an agent must READ to use the skill.
+  #
+  # It guards the ROUTE, not today's content. Every agent-readable source
+  # below gets a probe placeholder planted in the blueprint copy first, so a
+  # routing regression alone trips this test — without the probes it could
+  # only fail if someone ALSO reintroduced a placeholder into a real source,
+  # which makes it an assertion that cannot fail on its own.
+  blueprint_copy
+
+  # Fingerprinted fakes, seeded into the STORE rather than the environment:
+  # load_or_prompt_secrets re-exports every key from the secrets file, so an
+  # exported value is clobbered to empty before substitution ever runs and
+  # the assertion below would pass for the wrong reason.
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<'EOF'
+CLOUDFLARE_API_TOKEN=FPRINT-CF-TOKEN-2b9d41
+CLOUDFLARE_ACCOUNT_ID=FPRINT-CF-ACCT-2b9d41
+FIRECRAWL_API_KEY=FPRINT-FC-2b9d41
+BRAVE_API_KEY=FPRINT-BR-2b9d41
+MEMORY_ROUTER_TOKEN=FPRINT-MR-2b9d41
+EOF
+  chmod 600 "$HOME/.aicodingsetup/.secrets.env"
+
+  # One probe per agent-readable destination in the managed set: a skill, a
+  # slash command, the global CLAUDE.md, codex's AGENTS.md, and a subagent
+  # definition. BRAVE_API_KEY is a live substitution placeholder, so a probe
+  # that renders becomes FPRINT-BR-2b9d41 on disk.
+  local probe='PROBE (test fixture, not real guidance): {{BRAVE_API_KEY}}'
+  local src
+  for src in skills/cloudflare-browser/SKILL.md \
+             commands/housekeep.md \
+             configs/claude/CLAUDE.md \
+             configs/codex/AGENTS.md \
+             configs/claude/agents/llmwiki-distiller.md; do
+    [ -f "$BP/$src" ]
+    printf '\n%s\n' "$probe" >> "$BP/$src"
+  done
+
+  run bash "$BP/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+
+  # Every probe must have survived VERBATIM: reaching the deployed file with
+  # the placeholder intact is the proof it never went through substitution.
+  local dest
+  for dest in "$HOME/.claude/skills/cloudflare-browser/SKILL.md" \
+              "$HOME/.claude/commands/housekeep.md" \
+              "$HOME/.claude/CLAUDE.md" \
+              "$HOME/.codex/AGENTS.md" \
+              "$HOME/.claude/agents/llmwiki-distiller.md"; do
+    [ -f "$dest" ]
+    grep -qF '{{BRAVE_API_KEY}}' "$dest"
+  done
+
+  [ -d "$HOME/.claude/skills" ]
+  [ -d "$HOME/.claude/commands" ]
+  [ -d "$HOME/.claude/agents" ]
+  run grep -rl 'FPRINT-' \
+    "$HOME/.claude/skills" "$HOME/.claude/commands" "$HOME/.claude/agents" \
+    "$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md"
+  # grep exits 1 when it finds nothing, which is the passing case.
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "a sync right after install leaves the prose probes untouched" {
+  # The install path and the sync path must agree on prose-vs-config, or
+  # every agent-readable file reports phantom drift forever (and a sync would
+  # re-substitute secrets into files install.sh had kept clean).
+  #
+  # This is the only test in this file that runs the REAL sync.sh, so it owns
+  # two obligations the rest of the file does not have:
+  #
+  #  1. _sync_binaries (lib/sync.sh) runs `agent update` / `cursor-agent
+  #     update` / the codex updater whenever those binaries are on PATH.
+  #     setup() deliberately leaves codex/agent/cursor-agent unstubbed so the
+  #     dedicated ensure_codex / ensure_cursor_agent tests can stage their own
+  #     present/absent scenarios, so the stubs go HERE rather than there.
+  #     Unstubbed, this test makes live agent-CLI network calls (2026-08-08,
+  #     #56: five tests hitting a live CLI at 146-175s each set the suite
+  #     wall). CI has no such binaries, so an unstubbed reference fails there.
+  #  2. _sync_devcontainer_pin sed -i's the CWD repo's
+  #     .devcontainer/devcontainer.json, and run.sh leaves the cwd at
+  #     $BLUEPRINT_ROOT. See the cd below.
+  local cmd
+  for cmd in codex agent cursor-agent; do
+    printf '#!/bin/sh\nexit 0\n' > "$TMPDIR/stubs/$cmd"
+    chmod +x "$TMPDIR/stubs/$cmd"
+  done
+
+  # cwd must leave the real checkout: _sync_devcontainer_pin targets the
+  # cwd's repo, and tests must never write into $BLUEPRINT_ROOT. It is inert
+  # only because this repo happens to have no .devcontainer/ — luck, not
+  # design. (Same guard as tests/bats/e2e.bats.) Everything below uses
+  # absolute paths, so this is safe from here on.
+  cd "$TMPDIR"
+
+  blueprint_copy
+  mkdir -p "$HOME/.aicodingsetup"
+  printf 'BRAVE_API_KEY=FPRINT-BR-2b9d41\n' > "$HOME/.aicodingsetup/.secrets.env"
+  chmod 600 "$HOME/.aicodingsetup/.secrets.env"
+
+  local probe='PROBE (test fixture, not real guidance): {{BRAVE_API_KEY}}'
+  printf '\n%s\n' "$probe" >> "$BP/configs/claude/CLAUDE.md"
+  printf '\n%s\n' "$probe" >> "$BP/skills/cloudflare-browser/SKILL.md"
+  (cd "$BP" && git add -A && git -c user.email=t@t -c user.name=t commit -q -m probes)
+
+  bash "$BP/install.sh" </dev/null
+  grep -qF '{{BRAVE_API_KEY}}' "$HOME/.claude/CLAUDE.md"
+
+  export AICODING_UPDATE_STATE="$TMPDIR/state/updates"
+  run env AICODING_BLUEPRINT_CLONE="$BP" \
+    bash -c ". \"$BP/lib/sync.sh\"; aicoding_sync --yes"
+  [ "$status" -eq 0 ]
+  # The probes are still verbatim afterwards: sync did not re-substitute.
+  grep -qF '{{BRAVE_API_KEY}}' "$HOME/.claude/CLAUDE.md"
+  grep -qF '{{BRAVE_API_KEY}}' "$HOME/.claude/skills/cloudflare-browser/SKILL.md"
+  run grep -rl 'FPRINT-' "$HOME/.claude/CLAUDE.md" "$HOME/.claude/skills"
+  [ "$status" -eq 1 ]
+  # teardown rm -rf's $TMPDIR; do not sit in it.
+  cd /
+}
+
+@test "install.sh deploys the cloudflare-render broker as an executable" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ -x "$HOME/.local/bin/cloudflare-render" ]
+  # The skill documents the command; the command owns the credential.
+  grep -q 'cloudflare-render' "$HOME/.claude/skills/cloudflare-browser/SKILL.md"
 }

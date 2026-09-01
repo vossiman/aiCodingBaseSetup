@@ -11,10 +11,10 @@ This file is intended to ship in a PUBLIC repo. It contains no credential:
 only the path to the store, and the rules below that keep the value from
 escaping.
 
-  1. The destination host is pinned. KANBAN_URL may override it for testing,
-     but only to an https URL or an explicit loopback address -- so the token
-     cannot be redirected to an attacker's host by setting an env var, and is
-     never sent in plaintext.
+  1. The destination host is pinned to DEFAULT_URL. KANBAN_URL overrides it
+     only for a loopback test server, and when it does, the credential must
+     be injected via KANBAN_TEST_TOKEN -- the protected store is not read.
+     So no environment variable can redirect the token to another host.
   2. Redirects are refused. urllib re-sends Authorization to whatever a
      redirect names, including another origin; that is the classic way a
      bearer token leaks. A 3xx is an error here, not something to follow.
@@ -60,22 +60,47 @@ def die(message: str) -> "NoReturn":  # noqa: F821
 
 
 def base_url() -> str:
-    """The board's address, refusing anything that would expose the token."""
-    url = os.environ.get("KANBAN_URL", DEFAULT_URL).rstrip("/")
+    """The board's address. The destination is PINNED.
+
+    KANBAN_URL exists for the test server and nothing else: it is honoured
+    only for a loopback address. An https override used to be accepted,
+    which meant one environment variable could aim the bearer token at any
+    host on the internet -- the deny hook cannot help, because setting
+    KANBAN_URL names no secret. Loopback-only is what makes the docstring's
+    promise true.
+    """
+    override = os.environ.get("KANBAN_URL")
+    if not override:
+        return DEFAULT_URL
+    url = override.rstrip("/")
     parts = urllib.parse.urlsplit(url)
-    if parts.scheme == "https":
-        return url
-    if parts.scheme == "http" and (parts.hostname or "") in LOOPBACK:
+    if (parts.hostname or "") in LOOPBACK:
         return url
     die(
-        "KANBAN_URL must be https, or http on loopback for testing; "
-        f"refusing to send a bearer token to a {parts.scheme or 'schemeless'} URL"
+        "KANBAN_URL may only name a loopback test server; refusing to send "
+        f"a bearer token to {parts.hostname or 'a schemeless URL'}"
     )
 
 
 def token() -> str:
-    """Read KANBAN_TOKEN out of the secrets store. The value is returned to
-    exactly one caller, which puts it in a header and drops it."""
+    """Read the credential. Returned to exactly one caller, which puts it in
+    a header and drops it.
+
+    When KANBAN_URL is set we are talking to a test server, and the real
+    credential has no business being in that request: the value must be
+    injected through KANBAN_TEST_TOKEN instead. This is belt to
+    base_url()'s braces -- even if a loopback destination were somehow
+    hostile, it would receive a fake.
+    """
+    if os.environ.get("KANBAN_URL"):
+        value = os.environ.get("KANBAN_TEST_TOKEN", "")
+        if not value:
+            die(
+                "KANBAN_URL is set, so this is a test run; supply a fake "
+                "credential in KANBAN_TEST_TOKEN. The protected store is "
+                "not read for a test destination."
+            )
+        return value
     if not SECRETS.is_file():
         die(f"no secrets store at {SECRETS}")
     for line in SECRETS.read_text().splitlines():
@@ -226,7 +251,12 @@ def selftest() -> int:
     store.mkdir()
     (store / ".secrets.env").write_text(f"OTHER=x\nKANBAN_TOKEN={fake}\n")
 
-    env = {**os.environ, "HOME": home, "KANBAN_URL": f"http://127.0.0.1:{port}"}
+    env = {
+        **os.environ,
+        "HOME": home,
+        "KANBAN_URL": f"http://127.0.0.1:{port}",
+        "KANBAN_TEST_TOKEN": fake,
+    }
     failures = []
 
     def run(args, label):
@@ -253,10 +283,10 @@ def selftest() -> int:
     if len(seen) > before + 1:
         failures.append("redirect: Authorization was re-sent to the new location")
 
-    env["KANBAN_URL"] = "http://kanban.example.com"
-    out = run(["--list-tickets"], "plaintext")
-    if "must be https" not in out:
-        failures.append("plaintext: a non-loopback http URL was not refused")
+    env["KANBAN_URL"] = "https://kanban.example.invalid"
+    out = run(["--list-tickets"], "arbitrary https host")
+    if "loopback" not in out:
+        failures.append("destination: an arbitrary https host was not refused")
 
     srv.shutdown()
     for f in failures:
@@ -264,7 +294,7 @@ def selftest() -> int:
     if failures:
         return 1
     print("selftest: ok — token never reached the output; "
-          "redirects refused; plaintext destinations refused")
+          "redirects refused; non-loopback destinations refused")
     return 0
 
 

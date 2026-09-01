@@ -11,7 +11,10 @@ deploy_all_managed_files() {
   while IFS='|' read -r dest mode source; do
     [[ -z "$dest" ]] && continue
     if [[ -f "$SCRIPT_DIR/$source" ]]; then
-      deploy_overwrite_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
+      # _rendered, not _substituted: the inventory mixes configs with
+      # markdown every agent reads (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md,
+      # ~/.claude/agents/*.md), and the destination decides which is which.
+      deploy_overwrite_file_rendered "$SCRIPT_DIR/$source" "$dest" "$source"
       ok "deployed $dest"
     else
       warn "missing source in blueprint: $source — skipping $dest"
@@ -21,8 +24,7 @@ deploy_all_managed_files() {
   while IFS='|' read -r dest mode source; do
     [[ -z "$dest" ]] && continue
     if [[ -f "$SCRIPT_DIR/$source" ]]; then
-      mkdir -p "$(dirname "$dest")"
-      [[ -f "$dest" ]] || echo '{}' > "$dest"
+      _ensure_merge_dest "$dest"
       deploy_merge_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
       ok "merged $dest"
     fi
@@ -36,7 +38,9 @@ deploy_all_managed_files() {
   # Skills — every file of every skill dir, via the same enumeration the
   # sync inventory uses (enumerate_skill_files in blueprint-deploy.sh).
   # Divergence between the two paths would get files to_remove'd by sync.
-  # Markdown is substituted; everything else (binaries, CSS, JSON) deploys
+  # Markdown gets {{HOME}} expanded and NOTHING else (CAF-003: an agent must
+  # read a skill to use it, so a substituted credential landed in model
+  # context on every use). Everything else (binaries, CSS, JSON) deploys
   # verbatim — the sed substitution pass corrupts non-text files.
   mkdir -p "$CLAUDE_DIR/skills"
   local skill_dir skill_rel src_file dest_file
@@ -49,7 +53,7 @@ deploy_all_managed_files() {
     dest_file="$CLAUDE_DIR/skills/$skill_rel"
     mkdir -p "$(dirname "$dest_file")"
     if [[ "$skill_rel" == *.md ]]; then
-      deploy_overwrite_file_substituted "$src_file" "$dest_file" "skills/$skill_rel"
+      deploy_overwrite_file_prose "$src_file" "$dest_file" "skills/$skill_rel"
     else
       deploy_overwrite_file "$src_file" "$dest_file" "skills/$skill_rel"
     fi
@@ -62,7 +66,7 @@ deploy_all_managed_files() {
   for cmd_file in "$SCRIPT_DIR/commands"/*.md; do
     [[ ! -f "$cmd_file" ]] && continue
     cmd_name=$(basename "$cmd_file")
-    deploy_overwrite_file_substituted "$cmd_file" "$CLAUDE_DIR/commands/$cmd_name" "commands/$cmd_name"
+    deploy_overwrite_file_prose "$cmd_file" "$CLAUDE_DIR/commands/$cmd_name" "commands/$cmd_name"
     ok "command $cmd_name installed"
   done
 
@@ -199,7 +203,9 @@ adopt_existing_files() {
             '{mode:"overwrite",source:$s,deployed_hash:$h}')"
       adopted+=("$dest")
     elif [[ -f "$SCRIPT_DIR/$source" ]]; then
-      deploy_overwrite_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
+      # Same dest-driven choice as deploy_all_managed_files above; adopt must
+      # not be the one path that still substitutes secrets into prose.
+      deploy_overwrite_file_rendered "$SCRIPT_DIR/$source" "$dest" "$source"
       deployed+=("$dest")
     fi
   done < <(managed_inventory_overwrite)
@@ -211,8 +217,7 @@ adopt_existing_files() {
         "$(jq -n --arg s "$source" '{mode:"merge",source:$s}')"
       adopted+=("$dest")
     elif [[ -f "$SCRIPT_DIR/$source" ]]; then
-      mkdir -p "$(dirname "$dest")"
-      echo '{}' > "$dest"
+      _ensure_merge_dest "$dest"
       deploy_merge_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
       deployed+=("$dest")
     fi

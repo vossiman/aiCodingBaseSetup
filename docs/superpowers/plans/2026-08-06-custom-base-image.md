@@ -18,7 +18,7 @@
 - No nvm/nvs anywhere in the image — Node comes from NodeSource apt. (The nvs `BASH_FUNC` breakage is a universal-only disease; do not reintroduce it.)
 - Agent CLI seeds (claude, opencode, codex, cursor-agent) live in **user-owned `/home/codespace/.local/bin`** (not a root-owned system path): `lib/sync.sh` `_sync_binaries` refreshes via each CLI's *self-updater*, which must be able to write its install location; `ensure_*` in `lib/provision-system.sh` short-circuits when the binary is present there. Nothing may be seeded into mount-shadowed paths: `~/.claude`, `~/.codex`, `~/.cursor`, `~/.local/share/opencode`, `~/.aicodingsetup` are ALL host binds at runtime — content baked there is invisible.
 - Tests: ALWAYS run via `bash tests/bats/run.sh` (never bare bats). New tests must be purely static (file inspection with jq/grep) — no network, no docker, no daemon starts, no writes into `$BLUEPRINT_ROOT`.
-- All work commits to `feat/base-image-spec` in `devpod/aicoding`; `main` is protected — the PR is #48.
+- All work commits to `feat/base-image-spec` in `devpod/aicoding`; integration is via PR — the PR is #48.
 
 ---
 

@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""cloudflare-render — Cloudflare Browser Rendering, without handing an
+agent the credential.
+
+Same shape as git-credential-aicoding and kanban-post: the value is read
+from the estate's secrets store inside THIS process, used to build exactly
+one request, and never printed. That is what lets the skill document a
+command instead of a token.
+
+Why this exists at all: an agent must READ a skill before it can use one,
+so a credential rendered into skill prose lands in model context, persisted
+transcripts and tool-call records on every routine use. Substituting values
+into agent-readable markdown is the defect; this is its replacement.
+
+  1. The API origin is pinned to api.cloudflare.com. CF_API_BASE overrides
+     it only for a loopback test server, and then the credential must be
+     injected via CF_TEST_TOKEN -- the store is not read.
+  2. Redirects are refused. urllib re-sends Authorization to whatever a
+     redirect names, which is the classic bearer-token leak.
+  3. Nothing prints a traceback, and everything printed goes through
+     scrub().
+
+Usage:
+  cloudflare-render <url> [format]        # default format: markdown
+  cloudflare-render <url> scrape --selectors h1,p
+  cloudflare-render <url> json --prompt "extract the price"
+
+Formats: markdown content screenshot pdf snapshot scrape json links crawl
+Binary formats (screenshot, pdf) are written to a file and the PATH is
+printed; everything else prints the response body.
+"""
+import argparse
+import json
+import os
+import pathlib
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+API_BASE = "https://api.cloudflare.com/client/v4"
+SECRETS = pathlib.Path.home() / ".aicodingsetup" / ".secrets.env"
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+FORMATS = {
+    "markdown", "content", "screenshot", "pdf", "snapshot",
+    "scrape", "json", "links", "crawl",
+}
+BINARY_FORMATS = {"screenshot": "png", "pdf": "pdf"}
+
+
+def die(message: str) -> "NoReturn":  # noqa: F821
+    """Exit with a short message. Never a traceback: a frame dump would
+    carry the request object, and the Authorization header with it, into
+    whatever log caught it."""
+    sys.exit(f"cloudflare-render: {message}")
+
+
+def api_base() -> str:
+    """The API origin. PINNED; CF_API_BASE is a loopback-only test hook.
+
+    Scheme, host and port all come from one of two places: the constant
+    above, or a loopback address. One environment variable must never be
+    able to aim a bearer token at another host, and setting CF_API_BASE
+    names no secret, so the deny hook cannot help here.
+    """
+    override = os.environ.get("CF_API_BASE")
+    if not override:
+        return API_BASE
+    parts = urllib.parse.urlsplit(override)
+    if (parts.hostname or "") in LOOPBACK:
+        return override.rstrip("/")
+    die(
+        "CF_API_BASE may only name a loopback test server; refusing to send "
+        f"a bearer token to {parts.hostname or 'a schemeless URL'}"
+    )
+
+
+def _from_store(key: str) -> str:
+    if not SECRETS.is_file():
+        die(f"no secrets store at {SECRETS}")
+    for line in SECRETS.read_text().splitlines():
+        line = line.strip()
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return ""
+
+
+def token() -> str:
+    """Read the credential. Returned to exactly one caller, which puts it in
+    a header and drops it.
+
+    With CF_API_BASE set we are talking to a test server, and the real
+    credential has no business being in that request: it must be injected
+    through CF_TEST_TOKEN instead. Belt to api_base()'s braces -- even a
+    hostile loopback destination only ever receives a fake.
+    """
+    if os.environ.get("CF_API_BASE"):
+        value = os.environ.get("CF_TEST_TOKEN", "")
+        if not value:
+            die(
+                "CF_API_BASE is set, so this is a test run; supply a fake "
+                "credential in CF_TEST_TOKEN. The protected store is not "
+                "read for a test destination."
+            )
+        return value
+    value = _from_store("CLOUDFLARE_API_TOKEN")
+    if not value:
+        die("CLOUDFLARE_API_TOKEN is not set in the secrets store")
+    return value
+
+
+def account_id() -> str:
+    if os.environ.get("CF_API_BASE"):
+        return os.environ.get("CF_TEST_ACCOUNT", "test-account")
+    value = _from_store("CLOUDFLARE_ACCOUNT_ID")
+    if not value:
+        die("CLOUDFLARE_ACCOUNT_ID is not set in the secrets store")
+    return value
+
+
+def scrub(text: str) -> str:
+    """Last line of defence. A server that echoes request headers back must
+    not turn into a leak, so everything printed passes through here."""
+    try:
+        secret = token()
+    except SystemExit:
+        return text
+    return text.replace(secret, "<redacted>") if secret else text
+
+
+class NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect. Following one would re-send Authorization to
+    whatever host the response named."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        die(f"refusing to follow a {code} redirect to another location")
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(prog="cloudflare-render")
+    p.add_argument("url")
+    p.add_argument("format", nargs="?", default="markdown")
+    p.add_argument("--selectors", default=None,
+                   help="comma-separated CSS selectors, for the scrape format")
+    p.add_argument("--prompt", default=None,
+                   help="extraction prompt, for the json format")
+    p.add_argument("--output", default=None,
+                   help="destination path for screenshot/pdf")
+    a = p.parse_args()
+
+    # "redirect" is not a real Cloudflare format; the test server uses it to
+    # prove a 3xx is refused. Let it through the name check only for that.
+    if a.format not in FORMATS and not (
+        a.format == "redirect" and os.environ.get("CF_API_BASE")
+    ):
+        die(f"unknown format {a.format!r}; expected one of {' '.join(sorted(FORMATS))}")
+
+    payload: dict = {"url": a.url}
+    if a.format == "screenshot":
+        payload["fullPage"] = True
+    if a.format == "scrape":
+        if not a.selectors:
+            die("the scrape format needs --selectors")
+        payload["selectors"] = [s.strip() for s in a.selectors.split(",") if s.strip()]
+    if a.format == "json":
+        if not a.prompt:
+            die("the json format needs --prompt")
+        payload["prompt"] = a.prompt
+    if a.format == "crawl":
+        payload.update({"limit": 10, "formats": ["markdown"]})
+
+    url = f"{api_base()}/accounts/{account_id()}/browser-rendering/{a.format}"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={
+            "Authorization": f"Bearer {token()}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    opener = urllib.request.build_opener(NoRedirects)
+    try:
+        with opener.open(req, timeout=60) as r:
+            body = r.read()
+            status = r.status
+    except urllib.error.HTTPError as e:
+        body = e.read()
+        status = e.code
+    except urllib.error.URLError as e:
+        die(f"cannot reach the Cloudflare API: {e.reason}")
+    except Exception as e:  # deliberately broad: never surface a traceback
+        die(f"request failed: {type(e).__name__}")
+
+    if a.format in BINARY_FORMATS and status < 400:
+        dest = a.output or f"/tmp/cf-render.{BINARY_FORMATS[a.format]}"
+        pathlib.Path(dest).write_bytes(body)
+        print(dest)
+        return 0
+
+    print(scrub(body.decode(errors="replace")))
+    return 0 if status < 400 else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -117,6 +117,53 @@ CONTENT_COMMANDS=(
   tar cp mv rsync scp find zip unzip 7z 7za dd cpio pax gpg openssl
 )
 
+# The ONLY commands allowed to name a protected path inside a quoted argument
+# without that counting as a read.
+#
+# 2026-08-31: writing about a protected path is not reading it. Refusing
+# `kanban-post --body "...~/.codex/config.toml..."` blocked incident
+# write-ups and ticket bodies, which are exactly the texts that have to name
+# these files, and a hook that fires on a harmless mention trains an agent to
+# reword until something passes. See AICODINGBASESETUP-6.
+#
+# This is an ALLOWLIST, and the first cut of this change got that backwards.
+# It shipped a denylist of ~90 reader names instead, on the theory that an
+# omission costs only a false positive. The opposite is true: an omission
+# costs a LEAK. Review found `git diff --no-index`, `git hash-object`,
+# `gzip -c`, `xz -c`, `bat`, `column`, `pandoc`, `docker cp`, `aws s3 cp`,
+# `rclone copy`, `go run`, `make -f`, `busybox cat` and `ugrep` all missing,
+# every one of them a real read that the pre-change hook denied. A denylist of
+# things that read bytes can never be complete, so the question is inverted:
+# not "does this command read?" but "is this one of the handful of commands we
+# have positively established does not?".
+#
+# Keep this list SHORT and add to it only for an observed false positive.
+# Anything unrecognised keeps the strict rule, which is merely the behaviour
+# every command had before this change.
+#
+# Every entry must be a SINGLE-PURPOSE command, so that knowing its name is
+# enough to know it does not read a file. `gh` was briefly on this list,
+# restricted to its `issue` and `pr` subcommands and guarded against
+# `--body-file`. Both halves of that were wrong. The subcommand test was an
+# unanchored substring, so the word `pr` inside quoted prose qualified
+# `gh gist create "$SECRETS" -d 'for pr notes'`; and the file-option guard was
+# an enumeration of bad flags, which is the very shape this allowlist exists
+# to replace — it missed `-T`/`--template`. A multi-verb tool cannot be
+# allowlisted by its name, and no false positive ever asked for it.
+NON_READER_COMMANDS=(
+  kanban-post
+  echo
+  printf
+  true
+  false
+  :
+)
+
+# Set per tool call. 1 only for a Bash command whose every segment is headed
+# by an allowlisted non-reader; every other path keeps the pre-2026-08-31
+# strict behaviour.
+PROSE_MENTION_OK=0
+
 # Same idea, matched case-INSENSITIVELY. Kept separate because the patterns
 # above must stay case-sensitive: env var names are uppercase, and matching
 # them loosely would deny `grep -rn gh_token docs/`. Here the filter word is
@@ -231,6 +278,111 @@ is_sensitive_root() {
   for pattern in "${SENSITIVE_DIRS[@]}"; do
     case "$pattern" in *'*') ;; *) glob_match "$p" "$pattern" && return 0 ;; esac
   done
+  return 1
+}
+
+# segment_head <segment> — the FIRST word of one command segment, exactly as
+# written. Nothing is skipped and nothing is stripped.
+#
+# No wrapper resolution: with an allowlist there is nothing to see through,
+# because `sudo`, `env` and `timeout` are not on the list and so fail closed by
+# themselves. That also removed a bug, since bare `timeout cat "$SECRETS"` (no
+# duration) once skipped two words and resolved the head past `cat`.
+#
+# No skipping of leading VAR=VALUE assignments either: `PATH=/tmp/evil:$PATH
+# echo "$SECRETS"` puts an attacker's `echo` first on PATH, so an assignment
+# prefix disqualifies the segment rather than being stepped over.
+#
+# Quotes are NOT stripped. The caller rejects a quoted head outright, because
+# `"cat" "$SECRETS"` runs cat exactly like `cat "$SECRETS"` does, and comparing
+# the literal `"cat"` against an allowlist would silently exempt it.
+# Non-zero when the segment has no word at all.
+segment_head() {
+  local -a w=()
+  read -r -a w <<< "$1"
+  (( ${#w[@]} )) || return 1
+  printf '%s' "${w[0]}"
+}
+
+# segment_is_non_reader <segment> — true only for a command positively known
+# not to read file contents. Anything else, including anything unrecognised,
+# is treated as a reader.
+segment_is_non_reader() {
+  local segment="$1" head allowed
+  head="$(segment_head "$segment")" || return 0   # no word at all: harmless
+  case "$head" in
+    # Any quoting character: `"cat"`, `'cat'` and `\cat` all run cat, so a head
+    # that is quoted at all is not something to reason about.
+    *[\"\'\\]*) return 1 ;;
+    # Any slash: the allowlist is a set of NAMES resolved through PATH, not of
+    # programs. `/tmp/evil/echo` and `./echo` share only a basename with the
+    # `echo` that was vetted, so path-qualification forfeits the exemption.
+    */*) return 1 ;;
+    # A leading assignment (see segment_head).
+    *=*) return 1 ;;
+  esac
+  for allowed in "${NON_READER_COMMANDS[@]}"; do
+    [[ "$head" == "$allowed" ]] && return 0
+  done
+  return 1
+}
+
+# command_is_prose_safe <command> — true when EVERY segment is headed by an
+# allowlisted non-reader.
+#
+# The split has to cover every way a second command can hide inside the first,
+# or an allowlisted head just carries an arbitrary reader as its payload:
+# command substitution `$(…)` and backticks, and PROCESS substitution `<(…)`
+# and `>(…)`. The last two are not a detail — `echo hi >(sh -c "cat $SECRETS >
+# /tmp/leak")` is a working exfiltration whose head word is `echo`.
+command_is_prose_safe() {
+  local segment
+  while IFS= read -r segment || [[ -n "$segment" ]]; do
+    [[ -z "${segment//[[:space:]]/}" ]] && continue
+    segment_is_non_reader "$segment" || return 1
+  done < <(printf '%s' "$1" | sed -E 's/(\|\||&&|\$\(|[<>]\(|[;|&`])/\n/g')
+  return 0
+}
+
+# quoted_regions <command> — the contents of every single- or double-quoted
+# region, one per line. A region that never closes (or spans a newline) is
+# simply not emitted, which fails toward blocking.
+quoted_regions() {
+  printf '%s' "$1" | awk '
+    {
+      q = ""; buf = ""
+      for (i = 1; i <= length($0); i++) {
+        c = substr($0, i, 1)
+        if (q == "") {
+          if (c == "\"" || c == "\047") { q = c; buf = "" }
+        } else if (c == q) {
+          print buf; q = ""; buf = ""
+        } else {
+          buf = buf c
+        }
+      }
+    }
+  '
+}
+
+# is_quoted_prose_mention <token> — true when the token is only being WRITTEN
+# ABOUT: it sits inside a quoted argument, and the command runs no reader.
+#
+# 2026-08-31: narrowed so that naming a protected path is not treated as
+# reading it. Prose about credential handling (a ticket body, an incident
+# write-up) is exactly the text that must name these files, and a hook that
+# fires on a harmless mention trains an agent to reword until something
+# passes, which is the workaround reflex the block exists to prevent. A path
+# handed to cat/tar/source/base64, an unquoted path, a redirection target and
+# every $VAR expansion still block. See AICODINGBASESETUP-6 for the four false
+# positives that paid for this.
+is_quoted_prose_mention() {
+  local needle="$1" region
+  [[ "$PROSE_MENTION_OK" == 1 ]] || return 1
+  [[ -n "$needle" ]] || return 1
+  while IFS= read -r region || [[ -n "$region" ]]; do
+    [[ "$region" == *"$needle"* ]] && return 0
+  done < <(quoted_regions "${CMD:-}")
   return 1
 }
 
@@ -396,6 +548,13 @@ case "$TOOL_NAME" in
     CMD="$(echo "$INPUT" | jq -r '.tool_input.command // empty')"
     [[ -z "$CMD" ]] && exit 0
 
+    # Only a real shell command can be prose about a path; an apply_patch body
+    # keeps the strict rule, and so does anything not on the non-reader
+    # allowlist.
+    if [[ "$TOOL_NAME" == "Bash" ]] && command_is_prose_safe "$CMD"; then
+      PROSE_MENTION_OK=1
+    fi
+
     # Pass -1 — token oracles that never name a denied file.
     for secret_pattern in "${SECRET_COMMAND_PATTERNS[@]}"; do
       if echo "$CMD" | grep -qE "$secret_pattern"; then
@@ -473,12 +632,12 @@ case "$TOOL_NAME" in
           # basename names a known-secret file or actually resolves.
           if [[ "$relative_to_sensitive" == 0 ]] \
              || basename_is_denied "$base" || [[ -e "$expanded" ]]; then
-            deny "$base"
+            is_quoted_prose_mention "$stripped" || deny "$base"
           fi
         fi
         [[ -e "$expanded" ]] || continue
         if is_denied_path "$expanded"; then
-          deny "$(basename -- "$expanded")"
+          is_quoted_prose_mention "$stripped" || deny "$(basename -- "$expanded")"
         fi
       # Keep quote characters until after command-word classification so a
       # quoted literal `"cd"` cannot alter cwd tracking. `stripped` above is

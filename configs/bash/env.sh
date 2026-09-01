@@ -20,7 +20,7 @@
 #   git            — git-credential-aicoding reads the file per request.
 #   gh             — ensure_gh_stored_auth (lib/sync.sh) logs in from the file
 #                    on every boot sync; gh then uses ~/.config/gh/hosts.yml.
-#   MCP configs    — substitute_secrets / _substitute_file_to
+#   MCP configs    — _substitute_file_to
 #                    (lib/blueprint-deploy.sh) expand {{FIRECRAWL_API_KEY}} &
 #                    co. at DEPLOY time, and load_secrets_env sources the file
 #                    itself for that. It never used the interactive shell.

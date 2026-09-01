@@ -4,6 +4,9 @@ setup() {
   TMPDIR=$(mktemp -d)
   export AICODING_MANIFEST="$TMPDIR/manifest.json"
   export HOME="$TMPDIR"
+  # umask 0002 is the container default and the condition under which the
+  # 664 modes were observed live.
+  umask 0002
 }
 
 teardown() {
@@ -436,7 +439,7 @@ EOF
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   export FIRECRAWL_API_KEY="sekret-value"
   manifest_stage_begin
-  deploy_overwrite_file_substituted "$TMPDIR/src" "$TMPDIR/dest" "configs/x"
+  deploy_overwrite_file_rendered "$TMPDIR/src" "$TMPDIR/dest" "configs/x"
   manifest_stage_commit
   # Nothing changed since deploy: must NOT be perpetually will_update.
   run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
@@ -449,7 +452,7 @@ EOF
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   export FIRECRAWL_API_KEY="sekret-value"
   manifest_stage_begin
-  deploy_overwrite_file_substituted "$TMPDIR/src" "$TMPDIR/dest" "configs/x"
+  deploy_overwrite_file_rendered "$TMPDIR/src" "$TMPDIR/dest" "configs/x"
   manifest_stage_commit
   printf 'key = "{{FIRECRAWL_API_KEY}}"\nextra = true\n' > "$TMPDIR/src"
   run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
@@ -464,7 +467,7 @@ EOF
   printf 'model = "m"\n\n[tui]\nstatus_line = ["run-state"]\n' > "$TMPDIR/src"
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   manifest_stage_begin
-  deploy_overwrite_file_substituted "$TMPDIR/src" "$TMPDIR/.codex/config.toml" "configs/codex/config.toml"
+  deploy_overwrite_file_rendered "$TMPDIR/src" "$TMPDIR/.codex/config.toml" "configs/codex/config.toml"
   manifest_stage_commit
   printf '\n[projects."/some/dir"]\ntrust_level = "trusted"\n' >> "$TMPDIR/.codex/config.toml"
   run classify_file "$TMPDIR/.codex/config.toml" "$TMPDIR/src" "overwrite"
@@ -477,7 +480,7 @@ EOF
   printf 'model = "m"\n' > "$TMPDIR/src"
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   manifest_stage_begin
-  deploy_overwrite_file_substituted "$TMPDIR/src" "$TMPDIR/.codex/config.toml" "configs/codex/config.toml"
+  deploy_overwrite_file_rendered "$TMPDIR/src" "$TMPDIR/.codex/config.toml" "configs/codex/config.toml"
   manifest_stage_commit
   printf 'model = "changed-by-user"\n\n[projects."/some/dir"]\ntrust_level = "trusted"\n' > "$TMPDIR/.codex/config.toml"
   printf 'model = "new-blueprint"\n' > "$TMPDIR/src"
@@ -520,6 +523,107 @@ EOF
   deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/nested/dir/dest" "configs/x"
   manifest_stage_commit
   [ -f "$TMPDIR/nested/dir/dest" ]
+}
+
+@test "deploy_overwrite_file: creates the destination at 0600" {
+  echo hello > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/out/dest" "label"
+  manifest_stage_commit
+  [ "$(stat -c '%a' "$TMPDIR/out/dest")" = "600" ]
+}
+
+@test "deploy_overwrite_file: narrows a permissive existing destination" {
+  echo hello > "$TMPDIR/src"
+  echo stale > "$TMPDIR/dest"
+  chmod 664 "$TMPDIR/dest"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/dest" "label"
+  manifest_stage_commit
+  # A bare cp preserves 664 here, which is how the credential-bearing skill
+  # file ended up group-readable.
+  [ "$(stat -c '%a' "$TMPDIR/dest")" = "600" ]
+}
+
+@test "deploy_overwrite_file: keeps the executable bit at 0700" {
+  printf '#!/bin/sh\n' > "$TMPDIR/src"
+  chmod +x "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/dest" "label"
+  manifest_stage_commit
+  [ "$(stat -c '%a' "$TMPDIR/dest")" = "700" ]
+  [ -x "$TMPDIR/dest" ]
+}
+
+@test "_backup_file: a backup inherits the restrictive mode" {
+  echo secret > "$TMPDIR/dest"
+  chmod 600 "$TMPDIR/dest"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run _backup_file "$TMPDIR/dest"
+  [ "$status" -eq 0 ]
+  local bak; bak=$(ls "$TMPDIR"/dest.bak.* | head -1)
+  [ "$(stat -c '%a' "$bak")" = "600" ]
+}
+
+@test "_ensure_merge_dest: an empty merge destination is created at 0600" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  _ensure_merge_dest "$TMPDIR/merge/target.json"
+  [ "$(stat -c '%a' "$TMPDIR/merge/target.json")" = "600" ]
+  [ "$(cat "$TMPDIR/merge/target.json")" = "{}" ]
+}
+
+@test "deploy_merge_file: narrows an ALREADY-EXISTING permissive target to 0600" {
+  # The atomic-0600 guarantee used to hold only for files _json_merge_into
+  # created: its final write was a plain `> "$target"` redirect, which keeps
+  # an existing file's mode. So on every machine provisioned before that
+  # work, ~/.cursor/mcp.json and ~/.config/opencode/opencode.json — the two
+  # most credential-dense deployed files (FIRECRAWL_API_KEY, BRAVE_API_KEY,
+  # the MEMORY_ROUTER_TOKEN bearer header) — stayed 664 forever. Start from
+  # 664, as those machines are, not from nothing.
+  echo '{"userKey":"userValue"}' > "$TMPDIR/dest"
+  chmod 664 "$TMPDIR/dest"
+  [ "$(stat -c '%a' "$TMPDIR/dest")" = "664" ]   # before
+  echo '{"apiKey":"sekret-value"}' > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  ( umask 0002; deploy_merge_file "$TMPDIR/src" "$TMPDIR/dest" "configs/x" )
+  manifest_stage_commit
+  [ "$(stat -c '%a' "$TMPDIR/dest")" = "600" ]   # after
+  jq -e '.userKey == "userValue"' "$TMPDIR/dest"
+  jq -e '.apiKey == "sekret-value"' "$TMPDIR/dest"
+}
+
+@test "deploy_merge_file: a first-install copy lands at 0600 under a lax umask" {
+  # The absent-target branch of _json_merge_into was a bare `cp`, which
+  # creates under the ambient umask (0664 under umask 0002).
+  echo '{"apiKey":"sekret-value"}' > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  ( umask 0002; deploy_merge_file "$TMPDIR/src" "$TMPDIR/fresh/dest.json" "configs/x" )
+  manifest_stage_commit
+  [ "$(stat -c '%a' "$TMPDIR/fresh/dest.json")" = "600" ]
+  jq -e '.apiKey == "sekret-value"' "$TMPDIR/fresh/dest.json"
+}
+
+@test "_json_merge_into: leaves no temp file behind in the destination dir" {
+  mkdir -p "$TMPDIR/merge"
+  echo '{"a":1}' > "$TMPDIR/merge/dest.json"
+  echo '{"b":2}' > "$TMPDIR/src"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  _json_merge_into "$TMPDIR/merge/dest.json" "$TMPDIR/src"
+  run bash -c "ls -A '$TMPDIR/merge' | grep -c aicoding-deploy"
+  [ "$output" = "0" ]
+}
+
+@test "_ensure_merge_dest: leaves an existing destination untouched" {
+  mkdir -p "$TMPDIR/merge"
+  echo '{"k":"v"}' > "$TMPDIR/merge/target.json"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  _ensure_merge_dest "$TMPDIR/merge/target.json"
+  jq -e '.k == "v"' "$TMPDIR/merge/target.json"
 }
 
 @test "deploy_merge_file: preserves user-added top-level keys" {

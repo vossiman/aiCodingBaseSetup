@@ -23,6 +23,10 @@ setup() {
   KP="$BLUEPRINT_ROOT/bin/kanban-post"
   mkdir -p "$HOME/.aicodingsetup"
   printf 'OTHER=x\nKANBAN_TOKEN=%s\n' "$FAKE_TOKEN" > "$HOME/.aicodingsetup/.secrets.env"
+  # Test mode: KANBAN_URL is always a loopback server here, and the helper
+  # refuses to read the store when an override is present. The store above
+  # stays for the tests that assert on its absence or emptiness.
+  export KANBAN_TEST_TOKEN="$FAKE_TOKEN"
 }
 
 teardown() {
@@ -166,18 +170,39 @@ EOF
   export KANBAN_URL="http://kanban.example.com"
   run "$KP" --list-tickets
   [ "$status" -ne 0 ]
-  [[ "$output" == *"must be https"* ]]
+  [[ "$output" == *"loopback"* ]]
 }
 
-@test "an https destination is accepted" {
+@test "an arbitrary https destination is refused before the token is read" {
   export KANBAN_URL="https://kanban.example.invalid"
   run "$KP" --list-tickets
-  # Cannot resolve, which is the point: it got past the scheme check and
-  # failed on the network rather than being refused outright.
-  [[ "$output" == *"cannot reach the board"* ]]
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"loopback"* ]]
+  # It must fail on the destination rule, not on DNS: reaching the network
+  # would mean the check ran too late to matter.
+  [[ "$output" != *"cannot reach the board"* ]]
+}
+
+@test "a lookalike host is refused" {
+  export KANBAN_URL="https://kanban.dataprospectors.at.evil.example"
+  run "$KP" --list-tickets
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"loopback"* ]]
+}
+
+@test "test mode refuses to fall back to the protected store" {
+  # KANBAN_URL set, but no injected credential: the real store must not be
+  # consulted even though setup() wrote one.
+  export KANBAN_URL="http://127.0.0.1:9"
+  unset KANBAN_TEST_TOKEN
+  run "$KP" --list-tickets
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"KANBAN_TEST_TOKEN"* ]]
 }
 
 @test "a missing token is a clear error, not a traceback" {
+  unset KANBAN_TEST_TOKEN
+  unset KANBAN_URL
   rm "$HOME/.aicodingsetup/.secrets.env"
   run "$KP" --list-tickets
   [ "$status" -ne 0 ]
@@ -186,6 +211,8 @@ EOF
 }
 
 @test "an empty KANBAN_TOKEN is reported, not sent" {
+  unset KANBAN_TEST_TOKEN
+  unset KANBAN_URL
   printf 'KANBAN_TOKEN=\n' > "$HOME/.aicodingsetup/.secrets.env"
   run "$KP" --list-tickets
   [ "$status" -ne 0 ]

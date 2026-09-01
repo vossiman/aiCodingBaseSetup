@@ -18,7 +18,7 @@
 - Recursion guards (both): `LLMWIKI_DISTILLER=1` env check in the hook, `--settings '{"disableAllHooks": true}'` on the child.
 - Blueprint config files use `{{HOME}}` placeholders, never `$HOME`.
 - Run tests only through `tests/bats/run.sh` (e.g. `tests/bats/run.sh llmwiki-distill`), never bare `bats`.
-- `main` is protected — commits stay on this branch; integration is via PR at the end.
+- commits stay on this branch; integration is via PR at the end.
 
 ---
 
@@ -539,4 +539,4 @@ git log --oneline origin/main..HEAD
 git status --short
 ```
 
-Expected: the spec commits plus the three implementation commits; clean tree. Do NOT push or open the PR without the user — `main` is protected and merging needs their sign-off.
+Expected: the spec commits plus the three implementation commits; clean tree. Do NOT push or open the PR without the user — merging needs their sign-off.

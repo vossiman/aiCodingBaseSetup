@@ -353,3 +353,24 @@ EOF
   [[ "$output" == *"HOST-INSTALLER-RAN"* ]]
   [[ "$output" != *"CONTAINER-INSTALLER-RAN"* ]]
 }
+
+@test "host profile gets an on-request codex sandbox" {
+  export AICODINGSETUP_SKIP_NETWORK=1
+  run bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  [ "$status" -eq 0 ]
+  run grep -E '^approval_policy = "on-request"$' "$HOME/.codex/config.toml"
+  [ "$status" -eq 0 ]
+  run grep -E '^sandbox_mode = "workspace-write"$' "$HOME/.codex/config.toml"
+  [ "$status" -eq 0 ]
+}
+
+@test "host profile never ships danger-full-access" {
+  export AICODINGSETUP_SKIP_NETWORK=1
+  bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  # Match only the active assignment, not the enumerated values in the
+  # comment above it (which legitimately lists danger-full-access as one of
+  # the three possible sandbox_mode settings).
+  run grep -c '^sandbox_mode = "danger-full-access"$' "$HOME/.codex/config.toml"
+  # grep -c exits 1 with a count of 0 when nothing matches.
+  [ "$status" -eq 1 ]
+}

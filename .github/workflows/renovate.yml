@@ -1,0 +1,46 @@
+name: renovate
+
+# Deliberately no cron. PR #94 was closed 2026-08-20 because a weekly
+# Renovate PR per repo was not wanted. Security advisories reach us through
+# GitHub's own alerting, and this workflow is how a run gets triggered.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - renovate.json
+      - .github/workflows/renovate.yml
+
+permissions:
+  contents: read
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    # Inert until RENOVATE_TOKEN exists; skipping beats failing every run.
+    if: ${{ github.repository_owner == 'vossiman' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Check for the token
+        id: gate
+        env:
+          RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN }}
+        run: |
+          if [ -z "${RENOVATE_TOKEN}" ]; then
+            echo "RENOVATE_TOKEN is not set; skipping." >&2
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # NOTE: the user has been told this workflow is inert until a
+      # RENOVATE_TOKEN secret is added to the repo. Nothing runs before then.
+      - name: Renovate
+        if: steps.gate.outputs.ready == 'true'
+        uses: renovatebot/github-action@39b914146caeff8cd512e61c8992f1d5913af85c  # v46.2.5
+        env:
+          RENOVATE_TOKEN: ${{ secrets.RENOVATE_TOKEN }}
+        with:
+          configurationFile: renovate.json
+          token: ${{ secrets.RENOVATE_TOKEN }}

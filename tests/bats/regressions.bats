@@ -211,3 +211,30 @@ EOF
   echo "$output"
   [ "$status" -ne 0 ]
 }
+
+@test "no doc claims main is protected" {
+  # Verified 2026-08-31 with admin visibility: .protected is false and
+  # rulesets are empty on every repo in the estate. Branch protection is not
+  # wanted (spec decision 4), so a doc asserting it is a false guarantee.
+  # Grepping only CLAUDE.md left README.md and everything under docs/ free to
+  # re-assert it (two archived plans did). The guard covers every doc surface
+  # an agent or a human reads, not just the one that was wrong first.
+  run grep -rn 'main` is protected\|main is protected\|protected baseline' \
+    "$BLUEPRINT_ROOT/CLAUDE.md" "$BLUEPRINT_ROOT/README.md" \
+    "$BLUEPRINT_ROOT/docs"
+  echo "$output"
+  [ "$status" -eq 1 ]
+}
+
+@test "no ungated credential-substitution helper is reintroduced" {
+  # substitute_secrets and deploy_overwrite_file_substituted both expanded
+  # {{*_API_KEY}} with no _is_prose_dest gate, and both had no production
+  # callers. Kept around, the first future caller reintroduces CAF-003 (a
+  # live credential in a file an agent reads as prose) in a public repo.
+  # deploy_overwrite_file_rendered is the replacement: the DESTINATION
+  # decides prose-vs-config.
+  run grep -rn '^substitute_secrets()\|^deploy_overwrite_file_substituted()' \
+    "$BLUEPRINT_ROOT/lib" "$BLUEPRINT_ROOT/bin" "$BLUEPRINT_ROOT/install.sh"
+  echo "$output"
+  [ "$status" -eq 1 ]
+}
