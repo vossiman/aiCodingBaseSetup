@@ -158,3 +158,52 @@ STUB
   fi
   [ "$(jq_probe 'len(d["agents"])')" = "1" ]
 }
+
+@test "a garbage budget falls back to a default instead of crashing" {
+  export DVW_PROBE_BUDGET=garbage
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  echo "$output" | python3 -m json.tool >/dev/null
+}
+
+@test "a non-finite budget also falls back to a default" {
+  export DVW_PROBE_BUDGET=nan
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  echo "$output" | python3 -m json.tool >/dev/null
+}
+
+@test "collect_agents is cut off by its own share of the budget, tmux still answers" {
+  # A fixture pid whose cmdline is a FIFO gives a real, bounded wall-clock
+  # delay (a background writer only opens it after a fixed sleep) instead
+  # of racing fixture volume against machine speed: a pid-count fixture
+  # that reliably overruns on a slow CI runner finishes instantly on a
+  # fast one and never triggers the cutoff, and a fixture big enough to be
+  # safe on a fast runner turned this single test into a 2-minute outlier
+  # under parallel load in this repo's suite (verified: ~200k fixture pids
+  # took 126s wall here under `tests/bats/run.sh`'s parallel jobs, versus
+  # ~8s run alone). The FIFO trades that flakiness/cost for one guaranteed
+  # ~1.5s block on a single pid, independent of CPU speed or contention.
+  for pid in 10 11 12 13 14; do
+    d="$TMPDIR/proc/$pid"
+    mkdir -p "$d"
+    printf 'bash\n' > "$d/comm"
+    printf 'bash\0' > "$d/cmdline"
+    printf '%d (bash) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0\n' "$pid" > "$d/stat"
+  done
+  slow="$TMPDIR/proc/99999"
+  mkdir -p "$slow"
+  printf 'bash\n' > "$slow/comm"
+  printf '99999 (bash) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0\n' > "$slow/stat"
+  mkfifo "$slow/cmdline"
+  ( sleep 1.5; printf 'bash\0' > "$slow/cmdline" ) &
+  # Default (3 s) total budget: collect_agents' own 1 s cap is what must be
+  # exceeded by the 1.5 s FIFO delay; the rest of the default budget is what
+  # is left over for tmux to still answer from.
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  result="$(echo "$output" | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+print(d["partial"], d["tmux"] is not None)')"
+  [ "$result" = "True True" ]
+}

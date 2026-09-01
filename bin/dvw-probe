@@ -35,7 +35,8 @@ class Budget:
 def _run(argv, timeout):
     if timeout <= 0:
         raise subprocess.TimeoutExpired(argv, timeout)
-    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+                           errors="replace")
 
 
 def _int(s, default=None):
@@ -43,6 +44,16 @@ def _int(s, default=None):
         return int(s)
     except (TypeError, ValueError):
         return default
+
+
+def _budget_seconds(raw, default=3.0, lo=0.1, hi=60.0):
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if seconds != seconds or seconds in (float("inf"), float("-inf")):  # nan/inf
+        return default
+    return min(max(seconds, lo), hi)
 
 
 def collect_tmux(budget):
@@ -94,7 +105,8 @@ def _read(path):
         return f.read()
 
 
-def collect_agents(proc):
+def collect_agents(proc, budget):
+    deadline = time.monotonic() + budget.remaining(1.0)
     try:
         btime = None
         for line in _read(os.path.join(proc, "stat")).decode("ascii", "replace").splitlines():
@@ -104,6 +116,9 @@ def collect_agents(proc):
         my_uid = os.getuid()
         agents = []
         for name in os.listdir(proc):
+            if time.monotonic() >= deadline:
+                budget.partial = True
+                break
             if not name.isdigit():
                 continue
             pdir = os.path.join(proc, name)
@@ -142,6 +157,12 @@ def collect_agents(proc):
             except OSError:
                 cwd = None
             agents.append({"cli": cli, "pid": int(name), "started": started, "cwd": cwd})
+        if time.monotonic() >= deadline:
+            # Catches the case where the walk only went over budget on its
+            # last entry (e.g. a slow read on the final pid): the loop above
+            # only checks before starting a new entry, so a check is needed
+            # here too or a genuinely late finish would report partial=False.
+            budget.partial = True
         agents.sort(key=lambda a: a["pid"])
         return agents
     except OSError:
@@ -176,8 +197,9 @@ def collect_git(budget):
         out["dirty"] = bool(status) if status is not None else None
         counts = g("rev-list", "--left-right", "--count", "HEAD...@{upstream}")
         if counts:
-            a, b = counts.split()
-            out["ahead"], out["behind"] = _int(a), _int(b)
+            parts = counts.split()
+            if len(parts) == 2:
+                out["ahead"], out["behind"] = _int(parts[0]), _int(parts[1])
     except subprocess.TimeoutExpired:
         budget.partial = True
         return None
@@ -209,13 +231,13 @@ def main():
     if len(sys.argv) > 1:
         print(json.dumps({"schema": SCHEMA, "error": "dvw-probe takes no arguments"}))
         return 0
-    budget = Budget(float(os.environ.get("DVW_PROBE_BUDGET", "3")))
+    budget = Budget(_budget_seconds(os.environ.get("DVW_PROBE_BUDGET", "3")))
     proc = os.environ.get("DVW_PROBE_PROC", "/proc")
     cg = os.environ.get("DVW_PROBE_CGROUP", "/sys/fs/cgroup")
     doc = {"schema": SCHEMA, "ts": int(time.time()), "partial": False,
            "tmux": None, "agents": None, "git": None, "cgroup": None}
     for key, fn in (("cgroup", lambda: collect_cgroup(cg)),
-                    ("agents", lambda: collect_agents(proc)),
+                    ("agents", lambda: collect_agents(proc, budget)),
                     ("tmux", lambda: collect_tmux(budget)),
                     ("git", lambda: collect_git(budget))):
         try:
@@ -223,9 +245,25 @@ def main():
         except Exception:  # a collector must never take the document down
             doc[key] = None
     doc["partial"] = budget.partial
-    sys.stdout.write(json.dumps(doc, separators=(",", ":")) + "\n")
+    try:
+        sys.stdout.write(json.dumps(doc, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+    except OSError:
+        pass  # the reader went away; nothing more we can do about it
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    finally:
+        # Python's own shutdown sequence flushes stdout again; if the reader
+        # is already gone that raises BrokenPipeError past our own guard in
+        # main() and turns exit 0 into exit 120. Redirecting the fd to
+        # /dev/null first makes that final flush a no-op.
+        try:
+            sys.stdout.flush()
+        except OSError:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+            os.close(devnull)
