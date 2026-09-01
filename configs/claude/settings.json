@@ -88,6 +88,11 @@
             "type": "command",
             "command": "bash \"{{HOME}}/.claude/hooks/memory-hint.sh\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"{{HOME}}/.claude/hooks/opus-verbosity.sh\"",
+            "timeout": 5
           }
         ]
       }
