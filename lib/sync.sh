@@ -406,7 +406,11 @@ refresh_blueprint() {
 _sync_reconcile() {
   local mode=$1
 
-  refresh_blueprint || return $?
+  # _sync_refresh_and_reexec already fetched in this process; a second fetch
+  # would only cost network time.
+  if [[ "${_SYNC_REFRESHED:-0}" != 1 ]]; then
+    refresh_blueprint || return $?
+  fi
 
   [ -f "$AICODING_BLUEPRINT_CLONE/lib/blueprint-deploy.sh" ] || return 0
   . "$AICODING_BLUEPRINT_CLONE/lib/blueprint-deploy.sh"
@@ -791,6 +795,14 @@ _sync_provision() {
     local SCRIPT_DIR; SCRIPT_DIR="$(dirname "$blueprint_lib")"
     . "$blueprint_lib/provision-integrations.sh"
     install_dvw_probe_symlink || true
+    # Same self-heal for the other agent-facing CLIs install.sh symlinks:
+    # a ~/.local/bin that lost them, or predates one, otherwise only
+    # recovers on a full aicoding-install. Container-only entries (clip
+    # shims, ssh-agent watcher) stay out: they are profile-gated in
+    # install.sh and this path runs on hosts too.
+    install_agent_notify_symlink || true
+    install_update_status_symlink || true
+    install_kanban_post_symlink || true
   fi
   return 0
 }
@@ -843,6 +855,29 @@ _sync_devcontainer_pin() {
   return 0
 }
 
+# bin/aicoding-sync sources lib/sync.sh from the tracking clone BEFORE the
+# clone is refreshed, so the whole run executes the old sync.sh and any
+# provisioning step added since lands one boot late (seen with #125: the run
+# that fetched the dvw-probe step never ran it). Refresh first, and if the
+# clone actually moved, replace this process with the refreshed clone's own
+# bin/aicoding-sync, same arguments. The guard variable keeps the child from
+# doing it again; a --blueprint local source never fetches, so there is
+# nothing to re-exec from. Fail-open: if the re-exec target is missing, the
+# run just continues on the old code as before.
+_sync_refresh_and_reexec() {
+  [[ "$AICODING_BLUEPRINT_LOCAL" == 1 ]] && return 0
+  [[ "${AICODING_SYNC_REEXECED:-0}" == 1 ]] && return 0
+  local before after
+  before=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD 2>/dev/null || echo none)
+  refresh_blueprint || return $?
+  _SYNC_REFRESHED=1
+  after=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD 2>/dev/null || echo none)
+  [[ "$before" == "$after" ]] && return 0
+  [[ -f "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" ]] || return 0
+  echo "Blueprint clone moved ${before:0:7} -> ${after:0:7}; re-running from the refreshed clone"
+  AICODING_SYNC_REEXECED=1 exec bash "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" "$@"
+}
+
 aicoding_sync() {
   # Parse the FIRST recognized flag; no flag = interactive.
   local mode=interactive arg
@@ -854,6 +889,9 @@ aicoding_sync() {
       --first)   mode=first;   break ;;
     esac
   done
+
+  # 0. Bring the clone current and, if it moved, hand over to its code.
+  _sync_refresh_and_reexec "$@" || return $?
 
   # 1. Plumbing — always correct now, but write nothing under --dry-run.
   [ "$mode" != dry-run ] && _sync_plumbing
