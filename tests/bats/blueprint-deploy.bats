@@ -1151,3 +1151,63 @@ EOF
   [ "${BUCKETS[$HOME/.claude/skills/demo/assets/logo.png]}" = "up_to_date" ]
   [ "${BUCKETS[$HOME/.claude/skills/demo/SKILL.md]}" = "up_to_date" ]
 }
+
+@test "_backup_file: a backup of a permissive file is narrowed to 0600" {
+  echo secret > "$TMPDIR/dest"
+  chmod 664 "$TMPDIR/dest"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run _backup_file "$TMPDIR/dest"
+  [ "$status" -eq 0 ]
+  local bak; bak=$(ls "$TMPDIR"/dest.bak.* | head -1)
+  # Copying the live mode is how ~/.claude/hooks/*.bak.* ended up at 775:
+  # a backup is a second copy of the credential and gets no group bits.
+  [ "$(stat -c '%a' "$bak")" = "600" ]
+}
+
+@test "_backup_file: a backup of an executable keeps +x as 0700, no group bits" {
+  printf '#!/bin/sh\n' > "$TMPDIR/hook.sh"
+  chmod 775 "$TMPDIR/hook.sh"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run _backup_file "$TMPDIR/hook.sh"
+  [ "$status" -eq 0 ]
+  local bak; bak=$(ls "$TMPDIR"/hook.sh.bak.* | head -1)
+  [ "$(stat -c '%a' "$bak")" = "700" ]
+}
+
+@test "deploy_marker_block: a new destination is created at 0600 under a lax umask" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  ( umask 0002; deploy_marker_block "$TMPDIR/rc" "body line" "# START" "# END" )
+  manifest_stage_commit
+  [ "$(stat -c '%a' "$TMPDIR/rc")" = "600" ]
+  grep -qxF "body line" "$TMPDIR/rc"
+}
+
+@test "deploy_marker_block: replacing a block never widens an existing 0600 destination" {
+  printf 'prelude\n# START\nold body\n# END\n' > "$TMPDIR/rc"
+  chmod 600 "$TMPDIR/rc"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  # The replace path used to render into "$dest.tmp" under the ambient
+  # umask and mv it over dest, so a 600 file came back as 664.
+  ( umask 0002; deploy_marker_block "$TMPDIR/rc" "new body" "# START" "# END" )
+  manifest_stage_commit
+  [ "$(stat -c '%a' "$TMPDIR/rc")" = "600" ]
+  grep -qxF "new body" "$TMPDIR/rc"
+  ! grep -qxF "old body" "$TMPDIR/rc"
+  [ ! -e "$TMPDIR/rc.tmp" ]
+}
+
+@test "deploy_marker_block: appending to a user dotfile keeps the user's mode" {
+  printf 'prelude\n' > "$TMPDIR/rc"
+  chmod 644 "$TMPDIR/rc"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  deploy_marker_block "$TMPDIR/rc" "body line" "# START" "# END"
+  manifest_stage_commit
+  # ~/.bashrc is the user's file, not a credential store: the block deploy
+  # never widens it, and never narrows a mode the user chose either.
+  [ "$(stat -c '%a' "$TMPDIR/rc")" = "644" ]
+  grep -qxF "prelude" "$TMPDIR/rc"
+  grep -qxF "body line" "$TMPDIR/rc"
+}

@@ -483,25 +483,33 @@ deploy_merge_file() {
 deploy_marker_block() {
   local dest=$1 body=$2 start=$3 end=$4
   mkdir -p "$(dirname "$dest")"
-  touch "$dest"
+  # The destination is the user's own dotfile (~/.bashrc), so an existing
+  # mode is theirs to keep. What must never happen is the rename below
+  # WIDENING it: the old "$dest.tmp" redirect took the ambient umask, so a
+  # 600 rc file came back 664 on every sync. A new file starts at 0600.
+  local mode=0600
+  [[ -f "$dest" ]] && mode=$(stat -c '%a' "$dest")
+  local tmp
+  tmp=$(mktemp)
 
-  if grep -qxF "$start" "$dest" && grep -qxF "$end" "$dest"; then
+  if [[ -f "$dest" ]] && grep -qxF "$start" "$dest" && grep -qxF "$end" "$dest"; then
     # Replace existing block.
-    local tmp="$dest.tmp"
     awk -v s="$start" -v e="$end" -v b="$body" '
       $0 == s { print; print b; in_block = 1; next }
       $0 == e { print; in_block = 0; next }
       !in_block { print }
     ' "$dest" > "$tmp"
-    mv "$tmp" "$dest"
   else
     # Append a new block at the end.
     {
+      [[ -f "$dest" ]] && cat "$dest"
       printf '\n%s\n' "$start"
       printf '%s\n' "$body"
       printf '%s\n' "$end"
-    } >> "$dest"
+    } > "$tmp"
   fi
+  _write_atomic "$tmp" "$dest" "$mode"
+  rm -f "$tmp"
 
   local h
   h=$(compute_block_hash "$dest" "$start" "$end")
@@ -1085,8 +1093,11 @@ _backup_file() {
   local dest=$1 stamp mode
   stamp=$(date +%Y%m%d-%H%M%S)
   # A backup of a credential-bearing file is a second copy of the
-  # credential; it gets the source's mode, never the ambient umask.
-  mode=$(stat -c '%a' "$dest")
+  # credential. Copying the live file's mode is how the *.bak.* siblings of
+  # a 775 hook ended up 775 themselves; the backup gets no group or world
+  # bits, only the executable bit survives as 0700.
+  mode=0600
+  [[ -x "$dest" ]] && mode=0700
   _write_atomic "$dest" "$dest.bak.$stamp" "$mode"
   echo "      backup: $dest.bak.$stamp"
 }
