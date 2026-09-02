@@ -9,11 +9,13 @@ when it cannot be computed; a section that overran its share of the time
 budget is null and sets "partial": true.
 
 Test hooks: DVW_PROBE_PROC, DVW_PROBE_CGROUP, DVW_PROBE_WORKSPACE,
-DVW_PROBE_BUDGET (seconds). Spec: dvw docs/superpowers/specs/
-2026-09-01-docker-proxy-probe-design.md.
+DVW_PROBE_BUDGET (seconds), DVW_PROBE_UID (the uid to treat as "mine" in the
+/proc walk, so the owner filter can be exercised without root). Spec: dvw
+docs/superpowers/specs/2026-09-01-docker-proxy-probe-design.md.
 """
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -200,7 +202,7 @@ def collect_agents(proc, budget):
         # A platform may answer -1 or None for an unsupported name; dividing
         # ticks by that would put "started" decades off instead of unknown.
         hz = hz if isinstance(hz, int) and hz > 0 else 100
-        my_uid = os.getuid()
+        my_uid = _int(os.environ.get("DVW_PROBE_UID"), os.getuid())
         agents = []
         scanned = 0
         cut = False
@@ -336,16 +338,59 @@ def collect_cgroup(cg):
         return None
 
 
+def _finish(doc):
+    """Sanitise, cap and serialise the document; the only way out."""
+    flags = {"truncated": False}
+    doc = _clean(doc, None, flags)
+    if flags["truncated"]:
+        doc["partial"] = True
+    return _fit_output(doc).decode("utf-8")
+
+
+def _arm_deadline(doc, seconds):
+    """Hard backstop for the whole run.
+
+    Every collector checks the budget before it starts a step, and every
+    subprocess gets a timeout, but a plain read() on a wedged /proc entry
+    (or an open() on something that turns out to be a FIFO) has no timeout
+    at all and used to hold the probe for as long as the kernel liked. The
+    timer fires SIGALRM, which interrupts that syscall; the handler writes
+    whatever sections were finished by then, flagged partial, and leaves
+    through os._exit so no half-collected section gets a second chance to
+    block. A small grace on top of the budget covers serialisation.
+    """
+    def fire(signum, frame):
+        try:
+            doc["partial"] = True
+            payload = _finish(doc)
+        except Exception:
+            payload = json.dumps({"schema": SCHEMA, "ts": int(time.time()),
+                                  "partial": True, "tmux": None, "agents": None,
+                                  "git": None, "cgroup": None},
+                                 separators=(",", ":")) + "\n"
+        try:
+            sys.stdout.write(payload)
+            sys.stdout.flush()
+        except Exception:
+            pass
+        os._exit(0)
+
+    signal.signal(signal.SIGALRM, fire)
+    signal.setitimer(signal.ITIMER_REAL, seconds + 0.25)
+
+
 def main():
     if len(sys.argv) > 1:
         print(json.dumps({"schema": SCHEMA, "error": "dvw-probe takes no arguments"}))
         return 0
     try:
-        budget = Budget(_budget_seconds(os.environ.get("DVW_PROBE_BUDGET", "3")))
+        seconds = _budget_seconds(os.environ.get("DVW_PROBE_BUDGET", "3"))
+        budget = Budget(seconds)
         proc = os.environ.get("DVW_PROBE_PROC", "/proc")
         cg = os.environ.get("DVW_PROBE_CGROUP", "/sys/fs/cgroup")
         doc = {"schema": SCHEMA, "ts": int(time.time()), "partial": False,
                "tmux": None, "agents": None, "git": None, "cgroup": None}
+        _arm_deadline(doc, seconds)
         for key, fn in (("cgroup", lambda: collect_cgroup(cg)),
                         ("agents", lambda: collect_agents(proc, budget)),
                         ("tmux", lambda: collect_tmux(budget)),
@@ -355,12 +400,11 @@ def main():
             except Exception:  # a collector must never take the document down
                 doc[key] = None
                 budget.partial = True  # a crashed collector is not "measured"
+        # Collection is over; from here on the deadline handler would only
+        # race the normal exit and print the document twice.
+        signal.setitimer(signal.ITIMER_REAL, 0)
         doc["partial"] = budget.partial
-        flags = {"truncated": False}
-        doc = _clean(doc, None, flags)
-        if flags["truncated"]:
-            doc["partial"] = True
-        payload = _fit_output(doc).decode("utf-8")
+        payload = _finish(doc)
     except Exception:
         # Anything unexpected outside the collectors (a broken environment,
         # a serialisation surprise) still owes the caller one valid document.
