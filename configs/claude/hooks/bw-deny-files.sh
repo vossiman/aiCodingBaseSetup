@@ -100,12 +100,21 @@ SECRET_COMMAND_PATTERNS=(
   'git[[:space:]]+credential[[:space:]]+(fill|approve|reject)'
   'gh[[:space:]]+auth[[:space:]]+token'
   '/proc/[^[:space:]]*/environ'
-  '\$\{?(GH_TOKEN|GITHUB_TOKEN|[A-Z0-9]+(_[A-Z0-9]+)*_(TOKEN|KEY|SECRET|PASSWORD))\}?([^A-Za-z0-9_]|$)'
   'printenv[[:space:]]+[^|;&]*(TOKEN|KEY|SECRET|PASSWORD)'
   # `declare -p VAR` prints VAR's value just like `$VAR` does (found by
   # review 2026-08-21: -p counts as an option word, the var name as an
   # argument, so nothing else matched).
   '(declare|typeset)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-[a-zA-Z]*p[a-zA-Z]*[[:space:]]+([^|;&]*[[:space:]])?\{?(\$)?[A-Z0-9_]*(TOKEN|KEY|SECRET|PASSWORD)\}?([^A-Za-z0-9_]|$)'
+)
+
+# The one oracle the SHELL performs rather than a program: `$VAR` and `${VAR}`.
+# Kept apart from the list above because its quoting rules differ. Inside
+# single quotes it is literal text; inside double quotes it expands. The
+# patterns above name PROGRAMS, which no quoting protects against once an
+# interpreter gets the string, but which are inert text when the head is a
+# command that cannot execute its arguments (see PATTERN_INERT_COMMANDS).
+SECRET_EXPANSION_PATTERNS=(
+  '\$\{?(GH_TOKEN|GITHUB_TOKEN|[A-Z0-9]+(_[A-Z0-9]+)*_(TOKEN|KEY|SECRET|PASSWORD))\}?([^A-Za-z0-9_]|$)'
 )
 
 # Commands whose arguments are FILE CONTENTS, not listings or names. A bare
@@ -159,6 +168,30 @@ NON_READER_COMMANDS=(
   :
 )
 
+# Commands whose QUOTED arguments are inert text as far as the credential
+# oracles above are concerned: they neither run a string as a shell nor print
+# the environment, so a reader or oracle name quoted inside one of their
+# arguments is a mention, not a call. The non-readers qualify by
+# construction. grep and rg are added for the pattern-argument case: a grep
+# over a wiki page whose pattern contained `app env|dokploy env` was refused
+# on 2026-09-02 because the env-dump regex saw ` env|...secret` in it. They
+# are NOT non-readers (a protected path handed to grep is still a read, and
+# the path scan is unchanged), they merely cannot execute text. awk and sed
+# are deliberately absent: awk has system(), GNU sed has the e command.
+#
+# Quoting still matters within this carve-out. A single-quoted `$VAR` is
+# literal and is dropped before the expansion scan; a double-quoted one
+# expands and is scanned as before. Any quoted region carrying `$(` or a
+# backtick is left intact, since the substitution inside it runs regardless
+# of the head.
+PATTERN_INERT_COMMANDS=(
+  "${NON_READER_COMMANDS[@]}"
+  grep
+  egrep
+  fgrep
+  rg
+)
+
 # Set per tool call. 1 only for a Bash command whose every segment is headed
 # by an allowlisted non-reader; every other path keeps the pre-2026-08-31
 # strict behaviour.
@@ -168,9 +201,13 @@ PROSE_MENTION_OK=0
 # above must stay case-sensitive: env var names are uppercase, and matching
 # them loosely would deny `grep -rn gh_token docs/`. Here the filter word is
 # whatever the user typed, so `env | grep -i token` has to match too. The
-# leading boundary keeps `cat env.sh | grep key` out of it.
+# leading boundary keeps `cat env.sh | grep key` out of it. A quote counts
+# as a boundary too: a dump quoted as the payload of `bash -c` runs, and the
+# quote used to hide it from this scan. Prose quoting that phrase under an
+# inert head is blanked before the scan, so the wider boundary costs no
+# false positive.
 SECRET_COMMAND_PATTERNS_I=(
-  '(^|[;&|[:space:]])(env|printenv|set)([[:space:]]|\|)[^;&]*\|[^;&]*(token|key|secret|password)'
+  '(^|[;&|[:space:]"'"'"'])(env|printenv|set)([[:space:]]|\|)[^;&]*\|[^;&]*(token|key|secret|password)'
 )
 
 # Extra patterns from the bubblewrap sandbox, when present. Additive.
@@ -365,6 +402,58 @@ quoted_regions() {
   '
 }
 
+# blank_quoted_regions <command> <single|all> — the command with the CONTENTS
+# of quoted regions removed (quote characters kept), but only in segments whose
+# head is in PATTERN_INERT_COMMANDS. Mode `single` blanks single-quoted regions
+# only; `all` blanks double-quoted ones too. A region containing `$(` or a
+# backtick is never blanked, and neither is one that never closes; both fail
+# toward the strict scan. Segments split on newline, `;`, `|`, `&`, `(`, `)`
+# and backtick outside quotes, so `bash -c "env | grep token"` keeps its
+# payload (head bash is not inert) while `grep "app env|secret" page.md`
+# loses the pattern that only looked like a dump.
+blank_quoted_regions() {
+  local inert
+  inert="$(printf ' %s ' "${PATTERN_INERT_COMMANDS[@]}")"
+  printf '%s' "$1" | awk -v mode="$2" -v inert="$inert" '
+    function head_inert(   w) {
+      w = head
+      if (w == "") return 0
+      if (w ~ /["\047\\\/=]/) return 0
+      return index(inert, " " w " ") > 0
+    }
+    {
+      if (NR > 1) printf "\n"
+      line = $0
+      # An open quote spans the newline; outside quotes a newline starts a
+      # new segment.
+      if (q == "") { head = ""; head_done = 0 }
+      i = 1
+      while (i <= length(line)) {
+        c = substr(line, i, 1)
+        if (q != "") {
+          if (c == q) {
+            keep = 1
+            if (index(buf, "$(") == 0 && index(buf, "`") == 0 && head_inert() \
+                && (mode == "all" || q == "\047")) keep = 0
+            if (keep) printf "%s", buf
+            printf "%s", c; q = ""; buf = ""
+          } else buf = buf c
+          i++; continue
+        }
+        if (c == "\"" || c == "\047") {
+          head_done = 1
+          q = c; buf = ""; printf "%s", c; i++; continue
+        }
+        if (c ~ /[;|&()`]/) { head = ""; head_done = 0; printf "%s", c; i++; continue }
+        if (c ~ /[ \t]/) { if (head != "") head_done = 1; printf "%s", c; i++; continue }
+        if (!head_done) head = head c
+        printf "%s", c; i++
+      }
+    }
+    END { if (q != "") printf "%s", buf }
+  '
+}
+
 # is_quoted_prose_mention <token> — true when the token is only being WRITTEN
 # ABOUT: it sits inside a quoted argument, and the command runs no reader.
 #
@@ -395,16 +484,22 @@ is_quoted_prose_mention() {
 # hook. Real access still gets caught — `cat ~/.aicodingsetup/.secrets.env` is
 # not a heredoc, and `cat <<EOF > secrets.pem` puts its target in the command
 # part, where pass 2 sees it.
+#
+# With a second argument of `quoted`, only heredocs whose marker is quoted
+# (`<<'EOF'`, `<<"EOF"`) are dropped. The shell expands `$VAR` inside an
+# unquoted-marker body exactly as it would on the command line, so for the
+# credential-oracle scan such a body is command text, not data.
 strip_heredoc_bodies() {
-  printf '%s' "$1" | awk '
+  printf '%s' "$1" | awk -v only_quoted="${2:-}" '
     {
       if (in_body) { if ($0 == marker) { in_body = 0 }; next }
       line = $0
       if (match(line, /<<-?[[:space:]]*"?'"'"'?[A-Za-z_][A-Za-z0-9_]*"?'"'"'?/)) {
         marker = substr(line, RSTART, RLENGTH)
         gsub(/^<<-?[[:space:]]*/, "", marker)
+        quoted = (marker ~ /["'"'"']/)
         gsub(/["'"'"']/, "", marker)
-        in_body = 1
+        if (only_quoted == "" || quoted) in_body = 1
       }
       print line
     }
@@ -555,18 +650,46 @@ case "$TOOL_NAME" in
       PROSE_MENTION_OK=1
     fi
 
+    # Is a heredoc body EXECUTED by a shell here? Decided on the command with
+    # bodies stripped, so that a body which merely quotes `sh -c ...` (a wiki
+    # entry about docker exec, 2026-09-02) does not count as one.
+    HEREDOC_STRIPPED="$(strip_heredoc_bodies "$CMD")"
+    HEREDOC_SHELL_FED=0
+    if [[ "$CMD" != "$HEREDOC_STRIPPED" ]] \
+       && echo "$HEREDOC_STRIPPED" | grep -qE '(^|[[:space:]/;&|])(bash|sh|zsh|dash|ksh|eval|source)([[:space:]<]|$)'; then
+      HEREDOC_SHELL_FED=1
+    fi
+
     # Pass -1 — token oracles that never name a denied file.
+    #
+    # Scanned on the command text that can actually reach a program or the
+    # shell's expansion: quoted-marker heredoc bodies are string data unless a
+    # shell runs them (unquoted markers expand, so they stay in), and quoted
+    # arguments of a PATTERN_INERT_COMMANDS head are prose. Everything else is
+    # the raw command, as before. See AICODINGBASESETUP-6.
+    if (( HEREDOC_SHELL_FED )); then
+      ORACLE_CMD="$CMD"
+    else
+      ORACLE_CMD="$(strip_heredoc_bodies "$CMD" quoted)"
+    fi
+    ORACLE_NAMES="$(blank_quoted_regions "$ORACLE_CMD" all)"
+    ORACLE_EXPANSIONS="$(blank_quoted_regions "$ORACLE_CMD" single)"
     for secret_pattern in "${SECRET_COMMAND_PATTERNS[@]}"; do
-      if echo "$CMD" | grep -qE "$secret_pattern"; then
+      if echo "$ORACLE_NAMES" | grep -qE "$secret_pattern"; then
+        deny_secret_command
+      fi
+    done
+    for secret_pattern in "${SECRET_EXPANSION_PATTERNS[@]}"; do
+      if echo "$ORACLE_EXPANSIONS" | grep -qE "$secret_pattern"; then
         deny_secret_command
       fi
     done
     for secret_pattern in "${SECRET_COMMAND_PATTERNS_I[@]}"; do
-      if echo "$CMD" | grep -qiE "$secret_pattern"; then
+      if echo "$ORACLE_NAMES" | grep -qiE "$secret_pattern"; then
         deny_secret_command
       fi
     done
-    is_env_dump "$CMD" && deny_secret_command
+    is_env_dump "$ORACLE_NAMES" && deny_secret_command
 
     # apply_patch pass 0 — a patch that CREATES a denied file has no existing
     # path for the token scan below to catch, so match the patch's declared
@@ -645,7 +768,7 @@ case "$TOOL_NAME" in
       done < <(printf '%s' "$cmd" | tr ' \t\n|;&()<>,{}' '\n')
     }
 
-    scan_tokens "$(strip_heredoc_bodies "$CMD")"
+    scan_tokens "$HEREDOC_STRIPPED"
 
     # Pass 1b — heredoc bodies are DATA when they are written somewhere, but
     # an EXECUTION CHANNEL when the same command feeds them to a SHELL:
@@ -654,8 +777,7 @@ case "$TOOL_NAME" in
     # shell interpreters count — a python heredoc whose body mentions a path
     # is overwhelmingly a string literal being written, and denying those is
     # the false positive the stripping exists to prevent.
-    if [[ "$CMD" != "$(strip_heredoc_bodies "$CMD")" ]] \
-       && echo "$CMD" | grep -qE '(^|[[:space:]/;&|])(bash|sh|zsh|dash|ksh|eval|source)([[:space:]<]|$)'; then
+    if (( HEREDOC_SHELL_FED )); then
       scan_tokens "$CMD"
     fi
 

@@ -751,3 +751,81 @@ _seed_codex_config() {
 *** End Patch"
   denied
 }
+
+# --- credential NAMES in prose vs credential VALUES (AICODINGBASESETUP-6) ---
+# The command-pattern scan (pass -1) matched raw text: a `$VAR` inside a
+# quoted-marker heredoc that python receives as a string literal, an `env |`
+# fragment inside a grep pattern, `printenv GH_TOKEN` quoted inside a ticket
+# body. None of those expand or print anything. Two of them blocked wiki
+# writes on 2026-09-02. Expansion channels stay denied: a double-quoted
+# `$VAR`, an unquoted-marker heredoc (the shell expands it), and any heredoc
+# a shell interpreter executes.
+
+@test "a quoted-marker python heredoc quoting a token expansion is allowed" {
+  bash_hook "cd ~/wiki && python3 - <<'EOF'
+s = s.replace('x', 'compare sudo docker exec router sh -c '\"'\"'printf %s \"\$MEMORY_ROUTER_TOKEN\"'\"'\"' with the .secrets.env line')
+EOF
+git diff --stat"
+  allowed
+}
+
+@test "a grep pattern containing env| and secret is allowed" {
+  bash_hook 'grep -niE "Environment tab|app env|dokploy env|\.env" wiki/memory-lanes.md | grep -viE "secrets.env|openrouter.env"'
+  allowed
+}
+
+@test "a single-quoted token name handed to a non-reader is allowed" {
+  bash_hook "kanban-post 't' --repo r --body 'cites Bearer \$DVW_CATALOG_TOKEN from catalog-http-lib.sh'"
+  allowed
+  bash_hook "echo 'the hook refuses \$GH_TOKEN and \${GH_TOKEN}'"
+  allowed
+}
+
+@test "reader and oracle names quoted inside a non-reader argument are allowed" {
+  bash_hook 'kanban-post "t" --repo r --body "the hook blocks printenv GH_TOKEN, gh auth token, git credential fill and declare -p GH_TOKEN"'
+  allowed
+  bash_hook 'echo "env | grep -i token is refused"'
+  allowed
+}
+
+@test "an unquoted-marker heredoc still expands, so it is still denied" {
+  bash_hook "python3 - <<EOF
+print(\"\$GH_TOKEN\")
+EOF"
+  denied
+}
+
+@test "a shell-fed heredoc that expands a token is still denied" {
+  bash_hook "bash <<'X'
+echo \$GH_TOKEN
+X"
+  denied
+  bash_hook "cat <<'X' | sh
+printenv GH_TOKEN
+X"
+  denied
+}
+
+@test "single quotes buy nothing when the head is an interpreter" {
+  bash_hook "sh -c 'echo \$GH_TOKEN'"
+  denied
+  bash_hook "python3 -c 'import os; print(os.popen(\"printenv GH_TOKEN\").read())'"
+  denied
+}
+
+@test "a double-quoted expansion next to a single-quoted mention is still denied" {
+  bash_hook "echo '\$GH_TOKEN is' \"\$GH_TOKEN\""
+  denied
+  bash_hook "kanban-post \"t\" --repo r --body \"\$(gh auth token)\""
+  denied
+}
+
+@test "a quoted env dump handed to an interpreter is still denied" {
+  # Pre-existing gap: the boundary class before `env` did not include a
+  # quote, so the payload of bash -c slipped past. Closed alongside the
+  # prose narrowing, which is what made the wider boundary affordable.
+  bash_hook "bash -c 'env | grep token'"
+  denied
+  bash_hook 'grep "foo" file | sh -c "set | grep -i secret"'
+  denied
+}
