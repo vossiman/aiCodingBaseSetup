@@ -27,6 +27,11 @@ WRAPPERS = ("node", "python", "python3", "bun")
 # so with "partial": true.
 MAX_STR = 512
 LIST_CAPS = {"agents": 64, "sessions": 64, "windows": 256}
+# The catalog rejects probe stdout above this size. Character and item caps do
+# not imply a byte cap: json.dumps escapes one non-ASCII character to as many
+# as 12 ASCII bytes (a surrogate pair), so an otherwise valid tmux snapshot
+# can exceed the consumer's limit by several times.
+MAX_OUTPUT = 256 * 1024
 
 
 class Budget:
@@ -89,6 +94,47 @@ def _clean(value, key=None, flags=None):
         return {(_clean_str(k) if isinstance(k, str) else k): _clean(v, k, flags)
                 for k, v in value.items()}
     return value
+
+
+def _payload(doc):
+    return (json.dumps(doc, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def _fit_output(doc):
+    """Serialize within MAX_OUTPUT, retaining the largest useful prefixes.
+
+    Lists are the only fields capable of making the cleaned document large.
+    Trim whichever list currently contributes the most encoded bytes, using a
+    binary search so even a hostile maximum-size report remains cheap.
+    """
+    payload = _payload(doc)
+    if len(payload) <= MAX_OUTPUT:
+        return payload
+
+    doc["partial"] = True
+    tmux = doc.get("tmux") or {}
+    lists = [tmux.get("windows"), tmux.get("sessions"), doc.get("agents")]
+    lists = [items for items in lists if isinstance(items, list) and items]
+    while len(payload) > MAX_OUTPUT and lists:
+        largest = max(
+            range(len(lists)),
+            key=lambda i: sum(
+                len(json.dumps(v).encode("utf-8")) for v in lists[i]
+            ),
+        )
+        items = lists.pop(largest)
+        original = list(items)
+        lo, hi = 0, len(original)
+        while lo < hi:
+            keep = (lo + hi + 1) // 2
+            items[:] = original[:keep]
+            if len(_payload(doc)) <= MAX_OUTPUT:
+                lo = keep
+            else:
+                hi = keep - 1
+        items[:] = original[:lo]
+        payload = _payload(doc)
+    return payload
 
 
 def collect_tmux(budget):
@@ -314,7 +360,7 @@ def main():
         doc = _clean(doc, None, flags)
         if flags["truncated"]:
             doc["partial"] = True
-        payload = json.dumps(doc, separators=(",", ":")) + "\n"
+        payload = _fit_output(doc).decode("utf-8")
     except Exception:
         # Anything unexpected outside the collectors (a broken environment,
         # a serialisation surprise) still owes the caller one valid document.

@@ -251,6 +251,30 @@ print(len(d["agents"]), d["partial"])')"
   [ "$result" = "64 True" ]
 }
 
+@test "serialized output stays within the consumer byte cap" {
+  cat > "$TMPDIR/stubs/tmux" <<'STUB'
+#!/usr/bin/env python3
+import sys
+if "list-sessions" in sys.argv:
+    print("work\t1\t1756799999")
+else:
+    name = "😀" * 512
+    for i in range(256):
+        print(f"@{i}\t{name}\t0\t1756799999\t\tpython")
+STUB
+  chmod +x "$TMPDIR/stubs/tmux"
+
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  result="$(printf '%s\n' "$output" | python3 -c 'import json,sys
+raw=sys.stdin.buffer.read()
+d=json.loads(raw)
+print(len(raw), d["partial"], len(d["tmux"]["windows"]))')"
+  [ "${result%% *}" -le 262144 ]
+  [[ "$result" == *" True "* ]]
+  [ "${result##* }" -lt 256 ]
+}
+
 @test "a git call that times out keeps the fields already collected" {
   cat > "$TMPDIR/stubs/git" <<'STUB'
 #!/bin/sh
