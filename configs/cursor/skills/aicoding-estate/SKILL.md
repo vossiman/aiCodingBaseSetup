@@ -44,8 +44,18 @@ kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P] [--d
 kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority P] [--due DATE|none]
 kanban-post --done TICKET
 kanban-post --comment TICKET "text"
+kanban-post --link TICKET --depends-on OTHER | --blocks OTHER | --relates OTHER
+kanban-post --unlink TICKET OTHER
 kanban-post --list-repos | --list-tickets
 ```
+
+**Links.** `--link TICKET --depends-on OTHER` records that TICKET waits for
+OTHER; the board shows TICKET as `blocked` until OTHER reaches `done`.
+`--blocks` is the same link stated from the other side, and `--relates` is
+a plain see-also with no direction. Link follow-ups to the work they wait
+on instead of saying so in the body. `--unlink TICKET OTHER` removes the
+link between the two (any kind); if more than one kind joins that pair it
+refuses and lists them. Links cross repos freely, and `--repo` plays no part.
 
 **Every ticket has an issue key (`DEVMACHINE-12`)**, the repo name
 uppercased plus a number counted per repo. `TICKET` above is that key

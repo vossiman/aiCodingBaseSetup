@@ -26,6 +26,8 @@ Usage:
   kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority P] [--due DATE|none]
   kanban-post --done TICKET
   kanban-post --comment TICKET "text" | --comment TICKET --body TEXT
+  kanban-post --link TICKET --depends-on OTHER | --blocks OTHER | --relates OTHER
+  kanban-post --unlink TICKET OTHER
   kanban-post --list-repos | --list-tickets
   kanban-post --selftest        # proves the token cannot reach the output
 
@@ -190,7 +192,9 @@ def call(method: str, path: str, payload: dict | None = None):
     opener = urllib.request.build_opener(NoRedirects)
     try:
         with opener.open(req, timeout=30) as r:
-            return r.status, json.load(r)
+            body = r.read()
+            # 204 (a DELETE) carries no body.
+            return r.status, json.loads(body) if body else None
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")
         try:
@@ -274,6 +278,8 @@ def selftest() -> int:
     # checkout to derive a repo name from -- the redaction it exercises is
     # the same call()/emit() pair either way.
     run(["--done", "some-ticket-id"], "PATCH error path")
+    run(["--link", "A-1", "--relates", "B-2"], "link error path")
+    run(["--unlink", "A-1", "B-2"], "unlink lookup error path")
 
     env["KANBAN_URL"] = f"http://127.0.0.1:{port}/redirect"
     before = len(seen)
@@ -313,10 +319,28 @@ def main() -> int:
                    help="issue key (DEVMACHINE-12) or ticket uuid")
     p.add_argument("--comment", metavar="TICKET", default=None,
                    help="issue key (DEVMACHINE-12) or ticket uuid")
+    p.add_argument("--link", metavar="TICKET", default=None,
+                   help="link TICKET to another; pair with exactly one of the kind flags")
+    p.add_argument("--depends-on", metavar="OTHER", default=None,
+                   help="TICKET waits for OTHER; the board shows TICKET as blocked until OTHER is done")
+    p.add_argument("--blocks", metavar="OTHER", default=None,
+                   help="OTHER waits for TICKET")
+    p.add_argument("--relates", metavar="OTHER", default=None,
+                   help="plain see-also link, no direction")
+    p.add_argument("--unlink", metavar="TICKET", default=None,
+                   help="remove the link between TICKET and OTHER (given positionally)")
     p.add_argument("--list-repos", action="store_true")
     p.add_argument("--list-tickets", action="store_true")
     p.add_argument("--selftest", action="store_true")
     a = p.parse_args()
+
+    kinds = {k: getattr(a, k) for k in ("depends_on", "blocks", "relates") if getattr(a, k)}
+    if kinds and not a.link:
+        p.error("--depends-on, --blocks and --relates go with --link TICKET")
+    if (a.link or a.unlink) and (a.patch or a.done or a.comment or a.repo):
+        p.error("--link/--unlink only change links; drop --patch, --done, --comment and --repo")
+    if a.link and a.unlink:
+        p.error("--link and --unlink are alternatives")
 
     if a.selftest:
         return selftest()
@@ -324,6 +348,38 @@ def main() -> int:
         status, out = call("GET", "/api/repos")
     elif a.list_tickets:
         status, out = call("GET", "/api/tickets")
+    elif a.link:
+        if len(kinds) != 1:
+            p.error("--link needs exactly one of --depends-on OTHER, --blocks OTHER, --relates OTHER")
+        if a.title:
+            p.error("--link takes the other ticket through its kind flag, not positionally")
+        (kind, other), = kinds.items()
+        status, out = call("POST", f"/api/tickets/{a.link}/links", {"target": other, "kind": kind})
+    elif a.unlink:
+        if not a.title:
+            p.error("--unlink TICKET needs the other ticket's key or uuid as the positional argument")
+        status, out = call("GET", f"/api/tickets/{a.unlink}")
+        if status >= 400:
+            print(status)
+            emit(out)
+            return 1
+        other = a.title.upper()
+        matches = [
+            link for link in out.get("links", [])
+            if other in (link["ticket"]["key"].upper(), link["ticket"]["id"].upper())
+        ]
+        if not matches:
+            die(f"{out.get('key', a.unlink)} has no link to {a.title}")
+        if len(matches) > 1:
+            # Two kinds can join the same pair (depends_on plus relates, or
+            # both directions of depends_on). Refuse rather than guess.
+            found = ", ".join(f"{m['kind']} (link {m['id']})" for m in matches)
+            die(f"{out['key']} has more than one link to {a.title}: {found}; remove them in the UI")
+        status, out = call("DELETE", f"/api/tickets/{a.unlink}/links/{matches[0]['id']}")
+        if status < 400:
+            print(status)
+            print(f"unlinked {a.unlink} and {a.title}")
+            return 0
     elif a.comment:
         # The board's rules tell an agent to comment rather than move a card
         # when there is progress but no state change -- and forbid reaching
