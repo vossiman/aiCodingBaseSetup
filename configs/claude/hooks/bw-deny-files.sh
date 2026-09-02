@@ -402,7 +402,7 @@ quoted_regions() {
   '
 }
 
-# blank_quoted_regions <command> <single|all> — the command with the CONTENTS
+# blank_quoted_regions <command> <single|all>: the command with the CONTENTS
 # of quoted regions removed (quote characters kept), but only in segments whose
 # head is in PATTERN_INERT_COMMANDS. Mode `single` blanks single-quoted regions
 # only; `all` blanks double-quoted ones too. A region containing `$(` or a
