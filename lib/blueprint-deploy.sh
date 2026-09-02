@@ -560,6 +560,7 @@ $HOME/.local/bin/cloudflare-render|overwrite|configs/cloudflare/cloudflare-rende
 $HOME/.local/bin/secrets-check|overwrite|configs/secrets/secrets-check
 $HOME/.codex/config.toml|overwrite|configs/codex/config.toml
 $HOME/.codex/AGENTS.md|overwrite|configs/codex/AGENTS.md
+$HOME/.cursor/skills/aicoding-estate/SKILL.md|overwrite|configs/cursor/skills/aicoding-estate/SKILL.md
 EOF
   if [[ "$profile" == host ]]; then
     echo "$HOME/.bashrc.d/aicoding-boot-sync.sh|overwrite|configs/bash/boot-sync.sh"

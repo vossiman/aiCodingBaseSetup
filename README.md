@@ -82,6 +82,7 @@ Configured for **all four CLIs**: `claude mcp add` for Claude Code (existing), `
 - **`~/.bashrc.d/aicoding-ssh-auth-sock.sh`** — stabilizes the forwarded SSH agent socket across DevPod / Cursor reconnects. Routes every shell through `~/.ssh/agent.sock` (a symlink we keep current). Without it, long-lived tmux panes hold a stale `SSH_AUTH_SOCK` path after the host's SSH session rotates, and `git push` fails with `Permission denied (publickey)` until you open a new pane.
 - **`~/.codex/config.toml`** — overwrite-mode managed file; declares the 4 MCPs in TOML `[mcp_servers.<name>]` tables with secrets substituted at deploy time. Tracked in `manifest.json`; redeployed on every rebuild via `reconcile`.
 - **`~/.cursor/mcp.json`** — merge-mode managed file; declares the 4 MCPs in JSON `{mcpServers: ...}` (Claude-Desktop-compatible schema). User-added entries are preserved by the merge.
+- **`~/.cursor/skills/aicoding-estate/SKILL.md`** — overwrite-mode managed file; Cursor's only file-backed global instruction surface (User Rules live in the account, `~/.cursor/rules` is not read by the CLI). Carries the memory-retrieval, backlog-board (`kanban-post`) and secrets guidance that Claude gets from `~/.claude/CLAUDE.md` and Codex from `~/.codex/AGENTS.md`.
 
 ### External Tools (detected, not installed)
 

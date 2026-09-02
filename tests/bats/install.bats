@@ -875,8 +875,31 @@ EOF
   [ -f "$HOME/.codex/AGENTS.md" ]
   grep -q 'memory_search' "$HOME/.codex/AGENTS.md"
   grep -q 'homelab-wiki' "$HOME/.codex/AGENTS.md"
+  grep -q 'kanban-post' "$HOME/.codex/AGENTS.md"
   # Deployment is manifest-tracked (managed file, not a one-shot copy).
   hash=$(jq -r '.files["'"$HOME"'/.codex/AGENTS.md"].deployed_hash' "$AICODING_MANIFEST")
+  [ -n "$hash" ]
+}
+
+@test "first-deploy: cursor global skill carries memory, kanban and secrets guidance" {
+  # Cursor has no file-backed global rules; ~/.cursor/skills/ is its only
+  # user-level instruction surface, so the estate guidance ships as a skill.
+  mkdir -p "$HOME/.aicodingsetup"
+  cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
+FIRECRAWL_API_KEY=fake-firecrawl-123
+BRAVE_API_KEY=fake-brave-456
+EOF
+
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+
+  local skill="$HOME/.cursor/skills/aicoding-estate/SKILL.md"
+  [ -f "$skill" ]
+  head -1 "$skill" | grep -q '^---$'
+  grep -q '^name: aicoding-estate$' "$skill"
+  grep -q 'memory_search' "$skill"
+  grep -q 'kanban-post' "$skill"
+  grep -q 'secrets-check' "$skill"
+  hash=$(jq -r '.files["'"$skill"'"].deployed_hash' "$AICODING_MANIFEST")
   [ -n "$hash" ]
   [ "$hash" != "null" ]
 }
