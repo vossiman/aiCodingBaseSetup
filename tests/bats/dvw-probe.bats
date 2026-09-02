@@ -159,6 +159,64 @@ STUB
   [ "$(jq_probe 'len(d["agents"])')" = "1" ]
 }
 
+@test "DVW_PROBE_UID override: a foreign uid skips every fixture pid, own uid keeps them" {
+  # bats never runs as root, so the chown-based test above is always
+  # skipped and the uid filter's skip branch was never executed by the
+  # suite. The override stands in for "what uid am I" so the branch can be
+  # driven from an unprivileged run. Every fixture pid is owned by the
+  # test's own uid.
+  export DVW_PROBE_UID=$(( $(id -u) + 1 ))
+  # scanned > 0 and cut == False, so the answer is an empty list, not null.
+  [ "$(jq_probe 'd["agents"]')" = "[]" ]
+  export DVW_PROBE_UID=$(id -u)
+  [ "$(jq_probe 'len(d["agents"])')" = "1" ]
+}
+
+@test "a garbage DVW_PROBE_UID is ignored, real uid is used" {
+  export DVW_PROBE_UID=garbage
+  [ "$(jq_probe 'len(d["agents"])')" = "1" ]
+}
+
+@test "an agent CLI run through a wrapper interpreter is detected" {
+  # `node /home/u/.local/bin/claude --resume`: comm is the wrapper, argv[0]
+  # is the wrapper, argv[1] is the agent CLI. A wrapper running something
+  # else must stay ignored.
+  mkdir -p "$TMPDIR/proc/5150" "$TMPDIR/proc/5151"
+  echo node > "$TMPDIR/proc/5150/comm"
+  printf 'node\0/home/u/.local/bin/claude\0--resume\0' > "$TMPDIR/proc/5150/cmdline"
+  printf '5150 (node) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 700 0 0\n' > "$TMPDIR/proc/5150/stat"
+  ln -s "$TMPDIR/ws" "$TMPDIR/proc/5150/cwd"
+  echo node > "$TMPDIR/proc/5151/comm"
+  printf 'node\0/srv/app/server.js\0' > "$TMPDIR/proc/5151/cmdline"
+  printf '5151 (node) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 700 0 0\n' > "$TMPDIR/proc/5151/stat"
+  ln -s "$TMPDIR/ws" "$TMPDIR/proc/5151/cwd"
+  result="$(jq_probe '[(a["pid"], a["cli"]) for a in d["agents"]]')"
+  [ "$result" = "[(4242, 'claude'), (5150, 'claude')]" ]
+}
+
+@test "a read that never returns is cut by the hard deadline with a partial document" {
+  # The per-pid budget check only gates the START of each iteration; a
+  # single blocked read used to hold the whole probe for as long as the
+  # kernel liked. A FIFO with no writer blocks open() forever, which is the
+  # worst case. The backstop must fire, write what was collected before the
+  # walk (cgroup) and exit 0 well inside the outer timeout.
+  slow="$TMPDIR/proc/99998"
+  mkdir -p "$slow"
+  printf 'bash\n' > "$slow/comm"
+  printf '99998 (bash) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0\n' > "$slow/stat"
+  mkfifo "$slow/cmdline"
+  export DVW_PROBE_BUDGET=1
+  start=$(date +%s)
+  run timeout 8 "$PROBE"
+  elapsed=$(( $(date +%s) - start ))
+  [ "$status" -eq 0 ]
+  [ "$elapsed" -le 4 ]
+  result="$(echo "$output" | python3 -c 'import json,sys
+d=json.loads(sys.stdin.read(), strict=True)
+print(d["schema"], d["partial"], d["cgroup"]["nr_procs"], d["agents"], d["tmux"])')"
+  [ "$result" = "1 True 42 None None" ]
+}
+
 @test "a garbage budget falls back to a default instead of crashing" {
   export DVW_PROBE_BUDGET=garbage
   run "$PROBE"
