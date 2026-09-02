@@ -778,6 +778,20 @@ _sync_provision() {
     command -v ensure_codex_managed_hooks >/dev/null 2>&1 \
       && ensure_codex_managed_hooks || true
   fi
+
+  # dvw-probe's symlink is otherwise only created by install.sh at container
+  # creation. The catalog service execs it inside the container through the
+  # docker proxy, so it must self-heal here too: a restart that wipes the
+  # tmpfs blueprint clone (or drops the ~/.local/bin entry) would otherwise
+  # strand it until someone re-runs install.sh by hand. provision-integrations.sh
+  # expects SCRIPT_DIR to point at the blueprint root (it derives bin/ paths
+  # from it); set it locally rather than relying on install.sh having run in
+  # this process.
+  if [ -f "$blueprint_lib/provision-integrations.sh" ]; then
+    local SCRIPT_DIR; SCRIPT_DIR="$(dirname "$blueprint_lib")"
+    . "$blueprint_lib/provision-integrations.sh"
+    install_dvw_probe_symlink || true
+  fi
   return 0
 }
 

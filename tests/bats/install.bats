@@ -189,6 +189,13 @@ EOF
   readlink "$HOME/.local/bin/agent-notify" | grep -q "bin/agent-notify"
 }
 
+@test "install.sh symlinks dvw-probe into ~/.local/bin" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ -L "$HOME/.local/bin/dvw-probe" ]
+  [ -x "$HOME/.local/bin/dvw-probe" ]
+  readlink "$HOME/.local/bin/dvw-probe" | grep -q "bin/dvw-probe"
+}
+
 @test "install.sh reconcile mode: restores missing files without touching edited ones" {
   # First-deploy populates the manifest and all managed files.
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
