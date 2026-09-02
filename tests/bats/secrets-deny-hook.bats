@@ -829,3 +829,53 @@ X"
   bash_hook 'grep "foo" file | sh -c "set | grep -i secret"'
   denied
 }
+
+# --- AICODINGBASESETUP-7: protected paths glued onto option values ----------
+# The token scan skipped every dash-prefixed word outright, so a denied path
+# carried as `--file=PATH` or `-fPATH` was never examined. The value part of
+# an option is a token like any other; the flag part stays inert.
+
+@test "a protected path glued to a long option is denied" {
+  bash_hook "cat --file=$HOME/.aicodingsetup/.secrets.env"
+  denied
+  bash_hook 'sed --file=~/.aicodingsetup/.secrets.env x'
+  denied
+  bash_hook "python3 -c x --arg=\$HOME/.aicodingsetup/.secrets.env"
+  denied
+}
+
+@test "a protected path glued to a short option is denied" {
+  bash_hook "grep -f$HOME/.aicodingsetup/.secrets.env README.md"
+  denied
+  bash_hook 'grep -f~/.ssh/id_ed25519 README.md'
+  denied
+  bash_hook "cd ~/.aicodingsetup && grep -f.secrets.env README.md"
+  denied
+}
+
+@test "a sensitive directory glued to an option of a content command is denied" {
+  bash_hook 'tar czf /tmp/a.tgz --directory=~/.aicodingsetup .'
+  denied
+  bash_hook 'tar czf /tmp/a.tgz -C~/.aicodingsetup .'
+  denied
+}
+
+@test "ordinary options with values stay allowed" {
+  bash_hook 'grep --color=auto -n pattern ~/work/README.md'
+  allowed
+  bash_hook 'ls -la --time-style=long-iso ~/work'
+  allowed
+  bash_hook 'grep -C3 -A1 pattern ~/work/README.md'
+  allowed
+  bash_hook 'cat -- ~/work/README.md'
+  allowed
+  bash_hook 'cd ~/.aicodingsetup && ls -la --time-style=long-iso'
+  allowed
+}
+
+@test "a glued option inside quoted prose to a non-reader stays allowed" {
+  bash_hook "kanban-post 't' --repo r --body '--file=$HOME/.aicodingsetup/.secrets.env is what CAF-008 meant'"
+  allowed
+  bash_hook "echo 'the hook now catches grep -f\$HOME/.aicodingsetup/.secrets.env'"
+  allowed
+}

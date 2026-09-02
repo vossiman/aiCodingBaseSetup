@@ -318,6 +318,25 @@ is_sensitive_root() {
   return 1
 }
 
+# option_value <token> — the value glued onto an option word, or nothing.
+#
+# `--file=PATH` carries PATH after the first `=`; `-fPATH` carries it after
+# the flag letter. Both used to be skipped whole because they start with a
+# dash, so `cat --file=$SECRETS` and `grep -f$SECRETS` were never examined
+# (AICODINGBASESETUP-7). Bare flags (`-n`, `--color`, `--`, `-`) yield
+# nothing; a short-option remainder like `3` from `-C3` is returned and then
+# simply fails to resolve as a path. Unquoting stays with the caller.
+option_value() {
+  local token="$1"
+  case "$token" in
+    --|-) return 1 ;;
+    --*=*|-?=*) printf '%s' "${token#*=}" ;;
+    --*) return 1 ;;
+    -?*) printf '%s' "${token:2}" ;;
+    *) return 1 ;;
+  esac
+}
+
 # segment_head <segment> — the FIRST word of one command segment, exactly as
 # written. Nothing is skipped and nothing is stripped.
 #
@@ -721,10 +740,18 @@ case "$TOOL_NAME" in
     scan_tokens() {
       local cmd="$1"
       local token stripped expanded base exp_cd
-      local prev_cd=0 scan_cwd="$PWD" relative_to_sensitive=0
+      local prev_cd=0 scan_cwd="$PWD" relative_to_sensitive=0 from_option=0
       while IFS= read -r token || [[ -n "$token" ]]; do
         [[ -z "$token" ]] && continue
-        [[ "$token" == -* ]] && continue
+        # An option word is inert by itself, but the value glued onto it is
+        # an argument like any other. Swap the token for that value; a bare
+        # flag has none and is skipped as before.
+        from_option=0
+        if [[ "$token" == -* ]]; then
+          token="$(option_value "$token")" || continue
+          [[ -z "$token" ]] && continue
+          from_option=1
+        fi
         stripped="${token//\"/}"
         stripped="${stripped//\'}"
         if (( prev_cd )); then
@@ -737,8 +764,9 @@ case "$TOOL_NAME" in
           scan_cwd="$(realpath -m -- "$exp_cd")"
           continue
         fi
-        # A quoted `cd` is documentation/data, not shell state.
-        if [[ "$token" == "cd" ]]; then prev_cd=1; continue; fi
+        # A quoted `cd` is documentation/data, not shell state, and neither
+        # is the `cd` left over from an option like `-ccd`.
+        if [[ "$token" == "cd" ]] && (( from_option == 0 )); then prev_cd=1; continue; fi
         expanded="$(expand_path "$stripped")"
         relative_to_sensitive=0
         if [[ "$expanded" != /* ]]; then
@@ -828,7 +856,10 @@ case "$TOOL_NAME" in
       (( is_content == 0 )) || continue
       while IFS= read -r token || [[ -n "$token" ]]; do
         [[ -z "$token" ]] && continue
-        [[ "$token" == -* ]] && continue
+        if [[ "$token" == -* ]]; then
+          token="$(option_value "$token")" || continue
+          [[ -z "$token" ]] && continue
+        fi
         expanded="$(expand_path "${token//\"/}")"
         if is_sensitive_root "$expanded" || is_sensitive_root "$HOME/$expanded"; then
           deny "$(basename -- "${expanded%/}")"
