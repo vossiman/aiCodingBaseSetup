@@ -1194,7 +1194,7 @@ EOF
   manifest_stage_commit
   [ "$(stat -c '%a' "$TMPDIR/rc")" = "600" ]
   grep -qxF "new body" "$TMPDIR/rc"
-  ! grep -qxF "old body" "$TMPDIR/rc"
+  if grep -qxF "old body" "$TMPDIR/rc"; then false; fi
   [ ! -e "$TMPDIR/rc.tmp" ]
 }
 
