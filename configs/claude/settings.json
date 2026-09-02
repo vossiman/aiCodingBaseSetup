@@ -93,6 +93,11 @@
             "type": "command",
             "command": "bash \"{{HOME}}/.claude/hooks/opus-verbosity.sh\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash \"{{HOME}}/.claude/hooks/fable-guidance.sh\"",
+            "timeout": 5
           }
         ]
       }
