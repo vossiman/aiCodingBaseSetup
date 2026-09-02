@@ -1050,6 +1050,7 @@ EOF
   # Agent CLI configs are managed on hosts too (user decision 2026-08-19).
   [[ "$output" == *"/.codex/config.toml|"* ]]
   [[ "$output" == *"/.codex/AGENTS.md|"* ]]
+  [[ "$output" == *"/.cursor/skills/aicoding-estate/SKILL.md|overwrite|configs/cursor/skills/aicoding-estate/SKILL.md"* ]]
   run managed_inventory_merge
   [[ "$output" == *"/.claude/settings.json|"* ]]
   [[ "$output" == *"opencode.json|"* ]]

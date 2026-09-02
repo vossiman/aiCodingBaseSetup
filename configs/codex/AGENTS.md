@@ -39,6 +39,53 @@ to the wiki — a leak that outlives the session.
 - **You do not need the token to use GitHub.** `git` and `gh` are already
   authenticated from the secrets file — just run them.
 
+## The backlog board: file work you find, don't just report it
+
+`https://kanban.dataprospectors.at` is the estate's shared backlog. Every
+repo files against it, tagged with its own repo name, so work found in one
+project is visible from the phone instead of dying in a transcript.
+
+**Write to it with `kanban-post`, never `curl`.** The board authenticates
+agents with a bearer token in the shared secrets store, and the secrets deny
+hook refuses any command that expands the kanban token variable, because it
+cannot tell "send it in a header" from "print it". `kanban-post` reads the
+store itself, so no credential ever appears in a command you write. It
+redacts the credential from everything it prints, refuses redirects, and
+refuses plaintext destinations.
+
+```bash
+kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P] [--due DATE]
+kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority P] [--due DATE|none]
+kanban-post --done TICKET
+kanban-post --comment TICKET "text"
+kanban-post --list-repos | --list-tickets
+```
+
+**Every ticket has an issue key (`DEVMACHINE-12`)**, the repo name
+uppercased plus a number counted per repo. `TICKET` above is that key
+(case-insensitive) or the ticket's uuid. **Quote the key, not the uuid,** in
+commits, PRs and anything a human reads. Filing prints the new key on its
+own line.
+
+**`--repo` is required, and must name the repo you are standing in.** It is
+checked against the `github.com` origin of the current checkout, case and
+all. So file from the checkout the work belongs to: `cd` into the submodule
+or sibling repo first, rather than tagging someone else's finding with your
+own repo. A mismatch, or a directory that is no github.com checkout, is a
+refusal that makes no request. There is no default repo.
+
+Statuses are `backlog|todo|doing|done`; an unknown one is a 400 that lists
+the valid keys. `--done ID` closes a ticket. Close what you finish: the board
+only stays useful if it drains. `--comment ID "text"` adds a comment without
+touching the card; use it for progress with no state change (a blocker, a
+decision, a partial result). The owner reads comments on a phone, so write
+for a human who lacks your context.
+
+**When to file one:** a real defect or follow-up you found but were not
+asked to fix, and that would otherwise only exist in this transcript. Not
+for work you are about to do in this session, and not as a substitute for
+telling the user what you found: file it *and* say so.
+
 All four CLIs enforce this at the tool layer: Claude Code and Codex run the
 same PreToolUse deny hook (Codex's is installed as a *managed* hook in
 `/etc/codex/requirements.toml`, so it is trusted by policy and cannot be
