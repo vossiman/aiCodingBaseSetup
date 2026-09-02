@@ -22,6 +22,12 @@ SCHEMA = 1
 AGENT_CLIS = ("claude", "codex", "cursor-agent", "opencode")
 WRAPPERS = ("node", "python", "python3", "bun")
 
+# Caps mirrored from the consumer's model (dvw catalog): a document that
+# breaks them is rejected wholesale there, so truncate here instead and say
+# so with "partial": true.
+MAX_STR = 512
+LIST_CAPS = {"agents": 64, "sessions": 64, "windows": 256}
+
 
 class Budget:
     def __init__(self, seconds):
@@ -46,7 +52,7 @@ def _int(s, default=None):
         return default
 
 
-def _budget_seconds(raw, default=3.0, lo=0.1, hi=60.0):
+def _budget_seconds(raw, default=3.0, lo=0.1, hi=10.0):
     try:
         seconds = float(raw)
     except (TypeError, ValueError):
@@ -54,6 +60,35 @@ def _budget_seconds(raw, default=3.0, lo=0.1, hi=60.0):
     if seconds != seconds or seconds in (float("inf"), float("-inf")):  # nan/inf
         return default
     return min(max(seconds, lo), hi)
+
+
+def _clean_str(s):
+    """Make one string safe to serialise and short enough for the consumer.
+
+    os.readlink, os.listdir and os.environ decode bytes with surrogateescape,
+    so a path holding an invalid UTF-8 byte comes back carrying a lone
+    surrogate. json.dumps happily writes that as "\\udcff", which is not valid
+    JSON: a strict parser rejects the WHOLE document, so one odd byte in one
+    cwd would cost every section. Round-trip through the codec to turn those
+    back into U+FFFD.
+    """
+    return s.encode("utf-8", "surrogateescape").decode("utf-8", "replace")[:MAX_STR]
+
+
+def _clean(value, key=None, flags=None):
+    """Recursively sanitise strings and cap lists in the finished document."""
+    if isinstance(value, str):
+        return _clean_str(value)
+    if isinstance(value, list):
+        cap = LIST_CAPS.get(key)
+        if cap is not None and len(value) > cap:
+            value = value[:cap]
+            flags["truncated"] = True
+        return [_clean(v, None, flags) for v in value]
+    if isinstance(value, dict):
+        return {(_clean_str(k) if isinstance(k, str) else k): _clean(v, k, flags)
+                for k, v in value.items()}
+    return value
 
 
 def collect_tmux(budget):
@@ -112,15 +147,25 @@ def collect_agents(proc, budget):
         for line in _read(os.path.join(proc, "stat")).decode("ascii", "replace").splitlines():
             if line.startswith("btime "):
                 btime = _int(line.split()[1])
-        hz = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+        try:
+            hz = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+        except (ValueError, OSError):
+            hz = 100
+        # A platform may answer -1 or None for an unsupported name; dividing
+        # ticks by that would put "started" decades off instead of unknown.
+        hz = hz if isinstance(hz, int) and hz > 0 else 100
         my_uid = os.getuid()
         agents = []
+        scanned = 0
+        cut = False
         for name in os.listdir(proc):
             if time.monotonic() >= deadline:
                 budget.partial = True
+                cut = True
                 break
             if not name.isdigit():
                 continue
+            scanned += 1
             pdir = os.path.join(proc, name)
             try:
                 if os.stat(pdir).st_uid != my_uid:
@@ -163,6 +208,11 @@ def collect_agents(proc, budget):
             # only checks before starting a new entry, so a check is needed
             # here too or a genuinely late finish would report partial=False.
             budget.partial = True
+            cut = True
+        if cut and scanned == 0:
+            # Nothing was looked at at all, so an empty list would read as
+            # "no agents running" when the truth is "not measured": null.
+            return None
         agents.sort(key=lambda a: a["pid"])
         return agents
     except OSError:
@@ -187,24 +237,37 @@ def collect_git(budget):
     out = {"root": root, "branch": None, "head": None, "dirty": None, "ahead": None, "behind": None}
 
     def g(*args):
-        r = _run(["git", "-C", root, *args], budget.remaining(2.0))
+        """One git call, failing to None rather than to an exception.
+
+        Each call is caught on its own: a timeout on the third call used to
+        throw away the branch and head the first two had already produced,
+        which is the opposite of what "partial" is for.
+        """
+        try:
+            r = _run(["git", "-C", root, *args], budget.remaining(2.0))
+        except subprocess.TimeoutExpired:
+            budget.partial = True
+            return None
+        except OSError:
+            # git missing altogether shows up as every call failing and the
+            # section going null; only flag partial when an earlier call had
+            # already collected something worth keeping.
+            if any(out[k] is not None for k in ("branch", "head", "dirty")):
+                budget.partial = True
+            return None
         return r.stdout.strip() if r.returncode == 0 else None
 
-    try:
-        out["branch"] = g("rev-parse", "--abbrev-ref", "HEAD")
-        out["head"] = g("rev-parse", "--short", "HEAD")
-        status = g("status", "--porcelain")
-        out["dirty"] = bool(status) if status is not None else None
-        counts = g("rev-list", "--left-right", "--count", "HEAD...@{upstream}")
-        if counts:
-            parts = counts.split()
-            if len(parts) == 2:
-                out["ahead"], out["behind"] = _int(parts[0]), _int(parts[1])
-    except subprocess.TimeoutExpired:
-        budget.partial = True
-        return None
-    except OSError:
-        return None
+    out["branch"] = g("rev-parse", "--abbrev-ref", "HEAD")
+    out["head"] = g("rev-parse", "--short", "HEAD")
+    # --no-optional-locks: a monitoring exec must never take index.lock or
+    # rewrite the index cache under a developer working in the same repo.
+    status = g("--no-optional-locks", "status", "--porcelain")
+    out["dirty"] = bool(status) if status is not None else None
+    counts = g("rev-list", "--left-right", "--count", "HEAD...@{upstream}")
+    if counts:
+        parts = counts.split()
+        if len(parts) == 2:
+            out["ahead"], out["behind"] = _int(parts[0]), _int(parts[1])
     if out["branch"] is None and out["head"] is None:
         return None
     return out
@@ -231,24 +294,41 @@ def main():
     if len(sys.argv) > 1:
         print(json.dumps({"schema": SCHEMA, "error": "dvw-probe takes no arguments"}))
         return 0
-    budget = Budget(_budget_seconds(os.environ.get("DVW_PROBE_BUDGET", "3")))
-    proc = os.environ.get("DVW_PROBE_PROC", "/proc")
-    cg = os.environ.get("DVW_PROBE_CGROUP", "/sys/fs/cgroup")
-    doc = {"schema": SCHEMA, "ts": int(time.time()), "partial": False,
-           "tmux": None, "agents": None, "git": None, "cgroup": None}
-    for key, fn in (("cgroup", lambda: collect_cgroup(cg)),
-                    ("agents", lambda: collect_agents(proc, budget)),
-                    ("tmux", lambda: collect_tmux(budget)),
-                    ("git", lambda: collect_git(budget))):
-        try:
-            doc[key] = fn()
-        except Exception:  # a collector must never take the document down
-            doc[key] = None
-    doc["partial"] = budget.partial
     try:
-        sys.stdout.write(json.dumps(doc, separators=(",", ":")) + "\n")
+        budget = Budget(_budget_seconds(os.environ.get("DVW_PROBE_BUDGET", "3")))
+        proc = os.environ.get("DVW_PROBE_PROC", "/proc")
+        cg = os.environ.get("DVW_PROBE_CGROUP", "/sys/fs/cgroup")
+        doc = {"schema": SCHEMA, "ts": int(time.time()), "partial": False,
+               "tmux": None, "agents": None, "git": None, "cgroup": None}
+        for key, fn in (("cgroup", lambda: collect_cgroup(cg)),
+                        ("agents", lambda: collect_agents(proc, budget)),
+                        ("tmux", lambda: collect_tmux(budget)),
+                        ("git", lambda: collect_git(budget))):
+            try:
+                doc[key] = fn()
+            except Exception:  # a collector must never take the document down
+                doc[key] = None
+                budget.partial = True  # a crashed collector is not "measured"
+        doc["partial"] = budget.partial
+        flags = {"truncated": False}
+        doc = _clean(doc, None, flags)
+        if flags["truncated"]:
+            doc["partial"] = True
+        payload = json.dumps(doc, separators=(",", ":")) + "\n"
+    except Exception:
+        # Anything unexpected outside the collectors (a broken environment,
+        # a serialisation surprise) still owes the caller one valid document.
+        try:
+            ts = int(time.time())
+        except Exception:
+            ts = 0
+        payload = json.dumps({"schema": SCHEMA, "ts": ts, "partial": True,
+                              "tmux": None, "agents": None, "git": None,
+                              "cgroup": None}, separators=(",", ":")) + "\n"
+    try:
+        sys.stdout.write(payload)
         sys.stdout.flush()
-    except OSError:
+    except Exception:
         pass  # the reader went away; nothing more we can do about it
     return 0
 

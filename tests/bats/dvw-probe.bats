@@ -207,3 +207,90 @@ d=json.load(sys.stdin)
 print(d["partial"], d["tmux"] is not None)')"
   [ "$result" = "True True" ]
 }
+
+@test "an undecodable cwd still yields a document a strict parser accepts" {
+  # /proc symlinks come back through surrogateescape, so one invalid byte in
+  # a cwd used to travel into the JSON as a lone surrogate and cost the
+  # consumer the whole document.
+  rm "$TMPDIR/proc/4242/cwd"
+  ln -s "$TMPDIR/"$'ws/bad\xff' "$TMPDIR/proc/4242/cwd"
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  echo "$output" | python3 -c '
+import json, sys
+d = json.loads(sys.stdin.read(), strict=True)
+cwd = d["agents"][0]["cwd"]
+cwd.encode("utf-8")  # raises on a lone surrogate, which is the bug
+assert "�" in cwd, cwd
+'
+}
+
+@test "a long string is truncated to the consumer limit" {
+  # 900 chars of path, split into components a filesystem will accept.
+  long=$(python3 -c 'print("/".join(["w" * 100] * 9))')
+  mkdir -p "$TMPDIR/$long"
+  rm "$TMPDIR/proc/4242/cwd"
+  ln -s "$TMPDIR/$long" "$TMPDIR/proc/4242/cwd"
+  [ "$(jq_probe 'len(d["agents"][0]["cwd"])')" = "512" ]
+}
+
+@test "more agents than the consumer accepts are capped and flagged partial" {
+  for i in $(seq 0 69); do
+    d="$TMPDIR/proc/2$(printf '%04d' "$i")"
+    mkdir -p "$d"
+    printf 'claude\n' > "$d/comm"
+    printf 'claude\0' > "$d/cmdline"
+    printf '1 (claude) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 500 0 0\n' > "$d/stat"
+    ln -s "$TMPDIR/ws" "$d/cwd"
+  done
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  result="$(echo "$output" | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+print(len(d["agents"]), d["partial"])')"
+  [ "$result" = "64 True" ]
+}
+
+@test "a git call that times out keeps the fields already collected" {
+  cat > "$TMPDIR/stubs/git" <<'STUB'
+#!/bin/sh
+case "$*" in
+  *"--abbrev-ref HEAD"*) echo "feat/x" ;;
+  *"--short HEAD"*)      echo "abc1234" ;;
+  *"status --porcelain"*) sleep 10 ;;
+  *) exit 1 ;;
+esac
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/git"
+  export DVW_PROBE_BUDGET=1
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  result="$(echo "$output" | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+g=d["git"]
+print(g["branch"], g["head"], g["dirty"], d["partial"])')"
+  [ "$result" = "feat/x abc1234 None True" ]
+}
+
+@test "git status runs with --no-optional-locks so it never takes index.lock" {
+  log="$TMPDIR/git.log"
+  cat > "$TMPDIR/stubs/git" <<STUB
+#!/bin/sh
+printf '%s\n' "\$*" >> "$log"
+case "\$*" in
+  *"--abbrev-ref HEAD"*) echo "feat/x" ;;
+  *"--short HEAD"*)      echo "abc1234" ;;
+  *"status --porcelain"*) printf ' M file\n' ;;
+  *"rev-list --left-right --count"*) printf '2\t0\n' ;;
+  *) exit 1 ;;
+esac
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/git"
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  grep -q -- "--no-optional-locks status --porcelain" "$log"
+  # ... and never as a plain "git -C <root> status".
+  if grep -qE '^-C [^ ]+ status' "$log"; then false; fi
+}
