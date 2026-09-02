@@ -168,6 +168,36 @@ teardown() { cd /; rm -rf "$TMP"; }
   readlink "$HOME/.local/bin/dvw-probe" | grep -q "bin/dvw-probe"
 }
 
+@test "sync --boot restores a missing agent-notify symlink" {
+  # install.sh creates it once; a container whose ~/.local/bin lost the
+  # entry (or predates the tool) must heal on the next boot sync, not wait
+  # for a full aicoding-install.
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  rm -f "$HOME/.local/bin/agent-notify"
+  AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  [ -L "$HOME/.local/bin/agent-notify" ]
+  [ -x "$HOME/.local/bin/agent-notify" ]
+  readlink "$HOME/.local/bin/agent-notify" | grep -q "bin/agent-notify"
+}
+
+@test "sync --boot restores a missing aicoding-status symlink" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  rm -f "$HOME/.local/bin/aicoding-status"
+  AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  [ -L "$HOME/.local/bin/aicoding-status" ]
+  [ -x "$HOME/.local/bin/aicoding-status" ]
+  readlink "$HOME/.local/bin/aicoding-status" | grep -q "bin/aicoding-status"
+}
+
+@test "sync --boot restores a missing kanban-post symlink" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  rm -f "$HOME/.local/bin/kanban-post"
+  AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  [ -L "$HOME/.local/bin/kanban-post" ]
+  [ -x "$HOME/.local/bin/kanban-post" ]
+  readlink "$HOME/.local/bin/kanban-post" | grep -q "bin/kanban-post"
+}
+
 @test "sync right after install reports Nothing to do (no phantom drift)" {
   # Regression: substituted files (raw-source hash compare) and merge targets
   # (unconditional re-merge bucket) used to classify as actionable on every

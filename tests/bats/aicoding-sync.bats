@@ -176,3 +176,75 @@ EOF
   [ "$recorded" = "$full" ]
   [ "${#recorded}" -eq 40 ]
 }
+
+# Give the tracking clone an origin whose main is one commit ahead, with a
+# lib/sync.sh that prints a marker. The clone itself stays on the old commit
+# (whose sync.sh is the code under test), so refresh_blueprint's fetch +
+# reset is what moves it forward.
+_seed_origin_ahead() {
+  local work="$TMPDIR/origin-work"
+  (cd "$AICODING_BLUEPRINT_CLONE" && git checkout -q -B main)
+  git clone -q --bare "$AICODING_BLUEPRINT_CLONE" "$TMPDIR/origin.git"
+  (cd "$AICODING_BLUEPRINT_CLONE" && git remote add origin "$TMPDIR/origin.git")
+  git clone -q "$TMPDIR/origin.git" "$work"
+  sed -i 's/^aicoding_sync() {$/aicoding_sync() {\n  echo NEW_SYNC_STEP_RAN/' "$work/lib/sync.sh"
+  grep -q NEW_SYNC_STEP_RAN "$work/lib/sync.sh"
+  (cd "$work" && git -c user.email=test@local -c user.name=test commit -qam "new step" \
+     && git push -q origin HEAD:main)
+}
+
+@test "aicoding-sync re-execs from the refreshed clone so a new sync step runs in the same invocation" {
+  mkdir -p "$HOME/.aicodingsetup"
+  echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
+  _seed_origin_ahead
+  old=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse --short HEAD)
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
+  echo "$output"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "NEW_SYNC_STEP_RAN"
+  echo "$output" | grep -q "re-running from the refreshed clone"
+  new=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse --short HEAD)
+  [ "$old" != "$new" ]
+  echo "$output" | grep -q "Blueprint: old123 -> $new"
+}
+
+@test "aicoding-sync re-exec happens at most once per run" {
+  mkdir -p "$HOME/.aicodingsetup"
+  echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
+  _seed_origin_ahead
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | grep -c "re-running from the refreshed clone")" -eq 1 ]
+  [ "$(echo "$output" | grep -c "NEW_SYNC_STEP_RAN")" -eq 1 ]
+}
+
+@test "aicoding-sync guard env var suppresses the re-exec" {
+  mkdir -p "$HOME/.aicodingsetup"
+  echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
+  _seed_origin_ahead
+  run env AICODING_SYNC_REEXECED=1 "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
+  [ "$status" -eq 0 ]
+  if echo "$output" | grep -q "re-running from the refreshed clone"; then false; fi
+  if echo "$output" | grep -q "NEW_SYNC_STEP_RAN"; then false; fi
+}
+
+@test "aicoding-sync re-exec preserves the original arguments" {
+  mkdir -p "$HOME/.aicodingsetup"
+  echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
+  _seed_origin_ahead
+  # --dry-run prints the bucket counts and never provisions; if the re-exec
+  # dropped the flag the run would go interactive and stall on the prompt.
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "NEW_SYNC_STEP_RAN"
+  echo "$output" | grep -qE "^  [0-9]+ up_to_date"
+  [ ! -e "$AICODING_UPDATE_STATE/.binaries.stamp" ]
+}
+
+@test "aicoding-sync does not re-exec when the clone is already current" {
+  mkdir -p "$HOME/.aicodingsetup"
+  echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
+  [ "$status" -eq 0 ]
+  if echo "$output" | grep -q "re-running from the refreshed clone"; then false; fi
+}
