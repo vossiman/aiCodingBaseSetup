@@ -1211,3 +1211,19 @@ EOF
   grep -qxF "prelude" "$TMPDIR/rc"
   grep -qxF "body line" "$TMPDIR/rc"
 }
+
+# Auto mode consults allow rules before its classifier, and the classifier
+# cannot resolve a relative path after `cd` against the Read() deny globs, so
+# without these rules every `cd X && grep ... file` prompts. Read-only shell
+# commands are pre-approved fleet-wide; the secrets PreToolUse hook still
+# guards Bash on every profile. Sorted: _json_merge_into invariant.
+@test "claude settings fragment: read-only shell commands are allow-listed" {
+  local f="$BLUEPRINT_ROOT/configs/claude/settings.json"
+  for rule in 'Bash(cd:*)' 'Bash(grep:*)' 'Bash(rg:*)' 'Bash(cat:*)' \
+              'Bash(head:*)' 'Bash(tail:*)' 'Bash(sed -n:*)' 'Bash(ls:*)' \
+              'Bash(find:*)' 'Bash(wc:*)'; do
+    jq -e --arg r "$rule" '.permissions.allow | index($r) != null' "$f" \
+      || { echo "missing allow rule: $rule"; return 1; }
+  done
+  jq -e '.permissions.allow == (.permissions.allow | unique)' "$f"
+}

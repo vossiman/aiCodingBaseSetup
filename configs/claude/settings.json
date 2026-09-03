@@ -1,7 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git show:*)"
+      "Bash(cat:*)",
+      "Bash(cd:*)",
+      "Bash(find:*)",
+      "Bash(git show:*)",
+      "Bash(grep:*)",
+      "Bash(head:*)",
+      "Bash(ls:*)",
+      "Bash(rg:*)",
+      "Bash(sed -n:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)"
     ],
     "deny": [
       "Read(**/*.key)",
