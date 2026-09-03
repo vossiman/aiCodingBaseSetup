@@ -7,3 +7,6 @@ vendor/
 # OS artifacts
 .DS_Store
 Thumbs.db
+
+# review-by-harness: per-checkout sandbox opt-in (see skills/review-by-harness/SKILL.md)
+skills/review-by-harness/config.env
