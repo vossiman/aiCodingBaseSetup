@@ -64,7 +64,8 @@ Managed by the aiCodingBaseSetup blueprint (`configs/claude/CLAUDE.md`);
   `AGENTS.md` conventions.
 - Integrate via PR: never commit or force-push to a protected `main`. Ask
   before merging; delete merged branches.
-- **Deliver files through `out/` at the repo root, always.** Anything the
+- **Deliver files through `out/` at the repo root, always** (inside the
+  container that is `/workspaces/<workspace-name>/out`). Anything the
   user should receive (a report, an export, a build artifact such as a
   release APK fetched from CI) is written to `out/`, subdirectories kept,
   and announced by path; they fetch it with `dvw pull`. Create `out/` if it
