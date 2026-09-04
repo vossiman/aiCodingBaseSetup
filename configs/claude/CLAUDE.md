@@ -64,6 +64,12 @@ Managed by the aiCodingBaseSetup blueprint (`configs/claude/CLAUDE.md`);
   `AGENTS.md` conventions.
 - Integrate via PR: never commit or force-push to a protected `main`. Ask
   before merging; delete merged branches.
+- **Deliver files through `out/` at the repo root, always.** Anything the
+  user should receive (a report, an export, a build artifact such as a
+  release APK fetched from CI) is written to `out/`, subdirectories kept,
+  and announced by path; they fetch it with `dvw pull`. Create `out/` if it
+  is missing, never empty it, and treat a chat attachment as a preview, not
+  as delivery. Full conventions: `wiki/aicoding.md § Gotchas`.
 - **Starting a brand-new project?** Copy the reference layout from
   `templates/project/` in the aiCodingBaseSetup checkout (`/tmp/aicoding` in
   containers, refreshed on boot): substitute `{{PROJECT_NAME}}` and
