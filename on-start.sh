@@ -87,8 +87,11 @@ if [ -n "$sync_cmd" ]; then
 fi
 
 # Boot sweep: scrub transcripts left by crashed sessions or other containers.
-# Fail-open and backgrounded; the sync above has just refreshed the symlink.
+# Fail-open, bounded, and synchronous: a detached sweep outlives this script
+# and keeps writing state into a HOME the caller may already be tearing down
+# (CI, 2026-09-07: the bats teardown lost the race and failed on a non-empty
+# temp dir). The sync above has just refreshed the symlink.
 if command -v redact-sessions >/dev/null 2>&1; then
-  nohup timeout 300 redact-sessions --sweep >/dev/null 2>&1 &
+  timeout 120 redact-sessions --sweep >/dev/null 2>&1 || true
 fi
 exit 0
