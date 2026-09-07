@@ -160,7 +160,7 @@ EOF
   [[ "$(cat "$fr")" != *"$V1"* ]]
 }
 
-@test "sweep: covers every root including cursor json and subagents, not sqlite" {
+@test "sweep: covers every root including cursor json and subagents; a store.db that is no database is left alone" {
   local a="$HOME/.claude/projects/-p/s1/subagents/x.jsonl"
   local b="$HOME/.codex/sessions/2026/09/07/r.jsonl"
   local c="$HOME/.cursor/chats/w/c/prompt_history.json"
@@ -170,6 +170,8 @@ EOF
   "$RS" --sweep
   for f in "$a" "$b" "$c" "$d"; do [[ "$(cat "$f")" != *"$V1"* ]]; done
   grep -q "$V1" "$e"
+  grep -q "sqlite helper failed rc=1 file=$e" "$STATE/log"
+  grep -qx "$e" "$STATE/deferred"
 }
 
 @test "sweep stamp: second sweep with nothing newer inspects nothing" {
@@ -506,4 +508,104 @@ EOF
 @test "settings.json runs the pending hook on every SessionStart, clear and compact included" {
   local s="$BLUEPRINT_ROOT/configs/claude/settings.json"
   jq -e '[.hooks.SessionStart[] | select(.hooks[].command | test("redact-sessions-pending")) | has("matcher")] == [false]' "$s"
+}
+
+# --- SQLite stores (spec 2026-09-07-redact-sessions-sqlite-design.md) -------
+
+# source_candidates: run the script's candidates() in this shell.
+source_candidates() { ( REDACT_SESSIONS_SOURCE_ONLY=1 . "$RS"; candidates | sort -u ); }
+
+sqlite_opencode() {
+  python3 - "$1" "$V1" <<'PYEOF'
+import sqlite3, sys, json, os
+db, v1 = sys.argv[1:]
+c = sqlite3.connect(db); c.execute("pragma journal_mode=wal")
+c.executescript("create table message(id text primary key, session_id text, time_updated integer, data text); create table part(id text primary key, message_id text, session_id text, time_updated integer, data text)")
+c.execute("insert into part values('p','m','ses_9',1,?)", (json.dumps({"o": "KEY=%s" % v1}),))
+c.commit(); c.close()
+PYEOF
+}
+sqlite_cursor() {
+  python3 - "$1" "$V1" <<'PYEOF'
+import sqlite3, sys, json, hashlib
+db, v1 = sys.argv[1:]
+h = lambda b: hashlib.sha256(b).hexdigest()
+leaf = json.dumps({"content": v1}).encode(); root = b"\n\x20" + bytes.fromhex(h(leaf))
+c = sqlite3.connect(db); c.execute("pragma journal_mode=wal")
+c.executescript("create table blobs(id text primary key, data blob); create table meta(key text primary key, value text)")
+for b in (leaf, root): c.execute("insert into blobs values(?,?)", (h(b), b))
+c.execute("insert into meta values('0',?)", (json.dumps({"latestRootBlobId": h(root)}).encode().hex(),))
+c.commit(); c.close()
+PYEOF
+}
+# db_has DB VALUE: 0 when VALUE is in the main file or its -wal.
+db_has() { grep -q "$2" "$1" 2>/dev/null || grep -q "$2" "$1-wal" 2>/dev/null; }
+
+@test "sqlite: --now scrubs an opencode db and reports key and session" {
+  mkdir -p "$HOME/.local/share/opencode"; local f="$HOME/.local/share/opencode/opencode.db"
+  sqlite_opencode "$f"
+  run --separate-stderr "$RS" --now "$f"
+  [ "$status" -eq 0 ]
+  if db_has "$f" "$V1"; then false; fi
+  grep -q 'hit key=OPENROUTER_API_KEY count=1 file=.*opencode.db container=.* session=ses_9' "$STATE/log"
+  grep -qx OPENROUTER_API_KEY "$STATE/pending"
+  [[ "$stderr" != *"$V1"* ]]
+}
+
+@test "sqlite: sweep finds cursor stores under chats and acp-sessions, session is the conversation dir" {
+  mkdir -p "$HOME/.cursor/chats/w/conv1" "$HOME/.cursor/acp-sessions/conv2"
+  sqlite_cursor "$HOME/.cursor/chats/w/conv1/store.db"; old "$HOME/.cursor/chats/w/conv1/store.db"
+  sqlite_cursor "$HOME/.cursor/acp-sessions/conv2/store.db"; old "$HOME/.cursor/acp-sessions/conv2/store.db"
+  "$RS" --sweep
+  if grep -rq "$V1" "$HOME/.cursor"; then false; fi
+  grep -q 'hit key=OPENROUTER_API_KEY count=1 file=.*conv1/store.db container=.* session=conv1' "$STATE/log"
+  grep -q 'session=conv2' "$STATE/log"
+}
+
+@test "sqlite: quiet period looks at the -wal mtime too" {
+  mkdir -p "$HOME/.cursor/chats/w/c1"; local f="$HOME/.cursor/chats/w/c1/store.db"
+  sqlite_cursor "$f"; old "$f"; touch "$f-wal"
+  "$RS" --sweep
+  db_has "$f" "$V1"
+  grep -qx "$f" "$STATE/deferred"
+  old "$f-wal"; "$RS" --sweep
+  if db_has "$f" "$V1"; then false; fi
+}
+
+@test "sqlite: candidates include a store whose -wal is newer than the stamp" {
+  mkdir -p "$HOME/.cursor/chats/w/c1" "$STATE"; local f="$HOME/.cursor/chats/w/c1/store.db"
+  sqlite_cursor "$f"; : > "$f-wal"
+  touch -d '-30 minutes' "$f"; touch -d '-20 minutes' "$STATE/stamp"; touch -d '-10 minutes' "$f-wal"
+  source_candidates | grep -qx "$f"
+  # and the single-file opencode root behaves the same
+  mkdir -p "$HOME/.local/share/opencode"; local g="$HOME/.local/share/opencode/opencode.db"
+  sqlite_opencode "$g"; : > "$g-wal"
+  touch -d '-30 minutes' "$g"; touch -d '-10 minutes' "$g-wal"
+  source_candidates | grep -qx "$g"
+  if source_candidates | grep -q -- '-wal$'; then false; fi
+}
+
+@test "sqlite: busy db is deferred, not corrupted, and scrubbed by the next sweep" {
+  mkdir -p "$HOME/.local/share/opencode"; local f="$HOME/.local/share/opencode/opencode.db"
+  sqlite_opencode "$f"; old "$f"
+  python3 -c "import sqlite3,sys,time; c=sqlite3.connect(sys.argv[1]); c.execute('begin immediate'); time.sleep(3)" "$f" &
+  local holder=$!; sleep 0.5
+  # the holder connection freshens the -wal, so the quiet period must not mask the busy path
+  REDACT_QUIET_SECONDS=0 REDACT_SQLITE_BUSY_MS=300 "$RS" --sweep
+  grep -qx "$f" "$STATE/deferred"
+  grep -q 'sqlite busy file=' "$STATE/log"
+  wait "$holder"
+  "$RS" --sweep
+  if db_has "$f" "$V1"; then false; fi
+}
+
+@test "sqlite: no python3 defers the sqlite roots and still scrubs text files" {
+  mkdir -p "$HOME/.local/share/opencode"; local f="$HOME/.local/share/opencode/opencode.db"
+  sqlite_opencode "$f"; old "$f"
+  local t="$HOME/.claude/projects/-p/s1.jsonl"; printf '{"x":"%s"}\n' "$V1" > "$t"; old "$t"
+  REDACT_SESSIONS_PYTHON=/nonexistent/python3 "$RS" --sweep
+  if grep -q "$V1" "$t"; then false; fi
+  db_has "$f" "$V1"
+  grep -qx "$f" "$STATE/deferred"
+  grep -q 'python3 missing' "$STATE/log"
 }
