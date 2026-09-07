@@ -25,8 +25,13 @@ event="$(printf '%s' "$input" | jq -r '.hook_event_name // empty' 2>/dev/null)"
 transcript="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null)"
 
 # Claude Code says SessionEnd, cursor says sessionEnd; both mean "done writing".
-case "$event" in SessionEnd|sessionEnd) ended=1 ;; *) ended=0 ;; esac
-if [ "$ended" = 1 ] && [ -n "$transcript" ] && [ -f "$transcript" ]; then
+# A codex rollout is also scrubbed on Stop: codex holds it open with O_APPEND
+# and redact-sessions rewrites it in place, which that writer follows, so
+# there is no reason to wait for a quiet period a chatty session never gives.
+now=0
+case "$event" in SessionEnd|sessionEnd) now=1 ;; esac
+case "$event:$transcript" in Stop:*/.codex/sessions/*) now=1 ;; esac
+if [ "$now" = 1 ] && [ -n "$transcript" ] && [ -f "$transcript" ]; then
   timeout 60 "$bin" --now "$transcript" >/dev/null 2>&1 || true
 fi
 

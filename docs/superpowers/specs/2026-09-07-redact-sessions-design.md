@@ -104,7 +104,13 @@ Two of the three incidents were printed by subagents; that is the point.
    per key `K` with value `V` (length >= 8):
    - `V` verbatim.
    - the JSON-escaped form of `V`, when it differs (transcripts are JSONL,
-     so `"` and `\` inside a value appear as `\"` and `\\`).
+     so `"` and `\` inside a value appear as `\"` and `\\`). It is emitted
+     before the raw rule, so a value beginning with `"` or `\` cannot leave
+     a dangling escape in front of the marker.
+   - rules are ordered longest value first, so a value that contains another
+     is replaced whole and both keys are reported.
+   - lengths are byte lengths (`LC_ALL=C`): base64 groups bytes, and a
+     non-ASCII value has more bytes than characters.
    - the three base64 alignments of `V`. A base64 character encodes six
      bits, so a character at either edge of `V`'s encoding can also carry
      bits from the neighbouring byte in a larger blob. For each offset
@@ -200,7 +206,9 @@ only one of them still scrubs. Boot and sync cover crashed sessions.
 |---|---|---|
 | Claude Code `Stop` (async, after `llmwiki-distill.sh`) | `redact-sessions --sweep` | Catches every quiet file, including subagent files whose agents have finished |
 | Claude Code `SessionEnd` | `redact-sessions --now <transcript_path>` then `--sweep` | `--now` ignores the quiet period for the named file: the harness has said it is done |
-| codex `notify` (already wired to `agent-notify`, `configs/codex/config.toml`) | a wrapper that calls `agent-notify` then `redact-sessions --sweep` | codex fires `notify` at the end of every turn; the wrapper keeps the existing flag behaviour |
+| codex `Stop` and `SessionEnd`, managed hooks in `requirements.toml` next to the deny hook | the same hook script; on `Stop` a codex rollout is scrubbed `--now` in place (its `O_APPEND` writer follows), then a sweep | a sweep alone would defer the live rollout forever, since every `notify` fires right after an append (codex PR review, round 2) |
+| codex `SessionStart`, managed hook | `redact-sessions-pending.sh` | codex adds SessionStart stdout as developer context, so the rotation warning reaches codex-only sessions |
+| codex `notify` (already wired to `agent-notify`) | `codex-turn-done`: `agent-notify` then a background sweep | kept as a belt-and-braces trigger; the managed hooks above do the real work |
 | cursor `stop` hook (`~/.cursor/hooks.json`, managed by the blueprint) | `redact-sessions --sweep` | Same role as Claude Code's Stop |
 | `on-start.sh` (container boot) and `aicoding-sync` | `--sweep` | Crashed sessions, files touched from another container |
 
@@ -273,7 +281,11 @@ from a hook path in a way that blocks the harness: hooks call it with
 - `configs/claude/settings.json` gains the Stop, SessionEnd and SessionStart
   entries; `MANAGED_HOOKS` and `blueprint-deploy.sh` list the new hook file.
 - `configs/codex/config.toml`'s `notify` line points at the wrapper from
-  3.5 instead of `agent-notify` directly.
+  3.5 instead of `agent-notify` directly; `configs/codex/requirements.toml`
+  registers SessionStart, Stop and SessionEnd, and
+  `ensure_codex_managed_hooks` copies all three hook scripts into the
+  managed dir, root-owned like the deny hook.
+- `install-host.sh` installs the same symlinks as the container installer.
 - `configs/cursor/` gains a managed `hooks.json` with `stop` and
   `sessionStart` entries, deployed like the other cursor files.
 - `on-start.sh` runs `redact-sessions --sweep` after the secrets file mount

@@ -183,6 +183,8 @@ main() {
   install_aicoding_sync_symlink
   install_aicoding_install_symlink
   install_update_status_symlink
+  install_redact_transcript_symlink
+  install_redact_sessions_symlinks
   remove_deprecated_shims
 
   local mode

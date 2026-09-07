@@ -40,6 +40,9 @@ redact_literal_ere_escape() {
 # VALUE's final bits with whatever byte follows in a larger blob, so it is
 # dropped too.
 redact_literal_b64_core() {
+  # Byte length, not character length: base64 groups bytes, and a non-ASCII
+  # value has more bytes than characters.
+  local LC_ALL=C
   local v="$1" k="$2" filler="" enc
   case "$k" in 1) filler="A" ;; 2) filler="AA" ;; esac
   enc="$(printf '%s%s' "$filler" "$v" | base64 -w0)"
@@ -96,7 +99,7 @@ redact_literal_rules() {
     val="${line#*=}"
     val="${val%\"}"; val="${val#\"}"
     val="${val%\'}"; val="${val#\'}"
-    [ "${#val}" -ge 8 ] || continue
+    [ "$(LC_ALL=C; printf '%d' "${#val}")" -ge 8 ] || continue
     keys=$(( keys + 1 ))
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || key="_"
     for i in "${!vals[@]}"; do
@@ -108,7 +111,14 @@ redact_literal_rules() {
 
   [ "$keys" -eq "$expected" ] || return 1
 
-  for i in "${!vals[@]}"; do
+  # Longest value first: when one value is a prefix (or any substring) of
+  # another, the longer one must be replaced before the shorter rule can
+  # eat part of it and leave the longer key unreported.
+  local -a order=()
+  while IFS= read -r i; do order+=("$i"); done < <(
+    for i in "${!vals[@]}"; do LC_ALL=C printf '%d %d\n' "${#vals[$i]}" "$i"; done | sort -k1,1nr -k2,2n | awk '{print $2}')
+
+  for i in "${order[@]}"; do
     val="${vals[$i]}"
     marker="[REDACTED]"
     if [ "$mode" = sessions ]; then
@@ -117,13 +127,16 @@ redact_literal_rules() {
       [ -n "$key" ] && marker="[REDACTED:$key]"
     fi
 
-    rule="$(_redact_literal_rule "$val" "$marker")" || return 1
-    out+="$rule"$'\n'
+    # JSON-escaped form first: for a value starting with `"` or `\`, the raw
+    # rule would otherwise match from the second character of the escape and
+    # leave a dangling backslash before the marker, which is invalid JSONL.
     jval="$(redact_literal_json_escape "$val")"
     if [ "$jval" != "$val" ]; then
       rule="$(_redact_literal_rule "$jval" "$marker")" || return 1
       out+="$rule"$'\n'
     fi
+    rule="$(_redact_literal_rule "$val" "$marker")" || return 1
+    out+="$rule"$'\n'
 
     if [ "$mode" = sessions ] && [ "${#val}" -ge 12 ]; then
       for k in 0 1 2; do

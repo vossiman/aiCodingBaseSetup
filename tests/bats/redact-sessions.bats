@@ -412,3 +412,18 @@ EOF
   grep -qx '{"text":"mid-rewrite"}' "$f"
   [ "$(wc -l < "$f")" -eq 2 ]
 }
+
+@test "hook: Stop on a codex rollout scrubs it now, in place" {
+  local f="$HOME/.codex/sessions/2026/09/07/r.jsonl"
+  printf '{"text":"%s"}\n' "$V1" > "$f"
+  local ino; ino="$(stat -c '%i' "$f")"
+  run bash "$HOOK" <<< "$(jq -nc --arg t "$f" '{hook_event_name:"Stop", transcript_path:$t}')"
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$f")" != *"$V1"* ]]
+  [ "$(stat -c '%i' "$f")" = "$ino" ]
+}
+
+@test "install-host.sh installs the scrubber symlinks too" {
+  grep -q 'install_redact_sessions_symlinks' "$BLUEPRINT_ROOT/install-host.sh"
+  grep -q 'install_redact_transcript_symlink' "$BLUEPRINT_ROOT/install-host.sh"
+}

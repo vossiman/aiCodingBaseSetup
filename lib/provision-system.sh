@@ -250,9 +250,16 @@ ensure_codex_managed_hooks() {
 
   command -v codex &>/dev/null || { info "codex not installed — skipping managed hook"; return 0; }
 
+  # Every script requirements.toml references, all from configs/claude/hooks:
+  # codex runs the same hook contract, so the same files serve both CLIs.
+  local hooks=(bw-deny-files.sh redact-sessions-hook.sh redact-sessions-pending.sh)
   local src="$SCRIPT_DIR/configs/claude/hooks/bw-deny-files.sh"
   local req_src="$SCRIPT_DIR/configs/codex/requirements.toml"
-  [[ -f "$src" && -f "$req_src" ]] || { warn "blueprint hook sources missing — skipping"; return 0; }
+  local h
+  for h in "${hooks[@]}"; do
+    [[ -f "$SCRIPT_DIR/configs/claude/hooks/$h" ]] || { warn "blueprint hook source $h missing — skipping"; return 0; }
+  done
+  [[ -f "$req_src" ]] || { warn "blueprint hook sources missing — skipping"; return 0; }
 
   local dir="$CODEX_MANAGED_DIR"
   local hook_dest="$dir/hooks/bw-deny-files.sh"
@@ -270,10 +277,13 @@ ensure_codex_managed_hooks() {
 
   # Idempotent: only touch /etc when something actually differs, so a clean
   # sync stays silent (and never prompts for sudo on hosts).
-  if [[ -f "$req_dest" && -f "$hook_dest" ]] \
-     && [[ "$rendered" == "$(cat "$req_dest" 2>/dev/null)" ]] \
-     && cmp -s "$src" "$hook_dest"; then
-    ok "codex managed hook up to date ($req_dest)"
+  local fresh=1
+  [[ -f "$req_dest" && "$rendered" == "$(cat "$req_dest" 2>/dev/null)" ]] || fresh=0
+  for h in "${hooks[@]}"; do
+    cmp -s "$SCRIPT_DIR/configs/claude/hooks/$h" "$dir/hooks/$h" || fresh=0
+  done
+  if [[ "$fresh" == 1 ]]; then
+    ok "codex managed hooks up to date ($req_dest)"
     return 0
   fi
 
@@ -309,12 +319,14 @@ ensure_codex_managed_hooks() {
   $esc mkdir -p "$dir/hooks" || { warn "cannot create $dir — skipping"; return 0; }
   # Root-owned and not user-writable on purpose: a hook script an agent can
   # edit is a hook an agent can neuter.
-  $esc cp "$src" "$hook_dest" || { warn "cannot write $hook_dest — skipping"; return 0; }
-  $esc chmod 0755 "$hook_dest"
+  for h in "${hooks[@]}"; do
+    $esc cp "$SCRIPT_DIR/configs/claude/hooks/$h" "$dir/hooks/$h" || { warn "cannot write $dir/hooks/$h — skipping"; return 0; }
+    $esc chmod 0755 "$dir/hooks/$h"
+  done
   printf '%s\n' "$rendered" | $esc tee "$req_dest" >/dev/null \
     || { warn "cannot write $req_dest — skipping"; return 0; }
   $esc chmod 0644 "$req_dest"
-  ok "codex managed hook installed ($req_dest)"
+  ok "codex managed hooks installed ($req_dest)"
 }
 
 # _codex_hook_can_prompt — may this run stop and ask for a sudo password?

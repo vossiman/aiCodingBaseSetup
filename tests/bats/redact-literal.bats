@@ -140,3 +140,31 @@ EOF
   [[ "$output" == *'[REDACTED:C]/g'* ]]
   [[ "$output" != *'[REDACTED:A]/g'* ]]
 }
+
+@test "a value that is a prefix of another: both keys reported, longer wins" {
+  printf 'A=abcdefgh\nB=abcdefgh1234\n' > "$SECRETS"
+  local script; script="$(redact_literal_rules sessions "$SECRETS")"
+  run sed -E -f <(printf '%s' "$script") <<< "x abcdefgh1234 y abcdefgh z"
+  [ "$output" = "x [REDACTED:B] y [REDACTED:A] z" ]
+}
+
+@test "a value starting with a quote: the JSON-escaped form is replaced cleanly" {
+  printf 'Q="\"quoted-secret-value"\n' > "$SECRETS"
+  local script; script="$(redact_literal_rules sessions "$SECRETS")"
+  run sed -E -f <(printf '%s' "$script") <<< '{"t":"say \"quoted-secret-value now"}'
+  [ "$output" = '{"t":"say [REDACTED:Q] now"}' ]
+}
+
+@test "a non-ASCII value: base64 alignment uses byte length" {
+  local u="pässwörd-ünïcode-secret"
+  printf 'U=%s\n' "$u" > "$SECRETS"
+  local script; script="$(redact_literal_rules sessions "$SECRETS")"
+  local b0 b1 b2
+  b0="$(printf '%s' "$u" | base64 -w0)"
+  b1="$(printf 'X%sYZ' "$u" | base64 -w0)"
+  b2="$(printf 'XX%sY' "$u" | base64 -w0)"
+  run sed -E -f <(printf '%s' "$script") <<< "$b0 $b1 $b2"
+  [[ "$output" != *"$b0"* ]]
+  [[ "$output" != *"$b1"* ]]
+  [[ "$output" != *"$b2"* ]]
+}

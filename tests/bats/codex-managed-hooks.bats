@@ -43,6 +43,26 @@ teardown() { rm -rf "$TMPDIR_T"; }
   cmp "$BLUEPRINT_ROOT/configs/claude/hooks/bw-deny-files.sh" "$HOOK"
 }
 
+@test "ships the redact-sessions hooks as managed hooks on SessionStart, Stop and SessionEnd" {
+  ensure_codex_managed_hooks
+  [ -x "$CODEX_MANAGED_DIR/hooks/redact-sessions-hook.sh" ]
+  [ -x "$CODEX_MANAGED_DIR/hooks/redact-sessions-pending.sh" ]
+  cmp "$BLUEPRINT_ROOT/configs/claude/hooks/redact-sessions-hook.sh" "$CODEX_MANAGED_DIR/hooks/redact-sessions-hook.sh"
+  grep -q '^\[\[hooks.SessionStart\]\]' "$REQ"
+  grep -q '^\[\[hooks.Stop\]\]' "$REQ"
+  grep -q '^\[\[hooks.SessionEnd\]\]' "$REQ"
+  grep -q "command = \"$CODEX_MANAGED_DIR/hooks/redact-sessions-pending.sh\"" "$REQ"
+  [ "$(grep -c "command = \"$CODEX_MANAGED_DIR/hooks/redact-sessions-hook.sh\"" "$REQ")" -eq 2 ]
+}
+
+@test "a stale managed copy of a redact-sessions hook is refreshed" {
+  ensure_codex_managed_hooks
+  echo "stale" > "$CODEX_MANAGED_DIR/hooks/redact-sessions-pending.sh"
+  run ensure_codex_managed_hooks
+  [ "$status" -eq 0 ]
+  cmp "$BLUEPRINT_ROOT/configs/claude/hooks/redact-sessions-pending.sh" "$CODEX_MANAGED_DIR/hooks/redact-sessions-pending.sh"
+}
+
 @test "registers a PreToolUse hook with the managed dir substituted" {
   ensure_codex_managed_hooks
   grep -q '^\[\[hooks.PreToolUse\]\]' "$REQ"

@@ -31,3 +31,35 @@ type = "command"
 command = "{{MANAGED_DIR}}/hooks/bw-deny-files.sh"
 timeout = 30
 statusMessage = "secrets guard"
+
+# Transcript scrubber (redact-sessions) and its pending-rotation notice: the
+# same scripts Claude Code runs, wired to codex's matching events. Managed
+# for the same reason as the deny hook: a user-level hook sits inert until
+# someone runs /hooks. SessionStart stdout becomes developer context; Stop
+# scrubs the live rollout in place and sweeps; SessionEnd scrubs and sweeps.
+[[hooks.SessionStart]]
+matcher = ".*"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "{{MANAGED_DIR}}/hooks/redact-sessions-pending.sh"
+timeout = 5
+statusMessage = "pending rotations"
+
+[[hooks.Stop]]
+matcher = ".*"
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = "{{MANAGED_DIR}}/hooks/redact-sessions-hook.sh"
+timeout = 90
+statusMessage = "transcript scrub"
+
+[[hooks.SessionEnd]]
+matcher = ".*"
+
+[[hooks.SessionEnd.hooks]]
+type = "command"
+command = "{{MANAGED_DIR}}/hooks/redact-sessions-hook.sh"
+timeout = 90
+statusMessage = "transcript scrub"

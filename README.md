@@ -70,8 +70,9 @@ Configured for **all four CLIs**: `claude mcp add` for Claude Code (existing), `
   around `redact-sessions` (see Secrets). The first sweeps transcripts on disk after every turn and
   scrubs the session's own file at exit; the second announces, at every session start, any key whose
   live value was found in a transcript and has not been acknowledged with `redact-sessions --ack KEY`.
-  Both fail-open. The same two scripts are wired into cursor via `~/.cursor/hooks.json`, and codex
-  reaches the sweep through `codex-turn-done`, its `notify` target.
+  Both fail-open. The same two scripts are wired into cursor via `~/.cursor/hooks.json` and into
+  codex as managed hooks in `/etc/codex/requirements.toml` (SessionStart, Stop, SessionEnd); codex's
+  `notify` also goes through `codex-turn-done`, which sweeps after flagging the window.
 - **check-archived-docs.sh** — SessionStart hook. Emits a one-line banner when a project using the reference docs layout has docs with `status: done` in any `docs/*/active/` folder. Fail-open.
 
 ### Slash commands
@@ -120,7 +121,8 @@ hit under `~/.claude/state/redact-sessions/` (a shared mount, so every
 container sees it). A hit still means the value reached an agent, so the next
 session start on any container repeats the warning until the key is rotated and
 `redact-sessions --ack KEY` is run. Triggers: Claude Code Stop and SessionEnd,
-codex `notify`, cursor `stop`/`sessionEnd`, and container boot. Live files are
+codex Stop and SessionEnd as managed hooks (plus `notify`), cursor
+`stop`/`sessionEnd`, and container boot. Live files are
 handled with a quiet period plus a check-and-swap write, not an open-file test:
 the transcript roots are shared across containers with separate PID namespaces,
 so no process list is trustworthy. Claude Code appends by path and never holds
