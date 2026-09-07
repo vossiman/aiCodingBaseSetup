@@ -804,6 +804,7 @@ _sync_provision() {
     install_update_status_symlink || true
     install_kanban_post_symlink || true
     install_measure_remote_symlink || true
+    install_redact_transcript_symlink || true
   fi
   return 0
 }
