@@ -1,6 +1,7 @@
 # redact-sessions: scrub secret values out of agent transcripts on disk
 
-Ticket: AICODINGBASESETUP-15. Date: 2026-09-07. Status: draft, awaiting review.
+Ticket: AICODINGBASESETUP-15. Date: 2026-09-07. Status: draft, revised after
+codex review (PR #139), awaiting owner review.
 
 ## 1. Problem
 
@@ -23,9 +24,11 @@ distiller, and it survives the session. The scrubber attacks that copy.
 ## 2. Goal and non-goals
 
 **Goal.** Every value from `~/.aicodingsetup/.secrets.env` that lands in any
-agent transcript file on this machine is replaced with `[REDACTED:KEYNAME]`
+text transcript file on this machine is replaced with `[REDACTED:KEYNAME]`
 in the file, and the hit is reported so the credential gets rotated. This
-holds regardless of which CLI, tool, subagent, or encoding put it there.
+holds regardless of which tool, subagent, or encoding put it there, and for
+every CLI that keeps text transcripts (Claude Code, codex, cursor's JSON
+files). The two SQLite stores are named in the non-goals.
 
 **Non-goals, stated so nobody expects them.**
 
@@ -45,9 +48,13 @@ holds regardless of which CLI, tool, subagent, or encoding put it there.
   things a resumed session needs to read, and their hits would not be
   actionable anyway because no key name can be attached to them.
 - Values shorter than 8 characters (the existing literal-layer floor).
-- Cursor's SQLite chat store (`~/.cursor/chats/*/*/store.db`). It is not a
-  text file, and rewriting SQLite content in place is out of scope. Its
-  `prompt_history.json` siblings are in scope.
+- SQLite session stores: cursor's `~/.cursor/chats/*/*/store.db` and
+  OpenCode's `~/.local/share/opencode/opencode.db` (with its WAL). Both are
+  live databases on shared mounts; rewriting rows under a running writer is
+  its own design. This narrows the guarantee in section 2 to text
+  transcripts. The SQLite stores get a follow-up ticket, filed when this spec
+  is accepted, so the gap is visible on the board rather than implied here.
+  Cursor's `prompt_history.json` and `meta.json` siblings are in scope.
 
 ## 3. Design
 
@@ -57,13 +64,15 @@ Installed as `~/.local/bin/redact-sessions`, same pattern as
 `redact-transcript`. Two modes:
 
 ```
-redact-sessions FILE...        # scrub exactly these files
-redact-sessions --sweep        # scrub every settled transcript under the known roots
+redact-sessions --sweep        # scrub every quiet transcript under the known roots
+redact-sessions --now FILE...  # scrub exactly these files, ignoring the quiet period
+redact-sessions --ack KEY      # clear KEY from the pending-hit marker after rotation
 ```
 
-Both modes share the same per-file procedure (3.3). `--sweep` walks the
-roots in 3.2 and applies the procedure to each file that is not open for
-writing (3.4) and whose mtime is newer than the last sweep stamp.
+Sweep and `--now` share the per-file procedure (3.3). `--sweep` walks the
+roots in 3.2 and applies it to each file that has been quiet long enough
+(3.4) and is either newer than the last sweep stamp or in the deferred set
+(3.5).
 
 ### 3.2 Scan roots
 
@@ -74,6 +83,12 @@ One array near the top of the script, so a new harness is one added line:
 | Claude Code | `~/.claude/projects/` | `**/*.jsonl`, which includes `<project>/<session>/subagents/*.jsonl` |
 | codex | `~/.codex/sessions/` | `**/*.jsonl` |
 | cursor | `~/.cursor/chats/` | `**/prompt_history.json`, `**/meta.json` |
+| OpenCode | `~/.local/share/opencode/` | none in this spec: the store is SQLite (non-goals). Listed so the gap is visible in the code, not only in the doc |
+
+All four roots are host bind mounts shared by every devpod container on the
+host (`devcontainer.json`, `mounts`). That fact drives sections 3.4 to 3.6:
+a file may be written by a process the scrubber cannot see, and state the
+scrubber keeps must be visible from every container.
 
 Subagent transcripts are covered by the glob, not by any special handling.
 Two of the three incidents were printed by subagents; that is the point.
@@ -89,20 +104,31 @@ Two of the three incidents were printed by subagents; that is the point.
    - `V` verbatim.
    - the JSON-escaped form of `V`, when it differs (transcripts are JSONL,
      so `"` and `\` inside a value appear as `\"` and `\\`).
-   - the three base64 alignments of `V`. Encode `V`, `xV`, `xxV` (any
-     padding prefix), strip the first 2 or 3 leading characters and any
-     trailing `=`, and match the remaining run. This finds `V` inside any
-     larger base64 blob, which is the Dokploy notification case. Values
-     shorter than 12 characters get no base64 rules: the aligned core is too
-     short to be unique.
+   - the three base64 alignments of `V`. A base64 character encodes six
+     bits, so a character at either edge of `V`'s encoding can also carry
+     bits from the neighbouring byte in a larger blob. For each offset
+     `k` in 0, 1, 2: encode `k` filler bytes followed by `V`, drop the
+     leading characters that contain any filler bits (0, 2 or 3 characters
+     for `k` = 0, 1, 2), drop any trailing `=`, and then drop the last
+     character too whenever `(k + len(V)) % 3 != 0`, because that character
+     mixes `V`'s final bits with the next byte's. What remains is the run of
+     characters fully determined by `V` at that alignment, and it matches
+     wherever `V` sits inside any larger blob. This is the Dokploy
+     notification case. Values shorter than 12 characters get no base64
+     rules: the aligned core is too short to be unique. URL-safe base64
+     (`-_` alphabet) gets the same three rules with the two characters
+     translated.
    - replacement text is `[REDACTED:K]`. The key name is what makes a hit
      actionable; the value never appears anywhere.
 2. Count matches before rewriting (`grep -c` per rule against the file).
    Zero matches: leave the file untouched, do not change its mtime.
 3. Non-zero: write the redacted content to a temp file in the same
-   directory, `chmod --reference` the original, then `mv` it over the
-   original. Rename is atomic on the same filesystem, so a reader never sees
-   a half-written file.
+   directory, `chmod --reference` the original, then check-and-swap: if the
+   original's size and mtime still equal what was read in step 2, `mv` the
+   temp file over it; otherwise discard the temp file and retry once from
+   step 2. Rename is atomic on the same filesystem, so a reader never sees a
+   half-written file, and the check shrinks the lost-append window to the
+   gap between the stat and the rename.
 4. Report the hit (3.6).
 
 The scrubber reads the secrets file itself, in its own process, exactly as
@@ -114,33 +140,64 @@ does not apply to it because it is not a tool call.
 
 ### 3.4 Live-file safety
 
-The harnesses append to a transcript for the whole session. Rewriting an
-open file loses appends made between read and rename. So a file is only
-rewritten when no process holds it open for writing: `lsof -F` on the path,
-falling back to a `/proc/*/fd` scan when `lsof` is absent. Any doubt counts
-as open; the file is skipped and picked up by a later run.
+The harnesses append to a transcript for the whole session, and open-file
+detection cannot tell the scrubber when that is happening:
+
+- Claude Code does not keep the file open. `lsof` on a running session's
+  transcript returns nothing (checked 2026-09-07); each append reopens the
+  path. A path-based appender survives a rename, because its next write
+  opens the new inode.
+- The roots are shared across containers with separate PID namespaces, so
+  `lsof` and `/proc` in one container never see a writer in another.
+
+So there is no "is it open" test. Safety comes from two rules instead:
+
+1. **Check-and-swap** (3.3 step 3). The rename only lands if the file is
+   byte-for-byte what was read. An append that races the scrubber makes the
+   swap fail, and the retry picks the append up.
+2. **Quiet period.** The sweep only touches files whose mtime is older than
+   `REDACT_QUIET_SECONDS` (default 120). A file that is being written every
+   few seconds is left for the next run; the session's own end-of-session
+   trigger (3.5) handles it with the quiet period set to zero, because that
+   harness has just told us it is done.
+
+Residual risk: a writer that holds a file descriptor open across appends
+(codex, cursor: not measured) would keep appending to the unlinked old inode
+after a rename. The implementation measures this for codex and cursor with
+`lsof` during a live session before enabling their roots in the sweep; a
+harness that holds the descriptor gets scrubbed only by its own end-of-session
+trigger, and the spec is amended with the measurement.
 
 Consequence: a value printed mid-session stays in the file until that
-session's Stop or SessionEnd fires, or until the next sweep after the
-session dies. That window is accepted. It is the same window the distiller
-already lives with, and the alternative (a per-harness in-process hook) is
-the design this spec rejects.
+session ends or goes quiet. That window is accepted. It is the same window
+the distiller already lives with, and the alternative (a per-harness
+in-process hook) is the design this spec rejects.
 
 ### 3.5 Triggers
 
 No systemd user instance runs in the devcontainer, so there is no timer.
-Every trigger is a hook or a boot step that already exists:
+Every in-scope CLI gets its own end-of-turn trigger, so a container used by
+only one of them still scrubs. Boot and sync cover crashed sessions.
 
 | When | What runs | Why |
 |---|---|---|
-| Claude Code `Stop` (async, after `llmwiki-distill.sh`) | `redact-sessions --sweep` | The session's own file is usually still open; the sweep catches everything settled, including subagent files whose agents have finished |
-| Claude Code `SessionEnd` | `redact-sessions <transcript_path>` then `--sweep` | The main file is now closed |
-| codex `notify` / `SessionEnd` hook, if the installed version fires one; otherwise nothing extra | `--sweep` | codex files are also caught by every Claude Code trigger and by boot |
-| `on-start.sh` (container boot) and `aicoding-sync` | `--sweep` | Crashed sessions, other CLIs, files touched from another container |
+| Claude Code `Stop` (async, after `llmwiki-distill.sh`) | `redact-sessions --sweep` | Catches every quiet file, including subagent files whose agents have finished |
+| Claude Code `SessionEnd` | `redact-sessions --now <transcript_path>` then `--sweep` | `--now` ignores the quiet period for the named file: the harness has said it is done |
+| codex `notify` (already wired to `agent-notify`, `configs/codex/config.toml`) | a wrapper that calls `agent-notify` then `redact-sessions --sweep` | codex fires `notify` at the end of every turn; the wrapper keeps the existing flag behaviour |
+| cursor `stop` hook (`~/.cursor/hooks.json`, managed by the blueprint) | `redact-sessions --sweep` | Same role as Claude Code's Stop |
+| `on-start.sh` (container boot) and `aicoding-sync` | `--sweep` | Crashed sessions, files touched from another container |
 
-The sweep keeps a stamp file `~/.local/state/aicoding/redact-sessions.stamp`
-and only inspects files with mtime newer than the stamp, so repeated sweeps
-from busy sessions cost a directory walk, not a full rescan.
+Every trigger runs the sweep asynchronously with a timeout and `|| true`, so
+a slow or failing scrub never blocks a harness.
+
+**Sweep bookkeeping.** The sweep keeps a stamp `redact-sessions.stamp` in
+the shared state dir (3.6) and inspects files with mtime newer than the
+stamp. Files it skips (quiet period not reached, swap failed twice) go into
+`redact-sessions.deferred`, one path per line, and the next sweep inspects
+the deferred set first regardless of the stamp. A file leaves the deferred
+set when it has been scrubbed or found clean. Without this, a file skipped
+once would fall behind the stamp forever, because closing a file does not
+change its mtime.
 
 The distiller's slice tee keeps calling `redact-transcript` on its own copy.
 Ordering between the two Stop hooks does not matter: both redact.
@@ -149,16 +206,27 @@ Ordering between the two Stop hooks does not matter: both redact.
 
 A silent scrub hides the evidence that a rotation is due. Every hit produces:
 
-1. A line in `~/.local/state/aicoding/redact-sessions.log`:
-   `<iso-date> hit key=<K> count=<n> file=<path>` plus `session=<id>` when
-   the path yields one. Never the value.
-2. A pending-hit marker `~/.local/state/aicoding/redact-sessions.pending`
-   holding the unacknowledged key names.
+All scrubber state lives in `~/.claude/state/redact-sessions/`. That
+directory is on the shared `~/.claude` mount, so a hit found by container A
+in a file written by container B is visible to a session opened in either,
+and survives A being deleted. `~/.local/state` is container-local and is
+not used. Each hit produces:
+
+1. A line in `redact-sessions.log` there:
+   `<iso-date> hit key=<K> count=<n> file=<path> container=<hostname>` plus
+   `session=<id>` when the path yields one. Never the value.
+2. A pending-hit marker `redact-sessions.pending` holding the unacknowledged
+   key names, one per line, appended under `flock` because two containers
+   can sweep at once.
 3. Surfacing: the existing `SessionStart` hook slot gets a small script that
    prints the pending marker into the next session's context as an
-   instruction to tell the user which keys need rotating, then clears it.
-   This reaches the human through whatever agent they open next, in any
-   harness that runs the SessionStart contract (Claude Code and codex do).
+   instruction to tell the user which keys need rotating. It does not clear
+   the marker; the user clears it with `redact-sessions --ack KEY` once the
+   rotation is done, so the warning repeats in every new session on every
+   container until someone acts. This reaches the human through whatever
+   agent they open next, in any harness that runs the SessionStart contract
+   (Claude Code and codex do; cursor gets it through its `sessionStart`
+   hook).
 
 Push notification through the notify hub (apprise) is deferred: it needs a
 credential of its own inside the scrubber, which is the wrong direction for
@@ -184,10 +252,10 @@ from a hook path in a way that blocks the harness: hooks call it with
   SessionStart surfacing hook, mirroring `install_redact_transcript_symlink`.
 - `configs/claude/settings.json` gains the Stop, SessionEnd and SessionStart
   entries; `MANAGED_HOOKS` and `blueprint-deploy.sh` list the new hook file.
-- `configs/codex/requirements.toml` gains the equivalent hook entry if codex
-  0.153 exposes a session-end event; verified during implementation, not
-  assumed. If it does not, codex coverage is boot plus Claude Code triggers,
-  and the spec says so in a one-line note.
+- `configs/codex/config.toml`'s `notify` line points at the wrapper from
+  3.5 instead of `agent-notify` directly.
+- `configs/cursor/` gains a managed `hooks.json` with `stop` and
+  `sessionStart` entries, deployed like the other cursor files.
 - `on-start.sh` runs `redact-sessions --sweep` after the secrets file mount
   is confirmed.
 
@@ -200,23 +268,32 @@ file, fake transcript trees for all three roots, and no real session files.
    with a value inline. Value gone, `[REDACTED:OPENROUTER_API_KEY]` present,
    surrounding text byte-identical.
 2. Incident 2: a value embedded in a base64 blob at each of the three
-   alignments. All three redacted; an unrelated base64 blob untouched.
+   alignments, both with the value ending on a 3-byte boundary and not. All
+   six redacted; an unrelated base64 blob and a blob that shares only the
+   value's edge characters are untouched.
 3. Incident 3: a subagent transcript under `subagents/` containing three
    values from an env file dump. All three keys reported, each with its own
    name.
 4. JSON-escaped variant: a value containing `"` appears as `\"` in the file
    and is still caught.
 5. Clean file: content, mtime and inode unchanged, nothing logged.
-6. Open file: a background `sleep` holding the fixture open for writing;
-   the file is skipped, logged as skipped, and scrubbed on the next run
-   after the holder exits.
+6. Quiet period: a fixture with a fresh mtime is skipped by `--sweep`,
+   listed in the deferred set, and scrubbed by the next sweep once its mtime
+   is old enough; `--now` on the same file scrubs it immediately.
+6b. Racing append: a line is appended to the fixture between the read and
+    the rename (simulated by a hook the test injects); the first swap is
+    refused, the retry scrubs the file, and the appended line survives.
 7. Atomic rewrite: mode bits preserved, no temp file left behind.
 8. Fail-closed: unreadable secrets file exits 3, no fixture modified,
    pending marker written.
 9. Sweep stamp: a second `--sweep` with no newer files inspects nothing
-   (asserted through the log).
-10. Reporting: log line format, pending marker content, and the
-    SessionStart hook prints the keys then clears the marker.
+   (asserted through the log); a deferred file is inspected even though it
+   is older than the stamp.
+10. Reporting: log line format, pending marker content under the shared
+    state dir, the SessionStart hook prints the keys and leaves the marker,
+    `--ack KEY` removes exactly that key.
+10b. Two sweeps in parallel over the same tree (simulating two containers)
+     produce one scrub and no corrupted file or marker.
 11. Short value (7 chars) is not redacted; 11-char value gets literal rules
     but no base64 rules.
 
@@ -228,7 +305,10 @@ file, fake transcript trees for all three roots, and no real session files.
 - **Why key names in the marker, given they reveal which key exists?** The
   key name is public knowledge (it is in `.secrets.env.example`); the value
   is the secret. A marker without the name cannot drive a rotation.
-- **Why not scrub the file while the session runs?** Section 3.4.
+- **Why no open-file check?** Section 3.4: Claude Code never holds the
+  file open, and other containers' writers are invisible anyway.
+- **Why not scrub the file while the session runs?** It does, once the file
+  has been quiet for the configured period. Section 3.4.
 
 ## 6. Risks accepted
 
@@ -239,5 +319,6 @@ file, fake transcript trees for all three roots, and no real session files.
   short password that is also a common word) gets redacted everywhere. The
   8-character floor makes this rare; it is the same trade the transcript
   redactor already makes.
-- Base64 rules do not cover URL-safe base64 or values split across an
-  encoded line boundary. Logged as a known gap in the script header.
+- Base64 rules do not cover values split across an encoded line boundary
+  (MIME-wrapped base64) or double-encoded values. Logged as a known gap in
+  the script header.
