@@ -261,3 +261,44 @@ PYEOF
   [ "$(col "$HOME/store.db" "select count(*) from blobs where instr(cast(data as text), '[R:POST]') > 0")" -eq 1 ]
   [ "$(check_cursor "$HOME/store.db")" -eq 4 ]
 }
+
+@test "cursor: a value in the meta row (conversation name) is redacted and reported" {
+  make_cursor "$HOME/store.db" > /dev/null
+  python3 - "$HOME/store.db" "$V2" <<'PYEOF'
+import sqlite3, sys, json
+c = sqlite3.connect(sys.argv[1]); m = json.loads(bytes.fromhex(c.execute("select value from meta").fetchone()[0]))
+m["name"] = "pasted " + sys.argv[2]; c.execute("update meta set value=?", (json.dumps(m).encode().hex(),)); c.commit()
+PYEOF
+  run run_helper "$HOME/store.db"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"hit POSTGRES_PASSWORD 2"* ]]
+  local name; name="$(python3 -c "import sqlite3,sys,json; print(json.loads(bytes.fromhex(sqlite3.connect(sys.argv[1]).execute('select value from meta').fetchone()[0]))['name'])" "$HOME/store.db")"
+  [ "$name" = "pasted [REDACTED:POSTGRES_PASSWORD]" ]
+  [ "$(check_cursor "$HOME/store.db")" -eq 4 ]
+}
+
+@test "cursor: an unparseable meta row exits 5 and writes nothing" {
+  make_cursor "$HOME/store.db" > /dev/null
+  python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute(\"update meta set value='not hex, not json'\"); c.commit(); c.execute('pragma wal_checkpoint(truncate)')" "$HOME/store.db"
+  local before; before="$(sha256sum "$HOME/store.db")"
+  run run_helper "$HOME/store.db"
+  [ "$status" -eq 5 ]
+  [ "$(sha256sum "$HOME/store.db")" = "$before" ]
+}
+
+@test "cursor: a meta row lacking the root pointer exits 5" {
+  make_cursor "$HOME/store.db" > /dev/null
+  python3 -c "import sqlite3,sys,json; c=sqlite3.connect(sys.argv[1]); c.execute('update meta set value=?', (json.dumps({'name':'x'}).encode().hex(),)); c.commit()" "$HOME/store.db"
+  run run_helper "$HOME/store.db"
+  [ "$status" -eq 5 ]
+  grep -q "$V1" "$HOME/store.db"
+}
+
+@test "opencode: a renamed session column still lets the text column be scrubbed" {
+  make_opencode "$HOME/opencode.db"
+  python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('alter table part rename column session_id to sid'); c.commit()" "$HOME/opencode.db"
+  run run_helper "$HOME/opencode.db"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"hit OPENROUTER_API_KEY 1 session=-"* ]]
+  [ "$(col "$HOME/opencode.db" "select count(*) from part where instr(data,'[REDACTED:OPENROUTER_API_KEY]')>0")" -eq 2 ]
+}

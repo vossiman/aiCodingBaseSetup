@@ -101,13 +101,17 @@ def as_bytes(s):
 def scrub_opencode(conn, rules, out):
     present = tables(conn)
     for table, col, sess in OPENCODE_COLUMNS:
-        if table not in present or col not in columns(conn, table):
+        cols = columns(conn, table) if table in present else set()
+        if col not in cols:
             out.append("skipped-table %s" % table)
             continue
+        # A renamed session column must not fail the SELECT (that would roll
+        # back everything and defer the store forever); it just costs the id.
+        sess_expr = '"%s"' % sess if sess in cols else "'-'"
         where = " or ".join('instr("%s", ?) > 0' % col for _ in rules)
         params = [as_text(p) for p, _ in rules]
         rows = conn.execute(
-            'select rowid, "%s", "%s" from "%s" where %s' % (col, sess, table, where), params
+            'select rowid, "%s", %s from "%s" where %s' % (col, sess_expr, table, where), params
         ).fetchall()
         for rowid, text, sid in rows:
             hits = Counter()
@@ -119,12 +123,35 @@ def scrub_opencode(conn, rules, out):
                 out.append("hit %s %d session=%s" % (k, n, sid))
 
 
+def decode_meta(value):
+    """meta.value is hex-encoded JSON (measured); accept plain JSON too.
+    Returns (json_text, is_hex, dict) or raises LookupError."""
+    for is_hex in (True, False):
+        try:
+            text = bytes.fromhex(value).decode("utf-8") if is_hex else value
+            meta = json.loads(text)
+        except (ValueError, UnicodeDecodeError, TypeError):
+            continue
+        if isinstance(meta, dict):
+            return text, is_hex, meta
+    raise LookupError("meta row is neither hex JSON nor JSON")
+
+
 def scrub_cursor(conn, rules, out):
     blobs = {i: bytes(d) if d is not None else b"" for i, d in conn.execute("select id, data from blobs")}
     hits = Counter()
     leaf = {i: apply_rules(d, rules, hits, same_length=not d.startswith(b"{")) for i, d in blobs.items()}
+    # The meta row is user-visible metadata (conversation name, cwd) and can
+    # carry a value too; it is JSON text, so the full marker applies.
+    metas = []
+    for key, value in conn.execute("select key, value from meta").fetchall():
+        text, is_hex, meta = decode_meta(value)
+        new_text = as_text(apply_rules(as_bytes(text), rules, hits))
+        metas.append((key, new_text, is_hex, meta.get("latestRootBlobId")))
     if not hits:
         return
+    if not any(root is not None for _, _, _, root in metas):
+        raise LookupError("no meta row names a root blob")
     mapping = {i: sha256(leaf[i]) for i in blobs if leaf[i] != blobs[i]}
     final = dict(leaf)
     # Ancestors reference children by raw digest (or hex text). Recompute
@@ -147,18 +174,12 @@ def scrub_cursor(conn, rules, out):
         if not changed:
             break
     new_ids = {mapping.get(i, i) for i in blobs}
-    for key, value in conn.execute("select key, value from meta").fetchall():
-        try:
-            text = bytes.fromhex(value).decode("utf-8")
-            meta = json.loads(text)
-        except (ValueError, UnicodeDecodeError):
-            continue
-        root = meta.get("latestRootBlobId") if isinstance(meta, dict) else None
+    for key, text, is_hex, root in metas:
         if root is not None and mapping.get(root, root) not in new_ids:
             raise LookupError("root blob not resolvable after rewrite")
         for old, new in mapping.items():
             text = text.replace(old, new)
-        conn.execute("update meta set value = ? where key = ?", (text.encode().hex(), key))
+        conn.execute("update meta set value = ? where key = ?", (text.encode().hex() if is_hex else text, key))
     for old, new in mapping.items():
         conn.execute("insert or replace into blobs(id, data) values (?, ?)", (new, final[old]))
     for old in mapping:

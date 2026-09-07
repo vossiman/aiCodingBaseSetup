@@ -181,7 +181,9 @@ under that release yet (codex review of PR #143).
 
 A table or column missing from an older or newer schema is skipped with a
 log line, not an error, so a schema drift degrades to partial coverage
-rather than to no coverage. For each rule `(P, M)` and each column `T.C`:
+rather than to no coverage. A missing or renamed session-id column costs
+only the `session=` field in the log (`-` is reported), never the scrub
+(codex review of PR #143). For each rule `(P, M)` and each column `T.C`:
 
 ```sql
 SELECT rowid, (length(C) - length(replace(C, :p, ''))) / length(:p), session_id
@@ -223,10 +225,15 @@ MB). Then:
    the mapping. A blob may be visited once as a leaf and again as an
    ancestor of another leaf; the map is keyed by original id and the
    content used is always the latest rewritten one.
-3. **Root.** Decode `meta.value` (hex to UTF-8 JSON). If `latestRootBlobId`
-   is in the map, replace it and re-encode. Then assert the final root id
-   exists in the new blob set; if not, roll back and exit 5 (the store's
-   structure is not what this spec measured, and nothing was written).
+3. **Root and metadata.** Decode `meta.value` (hex-encoded UTF-8 JSON as
+   measured; plain JSON accepted too). A row that is neither, or no row
+   naming `latestRootBlobId`, is exit 5 with nothing written: the store's
+   structure is not what this spec measured. The literal rules are applied
+   to the decoded JSON text as well (the conversation name and cwd are
+   user-visible metadata and can carry a value; codex review of PR #143),
+   with the full marker and the hits counted. If `latestRootBlobId` is in
+   the map, replace it and re-encode. Then assert the final root id exists
+   in the new blob set; if not, roll back and exit 5.
 4. **Write.** `INSERT OR REPLACE` every rewritten blob under its new id,
    `DELETE` every old id that is no longer referenced, `UPDATE meta`.
    Commit.
