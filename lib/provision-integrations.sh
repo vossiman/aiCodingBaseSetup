@@ -115,6 +115,20 @@ install_kanban_post_symlink() {
   ok "kanban-post installed at ~/.local/bin/kanban-post -> $src"
 }
 
+# --- memory-lanes measurement client ---
+# Starts, watches and cancels memory-lanes measurement runs on vossisrv over a
+# command=-restricted SSH key in ~/.aicodingsetup. The key path is denied to
+# agents by the secrets hook, so the helper holds it, the way kanban-post
+# holds its token. Without the key installed the helper refuses politely.
+install_measure_remote_symlink() {
+  header "memory-lanes measurement client"
+  local src="$SCRIPT_DIR/bin/measure-remote"
+  [[ -f "$src" ]] || { warn "bin/measure-remote not found — skipping"; return; }
+  mkdir -p "$HOME/.local/bin"; chmod +x "$src"
+  ln -sf "$src" "$HOME/.local/bin/measure-remote"
+  ok "measure-remote installed at ~/.local/bin/measure-remote -> $src"
+}
+
 # --- clipboard-bridge X11 half (container only) ---
 # Selection-owner daemon that makes codex (arboard, direct X11) paste work
 # against the dvw clipboard bridge. Deploy-only symlink; the daemon is

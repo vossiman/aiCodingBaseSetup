@@ -175,8 +175,8 @@ transcript — the failure that actually happens — not a determined attacker.
   `AGENTS.md`) gets `{{HOME}}` expanded and **nothing else** — no key is ever
   substituted into a file an agent reads as prose. A skill that needs a
   credential calls a broker (`cloudflare-render`, `kanban-post`,
-  `git-credential-aicoding`), which reads the value in-process and never
-  prints it.
+  `measure-remote`, `git-credential-aicoding`), which reads the value
+  in-process and never prints it.
 
 In devcontainers the file is bind-mounted **read-only** (a single-file mount
 stacked over the rw `~/.aicodingsetup` mount) so no in-container tooling or
