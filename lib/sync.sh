@@ -405,6 +405,7 @@ refresh_blueprint() {
 # returns 0 everywhere else.
 _sync_reconcile() {
   local mode=$1
+  if _sync_color_on; then _SYNC_COLOR=1; else _SYNC_COLOR=0; fi
 
   # _sync_refresh_and_reexec already fetched in this process; a second fetch
   # would only cost network time.
@@ -566,7 +567,11 @@ _sync_reconcile() {
 # action's colour, the ruler again, then the diff indented. Colour only when
 # stdout is a terminal (FORCE_COLOR=1 overrides, NO_COLOR wins), so boot logs
 # and captured output stay plain.
+# _sync_reconcile pins the answer in _SYNC_COLOR up front: the diff bodies are
+# built inside command substitution, where stdout is a pipe and `-t 1` would
+# say no even on a terminal.
 _sync_color_on() {
+  case "${_SYNC_COLOR:-}" in 1) return 0 ;; 0) return 1 ;; esac
   [ -z "${NO_COLOR:-}" ] || return 1
   [ -n "${FORCE_COLOR:-}" ] || [ -t 1 ]
 }
@@ -598,11 +603,12 @@ _sync_change_report() {
 # deploy would write it (so {{HOME}} and friends never show as noise), then
 # every secrets-file value scrubbed: a config file's on-disk copy carries the
 # substituted credentials, and this output lands in transcripts.
+# Verbatim (overwrite_raw) sources deploy unrendered and are compared unrendered.
 _sync_diff_body() {
-  local dest=$1 src=$2 rendered color=never rules
+  local dest=$1 src=$2 file_mode=${3:-overwrite} rendered color=never rules secrets
   [ -f "$dest" ] && [ -f "$src" ] || return 0
   rendered=$(mktemp)
-  if command -v _render_managed_source >/dev/null 2>&1; then
+  if [ "$file_mode" != overwrite_raw ] && command -v _render_managed_source >/dev/null 2>&1; then
     _render_managed_source "$src" "$dest" "$rendered" 2>/dev/null || cp "$src" "$rendered"
   else
     cp "$src" "$rendered"
@@ -612,7 +618,8 @@ _sync_diff_body() {
   if [ -f "$AICODING_BLUEPRINT_CLONE/lib/redact-literal.sh" ]; then
     # shellcheck source=redact-literal.sh
     . "$AICODING_BLUEPRINT_CLONE/lib/redact-literal.sh"
-    if ! rules=$(redact_literal_rules transcript); then
+    secrets="${AICODING_SECRETS_FILE:-$HOME/.aicodingsetup/.secrets.env}"
+    if ! rules=$(redact_literal_rules transcript "$secrets"); then
       # Fail closed: a secrets file that cannot be turned into rules means
       # the diff cannot be scrubbed, so it is not shown at all.
       rm -f "$rendered"
@@ -637,7 +644,7 @@ _sync_diff_for_bucket() {
     *) return 0 ;;
   esac
   [ "${FILE_MODE[$dest]:-overwrite}" != marker_block ] || return 0
-  _sync_diff_body "$dest" "$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]}"
+  _sync_diff_body "$dest" "$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]}" "${FILE_MODE[$dest]:-overwrite}"
 }
 
 _sync_bucket_verb() {

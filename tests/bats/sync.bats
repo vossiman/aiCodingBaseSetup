@@ -659,7 +659,7 @@ _kvm_unused_gid() {
 
 @test "change report: FORCE_COLOR paints verb, rulers and diff lines" {
   printf 'a\nb\n' > "$TMP/dest"; printf 'a\nc\n' > "$TMP/src"
-  export FORCE_COLOR=1
+  unset NO_COLOR; export FORCE_COLOR=1
   run _sync_change_report "new" "$TMP/dest" "$(_sync_diff_body "$TMP/dest" "$TMP/src")"
   [ "$status" -eq 0 ]
   printf '%s' "$output" | grep -q $'\e\[32m'            # green: added line
@@ -669,7 +669,7 @@ _kvm_unused_gid() {
 }
 
 @test "change report: verb colour follows the action (removed=red, updated=yellow)" {
-  export FORCE_COLOR=1
+  unset NO_COLOR; export FORCE_COLOR=1
   run _sync_change_report "removed" "$TMP/x" ""
   printf '%s' "${lines[1]}" | grep -q $'\e\[1;31mremoved'
   run _sync_change_report "updated (with backup)" "$TMP/x" ""
@@ -717,4 +717,39 @@ _kvm_unused_gid() {
   [ "$status" -eq 0 ]
   echo "$output" | grep -q 'diff withheld'
   if echo "$output" | grep -q 'some-long-token'; then false; fi
+}
+
+@test "diff body: colour decision pinned in _SYNC_COLOR survives command substitution" {
+  unset NO_COLOR FORCE_COLOR
+  printf 'a\nb\n' > "$TMP/dest"; printf 'a\nc\n' > "$TMP/src"
+  _SYNC_COLOR=1
+  body=$(_sync_diff_body "$TMP/dest" "$TMP/src")
+  printf '%s' "$body" | grep -q $'\e\[32m'
+  _SYNC_COLOR=0
+  FORCE_COLOR=1 body=$(_sync_diff_body "$TMP/dest" "$TMP/src")
+  if printf '%s' "$body" | grep -q $'\e\['; then false; fi
+}
+
+@test "diff body: scrubs values from a custom AICODING_SECRETS_FILE" {
+  printf 'BRAVE_API_KEY=brave-custom-secret-9876\n' > "$TMP/custom-secrets"
+  export AICODING_SECRETS_FILE="$TMP/custom-secrets"
+  printf 'key = brave-custom-secret-9876\nold = 1\n' > "$TMP/dest"
+  printf 'key = brave-custom-secret-9876\nnew = 1\n' > "$TMP/src"
+  run _sync_diff_body "$TMP/dest" "$TMP/src"
+  [ "$status" -eq 0 ]
+  if echo "$output" | grep -q 'brave-custom'; then false; fi
+  echo "$output" | grep -qx -- '+new = 1'
+}
+
+@test "diff body: overwrite_raw sources are compared verbatim, placeholders untouched" {
+  . "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  printf 'path={{HOME}}/x\nold\n' > "$TMP/dest"
+  printf 'path={{HOME}}/x\nnew\n' > "$TMP/src"
+  run _sync_diff_body "$TMP/dest" "$TMP/src" overwrite_raw
+  [ "$status" -eq 0 ]
+  if echo "$output" | grep -q '^[-+]path='; then false; fi   # context only, never a change
+  echo "$output" | grep -qx -- '-old'
+  echo "$output" | grep -qx -- '+new'
+  run _sync_diff_body "$TMP/dest" "$TMP/src" overwrite
+  echo "$output" | grep -q -- "-path={{HOME}}/x"          # rendered mode substitutes, so it shows as changed
 }
