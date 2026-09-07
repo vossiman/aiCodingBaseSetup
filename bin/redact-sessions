@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# redact-sessions: scrub secrets-file values out of agent transcripts on
+# disk and report each hit so the credential gets rotated.
+# Spec: docs/superpowers/specs/2026-09-07-redact-sessions-design.md
+#
+#   redact-sessions --sweep        every quiet transcript under the known roots
+#   redact-sessions --now FILE...  exactly these files, ignoring the quiet period
+#   redact-sessions --ack KEY      clear KEY from the pending-rotation marker
+#
+# Literal layer only (lib/redact-literal.sh, sessions mode): raw, JSON-escaped
+# and base64-aligned forms of every secrets-file value, replaced with
+# [REDACTED:KEYNAME]. The pattern and entropy layers of redact-transcript are
+# deliberately not used here; they would eat digests and ids a resumed
+# session needs, and their hits carry no key name to rotate.
+#
+# Live files: no harness holds its transcript open (Claude Code appends by
+# path) and the roots are host mounts shared across containers with separate
+# PID namespaces, so there is no open-file test. Safety is a quiet period on
+# sweeps plus check-and-swap: the rename lands only if the file is still
+# byte-for-byte what was read.
+#
+# State (shared ~/.claude mount, visible from every container):
+#   log       one line per hit, never a value
+#   pending   key names awaiting --ack, or SECRETS_FILE_UNREADABLE
+#   deferred  files skipped this sweep (quiet period, swap refused twice)
+#   stamp     mtime watermark for --sweep
+#
+# Exit: 0 ok, 2 usage, 3 secrets file unreadable or partially parsed (nothing
+# touched). Never prints a secret value. The secrets file is only ever READ.
+set -uo pipefail
+
+_rs_self="$(readlink -f "${BASH_SOURCE[0]}")"
+# shellcheck source=../lib/redact-literal.sh
+. "$(dirname "$_rs_self")/../lib/redact-literal.sh"
+
+STATE="${REDACT_SESSIONS_STATE:-$HOME/.claude/state/redact-sessions}"
+QUIET="${REDACT_QUIET_SECONDS:-120}"
+SECRETS="${AICODING_SECRETS_FILE:-$HOME/.aicodingsetup/.secrets.env}"
+HOST="$(hostname 2>/dev/null || echo unknown)"
+RULES=""
+
+# Roots, one per harness. OpenCode is listed with no pattern: its store is
+# SQLite and out of scope (spec, non-goals); it stays here so the gap is
+# visible in the code.
+ROOTS=(
+  "$HOME/.claude/projects|*.jsonl"
+  "$HOME/.codex/sessions|*.jsonl"
+  "$HOME/.cursor/chats|prompt_history.json"
+  "$HOME/.cursor/chats|meta.json"
+  "$HOME/.local/share/opencode|"
+)
+
+log() { mkdir -p "$STATE" 2>/dev/null; printf '%s %s\n' "$(date -Is)" "$*" >> "$STATE/log" 2>/dev/null || true; }
+locked() { mkdir -p "$STATE" 2>/dev/null; ( flock -w 5 9 && "$@" ) 9>>"$STATE/lock"; }
+_pending_add() { grep -qx "$1" "$STATE/pending" 2>/dev/null || printf '%s\n' "$1" >> "$STATE/pending"; }
+pending_add() { locked _pending_add "$1"; }
+
+# session_of <path>: best-effort session id from the path, for the log.
+session_of() {
+  local b; b="$(basename "$1")"
+  case "$1" in
+    */subagents/*) basename "$(dirname "$(dirname "$1")")" ;;
+    *) printf '%s' "${b%.jsonl}" ;;
+  esac
+}
+
+# Builds the sed script once per run. Sets RULES; returns 3 on refusal.
+load_rules() {
+  if ! RULES="$(redact_literal_rules sessions "$SECRETS")"; then
+    log "refused secrets file unreadable or partially parsed; nothing touched"
+    pending_add SECRETS_FILE_UNREADABLE
+    echo "redact-sessions: secrets file exists but is unreadable or parsed partially; refusing" >&2
+    return 3
+  fi
+  return 0
+}
+
+# marker_counts <file>: "KEY count" per marker found.
+marker_counts() {
+  grep -o '\[REDACTED:[A-Za-z_][A-Za-z0-9_]*\]' "$1" 2>/dev/null \
+    | sed 's/^\[REDACTED:\(.*\)\]$/\1/' | sort | uniq -c | awk '{print $2, $1}'
+}
+
+# scrub_one <file>: 0 when the file is clean or was rewritten; 1 when it
+# could not be handled (swap refused twice, unreadable, unwritable). Never
+# touches a clean file.
+scrub_one() {
+  local f="$1" attempt tmp before after sig1 sig2 sess key n prev
+  [ -n "$RULES" ] || return 0
+  [ -f "$f" ] && [ -r "$f" ] && [ -w "$f" ] || return 1
+  for attempt in 1 2; do
+    sig1="$(stat -c '%s %Y' "$f")" || return 1
+    tmp="$(mktemp "$(dirname "$f")/.redact-sessions.XXXXXX")" || return 1
+    if ! sed -E -f <(printf '%s' "$RULES") "$f" > "$tmp"; then rm -f "$tmp"; return 1; fi
+    if cmp -s "$f" "$tmp"; then rm -f "$tmp"; return 0; fi
+    chmod --reference="$f" "$tmp" 2>/dev/null || true
+    [ -n "${REDACT_SESSIONS_RACE_HOOK:-}" ] && "$REDACT_SESSIONS_RACE_HOOK" "$f"
+    sig2="$(stat -c '%s %Y' "$f")" || { rm -f "$tmp"; return 1; }
+    if [ "$sig1" != "$sig2" ]; then
+      rm -f "$tmp"
+      log "swap refused file=$f attempt=$attempt"
+      continue
+    fi
+    before="$(marker_counts "$f")"
+    after="$(marker_counts "$tmp")"
+    if ! mv -f "$tmp" "$f"; then rm -f "$tmp"; return 1; fi
+    sess="$(session_of "$f")"
+    # Report the delta: markers already in the file are old news.
+    while read -r key n; do
+      [ -n "$key" ] || continue
+      prev="$(printf '%s\n' "$before" | awk -v k="$key" '$1==k{print $2}')"
+      n=$(( n - ${prev:-0} ))
+      [ "$n" -gt 0 ] || continue
+      log "hit key=$key count=$n file=$f container=$HOST session=$sess"
+      pending_add "$key"
+    done <<< "$after"
+    return 0
+  done
+  return 1
+}
+
+sweep() { echo "redact-sessions: --sweep not implemented" >&2; exit 2; }
+ack() { echo "redact-sessions: --ack not implemented" >&2; exit 2; }
+
+usage() { sed -n '2,8p' "$_rs_self" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+
+main() {
+  [ $# -ge 1 ] || usage
+  local f rc=0
+  case "$1" in
+    --now)
+      shift; [ $# -ge 1 ] || usage
+      load_rules || exit 3
+      for f in "$@"; do scrub_one "$f" || rc=1; done
+      exit "$rc" ;;
+    --sweep) shift; sweep "$@" ;;
+    --ack) shift; [ $# -eq 1 ] || usage; ack "$1" ;;
+    *) usage ;;
+  esac
+}
+
+main "$@"
