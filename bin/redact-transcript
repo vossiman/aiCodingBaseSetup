@@ -8,6 +8,7 @@
 #   1. LITERAL   exact values read from the read-only secrets file, plus their
 #                JSON-escaped variants (transcripts are JSONL, so a value
 #                containing `"` or `\` appears on disk as `\"` / `\\`).
+#                Rules come from lib/redact-literal.sh (transcript mode).
 #   2. PATTERNS  secret-SHAPED tokens (vendor prefixes, private keys, JWTs,
 #                URL credentials, credential-keyword assignments, long hex,
 #                base64/AWS-secret-shaped blobs).
@@ -36,77 +37,13 @@
 #     40-character lowercase-hex git SHAs, which are ubiquitous in transcripts.
 set -uo pipefail
 
-# Applies the JSON string escaping that JSONL transcripts use: backslash
-# first, then double quote.
-_ml_json_escape() {
-  local v="$1"
-  v="${v//\\/\\\\}"
-  v="${v//\"/\\\"}"
-  printf '%s' "$v"
-}
+# The literal layer lives in lib/redact-literal.sh, shared with
+# bin/redact-sessions. This file is installed as a symlink, so resolve it.
+_ml_self="$(readlink -f "${BASH_SOURCE[0]}")"
+# shellcheck source=../lib/redact-literal.sh
+. "$(dirname "$_ml_self")/../lib/redact-literal.sh"
 
-# Escapes ERE metacharacters (backslashes first). The class lists `[` last:
-# `[.` inside a bracket expression opens a POSIX collating symbol.
-_ml_ere_escape() {
-  printf '%s' "$1" | sed -e 's,\\,\\\\,g' -e 's,[]^$*+?(){}|/.[],\\&,g'
-}
-
-# Counts the KEY=value lines in the secrets file whose value (after the same
-# quote-stripping the generator does) is >=8 chars. Independent of the
-# generator loop, so a truncated/partial read of the file shows up as a count
-# mismatch rather than as silently missing rules.
-_ml_expected_rules() {
-  awk '
-    /^#/  { next }
-    /^$/  { next }
-    index($0, "=") == 0 { next }
-    {
-      v = $0; sub(/^[^=]*=/, "", v)
-      sub(/"$/,    "", v); sub(/^"/,    "", v)
-      sub(/\047$/, "", v); sub(/^\047/, "", v)
-      if (length(v) >= 8) c++
-    }
-    END { print c + 0 }
-  ' "$1"
-}
-
-# Emits a sed script redacting the literal values held in the secrets file.
-# Printed to stdout and captured into a shell variable — never written to
-# disk, so no plaintext secret is ever spilled by the redactor itself.
-# Exit status: 0 = script is trustworthy (possibly empty, if the file is
-# absent); non-zero = unreadable or partially parsed, caller must skip the tee.
-_ml_literal_script() {
-  local f="$HOME/.aicodingsetup/.secrets.env" line val esc jval jesc
-  local out='' rules=0 expected=0
-  # Absent file: nothing to redact literally. Documented above.
-  [ -e "$f" ] || return 0
-  [ -r "$f" ] || return 1
-
-  expected="$(_ml_expected_rules "$f")" || return 1
-  case "$expected" in (''|*[!0-9]*) return 1 ;; esac
-
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in ('#'*|'') continue ;; (*=*) ;; (*) continue ;; esac
-    val="${line#*=}"
-    val="${val%\"}"; val="${val#\"}"
-    val="${val%\'}"; val="${val#\'}"
-    [ "${#val}" -ge 8 ] || continue
-    esc="$(_ml_ere_escape "$val")" || return 1
-    [ -n "$esc" ] || return 1
-    out+="s/$esc/[REDACTED]/g"$'\n'
-    rules=$(( rules + 1 ))
-    # JSON-escaped variant — only when it actually differs from the raw form.
-    jval="$(_ml_json_escape "$val")"
-    if [ "$jval" != "$val" ]; then
-      jesc="$(_ml_ere_escape "$jval")" || return 1
-      [ -n "$jesc" ] || return 1
-      out+="s/$jesc/[REDACTED]/g"$'\n'
-    fi
-  done < "$f" || return 1
-
-  [ "$rules" -eq "$expected" ] || return 1
-  printf '%s' "$out"
-}
+_ml_literal_script() { redact_literal_rules transcript; }
 
 # stdin -> stdout, redacted. $1 is the literal sed script from
 # _ml_literal_script (may be empty).
