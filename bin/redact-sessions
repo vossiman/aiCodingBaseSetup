@@ -24,7 +24,7 @@
 #   pending   key names awaiting --ack, or SECRETS_FILE_UNREADABLE
 #   deferred  files skipped this sweep (quiet period, swap refused twice)
 #   stamp     mtime watermark for --sweep
-#   rules.fp  digest of the rule set the stamp was taken under
+#   rules.fp.<host>  salted digest of the rule set the stamp was taken under
 #
 # Exit: 0 ok, 2 usage, 3 secrets file unreadable or partially parsed (nothing
 # touched). Never prints a secret value. The secrets file is only ever READ.
@@ -53,9 +53,15 @@ RULES=""
 #            content instead.
 # OpenCode is listed with no pattern: its store is SQLite and out of scope
 # (spec, non-goals); it stays here so the gap is visible in the code.
+# A root may also be a single file (empty glob): the prompt histories both
+# CLIs append to. Those are rewritten in place, which is safe for a writer
+# that appends by path and for one that holds the file with O_APPEND alike.
 ROOTS=(
   "$HOME/.claude/projects|*.jsonl|rename"
+  "$HOME/.claude/history.jsonl||inplace"
   "$HOME/.codex/sessions|*.jsonl|inplace"
+  "$HOME/.codex/archived_sessions|*.jsonl|rename"
+  "$HOME/.codex/history.jsonl||inplace"
   "$HOME/.cursor/projects|*.jsonl|rename"
   "$HOME/.cursor/chats|prompt_history.json|rename"
   "$HOME/.cursor/chats|meta.json|rename"
@@ -67,7 +73,7 @@ write_mode_for() {
   local entry root
   for entry in "${ROOTS[@]}"; do
     root="${entry%%|*}"
-    case "$1" in "$root"/*) printf '%s' "${entry##*|}"; return 0 ;; esac
+    case "$1" in "$root"|"$root"/*) printf '%s' "${entry##*|}"; return 0 ;; esac
   done
   printf 'rename'
 }
@@ -85,6 +91,20 @@ session_of() {
     */agent-transcripts/*) basename "$(dirname "$1")" ;;
     *) printf '%s' "${b%.jsonl}" ;;
   esac
+}
+
+# Same salt file secrets-check uses, created the same way when absent.
+SALT_FILE="${AICODING_FP_SALT_FILE:-$HOME/.local/state/aicoding/secrets-check.salt}"
+fingerprint_rules() {
+  local salt=""
+  if [ -r "$SALT_FILE" ]; then
+    salt="$(cat "$SALT_FILE")"
+  else
+    mkdir -p "$(dirname "$SALT_FILE")" 2>/dev/null
+    salt="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    ( umask 077; printf '%s' "$salt" > "$SALT_FILE" ) 2>/dev/null
+  fi
+  printf '%s%s' "$salt" "$RULES" | sha256sum | cut -c1-16
 }
 
 # Builds the sed script once per run. Sets RULES; returns 3 on refusal.
@@ -184,6 +204,11 @@ candidates() {
   local entry root pat
   for entry in "${ROOTS[@]}"; do
     root="${entry%%|*}"; pat="${entry#*|}"; pat="${pat%%|*}"
+    if [ -f "$root" ]; then
+      if [ -e "$STATE/stamp" ]; then find "$root" -newer "$STATE/stamp" 2>/dev/null
+      else printf '%s\n' "$root"; fi
+      continue
+    fi
     [ -n "$pat" ] && [ -d "$root" ] || continue
     if [ -e "$STATE/stamp" ]; then
       find "$root" -type f -name "$pat" -newer "$STATE/stamp" 2>/dev/null
@@ -206,10 +231,12 @@ sweep() {
   if [ -z "$RULES" ]; then log "sweep skipped: no literal rules (secrets file absent)"; exit 0; fi
   # The stamp only says "inspected under the rules of that time". When the
   # rule set changes (a key added or rotated), every file is a candidate
-  # again. The fingerprint is a digest of the whole rendered rule set, not
-  # of any single value.
-  fp="$(printf '%s' "$RULES" | sha256sum | cut -c1-16)"
-  if [ "$(cat "$STATE/rules.fp" 2>/dev/null)" != "$fp" ]; then
+  # again. The fingerprint is a digest of the whole rendered rule set under
+  # this machine's secrets-check salt (container-local, mode 600), so the
+  # persisted value cannot be used to test guesses against a weak secret;
+  # it is kept per host name because the salt differs per container.
+  fp="$(fingerprint_rules)"
+  if [ "$(cat "$STATE/rules.fp.$HOST" 2>/dev/null)" != "$fp" ]; then
     rm -f "$STATE/stamp"
     log "rules changed: full rescan"
   fi
@@ -230,7 +257,7 @@ sweep() {
   # find -newer compares whole seconds; back the stamp off by one so a file
   # written in the same second as this sweep started is seen next time.
   touch -d "@$(( start - 1 ))" "$STATE/stamp" 2>/dev/null || touch "$STATE/stamp"
-  printf '%s\n' "$fp" > "$STATE/rules.fp"
+  printf '%s\n' "$fp" > "$STATE/rules.fp.$HOST"
   log "sweep inspected=$inspected done=$done deferred=$deferred container=$HOST"
   exit 0
 }

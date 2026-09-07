@@ -11,8 +11,8 @@ setup() {
   TMPDIR=$(mktemp -d)
   export HOME="$TMPDIR"
   mkdir -p "$HOME/.aicodingsetup" "$HOME/.claude/projects/-p/s1/subagents" \
-           "$HOME/.codex/sessions/2026/09/07" "$HOME/.cursor/chats/w/c" \
-           "$HOME/.cursor/projects/ws/agent-transcripts/c1"
+           "$HOME/.codex/sessions/2026/09/07" "$HOME/.codex/archived_sessions" \
+           "$HOME/.cursor/chats/w/c" "$HOME/.cursor/projects/ws/agent-transcripts/c1"
   SECRETS="$HOME/.aicodingsetup/.secrets.env"
   STATE="$HOME/.claude/state/redact-sessions"
   unset REDACT_SESSIONS_STATE REDACT_QUIET_SECONDS REDACT_SESSIONS_RACE_HOOK
@@ -466,4 +466,44 @@ EOF
 
 @test "aicoding-sync's binary refresh path runs a detached sweep" {
   grep -q 'redact-sessions" --sweep' "$BLUEPRINT_ROOT/lib/sync.sh"
+}
+
+@test "sweep: archived codex rollouts and both prompt histories are swept" {
+  local a="$HOME/.codex/archived_sessions/rollout-old.jsonl"
+  local h1="$HOME/.claude/history.jsonl" h2="$HOME/.codex/history.jsonl"
+  for f in "$a" "$h1" "$h2"; do printf '{"display":"%s"}\n' "$V1" > "$f"; old "$f"; done
+  local ino; ino="$(stat -c '%i' "$h1")"
+  "$RS" --sweep
+  for f in "$a" "$h1" "$h2"; do [[ "$(cat "$f")" != *"$V1"* ]]; done
+  [ "$(stat -c '%i' "$h1")" = "$ino" ]     # history files are rewritten in place
+}
+
+@test "contained value: a transcript holding only the longer secret reports both keys" {
+  printf 'A_KEY=abcdefgh\nB_KEY=abcdefgh1234\n' > "$SECRETS"
+  local f="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"abcdefgh1234"}\n' > "$f"
+  "$RS" --now "$f"
+  grep -qx 'A_KEY' "$STATE/pending"
+  grep -qx 'B_KEY' "$STATE/pending"
+}
+
+@test "rules fingerprint is salted and kept per host" {
+  local q="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"clean"}\n' > "$q"; old "$q"
+  "$RS" --sweep
+  local fpfile; fpfile="$(ls "$STATE"/rules.fp.* | head -1)"
+  [ -n "$fpfile" ]
+  [ -s "$HOME/.local/state/aicoding/secrets-check.salt" ]
+  [ "$(stat -c '%a' "$HOME/.local/state/aicoding/secrets-check.salt")" = "600" ]
+  local plain; plain="$(printf 'OPENROUTER_API_KEY=%s\n' "$V1" | sha256sum | cut -c1-16)"
+  [ "$(cat "$fpfile")" != "$plain" ]
+  # a different salt changes the fingerprint and forces a rescan
+  printf 'othersalt' > "$HOME/.local/state/aicoding/secrets-check.salt"
+  "$RS" --sweep
+  grep -q 'full rescan' "$STATE/log"
+}
+
+@test "settings.json runs the pending hook on every SessionStart, clear and compact included" {
+  local s="$BLUEPRINT_ROOT/configs/claude/settings.json"
+  jq -e '[.hooks.SessionStart[] | select(.hooks[].command | test("redact-sessions-pending")) | has("matcher")] == [false]' "$s"
 }

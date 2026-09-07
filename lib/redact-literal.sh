@@ -148,6 +148,21 @@ redact_literal_rules() {
   done
   unset -f _add
 
+  # A pattern that contains another whole (A=abcdefgh inside B=abcdefgh1234)
+  # is replaced first and would hide A: whoever saw B saw A too, so B's
+  # marker names A as well.
+  local nm
+  for i in "${!pats[@]}"; do
+    for j in "${!pats[@]}"; do
+      [ "$i" = "$j" ] && continue
+      case "${pats[$i]}" in *"${pats[$j]}"*)
+        for nm in ${pnames[$j]//,/ }; do
+          case ",${pnames[$i]}," in *",$nm,"*) ;; *) pnames[$i]="${pnames[$i]},$nm" ;; esac
+        done ;;
+      esac
+    done
+  done
+
   local -a order=()
   while IFS= read -r i; do order+=("$i"); done < <(
     for i in "${!pats[@]}"; do LC_ALL=C printf '%d %d\n' "${#pats[$i]}" "$i"; done | sort -k1,1nr -k2,2n | awk '{print $2}')

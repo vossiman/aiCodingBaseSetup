@@ -146,7 +146,8 @@ EOF
   printf 'A=abcdefgh\nB=abcdefgh1234\n' > "$SECRETS"
   local script; script="$(redact_literal_rules sessions "$SECRETS")"
   run sed -E -f <(printf '%s' "$script") <<< "x abcdefgh1234 y abcdefgh z"
-  [ "$output" = "x [REDACTED:B] y [REDACTED:A] z" ]
+  # B contains A, so whoever saw B saw A: B's marker names both.
+  [ "$output" = "x [REDACTED:A,B] y [REDACTED:A] z" ]
 }
 
 @test "a value starting with a quote: the JSON-escaped form is replaced cleanly" {
