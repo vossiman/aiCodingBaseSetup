@@ -609,3 +609,20 @@ db_has() { grep -q "$2" "$1" 2>/dev/null || grep -q "$2" "$1-wal" 2>/dev/null; }
   grep -qx "$f" "$STATE/deferred"
   grep -q 'python3 missing' "$STATE/log"
 }
+
+@test "a ROOTS change forces a full rescan like a rules change does" {
+  local q="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"clean"}\n' > "$q"; old "$q"
+  "$RS" --sweep; "$RS" --sweep
+  # second sweep with nothing new inspected nothing
+  tail -1 "$STATE/log" | grep -q 'sweep inspected=0'
+  # same script, one more root: the stamp must be dropped and the old file seen again
+  ( REDACT_SESSIONS_SOURCE_ONLY=1 . "$RS"; ROOTS+=("$HOME/.extra|*.jsonl|rename"); sweep )
+  tail -2 "$STATE/log" | grep -q 'rules changed: full rescan'
+  tail -1 "$STATE/log" | grep -q 'sweep inspected=1'
+  # and the fingerprint itself differs between the two root sets
+  local a b
+  a="$( REDACT_SESSIONS_SOURCE_ONLY=1 . "$RS"; load_rules; fingerprint_rules )"
+  b="$( REDACT_SESSIONS_SOURCE_ONLY=1 . "$RS"; ROOTS+=("$HOME/.extra|*.jsonl|rename"); load_rules; fingerprint_rules )"
+  [ "$a" != "$b" ]
+}
