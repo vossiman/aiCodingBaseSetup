@@ -144,9 +144,13 @@ checkpoint. `--now` ignores the quiet period as it does for text files.
    in free space of the page.
 3. `BEGIN IMMEDIATE`, apply the store-specific rewrite (4.5 or 4.6), count
    hits per key, `COMMIT`.
-4. `PRAGMA wal_checkpoint(TRUNCATE)`. The rewrite's new pages are moved into
-   the main file and the WAL is truncated to zero, so no frame that carried
-   the plaintext (ours or an earlier uncheckpointed write) remains on disk.
+4. `PRAGMA wal_checkpoint(TRUNCATE)`, run after a rewrite and also whenever
+   the `-wal` file is non-empty even though nothing changed: a checkpoint
+   refused as busy on an earlier run leaves the rows redacted but the
+   plaintext frames on disk, and the retry would otherwise find nothing to
+   do and clear the deferred entry (codex review of PR #143). The rewrite's
+   new pages are moved into the main file and the WAL is truncated to zero,
+   so no frame that carried the plaintext remains on disk.
    If the checkpoint reports it could not complete (another connection
    holds a read transaction that pins the WAL), the helper still exits 0 for
    the rewrite but prints a `checkpoint-incomplete` line; the bash side logs
@@ -166,9 +170,14 @@ harness itself, which the state lock cannot see.
 Column list, fixed in the helper:
 
 ```
-message.data  part.data  event.data  session.title  todo.content
-session_input.prompt  session_context_epoch.baseline  session_context_epoch.snapshot
+message.data  part.data  session_message.data  event.data
+session.title  session.summary_diffs  todo.content  session_input.prompt
+session_context_epoch.baseline  session_context_epoch.snapshot
 ```
+
+`session_message` is where OpenCode 1.18.29 writes its current (V2) message
+rows; it was empty in the measured database only because no session had run
+under that release yet (codex review of PR #143).
 
 A table or column missing from an older or newer schema is skipped with a
 log line, not an error, so a schema drift degrades to partial coverage
@@ -198,6 +207,14 @@ MB). Then:
 1. **Leaves.** For every blob whose `data` contains any pattern, apply the
    rules, compute `new_id = sha256(new_data)`, record `old_id -> new_id`,
    and count hits per key (occurrences of each pattern before replacement).
+   Only blobs that start with `{` (JSON) get the full `[REDACTED:KEY]`
+   marker. Every other blob gets a **same-length** marker: the full marker
+   padded with `*` when the pattern is long enough, else `[R:KEY...]` cut to
+   fit, else `*` fill. A protobuf length-delimited field carries its byte
+   length in a varint prefix, so a payload that grows or shrinks would leave
+   the blob structurally malformed even with every hash consistent (codex
+   review of PR #143). The key name still reaches the log through the hit
+   count, which is taken before replacement.
 2. **Ancestors, to a fixed point.** While the map grew in the last pass:
    for every blob not yet rewritten whose `data` contains an old id either
    as its raw 32 bytes or as its 64-character lowercase hex, substitute the
@@ -213,6 +230,9 @@ MB). Then:
 4. **Write.** `INSERT OR REPLACE` every rewritten blob under its new id,
    `DELETE` every old id that is no longer referenced, `UPDATE meta`.
    Commit.
+
+The same-length rule makes step 2's substitution the only place a blob's
+length could change, and it never does (both id forms are fixed width).
 
 An id collision (two distinct blobs rewriting to the same bytes) is a
 legitimate dedup in a content-addressed store and needs no handling.

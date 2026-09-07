@@ -23,7 +23,7 @@ run_helper() { printf '%s\n' "$RULES" | python3 "$PY" "$@"; }
 # leaked DB VALUE: 0 when no scrubbed OpenCode column holds VALUE (credential is opencode's own and keeps it).
 leaked() { python3 -c "
 import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); n=0
-for t,col in [('message','data'),('part','data'),('event','data'),('session','title'),('todo','content')]:
+for t,col in [('message','data'),('part','data'),('event','data'),('session','title'),('todo','content'),('session_message','data')]:
     try: n+=c.execute(f'select count(*) from {t} where instr({col},?)>0',(sys.argv[2],)).fetchone()[0]
     except sqlite3.OperationalError: pass
 print(n)" "$1" "$2"; }
@@ -43,7 +43,9 @@ create table part(id text primary key, message_id text not null, session_id text
 create table event(id text primary key, aggregate_id text not null, seq integer not null, type text not null, data text not null);
 create table todo(session_id text not null, content text not null, position integer not null, primary key(session_id, position));
 create table credential(id text primary key, value text not null);
+create table session_message(id text primary key, session_id text not null, type text not null, time_updated integer not null, data text not null, seq integer not null);
 """)
+c.execute("insert into session_message values('sm_1','ses_1','tool',7,?,1)", (json.dumps({"output":"V2 KEY=%s" % v1}),))
 c.execute("insert into session values('ses_1', ?, 1)", ('title mentions %s' % v2,))
 c.execute("insert into message values('msg_1','ses_1',7,?)", (json.dumps({"role":"user","text":'quoted "%s"' % v1}),))
 c.execute("insert into part values('prt_1','msg_1','ses_1',7,?)", (json.dumps({"type":"tool","output":"KEY=%s\nother" % v1}),))
@@ -108,7 +110,8 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"hit OPENROUTER_API_KEY 1 session=ses_1"* ]]
   [[ "$output" == *"hit POSTGRES_PASSWORD 1 session=ses_1"* ]]
-  [ "$(grep -c 'hit OPENROUTER_API_KEY' <<< "$output")" -eq 4 ]
+  [ "$(grep -c 'hit OPENROUTER_API_KEY' <<< "$output")" -eq 5 ]
+  [ "$(col "$HOME/opencode.db" "select count(*) from session_message where instr(data,'[REDACTED:OPENROUTER_API_KEY]')>0")" -eq 1 ]
   [ "$(leaked "$HOME/opencode.db" "$V1")" -eq 0 ]
   [ "$(leaked "$HOME/opencode.db" "$V2")" -eq 0 ]
   # V2 lives only in a scrubbed column, so the raw file must be free of it
@@ -209,4 +212,52 @@ c.execute('pragma wal_checkpoint(truncate)')" "$HOME/store.db"
   [ -s "$HOME/store.db-wal" ]
   run_helper "$HOME/store.db"
   [ ! -s "$HOME/store.db-wal" ]
+}
+
+@test "opencode: WAL residue with already-clean rows is still checkpointed away" {
+  # rows once held the value and were rewritten, but the checkpoint never ran
+  # (a busy reader on the earlier run): the -wal still carries the plaintext
+  python3 - "$HOME/opencode.db" "$V1" <<'PYEOF'
+import sqlite3, sys, os
+db, v1 = sys.argv[1:]
+c = sqlite3.connect(db); c.execute("pragma journal_mode=wal")
+c.executescript("create table message(id text primary key, session_id text, time_updated integer, data text); create table part(id text primary key, message_id text, session_id text, time_updated integer, data text)")
+c.execute("insert into part values('p','m','s',1,?)", ("KEY=" + v1,)); c.commit()
+c.execute("update part set data='[REDACTED:OPENROUTER_API_KEY]'"); c.commit()
+os._exit(0)
+PYEOF
+  grep -q "$V1" "$HOME/opencode.db-wal"
+  run run_helper "$HOME/opencode.db"
+  [ "$status" -eq 0 ]; [[ "$output" != *hit* ]]
+  [ ! -s "$HOME/opencode.db-wal" ]
+  if grep -q "$V1" "$HOME/opencode.db"; then false; fi
+}
+
+@test "cursor: protobuf blobs keep their length so varint field prefixes stay valid" {
+  make_cursor "$HOME/store.db" > /dev/null
+  local before; before="$(col "$HOME/store.db" "select length(data) from blobs where instr(cast(data as text), '$V2') > 0")"
+  run_helper "$HOME/store.db"
+  python3 - "$HOME/store.db" "$before" "$V2" <<'PYEOF'
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1]); want = int(sys.argv[2]); v2 = sys.argv[3]
+rows = [d for (d,) in c.execute("select data from blobs") if d.startswith(b"\n\x20") and b"\x12" in d]
+node = [d for d in rows if b"[REDACTED:POSTGRES_PASSWORD]" in d]
+assert len(node) == 1, rows
+d = node[0]
+assert len(d) == want, (len(d), want)
+i = d.index(b"\x12"); n = d[i + 1]
+assert n == len(v2) and len(d[i + 2:]) == n, "length prefix no longer matches payload"
+assert d[i + 2:] == b"[REDACTED:POSTGRES_PASSWORD]" + b"*" * (n - len("[REDACTED:POSTGRES_PASSWORD]"))
+PYEOF
+  # JSON leaves keep the full, unpadded marker
+  [ "$(col "$HOME/store.db" "select count(*) from blobs where substr(cast(data as text),1,1)='{' and instr(cast(data as text), '[REDACTED:OPENROUTER_API_KEY]\"') > 0")" -eq 1 ]
+}
+
+@test "cursor: a pattern shorter than its marker gets the short same-length form" {
+  make_cursor "$HOME/store.db" > /dev/null
+  # 8-byte pattern inside the protobuf node (a piece of V2), one key
+  RULES="$(hex "${V2:0:8}") [REDACTED:POSTGRES_PASSWORD]"
+  run_helper "$HOME/store.db"
+  [ "$(col "$HOME/store.db" "select count(*) from blobs where instr(cast(data as text), '[R:POST]') > 0")" -eq 1 ]
+  [ "$(check_cursor "$HOME/store.db")" -eq 4 ]
 }

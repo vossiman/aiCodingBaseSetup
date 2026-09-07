@@ -10,6 +10,10 @@ Two store kinds, detected from the schema:
   cursor    blobs(id, data) + meta: content-addressed, id == sha256(data),
             tree nodes reference children by raw digest. Changed blobs are
             rehashed and every ancestor is patched up to the root pointer.
+            Only JSON blobs get the full marker; protobuf and other blobs
+            get a same-length marker, because a length-delimited protobuf
+            field carries its byte length in a varint prefix that a longer
+            or shorter payload would falsify.
   OpenCode  message/part/event/... text columns rewritten row by row.
 
 Stdout: "hit KEY N [session=ID]", "skipped-table T", "checkpoint-incomplete".
@@ -29,8 +33,10 @@ EXIT_BUSY, EXIT_SCHEMA = 4, 5
 OPENCODE_COLUMNS = [
     ("message", "data", "session_id"),
     ("part", "data", "session_id"),
+    ("session_message", "data", "session_id"),
     ("event", "data", "aggregate_id"),
     ("session", "title", "id"),
+    ("session", "summary_diffs", "id"),
     ("todo", "content", "session_id"),
     ("session_input", "prompt", "session_id"),
     ("session_context_epoch", "baseline", "session_id"),
@@ -53,13 +59,22 @@ def keys_of(marker):
     return m[len("[REDACTED:"):-1].split(",") if m.startswith("[REDACTED:") else []
 
 
-def apply_rules(data, rules, hits):
+def fit_marker(marker, n):
+    """A marker of exactly n bytes: the full one padded, or a shortened form."""
+    if len(marker) <= n:
+        return marker + b"*" * (n - len(marker))
+    keys = b",".join(k.encode() for k in keys_of(marker))
+    short = b"[R:" + keys[: max(n - 4, 0)] + b"]"
+    return short if len(short) == n else b"*" * n
+
+
+def apply_rules(data, rules, hits, same_length=False):
     for pat, marker in rules:
         n = data.count(pat)
         if n:
             for k in keys_of(marker):
                 hits[k] += n
-            data = data.replace(pat, marker)
+            data = data.replace(pat, fit_marker(marker, len(pat)) if same_length else marker)
     return data
 
 
@@ -107,7 +122,7 @@ def scrub_opencode(conn, rules, out):
 def scrub_cursor(conn, rules, out):
     blobs = {i: bytes(d) if d is not None else b"" for i, d in conn.execute("select id, data from blobs")}
     hits = Counter()
-    leaf = {i: apply_rules(d, rules, hits) for i, d in blobs.items()}
+    leaf = {i: apply_rules(d, rules, hits, same_length=not d.startswith(b"{")) for i, d in blobs.items()}
     if not hits:
         return
     mapping = {i: sha256(leaf[i]) for i in blobs if leaf[i] != blobs[i]}
@@ -181,7 +196,12 @@ def main():
             raise
         wrote = conn.total_changes > 0
         conn.execute("commit")
-        if wrote:
+        # Checkpoint after a rewrite, and also whenever the WAL still holds
+        # frames: a checkpoint refused as busy on an earlier run leaves the
+        # rows redacted but the plaintext frames on disk, and the retry finds
+        # nothing left to change.
+        wal = db + "-wal"
+        if wrote or (os.path.exists(wal) and os.path.getsize(wal) > 0):
             busy, _log, _ckpt = conn.execute("pragma wal_checkpoint(truncate)").fetchone()
             if busy:
                 out.append("checkpoint-incomplete")
