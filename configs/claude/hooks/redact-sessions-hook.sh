@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Claude Code Stop / SessionEnd hook (also cursor stop / sessionEnd): scrub
+# Claude Code Stop / SessionEnd hook (also cursor stop / sessionEnd; cursor
+# sends the same transcript_path and hook_event_name fields): scrub
 # transcripts on disk with redact-sessions. On SessionEnd the session's own
 # file is scrubbed now, because the harness has said it is done writing;
 # everything else goes through the sweep, which honours the quiet period.
@@ -23,7 +24,9 @@ if [ ! -t 0 ]; then input="$(timeout 2 cat 2>/dev/null || true)"; fi
 event="$(printf '%s' "$input" | jq -r '.hook_event_name // empty' 2>/dev/null)"
 transcript="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null)"
 
-if [ "$event" = "SessionEnd" ] && [ -n "$transcript" ] && [ -f "$transcript" ]; then
+# Claude Code says SessionEnd, cursor says sessionEnd; both mean "done writing".
+case "$event" in SessionEnd|sessionEnd) ended=1 ;; *) ended=0 ;; esac
+if [ "$ended" = 1 ] && [ -n "$transcript" ] && [ -f "$transcript" ]; then
   timeout 60 "$bin" --now "$transcript" >/dev/null 2>&1 || true
 fi
 

@@ -11,7 +11,8 @@ setup() {
   TMPDIR=$(mktemp -d)
   export HOME="$TMPDIR"
   mkdir -p "$HOME/.aicodingsetup" "$HOME/.claude/projects/-p/s1/subagents" \
-           "$HOME/.codex/sessions/2026/09/07" "$HOME/.cursor/chats/w/c"
+           "$HOME/.codex/sessions/2026/09/07" "$HOME/.cursor/chats/w/c" \
+           "$HOME/.cursor/projects/ws/agent-transcripts/c1"
   SECRETS="$HOME/.aicodingsetup/.secrets.env"
   STATE="$HOME/.claude/state/redact-sessions"
   unset REDACT_SESSIONS_STATE REDACT_QUIET_SECONDS REDACT_SESSIONS_RACE_HOOK
@@ -349,5 +350,65 @@ TURN="$BLUEPRINT_ROOT/bin/codex-turn-done"
   "$RS" --now "$f"
   [ "$(stat -c '%i' "$f")" != "$ino" ]
   printf '{"text":"by path"}\n' >> "$f"
+  [ "$(wc -l < "$f")" -eq 2 ]
+}
+
+@test "cursor root: agent-transcripts jsonl is swept and attributed to its conversation" {
+  local f="$HOME/.cursor/projects/ws/agent-transcripts/c1/c1.jsonl"
+  printf '{"role":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}\n' "$V1" > "$f"; old "$f"
+  "$RS" --sweep
+  [[ "$(cat "$f")" != *"$V1"* ]]
+  grep -q 'session=c1' "$STATE/log"
+}
+
+@test "hook: cursor's sessionEnd spelling also scrubs the named transcript now" {
+  local f="$HOME/.cursor/projects/ws/agent-transcripts/c1/c1.jsonl"
+  printf '{"text":"%s"}\n' "$V1" > "$f"
+  run bash "$HOOK" <<< "$(jq -nc --arg t "$f" '{hook_event_name:"sessionEnd", transcript_path:$t, conversation_id:"c1"}')"
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$f")" != *"$V1"* ]]
+}
+
+@test "pending hook --cursor: emits JSON with additional_context" {
+  mkdir -p "$STATE"; printf 'GH_TOKEN\n' > "$STATE/pending"
+  run bash "$PENDING" --cursor
+  [ "$status" -eq 0 ]
+  printf '%s' "$output" | jq -e '.additional_context | test("GH_TOKEN")'
+  printf '%s' "$output" | jq -e '.additional_context | test("redact-sessions --ack")'
+}
+
+@test "pending hook --cursor: silent with no marker" {
+  run bash "$PENDING" --cursor
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "two keys sharing a value are both logged and both pending" {
+  printf 'A_KEY=%s\nB_KEY=%s\n' "$V1" "$V1" > "$SECRETS"
+  local f="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"%s"}\n' "$V1" > "$f"
+  "$RS" --now "$f"
+  grep -q 'REDACTED:A_KEY,B_KEY' "$f"
+  grep -q 'key=A_KEY count=1' "$STATE/log"
+  grep -q 'key=B_KEY count=1' "$STATE/log"
+  grep -qx 'A_KEY' "$STATE/pending"
+  grep -qx 'B_KEY' "$STATE/pending"
+}
+
+@test "codex root: a record appended during the in-place rewrite is kept and logged" {
+  local f="$HOME/.codex/sessions/2026/09/07/r.jsonl"
+  printf '{"text":"%s"}\n' "$V1" > "$f"; old "$f"
+  # Append through an O_APPEND fd from the race hook, which runs after the
+  # temp file is built and before the swap: the record must survive whole.
+  cat > "$HOME/race.sh" <<EOF
+#!/bin/sh
+[ -e "$HOME/raced" ] && exit 0
+touch "$HOME/raced"
+printf '{"text":"mid-rewrite"}\\n' >> "$f"
+EOF
+  chmod +x "$HOME/race.sh"
+  REDACT_SESSIONS_RACE_HOOK="$HOME/race.sh" "$RS" --now "$f"
+  [[ "$(cat "$f")" != *"$V1"* ]]
+  grep -qx '{"text":"mid-rewrite"}' "$f"
   [ "$(wc -l < "$f")" -eq 2 ]
 }

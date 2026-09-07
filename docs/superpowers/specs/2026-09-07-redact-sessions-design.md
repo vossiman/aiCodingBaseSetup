@@ -82,6 +82,7 @@ One array near the top of the script, so a new harness is one added line:
 |---|---|---|
 | Claude Code | `~/.claude/projects/` | `**/*.jsonl`, which includes `<project>/<session>/subagents/*.jsonl` |
 | codex | `~/.codex/sessions/` | `**/*.jsonl` |
+| cursor | `~/.cursor/projects/` | `*/agent-transcripts/**/*.jsonl`, the full conversation transcripts (found by codex's PR review; the chats dir alone holds only metadata) |
 | cursor | `~/.cursor/chats/` | `**/prompt_history.json`, `**/meta.json` |
 | OpenCode | `~/.local/share/opencode/` | none in this spec: the store is SQLite (non-goals). Listed so the gap is visible in the code, not only in the doc |
 
@@ -119,7 +120,10 @@ Two of the three incidents were printed by subagents; that is the point.
      (`-_` alphabet) gets the same three rules with the two characters
      translated.
    - replacement text is `[REDACTED:K]`. The key name is what makes a hit
-     actionable; the value never appears anywhere.
+     actionable; the value never appears anywhere. Two keys holding the
+     same value share one marker, `[REDACTED:A,B]`, and both are reported;
+     otherwise the first rule would consume every occurrence and the second
+     key would never be flagged.
 2. Count matches before rewriting (`grep -c` per rule against the file).
    Zero matches: leave the file untouched, do not change its mtime.
 3. Non-zero: write the redacted content to a temp file in the same
@@ -169,9 +173,17 @@ rename; codex files are rewritten in place (truncate and write the same
 inode), which an `O_APPEND` writer follows correctly, its next record landing
 after the scrubbed content. The cost is that an in-place rewrite is not
 atomic for a concurrent reader; codex does not read its rollout mid-session,
-and the window is milliseconds. Cursor: `cursor-agent` is not installed in
-this container, so its behaviour is not measured; its JSON files use rename,
-and it writes them whole rather than appending.
+and the window is milliseconds. Cursor: `cursor-agent` 2026.09.02
+does not hold its transcript open either (`lsof` over 50 one-second samples
+of a live run showed only sockets), so its files use rename.
+
+In-place residual: the state lock does not cover the harness's own writer.
+The rewrite therefore truncates and then appends the replacement in one
+`write()` with `O_APPEND`, so a record codex appends in the same instant
+lands whole, before or after ours, instead of being overwritten. A record
+that slips into the gap between the truncate and our append is out of order
+but intact; the scrubber compares the resulting size with what it wrote and
+logs the case.
 
 Consequence: a value printed mid-session stays in the file until that
 session ends or goes quiet. That window is accepted. It is the same window
@@ -224,7 +236,10 @@ not used. Each hit produces:
    key names, one per line, appended under `flock` because two containers
    can sweep at once.
 3. Surfacing: the existing `SessionStart` hook slot gets a small script that
-   prints the pending marker into the next session's context as an
+   prints the pending marker into the next session's context (plain text
+   for Claude Code; cursor parses hook stdout as JSON and injects only
+   `additional_context`, so its hooks.json passes `--cursor` to get that
+   form) as an
    instruction to tell the user which keys need rotating. It does not clear
    the marker; the user clears it with `redact-sessions --ack KEY` once the
    rotation is done, so the warning repeats in every new session on every

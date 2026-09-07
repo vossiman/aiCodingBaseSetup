@@ -114,7 +114,7 @@ config` interpolates it, a build-failure notification carries it base64-encoded,
 a helper script writes it into a scratch env dir. Three such leaks in two days
 (2026-08-27, 2026-09-04) motivated the output side, `redact-sessions`: it sweeps
 the persisted transcripts of every CLI (Claude Code and its subagents, codex,
-cursor's JSON files) for the secrets-file **values**, in raw, JSON-escaped and
+cursor's `agent-transcripts` and chat JSON files) for the secrets-file **values**, in raw, JSON-escaped and
 base64-aligned form, replaces each with `[REDACTED:KEYNAME]`, and records the
 hit under `~/.claude/state/redact-sessions/` (a shared mount, so every
 container sees it). A hit still means the value reached an agent, so the next

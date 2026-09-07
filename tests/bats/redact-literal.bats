@@ -131,3 +131,12 @@ EOF
   [[ "$output" == *'[REDACTED:B]'* ]]
   [[ "$output" != *'"'* ]]
 }
+
+@test "two keys sharing one value fold into one marker naming both" {
+  printf 'A=%s\nB=%s\nC=zzzzzzzzzzzzzz\n' "$V" "$V" > "$SECRETS"
+  run redact_literal_rules sessions "$SECRETS"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'[REDACTED:A,B]/g'* ]]
+  [[ "$output" == *'[REDACTED:C]/g'* ]]
+  [[ "$output" != *'[REDACTED:A]/g'* ]]
+}

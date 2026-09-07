@@ -74,9 +74,14 @@ _redact_literal_rule() {
   printf 's/%s/%s/g\n' "$esc" "$2"
 }
 
+# Two keys can hold the same value (a password reused across services). The
+# first sed rule would then eat every occurrence and the second key would
+# never be reported, so keys sharing a value are folded into one marker,
+# [REDACTED:A,B], and the caller reports every name in it.
 redact_literal_rules() {
   local mode="$1" f="${2:-$HOME/.aicodingsetup/.secrets.env}"
-  local line key val marker jval out='' keys=0 expected=0 k core rule
+  local line key val marker jval out='' keys=0 expected=0 k core rule i
+  local -a vals=() names=()
   case "$mode" in transcript|sessions) ;; *) return 1 ;; esac
   [ -e "$f" ] || return 0
   [ -r "$f" ] || return 1
@@ -93,11 +98,23 @@ redact_literal_rules() {
     val="${val%\'}"; val="${val#\'}"
     [ "${#val}" -ge 8 ] || continue
     keys=$(( keys + 1 ))
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || key="_"
+    for i in "${!vals[@]}"; do
+      if [ "${vals[$i]}" = "$val" ]; then names[$i]="${names[$i]},$key"; val=""; break; fi
+    done
+    [ -n "$val" ] || continue
+    vals+=("$val"); names+=("$key")
+  done < "$f" || return 1
 
-    if [ "$mode" = sessions ] && [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      marker="[REDACTED:$key]"
-    else
-      marker="[REDACTED]"
+  [ "$keys" -eq "$expected" ] || return 1
+
+  for i in "${!vals[@]}"; do
+    val="${vals[$i]}"
+    marker="[REDACTED]"
+    if [ "$mode" = sessions ]; then
+      # Drop the "_" placeholders left by unnameable keys; keep the rest.
+      key="$(printf '%s' "${names[$i]}" | tr ',' '\n' | grep -vx '_' | paste -sd, -)"
+      [ -n "$key" ] && marker="[REDACTED:$key]"
     fi
 
     rule="$(_redact_literal_rule "$val" "$marker")" || return 1
@@ -118,8 +135,6 @@ redact_literal_rules() {
         out+="$rule"$'\n'
       done
     fi
-  done < "$f" || return 1
-
-  [ "$keys" -eq "$expected" ] || return 1
+  done
   printf '%s' "$out"
 }

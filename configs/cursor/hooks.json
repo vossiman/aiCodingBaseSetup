@@ -3,6 +3,6 @@
   "hooks": {
     "stop": [{ "command": "bash \"{{HOME}}/.claude/hooks/redact-sessions-hook.sh\"" }],
     "sessionEnd": [{ "command": "bash \"{{HOME}}/.claude/hooks/redact-sessions-hook.sh\"" }],
-    "sessionStart": [{ "command": "bash \"{{HOME}}/.claude/hooks/redact-sessions-pending.sh\"" }]
+    "sessionStart": [{ "command": "bash \"{{HOME}}/.claude/hooks/redact-sessions-pending.sh\" --cursor" }]
   }
 }

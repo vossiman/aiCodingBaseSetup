@@ -41,8 +41,9 @@ RULES=""
 
 # Roots, one per harness: root|glob|write-mode.
 #   rename   write a temp file and rename it over the original. Right for a
-#            writer that appends by path (Claude Code: lsof shows no open
-#            handle on a live transcript, measured 2026-09-07).
+#            writer that appends by path (Claude Code and cursor-agent:
+#            lsof shows no open handle on a live transcript, measured
+#            2026-09-07).
 #   inplace  truncate and rewrite the same inode. Right for a writer that
 #            keeps the file open with O_APPEND (codex: fd flags 02102002 on
 #            its rollout file for the whole run, measured 2026-09-07). A
@@ -54,6 +55,7 @@ RULES=""
 ROOTS=(
   "$HOME/.claude/projects|*.jsonl|rename"
   "$HOME/.codex/sessions|*.jsonl|inplace"
+  "$HOME/.cursor/projects|*.jsonl|rename"
   "$HOME/.cursor/chats|prompt_history.json|rename"
   "$HOME/.cursor/chats|meta.json|rename"
   "$HOME/.local/share/opencode||rename"
@@ -79,6 +81,7 @@ session_of() {
   local b; b="$(basename "$1")"
   case "$1" in
     */subagents/*) basename "$(dirname "$(dirname "$1")")" ;;
+    */agent-transcripts/*) basename "$(dirname "$1")" ;;
     *) printf '%s' "${b%.jsonl}" ;;
   esac
 }
@@ -96,7 +99,7 @@ load_rules() {
 
 # marker_counts <file>: "KEY count" per marker found.
 marker_counts() {
-  grep -o '\[REDACTED:[A-Za-z_][A-Za-z0-9_]*\]' "$1" 2>/dev/null \
+  grep -o '\[REDACTED:[A-Za-z_][A-Za-z0-9_,]*\]' "$1" 2>/dev/null \
     | sed 's/^\[REDACTED:\(.*\)\]$/\1/' | sort | uniq -c | awk '{print $2, $1}'
 }
 
@@ -107,7 +110,20 @@ _swap() {
   sig2="$(stat -c '%i %s %Y' "$f")" || { rm -f "$tmp"; return 2; }
   if [ "$sig1" != "$sig2" ]; then rm -f "$tmp"; return 1; fi
   if [ "$mode" = inplace ]; then
-    if ! cat "$tmp" > "$f"; then rm -f "$tmp"; return 2; fi
+    # Truncate, then append the whole replacement in ONE write(): with
+    # O_APPEND on both sides the kernel serialises the two writers, so a
+    # record the harness appends in the same instant lands intact before
+    # or after ours instead of being overwritten. The gap between the
+    # truncate and our append is the residual window; a record that slips
+    # into it is out of order but whole, and the size check below logs it.
+    local want got
+    want="$(stat -c '%s' "$tmp")"
+    if ! : > "$f"; then rm -f "$tmp"; return 2; fi
+    if ! dd if="$tmp" of="$f" oflag=append conv=notrunc bs="$want" count=1 status=none 2>/dev/null; then
+      cat "$tmp" >> "$f"
+    fi
+    got="$(stat -c '%s' "$f")"
+    [ "$got" = "$want" ] || log "concurrent append during in-place rewrite file=$f (record kept, order not guaranteed)"
     rm -f "$tmp"
   else
     mv -f "$tmp" "$f" || { rm -f "$tmp"; return 2; }
@@ -148,8 +164,11 @@ scrub_one() {
       prev="$(printf '%s\n' "$before" | awk -v k="$key" '$1==k{print $2}')"
       n=$(( n - ${prev:-0} ))
       [ "$n" -gt 0 ] || continue
-      log "hit key=$key count=$n file=$f container=$HOST session=$sess"
-      pending_add "$key"
+      local one
+      for one in ${key//,/ }; do
+        log "hit key=$one count=$n file=$f container=$HOST session=$sess"
+        pending_add "$one"
+      done
     done <<< "$after"
     return 0
   done
