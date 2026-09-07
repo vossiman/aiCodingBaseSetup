@@ -84,7 +84,9 @@ new helper:
 lib/redact-sqlite.py <db-path>      # rules on stdin, hits on stdout
 ```
 
-Standard library only. The helper detects the store kind from the schema
+Standard library only. `REDACT_SQLITE_BUSY_MS` (default 5000) sets the
+lock wait and `REDACT_SESSIONS_PYTHON` (default `python3`) names the
+interpreter, both for tests. The helper detects the store kind from the schema
 (`blobs`+`meta` means cursor; a `message` table with `part` means OpenCode),
 applies the rules inside one transaction, and prints one `KEY count` line
 per key it redacted. It never prints a value, never reads the secrets file
@@ -103,9 +105,11 @@ redact_literal_rules pairs [FILE]
 Same values, same deduplication, same longest-pattern-first order and the
 same marker text as `sessions` mode (raw, JSON-escaped and base64-aligned
 forms, floors of 8 and 12 characters, `[REDACTED:A,B]` for shared
-patterns). Output is not a sed script: each rule is `PATTERN NUL MARKER NUL`,
-raw literal bytes, no escaping. NUL cannot occur in a `.env` value, so the
-framing is unambiguous where a tab or newline separator would not be. The
+patterns). Output is not a sed script: one line per rule, `HEX(PATTERN) SPACE MARKER`,
+the pattern's raw bytes hex-encoded and the marker verbatim. Hex keeps the
+framing unambiguous for any byte a `.env` value can hold and lets the bash
+side keep the rendered set in a variable (bash variables cannot hold NUL),
+so the generator runs once per sweep, not once per file. The
 fail-closed contract is unchanged: absent file, exit 0 and empty output;
 unreadable or partially parsed file, exit 1 and empty output.
 
