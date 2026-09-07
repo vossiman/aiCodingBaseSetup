@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# codex-turn-done: the codex `notify` target. codex invokes argv plus one JSON
+# argument at the end of every agent turn. This flags the tmux window through
+# agent-notify (the existing behaviour) and then sweeps transcripts with
+# redact-sessions, so a container used only by codex still scrubs.
+# Contract: never exits non-zero, never blocks codex.
+set -u
+
+notify="${AGENT_NOTIFY_BIN:-}"
+[ -n "$notify" ] || notify="$(command -v agent-notify 2>/dev/null || true)"
+[ -n "$notify" ] || notify="$HOME/.local/bin/agent-notify"
+if [ -x "$notify" ]; then
+  "$notify" --source codex --title "✔ codex turn done" "$@" >/dev/null 2>&1 || true
+fi
+
+rs="${REDACT_SESSIONS_BIN:-}"
+[ -n "$rs" ] || rs="$(command -v redact-sessions 2>/dev/null || true)"
+[ -n "$rs" ] || rs="$HOME/.local/bin/redact-sessions"
+if [ -x "$rs" ]; then
+  if [ "${REDACT_SESSIONS_SYNC:-}" = "1" ]; then
+    timeout 300 "$rs" --sweep >/dev/null 2>&1 || true
+  else
+    nohup timeout 300 "$rs" --sweep >/dev/null 2>&1 &
+  fi
+fi
+exit 0

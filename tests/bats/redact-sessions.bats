@@ -282,3 +282,47 @@ EOF
   grep -q '"redact-sessions-hook.sh"' "$BLUEPRINT_ROOT/lib/provision-managed-files.sh"
   grep -q '"redact-sessions-pending.sh"' "$BLUEPRINT_ROOT/lib/provision-managed-files.sh"
 }
+
+TURN="$BLUEPRINT_ROOT/bin/codex-turn-done"
+
+@test "codex-turn-done: notifies, then sweeps, exits 0" {
+  mkdir -p "$HOME/stubs"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "$HOME/notify-args"\n' > "$HOME/stubs/agent-notify"
+  chmod +x "$HOME/stubs/agent-notify"
+  local g="$HOME/.codex/sessions/2026/09/07/r.jsonl"
+  printf '{"text":"%s"}\n' "$V2" > "$g"; old "$g"
+  AGENT_NOTIFY_BIN="$HOME/stubs/agent-notify" run "$TURN" '{"type":"agent-turn-complete"}'
+  [ "$status" -eq 0 ]
+  grep -q -- '--source' "$HOME/notify-args"
+  grep -q 'agent-turn-complete' "$HOME/notify-args"
+  [[ "$(cat "$g")" != *"$V2"* ]]
+}
+
+@test "codex-turn-done: missing binaries still exit 0" {
+  AGENT_NOTIFY_BIN=/nonexistent REDACT_SESSIONS_BIN=/nonexistent run "$TURN" '{}'
+  [ "$status" -eq 0 ]
+}
+
+@test "cursor hooks.json wires stop, sessionEnd and sessionStart to the hook scripts" {
+  local h="$BLUEPRINT_ROOT/configs/cursor/hooks.json"
+  jq -e '.version == 1' "$h"
+  jq -e '.hooks.stop[0].command | test("redact-sessions-hook.sh")' "$h"
+  jq -e '.hooks.sessionEnd[0].command | test("redact-sessions-hook.sh")' "$h"
+  jq -e '.hooks.sessionStart[0].command | test("redact-sessions-pending.sh")' "$h"
+  grep -q 'cursor/hooks.json|overwrite|configs/cursor/hooks.json' "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+}
+
+@test "on-start.sh runs a boot sweep when redact-sessions is on PATH" {
+  grep -q 'redact-sessions --sweep' "$BLUEPRINT_ROOT/on-start.sh"
+}
+
+@test "install symlinks both binaries" {
+  header(){ :; }; ok(){ :; }; warn(){ echo "WARN $*"; }; info(){ :; }
+  export SCRIPT_DIR="$BLUEPRINT_ROOT"
+  . "$BLUEPRINT_ROOT/lib/provision-integrations.sh" >/dev/null 2>&1 || true
+  install_redact_sessions_symlinks
+  [ -L "$HOME/.local/bin/redact-sessions" ]
+  [ -L "$HOME/.local/bin/codex-turn-done" ]
+  grep -q 'install_redact_sessions_symlinks' "$BLUEPRINT_ROOT/install.sh"
+  grep -q 'install_redact_sessions_symlinks' "$BLUEPRINT_ROOT/lib/sync.sh"
+}

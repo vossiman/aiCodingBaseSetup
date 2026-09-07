@@ -12,7 +12,9 @@ model = "gpt-5.6-sol"
 # 2026-02 in favor of the [hooks] feature — stable+default-on since 0.147,
 # events incl. PermissionRequest — a candidate replacement for this notify
 # wiring, not yet adopted; see docs/agent-release-audits.md 2026-08-18).
-notify = ["{{HOME}}/.local/bin/agent-notify", "--source", "codex", "--title", "✔ codex turn done"]
+# codex-turn-done wraps agent-notify (same flag, same title) and then runs a
+# redact-sessions sweep so a codex-only container still scrubs transcripts.
+notify = ["{{HOME}}/.local/bin/codex-turn-done"]
 
 # Historical: setting BOTH keys below once suppressed codex's per-project
 # trust screen and its [projects."<path>"].trust_level writes into this file

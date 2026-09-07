@@ -135,7 +135,9 @@ teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
 
 @test "codex config wires notify to agent-notify above the first table" {
   local cfg="$BLUEPRINT_ROOT/configs/codex/config.toml"
-  grep -q 'notify = \["{{HOME}}/.local/bin/agent-notify"' "$cfg"
+  # notify goes through codex-turn-done, which flags the window via
+  # agent-notify and then sweeps transcripts with redact-sessions.
+  grep -q 'notify = \["{{HOME}}/.local/bin/codex-turn-done"' "$cfg"
   # notify must appear before the first [table] or codex ignores it
   awk '/^\[/{exit 1} /^notify = /{found=1} END{exit !found}' "$cfg"
 }

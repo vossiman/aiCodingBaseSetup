@@ -805,6 +805,7 @@ _sync_provision() {
     install_kanban_post_symlink || true
     install_measure_remote_symlink || true
     install_redact_transcript_symlink || true
+    install_redact_sessions_symlinks || true
   fi
   return 0
 }
