@@ -48,13 +48,10 @@ files). The two SQLite stores are named in the non-goals.
   things a resumed session needs to read, and their hits would not be
   actionable anyway because no key name can be attached to them.
 - Values shorter than 8 characters (the existing literal-layer floor).
-- SQLite session stores: cursor's `~/.cursor/chats/*/*/store.db` and
-  OpenCode's `~/.local/share/opencode/opencode.db` (with its WAL). Both are
-  live databases on shared mounts; rewriting rows under a running writer is
-  its own design. This narrows the guarantee in section 2 to text
-  transcripts. The SQLite stores get a follow-up ticket, filed when this spec
-  is accepted, so the gap is visible on the board rather than implied here.
-  Cursor's `prompt_history.json` and `meta.json` siblings are in scope.
+- SQLite session stores (cursor's `store.db`, OpenCode's `opencode.db`)
+  were out of scope for this spec; they are covered by
+  `2026-09-07-redact-sessions-sqlite-design.md` (AICODINGBASESETUP-16).
+  Cursor's `prompt_history.json` and `meta.json` siblings are in scope here.
 
 ## 3. Design
 
@@ -86,7 +83,7 @@ One array near the top of the script, so a new harness is one added line:
 | Claude Code, codex | `~/.claude/history.jsonl`, `~/.codex/history.jsonl` | the prompt histories, single files, rewritten in place |
 | cursor | `~/.cursor/projects/` | `*/agent-transcripts/**/*.jsonl`, the full conversation transcripts (found by codex's PR review; the chats dir alone holds only metadata) |
 | cursor | `~/.cursor/chats/` | `**/prompt_history.json`, `**/meta.json` |
-| OpenCode | `~/.local/share/opencode/` | none in this spec: the store is SQLite (non-goals). Listed so the gap is visible in the code, not only in the doc |
+| cursor, OpenCode | `~/.cursor/chats/`, `~/.cursor/acp-sessions/`, `~/.local/share/opencode/opencode.db` | `**/store.db` and the single OpenCode database, write mode `sqlite`; see the sqlite spec |
 
 All four roots are host bind mounts shared by every devpod container on the
 host (`devcontainer.json`, `mounts`). That fact drives sections 3.4 to 3.6:
