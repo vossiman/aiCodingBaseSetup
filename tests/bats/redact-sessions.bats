@@ -134,3 +134,88 @@ EOF
   grep -q '^abcdefg and \[REDACTED:B\] and ' "$f"
   grep -q "$b" "$f"
 }
+
+@test "sweep: quiet file scrubbed, fresh file deferred, then scrubbed once quiet" {
+  local q="$HOME/.claude/projects/-p/s1.jsonl" fr="$HOME/.codex/sessions/2026/09/07/r.jsonl"
+  printf '{"text":"%s"}\n' "$V1" > "$q"; old "$q"
+  printf '{"text":"%s"}\n' "$V2" > "$fr"
+  "$RS" --sweep
+  [[ "$(cat "$q")" != *"$V1"* ]]
+  grep -q "$V2" "$fr"
+  grep -qx "$fr" "$STATE/deferred"
+  old "$fr"
+  "$RS" --sweep
+  [[ "$(cat "$fr")" != *"$V2"* ]]
+  if grep -qx "$fr" "$STATE/deferred" 2>/dev/null; then false; fi
+}
+
+@test "sweep: --now ignores the quiet period" {
+  local fr="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"%s"}\n' "$V1" > "$fr"
+  "$RS" --now "$fr"
+  [[ "$(cat "$fr")" != *"$V1"* ]]
+}
+
+@test "sweep: covers every root including cursor json and subagents, not sqlite" {
+  local a="$HOME/.claude/projects/-p/s1/subagents/x.jsonl"
+  local b="$HOME/.codex/sessions/2026/09/07/r.jsonl"
+  local c="$HOME/.cursor/chats/w/c/prompt_history.json"
+  local d="$HOME/.cursor/chats/w/c/meta.json"
+  local e="$HOME/.cursor/chats/w/c/store.db"
+  for f in "$a" "$b" "$c" "$d" "$e"; do printf '%s\n' "$V1" > "$f"; old "$f"; done
+  "$RS" --sweep
+  for f in "$a" "$b" "$c" "$d"; do [[ "$(cat "$f")" != *"$V1"* ]]; done
+  grep -q "$V1" "$e"
+}
+
+@test "sweep stamp: second sweep with nothing newer inspects nothing" {
+  local q="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"clean"}\n' > "$q"; old "$q"
+  "$RS" --sweep
+  local n1; n1="$(grep -c 'sweep inspected' "$STATE/log")"
+  "$RS" --sweep
+  grep -q 'sweep inspected=0 ' "$STATE/log"
+  [ "$(grep -c 'sweep inspected' "$STATE/log")" -eq $((n1 + 1)) ]
+}
+
+@test "sweep: a deferred file is inspected even when older than the stamp" {
+  local fr="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"%s"}\n' "$V1" > "$fr"
+  REDACT_QUIET_SECONDS=3600 "$RS" --sweep
+  grep -qx "$fr" "$STATE/deferred"
+  REDACT_QUIET_SECONDS=0 "$RS" --sweep
+  [[ "$(cat "$fr")" != *"$V1"* ]]
+}
+
+@test "sweep: two parallel sweeps produce one scrub and no corruption" {
+  local q="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"%s"}\n{"text":"tail"}\n' "$V1" > "$q"; old "$q"
+  "$RS" --sweep & "$RS" --sweep & wait
+  [ "$(wc -l < "$q")" -eq 2 ]
+  grep -q '"text":"tail"' "$q"
+  [ "$(grep -c 'key=OPENROUTER_API_KEY' "$STATE/log")" -eq 1 ]
+  [ "$(grep -cx 'OPENROUTER_API_KEY' "$STATE/pending")" -eq 1 ]
+}
+
+@test "--ack removes exactly that key" {
+  mkdir -p "$STATE"; printf 'A\nB\n' > "$STATE/pending"
+  "$RS" --ack A
+  [ "$(cat "$STATE/pending")" = "B" ]
+  "$RS" --ack ZZZ
+  [ "$(cat "$STATE/pending")" = "B" ]
+}
+
+@test "sweep on an empty HOME is a silent no-op with exit 0" {
+  rm -rf "$HOME/.claude/projects" "$HOME/.codex" "$HOME/.cursor"
+  run --separate-stderr "$RS" --sweep
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ -z "$stderr" ]
+}
+
+@test "usage errors exit 2 without touching state" {
+  run "$RS"; [ "$status" -eq 2 ]
+  run "$RS" --bogus; [ "$status" -eq 2 ]
+  run "$RS" --now; [ "$status" -eq 2 ]
+  [ ! -e "$STATE/log" ]
+}

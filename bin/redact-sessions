@@ -81,29 +81,42 @@ marker_counts() {
     | sed 's/^\[REDACTED:\(.*\)\]$/\1/' | sort | uniq -c | awk '{print $2, $1}'
 }
 
+# _swap <file> <tmp> <sig1>: 0 swapped, 1 refused (file changed), 2 error.
+# Runs under the state lock. Removes <tmp> unless it was swapped in.
+_swap() {
+  local f="$1" tmp="$2" sig1="$3" sig2
+  sig2="$(stat -c '%i %s %Y' "$f")" || { rm -f "$tmp"; return 2; }
+  if [ "$sig1" != "$sig2" ]; then rm -f "$tmp"; return 1; fi
+  mv -f "$tmp" "$f" || { rm -f "$tmp"; return 2; }
+  return 0
+}
+
 # scrub_one <file>: 0 when the file is clean or was rewritten; 1 when it
 # could not be handled (swap refused twice, unreadable, unwritable). Never
 # touches a clean file.
 scrub_one() {
-  local f="$1" attempt tmp before after sig1 sig2 sess key n prev
+  local f="$1" attempt tmp before after sig1 sess key n prev
   [ -n "$RULES" ] || return 0
   [ -f "$f" ] && [ -r "$f" ] && [ -w "$f" ] || return 1
   for attempt in 1 2; do
-    sig1="$(stat -c '%s %Y' "$f")" || return 1
+    sig1="$(stat -c '%i %s %Y' "$f")" || return 1
     tmp="$(mktemp "$(dirname "$f")/.redact-sessions.XXXXXX")" || return 1
     if ! sed -E -f <(printf '%s' "$RULES") "$f" > "$tmp"; then rm -f "$tmp"; return 1; fi
     if cmp -s "$f" "$tmp"; then rm -f "$tmp"; return 0; fi
     chmod --reference="$f" "$tmp" 2>/dev/null || true
     [ -n "${REDACT_SESSIONS_RACE_HOOK:-}" ] && "$REDACT_SESSIONS_RACE_HOOK" "$f"
-    sig2="$(stat -c '%s %Y' "$f")" || { rm -f "$tmp"; return 1; }
-    if [ "$sig1" != "$sig2" ]; then
-      rm -f "$tmp"
-      log "swap refused file=$f attempt=$attempt"
-      continue
-    fi
     before="$(marker_counts "$f")"
     after="$(marker_counts "$tmp")"
-    if ! mv -f "$tmp" "$f"; then rm -f "$tmp"; return 1; fi
+    # The final stat and the rename happen under the state lock so two
+    # sweeps (from two containers, say) cannot both pass the check: the
+    # loser sees the winner's rename as a changed signature and retries
+    # against the already-clean file.
+    locked _swap "$f" "$tmp" "$sig1"
+    case $? in
+      0) ;;
+      1) log "swap refused file=$f attempt=$attempt"; continue ;;
+      *) return 1 ;;
+    esac
     sess="$(session_of "$f")"
     # Report the delta: markers already in the file are old news.
     while read -r key n; do
@@ -119,8 +132,55 @@ scrub_one() {
   return 1
 }
 
-sweep() { echo "redact-sessions: --sweep not implemented" >&2; exit 2; }
-ack() { echo "redact-sessions: --ack not implemented" >&2; exit 2; }
+# candidates: files newer than the stamp under every root, plus the deferred
+# set. One absolute path per line; the caller deduplicates.
+candidates() {
+  local entry root pat
+  for entry in "${ROOTS[@]}"; do
+    root="${entry%%|*}"; pat="${entry#*|}"
+    [ -n "$pat" ] && [ -d "$root" ] || continue
+    if [ -e "$STATE/stamp" ]; then
+      find "$root" -type f -name "$pat" -newer "$STATE/stamp" 2>/dev/null
+    else
+      find "$root" -type f -name "$pat" 2>/dev/null
+    fi
+  done
+  [ -f "$STATE/deferred" ] && cat "$STATE/deferred"
+  return 0
+}
+
+sweep() {
+  local start f age now inspected=0 done=0 deferred=0 list
+  start="$(date +%s)"
+  load_rules || exit 3
+  mkdir -p "$STATE" 2>/dev/null || exit 0
+  list="$(candidates | sort -u)"
+  : > "$STATE/deferred.next.$$"
+  now="$(date +%s)"
+  while IFS= read -r f; do
+    [ -n "$f" ] && [ -f "$f" ] || continue
+    inspected=$(( inspected + 1 ))
+    age=$(( now - $(stat -c '%Y' "$f" 2>/dev/null || echo "$now") ))
+    if [ "$age" -lt "$QUIET" ]; then
+      printf '%s\n' "$f" >> "$STATE/deferred.next.$$"; deferred=$(( deferred + 1 )); continue
+    fi
+    if scrub_one "$f"; then done=$(( done + 1 ))
+    else printf '%s\n' "$f" >> "$STATE/deferred.next.$$"; deferred=$(( deferred + 1 )); fi
+  done <<< "$list"
+  mv -f "$STATE/deferred.next.$$" "$STATE/deferred"
+  # find -newer compares whole seconds; back the stamp off by one so a file
+  # written in the same second as this sweep started is seen next time.
+  touch -d "@$(( start - 1 ))" "$STATE/stamp" 2>/dev/null || touch "$STATE/stamp"
+  log "sweep inspected=$inspected done=$done deferred=$deferred container=$HOST"
+  exit 0
+}
+
+_ack() {
+  [ -f "$STATE/pending" ] || return 0
+  grep -vx "$1" "$STATE/pending" > "$STATE/pending.next" || true
+  mv -f "$STATE/pending.next" "$STATE/pending"
+}
+ack() { locked _ack "$1"; exit 0; }
 
 usage() { sed -n '2,8p' "$_rs_self" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
