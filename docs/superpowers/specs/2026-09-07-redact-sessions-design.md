@@ -220,11 +220,13 @@ a harness and codex's short SessionEnd budget is never an issue.
 **Sweep bookkeeping.** The sweep keeps a stamp `redact-sessions.stamp` in
 the shared state dir (3.6) and inspects files with mtime newer than the
 stamp. The stamp only means "inspected under the rules of that time", so
-next to it lives a digest of the rendered rule set, salted with the
-machine's `secrets-check` salt and kept per host name (the salt is
-container-local); when the secrets file
-changes (a key added or rotated) the digest differs and the next sweep
-rescans everything. With no secrets file there are no rules, and the sweep
+next to it lives a digest of the rendered rule set and of the roots table,
+salted with the machine's `secrets-check` salt and kept per host name (the
+salt is container-local); when the secrets file changes (a key added or
+rotated) or a release adds a root, the digest differs and the next sweep
+rescans everything. Without the roots in the digest, files under a new root
+sat behind the stamp forever (found deploying the sqlite roots,
+AICODINGBASESETUP-23). With no secrets file there are no rules, and the sweep
 neither scrubs nor advances the stamp, so a file that appears later still
 sees every old transcript. Files it skips (quiet period not reached, swap failed twice) go into
 `redact-sessions.deferred`, one path per line, and the next sweep inspects

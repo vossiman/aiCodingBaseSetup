@@ -28,7 +28,7 @@
 #   pending   key names awaiting --ack, or SECRETS_FILE_UNREADABLE
 #   deferred  files skipped this sweep (quiet period, swap refused twice)
 #   stamp     mtime watermark for --sweep
-#   rules.fp.<host>  salted digest of the rule set the stamp was taken under
+#   rules.fp.<host>  salted digest of the rule set and roots the stamp was taken under
 #
 # Exit: 0 ok, 2 usage, 3 secrets file unreadable or partially parsed (nothing
 # touched). Never prints a secret value. The secrets file is only ever READ.
@@ -118,7 +118,11 @@ fingerprint_rules() {
     salt="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
     ( umask 077; printf '%s' "$salt" > "$SALT_FILE" ) 2>/dev/null
   fi
-  printf '%s%s' "$salt" "$RULES" | sha256sum | cut -c1-16
+  # The roots are part of the fingerprint: a root added in a new release
+  # must make every old file a candidate again, exactly like a rotated key,
+  # or the stores under the new root sit behind the stamp forever (found
+  # deploying the sqlite roots, AICODINGBASESETUP-23).
+  printf '%s%s%s' "$salt" "$RULES" "${ROOTS[*]}" | sha256sum | cut -c1-16
 }
 
 # Builds the sed script once per run. Sets RULES; returns 3 on refusal.
@@ -294,7 +298,7 @@ sweep() {
   fp="$(fingerprint_rules)"
   if [ "$(cat "$STATE/rules.fp.$HOST" 2>/dev/null)" != "$fp" ]; then
     rm -f "$STATE/stamp"
-    log "rules changed: full rescan"
+    log "rules changed: full rescan (rule set or roots differ from the stamp)"
   fi
   list="$(candidates | sort -u)"
   : > "$STATE/deferred.next.$$"
