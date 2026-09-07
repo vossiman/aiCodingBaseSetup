@@ -500,6 +500,7 @@ _sync_reconcile() {
     printf 'Apply? [y/N] '
     local answer
     read -r answer
+    [ -t 0 ] || echo
     case "$answer" in
       y|Y|yes) ;;
       *) echo "Aborted."; return 0 ;;
@@ -519,25 +520,35 @@ _sync_reconcile() {
     # interactive / yes / first: full reconcile.
     buckets="restore new_file new_file_existing will_update will_update_owned drifted_but_aligned drifted_and_updating merge to_remove"
   fi
+  # The receipt's diffs must be taken before apply: afterwards dest == source.
+  local -A DIFFS=()
+  local bucket
+  if [[ "$mode" == interactive || "$mode" == yes ]]; then
+    for d in "${!BUCKETS[@]}"; do
+      bucket=${BUCKETS[$d]}
+      case " $buckets " in *" $bucket "*) ;; *) continue ;; esac
+      DIFFS[$d]=$(_sync_diff_for_bucket "$d" "$bucket")
+    done
+  fi
+
   apply_managed_buckets "$buckets"
 
   # Per-bucket announcements (interactive output, not deploy behavior). Only
-  # report buckets that were actually in the applied set for this mode.
-  local bucket
-  for d in "${!BUCKETS[@]}"; do
+  # report buckets that were actually in the applied set for this mode. Boot
+  # and first-run output goes to logs nobody reads, so those stay one-liners.
+  while IFS= read -r d; do
     bucket=${BUCKETS[$d]}
     case " $buckets " in *" $bucket "*) ;; *) continue ;; esac
     case "$bucket" in
-      restore)              echo "      restored: $d" ;;
-      new_file)             echo "      new: $d" ;;
-      new_file_existing)    echo "      new (existing file backed up): $d" ;;
-      will_update)          echo "      updated: $d" ;;
-      will_update_owned)    echo "      updated: $d" ;;
-      drifted_and_updating) echo "      updated (with backup): $d" ;;
-      merge)                echo "      merged: $d" ;;
-      to_remove)            echo "      removed: $d" ;;
+      restore|new_file|new_file_existing|will_update|will_update_owned|drifted_and_updating|merge|to_remove) ;;
+      *) continue ;;
     esac
-  done
+    if [[ "$mode" == interactive || "$mode" == yes ]]; then
+      _sync_change_report "$(_sync_bucket_verb "$bucket")" "$d" "${DIFFS[$d]:-}"
+    else
+      echo "      $(_sync_bucket_verb "$bucket"): $d"
+    fi
+  done < <(printf '%s\n' "${!BUCKETS[@]}" | sort)
 
   local origin
   origin=$(blueprint_origin "$AICODING_BLUEPRINT_CLONE")
@@ -550,7 +561,99 @@ _sync_reconcile() {
   return 0
 }
 
-# Interactive summary: tally + inline `diff -u` per drifted_and_updating file.
+# --- Change report ----------------------------------------------------------
+# One block per file: a double ruler, "verb: path" with the verb in the
+# action's colour, the ruler again, then the diff indented. Colour only when
+# stdout is a terminal (FORCE_COLOR=1 overrides, NO_COLOR wins), so boot logs
+# and captured output stay plain.
+_sync_color_on() {
+  [ -z "${NO_COLOR:-}" ] || return 1
+  [ -n "${FORCE_COLOR:-}" ] || [ -t 1 ]
+}
+
+_sync_verb_color() {
+  case "$1" in
+    new*|restored*|merged*) printf '32' ;;
+    removed*)               printf '31' ;;
+    *)                      printf '33' ;;
+  esac
+}
+
+# _sync_change_report <verb> <dest> <diff-body>
+_sync_change_report() {
+  local verb=$1 dest=$2 body=$3 rule i=''
+  for ((i=0; i<72; i++)); do rule+='═'; done
+  if _sync_color_on; then
+    printf '\e[36m%s\e[0m\n' "$rule"
+    printf ' \e[1;%sm%s\e[0m: %s\n' "$(_sync_verb_color "$verb")" "$verb" "$dest"
+    printf '\e[36m%s\e[0m\n' "$rule"
+  else
+    printf '%s\n %s: %s\n%s\n' "$rule" "$verb" "$dest" "$rule"
+  fi
+  [ -n "$body" ] && printf '%s\n' "$body" | sed 's/^/    /'
+  echo
+}
+
+# _sync_diff_body <dest> <src> — hunks of dest -> src, src rendered exactly as
+# deploy would write it (so {{HOME}} and friends never show as noise), then
+# every secrets-file value scrubbed: a config file's on-disk copy carries the
+# substituted credentials, and this output lands in transcripts.
+_sync_diff_body() {
+  local dest=$1 src=$2 rendered color=never rules
+  [ -f "$dest" ] && [ -f "$src" ] || return 0
+  rendered=$(mktemp)
+  if command -v _render_managed_source >/dev/null 2>&1; then
+    _render_managed_source "$src" "$dest" "$rendered" 2>/dev/null || cp "$src" "$rendered"
+  else
+    cp "$src" "$rendered"
+  fi
+  _sync_color_on && color=always
+  rules=''
+  if [ -f "$AICODING_BLUEPRINT_CLONE/lib/redact-literal.sh" ]; then
+    # shellcheck source=redact-literal.sh
+    . "$AICODING_BLUEPRINT_CLONE/lib/redact-literal.sh"
+    if ! rules=$(redact_literal_rules transcript); then
+      # Fail closed: a secrets file that cannot be turned into rules means
+      # the diff cannot be scrubbed, so it is not shown at all.
+      rm -f "$rendered"
+      echo "(diff withheld: secrets file present but unreadable, so it cannot be scrubbed)"
+      return 0
+    fi
+  fi
+  git -c color.diff.new=green -c color.diff.old=red -c color.diff.frag=cyan \
+    diff --no-index --color="$color" -- "$dest" "$rendered" 2>/dev/null \
+    | tail -n +5 | sed -E -f <(printf '%s' "$rules")
+  rm -f "$rendered"
+  return 0
+}
+
+# _sync_diff_for_bucket <dest> <bucket> — the diff a bucket's report shows;
+# empty for buckets with nothing to compare (new, restore, remove) and for
+# marker blocks and merges, whose on-disk shape is not the source's.
+_sync_diff_for_bucket() {
+  local dest=$1 bucket=$2
+  case "$bucket" in
+    will_update|will_update_owned|drifted_and_updating|new_file_existing) ;;
+    *) return 0 ;;
+  esac
+  [ "${FILE_MODE[$dest]:-overwrite}" != marker_block ] || return 0
+  _sync_diff_body "$dest" "$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]}"
+}
+
+_sync_bucket_verb() {
+  case "$1" in
+    restore)              printf 'restored' ;;
+    new_file)             printf 'new' ;;
+    new_file_existing)    printf 'new (existing file backed up)' ;;
+    will_update)          printf 'updated' ;;
+    will_update_owned)    printf 'updated' ;;
+    drifted_and_updating) printf 'updated (with backup)' ;;
+    merge)                printf 'merged' ;;
+    to_remove)            printf 'removed' ;;
+  esac
+}
+
+# Interactive summary: tally + a change report per actionable file.
 # Reads the COUNT / BUCKETS / FILE_MODE / FILE_SOURCE state from the caller.
 _sync_print_summary() {
   echo
@@ -582,11 +685,6 @@ _sync_print_summary() {
     for dest in "${!BUCKETS[@]}"; do
       [[ ${BUCKETS[$dest]} != drifted_and_updating ]] && continue
       echo "      $dest"
-      if [[ "${FILE_MODE[$dest]:-overwrite}" != "marker_block" ]]; then
-        local src="$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]}"
-        diff -u --label "your version" --label "blueprint version" "$dest" "$src" 2>/dev/null \
-          | sed 's/^/        /' || true
-      fi
     done
   fi
 
@@ -619,6 +717,19 @@ _sync_print_summary() {
   fi
 
   echo
+  # One report per file that has something to read before "Apply?". Files
+  # without a diff (new, restored, removed, merged) are covered by the tally.
+  local body verb
+  while IFS= read -r dest; do
+    body=$(_sync_diff_for_bucket "$dest" "${BUCKETS[$dest]}")
+    [ -n "$body" ] || continue
+    case "${BUCKETS[$dest]}" in
+      drifted_and_updating) verb="you edited, blueprint changed" ;;
+      new_file_existing)    verb="will replace (backup kept)" ;;
+      *)                    verb="will update" ;;
+    esac
+    _sync_change_report "$verb" "$dest" "$body"
+  done < <(printf '%s\n' "${!BUCKETS[@]}" | sort)
 }
 
 # Codex has no self-update subcommand; a refresh means re-running the
