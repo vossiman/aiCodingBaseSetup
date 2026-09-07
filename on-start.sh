@@ -85,4 +85,10 @@ fi
 if [ -n "$sync_cmd" ]; then
   "$sync_cmd" --boot || echo "WARN: aicoding-sync failed (non-fatal)" >&2
 fi
+
+# Boot sweep: scrub transcripts left by crashed sessions or other containers.
+# Fail-open and backgrounded; the sync above has just refreshed the symlink.
+if command -v redact-sessions >/dev/null 2>&1; then
+  nohup timeout 300 redact-sessions --sweep >/dev/null 2>&1 &
+fi
 exit 0

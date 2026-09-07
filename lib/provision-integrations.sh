@@ -128,6 +128,22 @@ install_redact_transcript_symlink() {
   ok "redact-transcript installed at ~/.local/bin/redact-transcript -> $src"
 }
 
+# --- transcript scrubber ---
+# redact-sessions sweeps persisted transcripts for secrets-file values;
+# codex-turn-done is codex's notify target that triggers it. Symlinked so
+# hooks and the codex config find one implementation.
+install_redact_sessions_symlinks() {
+  header "transcript scrubber"
+  local name src
+  for name in redact-sessions codex-turn-done; do
+    src="$SCRIPT_DIR/bin/$name"
+    [[ -f "$src" ]] || { warn "bin/$name not found, skipping"; continue; }
+    mkdir -p "$HOME/.local/bin"; chmod +x "$src"
+    ln -sf "$src" "$HOME/.local/bin/$name"
+    ok "$name installed at ~/.local/bin/$name -> $src"
+  done
+}
+
 # --- memory-lanes measurement client ---
 # Starts, watches and cancels memory-lanes measurement runs on vossisrv over a
 # command=-restricted SSH key in ~/.aicodingsetup. The key path is denied to

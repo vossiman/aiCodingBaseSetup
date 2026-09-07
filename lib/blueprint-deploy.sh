@@ -558,6 +558,8 @@ $HOME/.claude/hooks/agent-waiting.sh|overwrite|configs/claude/hooks/agent-waitin
 $HOME/.claude/hooks/memory-hint.sh|overwrite|configs/claude/hooks/memory-hint.sh
 $HOME/.claude/hooks/opus-verbosity.sh|overwrite|configs/claude/hooks/opus-verbosity.sh
 $HOME/.claude/hooks/fable-guidance.sh|overwrite|configs/claude/hooks/fable-guidance.sh
+$HOME/.claude/hooks/redact-sessions-hook.sh|overwrite|configs/claude/hooks/redact-sessions-hook.sh
+$HOME/.claude/hooks/redact-sessions-pending.sh|overwrite|configs/claude/hooks/redact-sessions-pending.sh
 $HOME/.claude/agents/llmwiki-distiller.md|overwrite|configs/claude/agents/llmwiki-distiller.md
 $HOME/.claude/CLAUDE.md|overwrite|configs/claude/CLAUDE.md
 $HOME/.bashrc.d/aicoding-env.sh|overwrite|configs/bash/env.sh
@@ -570,6 +572,7 @@ $HOME/.local/bin/secrets-check|overwrite|configs/secrets/secrets-check
 $HOME/.codex/config.toml|overwrite|configs/codex/config.toml
 $HOME/.codex/AGENTS.md|overwrite|configs/codex/AGENTS.md
 $HOME/.cursor/skills/aicoding-estate/SKILL.md|overwrite|configs/cursor/skills/aicoding-estate/SKILL.md
+$HOME/.cursor/hooks.json|overwrite|configs/cursor/hooks.json
 EOF
   if [[ "$profile" == host ]]; then
     echo "$HOME/.bashrc.d/aicoding-boot-sync.sh|overwrite|configs/bash/boot-sync.sh"

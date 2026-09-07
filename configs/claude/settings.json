@@ -64,6 +64,12 @@
             "command": "bash \"{{HOME}}/.claude/hooks/llmwiki-distill.sh\"",
             "async": true,
             "timeout": 600
+          },
+          {
+            "type": "command",
+            "command": "bash \"{{HOME}}/.claude/hooks/redact-sessions-hook.sh\"",
+            "async": true,
+            "timeout": 300
           }
         ]
       }
@@ -89,6 +95,15 @@
             "command": "bash \"{{HOME}}/.claude/hooks/check-archived-docs.sh\""
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{{HOME}}/.claude/hooks/redact-sessions-pending.sh\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -108,6 +123,17 @@
             "type": "command",
             "command": "bash \"{{HOME}}/.claude/hooks/fable-guidance.sh\"",
             "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{{HOME}}/.claude/hooks/redact-sessions-hook.sh\"",
+            "timeout": 90
           }
         ]
       }
