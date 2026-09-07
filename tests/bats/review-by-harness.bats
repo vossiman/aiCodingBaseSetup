@@ -23,11 +23,14 @@ setup() {
 #!/usr/bin/env bash
 set -euo pipefail
 verb="$1"; wt="$2"
+[ -n "${STUB_FAIL:-}" ] && { echo "stub failure" >&2; exit 1; }
 case "$verb" in
   review) out="$4"; cp "$wt/AGENTS.md" "$out/agents-seen-review.md" 2>/dev/null || : > "$out/agents-seen-review.md"
           echo "stub findings" > "$out/review.md" ;;
   fix)    out="$3"; cp "$wt/AGENTS.md" "$out/agents-seen-fix.md" 2>/dev/null || : > "$out/agents-seen-fix.md"
+          cp "$wt/AGENTS.override.md" "$out/override-seen-fix.md" 2>/dev/null || true
           echo "edited by stub" >> "$wt/src.txt"
+          [ -n "${STUB_EDIT_AGENTS:-}" ] && echo "also run the linter" >> "$wt/AGENTS.md"
           echo "stub fix report" > "$out/fix.md" ;;
 esac
 STUB
@@ -48,7 +51,7 @@ GH
   export PATH="$TMPDIR/bin:$PATH"
 
   # Bare origin with main and a PR head at refs/pull/1/head; REPO is a clone.
-  git init -q --bare "$TMPDIR/origin.git"
+  git init -q --bare -b main "$TMPDIR/origin.git"
   git init -q -b main "$TMPDIR/seed"
   ( cd "$TMPDIR/seed"
     git -c user.name=t -c user.email=t@t config user.name t; git config user.email t@t
@@ -114,4 +117,51 @@ add_project_agents() {
   grep -q 'kanban-post' "$d/fix.md"
   grep -q 'kanban-post' "$d/agents-review.md"
   grep -q 'kanban-post' "$d/agents-fix.md"
+}
+
+@test "a tracked AGENTS.md symlink is replaced for the run and put back; its target is untouched" {
+  ( cd "$TMPDIR/seed"
+    printf '# Claude rules\nrun the tests\n' > CLAUDE.md; ln -s CLAUDE.md AGENTS.md
+    git add CLAUDE.md AGENTS.md; git commit -qm link; git push -q -f origin HEAD:refs/pull/1/head )
+  run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+  [ "$status" -eq 0 ]
+  grep -q 'Review session rules' "$WT/.review-round/agents-seen-review.md"
+  grep -q 'run the tests' "$WT/.review-round/agents-seen-review.md"
+  [ -L "$WT/AGENTS.md" ]
+  [ "$(readlink "$WT/AGENTS.md")" = "CLAUDE.md" ]
+  [ "$(cat "$WT/CLAUDE.md")" = "$(printf '# Claude rules\nrun the tests')" ]
+  git -C "$WT" diff --quiet HEAD
+}
+
+@test "AGENTS.override.md, which codex prefers, gets the rules too and is restored" {
+  ( cd "$TMPDIR/seed"
+    printf 'override rules\n' > AGENTS.override.md; git add AGENTS.override.md; git commit -qm override
+    git push -q -f origin HEAD:refs/pull/1/head )
+  printf 'REVIEW_SANDBOX=-s\nREVIEW_APPROVAL=--x\n' > "$TMPDIR/cfg.env"
+  REVIEW_CONFIG="$TMPDIR/cfg.env" run "$SKILL/run.sh" 1 "$REPO" --harness stub
+  [ "$status" -eq 0 ]
+  grep -q 'Fix session rules' "$WT/.review-round/override-seen-fix.md"
+  grep -q 'override rules' "$WT/.review-round/override-seen-fix.md"
+  [ "$(cat "$WT/AGENTS.override.md")" = "override rules" ]
+  [ ! -e "$WT/AGENTS.md" ]
+  git -C "$WT" diff --quiet HEAD -- AGENTS.override.md
+}
+
+@test "an edit the fix pass makes to AGENTS.md survives restore and shows in the handback" {
+  add_project_agents
+  printf 'REVIEW_SANDBOX=-s\nREVIEW_APPROVAL=--x\n' > "$TMPDIR/cfg.env"
+  STUB_EDIT_AGENTS=1 REVIEW_CONFIG="$TMPDIR/cfg.env" run "$SKILL/run.sh" 1 "$REPO" --harness stub
+  [ "$status" -eq 0 ]
+  grep -q 'also run the linter' "$WT/AGENTS.md"
+  if grep -q 'review-by-harness' "$WT/AGENTS.md"; then false; fi
+  [[ "$output" == *"+also run the linter"* ]]
+  if [[ "$output" == *"review-by-harness:begin"* ]]; then false; fi
+}
+
+@test "a failing adapter still leaves the worktree without the rules" {
+  add_project_agents
+  STUB_FAIL=1 run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+  [ "$status" -ne 0 ]
+  [ "$(cat "$WT/AGENTS.md")" = "$(printf '# Project rules\nrun the tests')" ]
+  git -C "$WT" diff --quiet HEAD
 }

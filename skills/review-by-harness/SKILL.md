@@ -161,8 +161,14 @@ aiCodingBaseSetup#139 one review-only pass filed four. So `run.sh` prepends
 `prompts/agents-review.md` (no writes, no tickets, no commits) to the
 worktree's `AGENTS.md` before the review, swaps in `prompts/agents-fix.md`
 (edits allowed, still no tickets, no commits) before the fix pass, keeps the
-project's own `AGENTS.md` content underneath, and restores the file before
-the handback diff. A harness can still ignore instructions; the handback is
+project's own content underneath, and strips exactly its own marker-delimited
+block before the handback diff, so an edit the fix pass made to that file
+survives. `AGENTS.override.md` gets the same treatment when the repo has one
+(codex prefers it over `AGENTS.md`). An `AGENTS.md` that is a symlink is
+replaced by a regular file for the run and put back from git afterwards, so
+nothing is written through the link. Restore also runs from an EXIT trap, so
+a failing adapter leaves no rules behind. First live run of this, on its own
+PR (#140): the board's ticket count was the same before and after. A harness can still ignore instructions; the handback is
 what catches that, and `kanban-post --list-tickets` after a run is the check
 for the board.
 

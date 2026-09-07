@@ -137,33 +137,65 @@ grep -qxF '.review-round/' "$EXCLUDE" 2>/dev/null \
 
 START_HEAD=$(git -C "$WT" rev-parse HEAD)
 
-# Session rules for the harness, as the worktree's AGENTS.md. Every harness
-# reads a repo-root AGENTS.md ahead of its global instructions, and the global
-# ones tell agents to file work they find on the board; a reviewer that obeys
-# that files tickets for findings the author is about to fix (seen on
-# aiCodingBaseSetup#139: four tickets in one review pass). The block is
-# prepended so a project's own AGENTS.md still applies, and restored before
-# the handback so it never shows up as a change the harness made.
-AGENTS="$WT/AGENTS.md"
-AGENTS_ORIG=""
-if git -C "$WT" cat-file -e "HEAD:AGENTS.md" 2>/dev/null; then AGENTS_ORIG=tracked
-elif [ -e "$AGENTS" ]; then AGENTS_ORIG=untracked; cp "$AGENTS" "$OUT/AGENTS.md.orig"
-fi
+# Session rules for the harness, prepended to the worktree's instruction
+# files. Every harness reads a repo-root AGENTS.md ahead of its global
+# instructions (codex prefers AGENTS.override.md when one exists), and the
+# global ones tell agents to file work they find on the board; a reviewer
+# that obeys that files tickets for findings the author is about to fix
+# (seen on aiCodingBaseSetup#139: four tickets in one review pass).
+#
+# The block sits between markers so restore can strip exactly it and keep
+# any edit the fix pass legitimately made to the file underneath. A file
+# that is a symlink (AGENTS.md -> CLAUDE.md is common) is replaced by a
+# regular file for the run and put back from git, since writing through the
+# link would edit its target. Restore also runs from an EXIT trap, so a
+# failing adapter cannot leave the rules behind in the retained worktree.
+AGENTS_FILES=(AGENTS.md)
+[ -e "$WT/AGENTS.override.md" ] && AGENTS_FILES+=(AGENTS.override.md)
+RB_BEGIN='<!-- review-by-harness:begin -->'
+RB_END='<!-- review-by-harness:end -->'
+_agents_kind() {  # _agents_kind <name>: tracked | untracked | absent
+    if git -C "$WT" cat-file -e "HEAD:$1" 2>/dev/null; then echo tracked
+    elif [ -e "$WT/$1" ] || [ -L "$WT/$1" ]; then echo untracked
+    else echo absent; fi
+}
 install_agents() {  # install_agents <review|fix>
-    { cat "$SKILL_DIR/prompts/agents-$1.md"
-      case "$AGENTS_ORIG" in
-          tracked)   git -C "$WT" show "HEAD:AGENTS.md" ;;
-          untracked) cat "$OUT/AGENTS.md.orig" ;;
-      esac
-    } > "$AGENTS"
+    local f kind body
+    for f in "${AGENTS_FILES[@]}"; do
+        kind="$(_agents_kind "$f")"
+        [ -e "$OUT/$f.kind" ] || echo "$kind" > "$OUT/$f.kind"
+        body=""
+        if [ -L "$WT/$f" ]; then
+            [ -e "$OUT/$f.orig" ] || cp -P "$WT/$f" "$OUT/$f.orig"
+            body="$(cat "$WT/$f" 2>/dev/null || true)"
+            rm -f "$WT/$f"
+        elif [ -e "$WT/$f" ]; then
+            body="$(sed "/^$RB_BEGIN\$/,/^$RB_END\$/d" "$WT/$f")"
+        fi
+        { echo "$RB_BEGIN"; cat "$SKILL_DIR/prompts/agents-$1.md"; echo "$RB_END"
+          if [ -n "$body" ]; then printf '%s\n' "$body"; fi; } > "$WT/$f"
+    done
 }
 restore_agents() {
-    case "$AGENTS_ORIG" in
-        tracked)   git -C "$WT" checkout --quiet -- AGENTS.md ;;
-        untracked) cp "$OUT/AGENTS.md.orig" "$AGENTS" ;;
-        *)         rm -f "$AGENTS" ;;
-    esac
+    local f kind
+    for f in "${AGENTS_FILES[@]}"; do
+        kind="$(cat "$OUT/$f.kind" 2>/dev/null || echo absent)"
+        if [ -L "$OUT/$f.orig" ] || [ -e "$OUT/$f.orig" ]; then
+            # Was a symlink: put the link back, tracked from git, untracked from the copy.
+            rm -f "$WT/$f"
+            if [ "$kind" = tracked ]; then git -C "$WT" checkout --quiet -- "$f"
+            else cp -P "$OUT/$f.orig" "$WT/$f"; fi
+            continue
+        fi
+        [ -f "$WT/$f" ] || continue
+        sed -i "/^$RB_BEGIN\$/,/^$RB_END\$/d" "$WT/$f"
+        if [ "$kind" = absent ] && [ ! -s "$WT/$f" ]; then rm -f "$WT/$f"; continue; fi
+        # A harness that staged the file staged the rules too; unstage so the
+        # handback (diff against HEAD) shows the working copy, rules gone.
+        [ "$kind" = tracked ] && git -C "$WT" reset --quiet -- "$f" 2>/dev/null || true
+    done
 }
+trap restore_agents EXIT
 
 echo "### PR #$PR  $TITLE"
 echo "### $HEAD_REF -> $BASE  @ $(git -C "$WT" rev-parse --short HEAD)"
