@@ -16,6 +16,9 @@ setup() {
   STATE="$HOME/.claude/state/redact-sessions"
   unset REDACT_SESSIONS_STATE REDACT_QUIET_SECONDS REDACT_SESSIONS_RACE_HOOK
   export AICODING_SECRETS_FILE="$SECRETS"
+  export REDACT_SESSIONS_BIN="$RS" REDACT_SESSIONS_SYNC=1
+  HOOK="$BLUEPRINT_ROOT/configs/claude/hooks/redact-sessions-hook.sh"
+  PENDING="$BLUEPRINT_ROOT/configs/claude/hooks/redact-sessions-pending.sh"
   V1="deadbeefcafebabefeedface12345678"
   V2="quickbrownfoxjumpsoverlazydogs99"
   printf 'OPENROUTER_API_KEY=%s\nPOSTGRES_PASSWORD=%s\n' "$V1" "$V2" > "$SECRETS"
@@ -218,4 +221,64 @@ EOF
   run "$RS" --bogus; [ "$status" -eq 2 ]
   run "$RS" --now; [ "$status" -eq 2 ]
   [ ! -e "$STATE/log" ]
+}
+
+@test "hook: SessionEnd scrubs the named transcript now, then sweeps" {
+  local f="$HOME/.claude/projects/-p/s1.jsonl" g="$HOME/.claude/projects/-p/s2.jsonl"
+  printf '{"text":"%s"}\n' "$V1" > "$f"
+  printf '{"text":"%s"}\n' "$V2" > "$g"; old "$g"
+  run bash "$HOOK" <<< "$(jq -nc --arg t "$f" '{hook_event_name:"SessionEnd", transcript_path:$t, session_id:"s1"}')"
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$f")" != *"$V1"* ]]
+  [[ "$(cat "$g")" != *"$V2"* ]]
+}
+
+@test "hook: Stop sweeps only quiet files and exits 0" {
+  local f="$HOME/.claude/projects/-p/s1.jsonl" g="$HOME/.claude/projects/-p/s2.jsonl"
+  printf '{"text":"%s"}\n' "$V1" > "$f"
+  printf '{"text":"%s"}\n' "$V2" > "$g"; old "$g"
+  run bash "$HOOK" <<< '{"hook_event_name":"Stop","transcript_path":"'"$f"'"}'
+  [ "$status" -eq 0 ]
+  grep -q "$V1" "$f"
+  [[ "$(cat "$g")" != *"$V2"* ]]
+}
+
+@test "hook: no stdin and no binary still exits 0" {
+  run bash "$HOOK" < /dev/null
+  [ "$status" -eq 0 ]
+  REDACT_SESSIONS_BIN=/nonexistent run bash "$HOOK" < /dev/null
+  [ "$status" -eq 0 ]
+}
+
+@test "pending hook: prints keys as context and leaves the marker" {
+  mkdir -p "$STATE"; printf 'GH_TOKEN\nLOGFIRE_TOKEN\n' > "$STATE/pending"
+  run bash "$PENDING"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"GH_TOKEN"* ]]
+  [[ "$output" == *"LOGFIRE_TOKEN"* ]]
+  [[ "$output" == *"redact-sessions --ack"* ]]
+  [ "$(wc -l < "$STATE/pending")" -eq 2 ]
+}
+
+@test "pending hook: silent with no marker" {
+  run bash "$PENDING"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "pending hook: names the unreadable secrets file case" {
+  mkdir -p "$STATE"; printf 'SECRETS_FILE_UNREADABLE\n' > "$STATE/pending"
+  run bash "$PENDING"
+  [[ "$output" == *"secrets file"* ]]
+}
+
+@test "settings.json registers both hooks and the inventory ships them" {
+  local s="$BLUEPRINT_ROOT/configs/claude/settings.json"
+  jq -e '.hooks.Stop[].hooks[] | select(.command | test("redact-sessions-hook")) | .async == true' "$s"
+  jq -e '.hooks.SessionEnd[].hooks[] | select(.command | test("redact-sessions-hook"))' "$s"
+  jq -e '.hooks.SessionStart[].hooks[] | select(.command | test("redact-sessions-pending"))' "$s"
+  grep -q 'hooks/redact-sessions-hook.sh|overwrite|' "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  grep -q 'hooks/redact-sessions-pending.sh|overwrite|' "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  grep -q '"redact-sessions-hook.sh"' "$BLUEPRINT_ROOT/lib/provision-managed-files.sh"
+  grep -q '"redact-sessions-pending.sh"' "$BLUEPRINT_ROOT/lib/provision-managed-files.sh"
 }

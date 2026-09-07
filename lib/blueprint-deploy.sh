@@ -558,6 +558,8 @@ $HOME/.claude/hooks/agent-waiting.sh|overwrite|configs/claude/hooks/agent-waitin
 $HOME/.claude/hooks/memory-hint.sh|overwrite|configs/claude/hooks/memory-hint.sh
 $HOME/.claude/hooks/opus-verbosity.sh|overwrite|configs/claude/hooks/opus-verbosity.sh
 $HOME/.claude/hooks/fable-guidance.sh|overwrite|configs/claude/hooks/fable-guidance.sh
+$HOME/.claude/hooks/redact-sessions-hook.sh|overwrite|configs/claude/hooks/redact-sessions-hook.sh
+$HOME/.claude/hooks/redact-sessions-pending.sh|overwrite|configs/claude/hooks/redact-sessions-pending.sh
 $HOME/.claude/agents/llmwiki-distiller.md|overwrite|configs/claude/agents/llmwiki-distiller.md
 $HOME/.claude/CLAUDE.md|overwrite|configs/claude/CLAUDE.md
 $HOME/.bashrc.d/aicoding-env.sh|overwrite|configs/bash/env.sh
