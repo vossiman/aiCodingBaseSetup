@@ -1219,7 +1219,7 @@ install_redact_sessions_symlinks() {
   local name src
   for name in redact-sessions codex-turn-done; do
     src="$SCRIPT_DIR/bin/$name"
-    [[ -f "$src" ]] || { warn "bin/$name not found — skipping"; continue; }
+    [[ -f "$src" ]] || { warn "bin/$name not found, skipping"; continue; }
     mkdir -p "$HOME/.local/bin"; chmod +x "$src"
     ln -sf "$src" "$HOME/.local/bin/$name"
     ok "$name installed at ~/.local/bin/$name -> $src"
