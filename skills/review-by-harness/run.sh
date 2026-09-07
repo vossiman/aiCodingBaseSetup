@@ -137,6 +137,66 @@ grep -qxF '.review-round/' "$EXCLUDE" 2>/dev/null \
 
 START_HEAD=$(git -C "$WT" rev-parse HEAD)
 
+# Session rules for the harness, prepended to the worktree's instruction
+# files. Every harness reads a repo-root AGENTS.md ahead of its global
+# instructions (codex prefers AGENTS.override.md when one exists), and the
+# global ones tell agents to file work they find on the board; a reviewer
+# that obeys that files tickets for findings the author is about to fix
+# (seen on aiCodingBaseSetup#139: four tickets in one review pass).
+#
+# The block sits between markers so restore can strip exactly it and keep
+# any edit the fix pass legitimately made to the file underneath. A file
+# that is a symlink (AGENTS.md -> CLAUDE.md is common) is replaced by a
+# regular file for the run and put back from git, since writing through the
+# link would edit its target. Restore also runs from an EXIT trap, so a
+# failing adapter cannot leave the rules behind in the retained worktree.
+AGENTS_FILES=(AGENTS.md)
+[ -e "$WT/AGENTS.override.md" ] && AGENTS_FILES+=(AGENTS.override.md)
+RB_BEGIN='<!-- review-by-harness:begin -->'
+RB_END='<!-- review-by-harness:end -->'
+_agents_kind() {  # _agents_kind <name>: tracked | untracked | absent
+    if git -C "$WT" cat-file -e "HEAD:$1" 2>/dev/null; then echo tracked
+    elif [ -e "$WT/$1" ] || [ -L "$WT/$1" ]; then echo untracked
+    else echo absent; fi
+}
+install_agents() {  # install_agents <review|fix>
+    local f kind body
+    for f in "${AGENTS_FILES[@]}"; do
+        kind="$(_agents_kind "$f")"
+        [ -e "$OUT/$f.kind" ] || echo "$kind" > "$OUT/$f.kind"
+        body=""
+        if [ -L "$WT/$f" ]; then
+            [ -e "$OUT/$f.orig" ] || cp -P "$WT/$f" "$OUT/$f.orig"
+            body="$(cat "$WT/$f" 2>/dev/null || true)"
+            rm -f "$WT/$f"
+        elif [ -e "$WT/$f" ]; then
+            body="$(sed "/^$RB_BEGIN\$/,/^$RB_END\$/d" "$WT/$f")"
+        fi
+        { echo "$RB_BEGIN"; cat "$SKILL_DIR/prompts/agents-$1.md"; echo "$RB_END"
+          if [ -n "$body" ]; then printf '%s\n' "$body"; fi; } > "$WT/$f"
+    done
+}
+restore_agents() {
+    local f kind
+    for f in "${AGENTS_FILES[@]}"; do
+        kind="$(cat "$OUT/$f.kind" 2>/dev/null || echo absent)"
+        if [ -L "$OUT/$f.orig" ] || [ -e "$OUT/$f.orig" ]; then
+            # Was a symlink: put the link back, tracked from git, untracked from the copy.
+            rm -f "$WT/$f"
+            if [ "$kind" = tracked ]; then git -C "$WT" checkout --quiet -- "$f"
+            else cp -P "$OUT/$f.orig" "$WT/$f"; fi
+            continue
+        fi
+        [ -f "$WT/$f" ] || continue
+        sed -i "/^$RB_BEGIN\$/,/^$RB_END\$/d" "$WT/$f"
+        if [ "$kind" = absent ] && [ ! -s "$WT/$f" ]; then rm -f "$WT/$f"; continue; fi
+        # A harness that staged the file staged the rules too; unstage so the
+        # handback (diff against HEAD) shows the working copy, rules gone.
+        [ "$kind" = tracked ] && git -C "$WT" reset --quiet -- "$f" 2>/dev/null || true
+    done
+}
+trap restore_agents EXIT
+
 echo "### PR #$PR  $TITLE"
 echo "### $HEAD_REF -> $BASE  @ $(git -C "$WT" rev-parse --short HEAD)"
 echo "### harness: $HARNESS   worktree: $WT"
@@ -153,10 +213,13 @@ if git -C "$WT" diff --quiet "origin/$BASE...HEAD"; then
 fi
 
 echo "### phase A: review"
+install_agents review
 "$ADAPTER" review "$WT" "origin/$BASE" "$OUT" || {
     echo "!!! review failed"; tail -20 "$OUT/review.err" 2>/dev/null; exit 1; }
 echo "--- findings ---"
 cat "$OUT/review.md"
+
+restore_agents
 
 if [ "$REVIEW_ONLY" -eq 1 ]; then
     echo "### review-only: no fix pass, no changes made"
@@ -165,6 +228,7 @@ if [ "$REVIEW_ONLY" -eq 1 ]; then
 fi
 
 echo "### phase B: fix"
+install_agents fix
 "$ADAPTER" fix "$WT" "$OUT" || {
     echo "!!! fix failed"; tail -20 "$OUT/fix.err" 2>/dev/null
     echo "### (if this is a bubblewrap/uid-map error, see SKILL.md:"
@@ -183,6 +247,7 @@ cat "$OUT/fix.md"
 # commits despite being told not to would produce a handback that looks clean.
 # So: diff against HEAD (staged + unstaged), list untracked, and check whether
 # HEAD itself moved.
+restore_agents
 echo "### diff produced (verify this before trusting the report above)"
 git -C "$WT" --no-pager diff HEAD
 echo "### files touched"

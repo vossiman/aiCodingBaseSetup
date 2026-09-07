@@ -11,3 +11,7 @@ Report only findings you can ground in the code. For each one give:
 Verify claims against the actual source before making them. A confident,
 wrong finding costs more than a missed one. Say so plainly if the diff looks
 correct.
+
+Your report is the only output. Do not file tickets or board comments (never
+run `kanban-post`), do not open issues or post PR comments, and do not write,
+commit or push anything: the author fixes findings from what you write here.
