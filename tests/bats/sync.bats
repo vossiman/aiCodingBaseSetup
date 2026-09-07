@@ -642,3 +642,114 @@ _kvm_unused_gid() {
   [ ! -e "$durable/.runtime/blueprint" ]   # no recursive self-copy
   [ "$(cat "$durable/project/.runtime/blueprint/keepme.txt")" = survives ]
 }
+
+# --- change report (per-file rulers + coloured diff) -------------------------
+
+@test "change report: ruler header, verb, path, diff body; no colour when piped" {
+  printf 'a\nb\n' > "$TMP/dest"; printf 'a\nc\n' > "$TMP/src"
+  run _sync_change_report "updated" "$TMP/dest" "$(_sync_diff_body "$TMP/dest" "$TMP/src")"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "$(printf '═%.0s' $(seq 1 72))" ]
+  [ "${lines[1]}" = " updated: $TMP/dest" ]
+  [ "${lines[2]}" = "${lines[0]}" ]
+  echo "$output" | grep -qx '    -b'
+  echo "$output" | grep -qx '    +c'
+  if printf '%s' "$output" | grep -q $'\e\['; then false; fi
+}
+
+@test "change report: FORCE_COLOR paints verb, rulers and diff lines" {
+  printf 'a\nb\n' > "$TMP/dest"; printf 'a\nc\n' > "$TMP/src"
+  unset NO_COLOR; export FORCE_COLOR=1
+  run _sync_change_report "new" "$TMP/dest" "$(_sync_diff_body "$TMP/dest" "$TMP/src")"
+  [ "$status" -eq 0 ]
+  printf '%s' "$output" | grep -q $'\e\[32m'            # green: added line
+  printf '%s' "$output" | grep -q $'\e\[31m'            # red: removed line
+  printf '%s' "$output" | grep -q $'\e\[36m'            # cyan ruler
+  printf '%s' "${lines[1]}" | grep -q $'\e\[1;32mnew\e\[0m: '
+}
+
+@test "change report: verb colour follows the action (removed=red, updated=yellow)" {
+  unset NO_COLOR; export FORCE_COLOR=1
+  run _sync_change_report "removed" "$TMP/x" ""
+  printf '%s' "${lines[1]}" | grep -q $'\e\[1;31mremoved'
+  run _sync_change_report "updated (with backup)" "$TMP/x" ""
+  printf '%s' "${lines[1]}" | grep -q $'\e\[1;33mupdated (with backup)'
+}
+
+@test "change report: no diff body prints header only, no blank diff block" {
+  run _sync_change_report "restored" "$TMP/x" ""
+  [ "${#lines[@]}" -eq 3 ]                # bats drops the trailing blank separator line
+  if echo "$output" | grep -q '^    '; then false; fi
+}
+
+@test "diff body: renders the source like deploy does and scrubs secrets-file values" {
+  mkdir -p "$TMP/.aicodingsetup"
+  printf 'FIRECRAWL_API_KEY=fc-supersecret-value-123\n' > "$TMP/.aicodingsetup/.secrets.env"
+  . "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"; load_secrets_env
+  printf 'key = "fc-supersecret-value-123"\nold = 1\n' > "$HOME/dest.toml"
+  printf 'key = "{{FIRECRAWL_API_KEY}}"\nnew = 1\n' > "$TMP/src.toml"
+  run _sync_diff_body "$HOME/dest.toml" "$TMP/src.toml"
+  [ "$status" -eq 0 ]
+  if echo "$output" | grep -q 'fc-supersecret'; then false; fi
+  if echo "$output" | grep -q '{{FIRECRAWL'; then false; fi   # substituted, so the key line is unchanged
+  echo "$output" | grep -qx -- '-old = 1'
+  echo "$output" | grep -qx -- '+new = 1'
+}
+
+@test "sync --yes prints a change report with the diff for each applied file" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  # Prepend: the deployed file has no trailing newline, so an append would
+  # glue onto the last line instead of adding one.
+  printf '# user edit\n%s' "$(cat "$HOME/.tmux.conf")" > "$HOME/.tmux.conf"
+  run bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_sync --yes'
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qx " updated (with backup): $HOME/.tmux.conf"
+  echo "$output" | grep -qx '    -# user edit'
+  echo "$output" | grep -q '^═══'
+}
+
+@test "diff body: withholds the diff when the secrets file exists but rules cannot be built" {
+  mkdir -p "$TMP/.aicodingsetup"
+  printf 'GH_TOKEN=some-long-token-value\n' > "$TMP/.aicodingsetup/.secrets.env"
+  chmod 000 "$TMP/.aicodingsetup/.secrets.env"
+  printf 'old = some-long-token-value\n' > "$TMP/dest"; printf 'new = 1\n' > "$TMP/src"
+  run _sync_diff_body "$TMP/dest" "$TMP/src"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'diff withheld'
+  if echo "$output" | grep -q 'some-long-token'; then false; fi
+}
+
+@test "diff body: colour decision pinned in _SYNC_COLOR survives command substitution" {
+  unset NO_COLOR FORCE_COLOR
+  printf 'a\nb\n' > "$TMP/dest"; printf 'a\nc\n' > "$TMP/src"
+  _SYNC_COLOR=1
+  body=$(_sync_diff_body "$TMP/dest" "$TMP/src")
+  printf '%s' "$body" | grep -q $'\e\[32m'
+  _SYNC_COLOR=0
+  FORCE_COLOR=1 body=$(_sync_diff_body "$TMP/dest" "$TMP/src")
+  if printf '%s' "$body" | grep -q $'\e\['; then false; fi
+}
+
+@test "diff body: scrubs values from a custom AICODING_SECRETS_FILE" {
+  printf 'BRAVE_API_KEY=brave-custom-secret-9876\n' > "$TMP/custom-secrets"
+  export AICODING_SECRETS_FILE="$TMP/custom-secrets"
+  printf 'key = brave-custom-secret-9876\nold = 1\n' > "$TMP/dest"
+  printf 'key = brave-custom-secret-9876\nnew = 1\n' > "$TMP/src"
+  run _sync_diff_body "$TMP/dest" "$TMP/src"
+  [ "$status" -eq 0 ]
+  if echo "$output" | grep -q 'brave-custom'; then false; fi
+  echo "$output" | grep -qx -- '+new = 1'
+}
+
+@test "diff body: overwrite_raw sources are compared verbatim, placeholders untouched" {
+  . "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  printf 'path={{HOME}}/x\nold\n' > "$TMP/dest"
+  printf 'path={{HOME}}/x\nnew\n' > "$TMP/src"
+  run _sync_diff_body "$TMP/dest" "$TMP/src" overwrite_raw
+  [ "$status" -eq 0 ]
+  if echo "$output" | grep -q '^[-+]path='; then false; fi   # context only, never a change
+  echo "$output" | grep -qx -- '-old'
+  echo "$output" | grep -qx -- '+new'
+  run _sync_diff_body "$TMP/dest" "$TMP/src" overwrite
+  echo "$output" | grep -q -- "-path={{HOME}}/x"          # rendered mode substitutes, so it shows as changed
+}
