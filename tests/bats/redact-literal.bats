@@ -195,3 +195,30 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *'[REDACTED:M]'* ]]
 }
+
+@test "pairs mode: hex pattern and marker per line, same set and order as sessions" {
+  printf 'A_KEY=%s\nB_KEY=%s\n' "$V" 'has"quote_and_more' > "$SECRETS"
+  run redact_literal_rules pairs "$SECRETS"
+  [ "$status" -eq 0 ]
+  while IFS=' ' read -r hex marker; do
+    [[ "$hex" =~ ^([0-9a-f][0-9a-f])+$ ]]
+    [[ "$marker" =~ ^\[REDACTED:[A-Z_,]+\]$ ]]
+  done <<< "$output"
+  # the first line is the longest pattern; decoded, it is a pattern the sessions script also carries
+  local first; first="$(head -1 <<< "$output" | cut -d' ' -f1 | python3 -c 'import sys; sys.stdout.write(bytes.fromhex(sys.stdin.read().strip()).decode())')"
+  run redact_literal_rules sessions "$SECRETS"
+  [[ "$output" == *"$(redact_literal_ere_escape "$first")"* ]]
+  # the JSON-escaped form of the quoted value is present, verbatim hex
+  run redact_literal_rules pairs "$SECRETS"
+  [[ "$output" == *"$(printf '%s' 'has\"quote_and_more' | od -An -v -tx1 | tr -d ' \n') [REDACTED:B_KEY]"* ]]
+  [[ "$output" != *"$V"* ]]
+}
+
+@test "pairs mode: same line count as sessions mode, shared value names both keys" {
+  printf 'A_KEY=%s\nB_KEY=%s\n' "$V" "$V" > "$SECRETS"
+  local a b
+  a="$(redact_literal_rules sessions "$SECRETS" | wc -l)"
+  b="$(redact_literal_rules pairs "$SECRETS" | wc -l)"
+  [ "$a" -eq "$b" ]
+  redact_literal_rules pairs "$SECRETS" | grep -q ' \[REDACTED:A_KEY,B_KEY\]$'
+}
