@@ -352,6 +352,14 @@ file, fake transcript trees for all three roots, and no real session files.
 
 ## 6. Risks accepted
 
+- A value rotated before its transcript was scrubbed is gone from the
+  secrets file, so no rule can find the old copy, and the file keeps it
+  (found by codex review round 4). Keeping old rule sets would mean
+  persisting retired secrets, which is worse. The order the reporting path
+  drives is the safe one: the scrub finds and reports the value, then the
+  key is rotated. Rotating on your own initiative means running
+  `redact-sessions --sweep` with the quiet period set to zero first.
+
 - A value printed and then read back by the same session inside the
   live-file window is not scrubbed until the session ends. Reporting still
   fires at that point.

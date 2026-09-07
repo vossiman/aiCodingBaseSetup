@@ -187,3 +187,10 @@ EOF
   [ "$status" -eq 0 ]
   [ "$(printf '%s\n' "$output" | grep -c '^s/')" -gt 1 ]
 }
+
+@test "a short multibyte value that is 8+ bytes does not trip the fail-closed count" {
+  printf 'M=ääää\n' > "$SECRETS"
+  run redact_literal_rules sessions "$SECRETS"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'[REDACTED:M]'* ]]
+}

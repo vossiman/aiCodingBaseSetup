@@ -806,6 +806,14 @@ _sync_provision() {
     install_measure_remote_symlink || true
     install_redact_transcript_symlink || true
     install_redact_sessions_symlinks || true
+    # A sync is one of the documented recovery triggers for transcripts a
+    # crashed session left behind. Synchronous and bounded: a detached sweep
+    # would outlive the sync and keep writing state into a HOME the caller
+    # (the bats suite, say) is already tearing down. Boot has its own
+    # detached sweep in on-start.sh.
+    if [ "${AICODING_SYNC_MODE:-}" != boot ] && [ -x "$HOME/.local/bin/redact-sessions" ]; then
+      timeout 120 "$HOME/.local/bin/redact-sessions" --sweep >/dev/null 2>&1 || true
+    fi
   fi
   return 0
 }

@@ -55,7 +55,8 @@ redact_literal_b64_core() {
 # Counts KEY=value lines whose stripped value is >= 8 chars, independently of
 # the rule generator, so a partial read shows up as a mismatch.
 _redact_literal_expected() {
-  awk '
+  # C locale so gawk's length() counts bytes, like the generator does.
+  LC_ALL=C awk '
     /^[[:space:]]*#/ { next }
     /^[[:space:]]*$/ { next }
     index($0, "=") == 0 { next }

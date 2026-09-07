@@ -463,3 +463,7 @@ EOF
   local i; for i in 1 2 3 4 5 6 7 8 9 10; do grep -q "$V1" "$f" || break; sleep 0.5; done
   [[ "$(cat "$f")" != *"$V1"* ]]
 }
+
+@test "aicoding-sync's binary refresh path runs a detached sweep" {
+  grep -q 'redact-sessions" --sweep' "$BLUEPRINT_ROOT/lib/sync.sh"
+}
