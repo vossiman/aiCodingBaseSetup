@@ -82,6 +82,8 @@ One array near the top of the script, so a new harness is one added line:
 |---|---|---|
 | Claude Code | `~/.claude/projects/` | `**/*.jsonl`, which includes `<project>/<session>/subagents/*.jsonl` |
 | codex | `~/.codex/sessions/` | `**/*.jsonl` |
+| codex | `~/.codex/archived_sessions/` | `*.jsonl`, rollouts codex moves here when a thread is archived |
+| Claude Code, codex | `~/.claude/history.jsonl`, `~/.codex/history.jsonl` | the prompt histories, single files, rewritten in place |
 | cursor | `~/.cursor/projects/` | `*/agent-transcripts/**/*.jsonl`, the full conversation transcripts (found by codex's PR review; the chats dir alone holds only metadata) |
 | cursor | `~/.cursor/chats/` | `**/prompt_history.json`, `**/meta.json` |
 | OpenCode | `~/.local/share/opencode/` | none in this spec: the store is SQLite (non-goals). Listed so the gap is visible in the code, not only in the doc |
@@ -221,7 +223,9 @@ a harness and codex's short SessionEnd budget is never an issue.
 **Sweep bookkeeping.** The sweep keeps a stamp `redact-sessions.stamp` in
 the shared state dir (3.6) and inspects files with mtime newer than the
 stamp. The stamp only means "inspected under the rules of that time", so
-next to it lives a digest of the rendered rule set; when the secrets file
+next to it lives a digest of the rendered rule set, salted with the
+machine's `secrets-check` salt and kept per host name (the salt is
+container-local); when the secrets file
 changes (a key added or rotated) the digest differs and the next sweep
 rescans everything. With no secrets file there are no rules, and the sweep
 neither scrubs nor advances the stamp, so a file that appears later still
