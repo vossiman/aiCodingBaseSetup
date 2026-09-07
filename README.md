@@ -175,7 +175,7 @@ transcript — the failure that actually happens — not a determined attacker.
   `AGENTS.md`) gets `{{HOME}}` expanded and **nothing else** — no key is ever
   substituted into a file an agent reads as prose. A skill that needs a
   credential calls a broker (`cloudflare-render`, `kanban-post`,
-  `measure-remote`, `git-credential-aicoding`), which reads the value
+  `measure-remote`, `redact-transcript`, `git-credential-aicoding`), which reads the value
   in-process and never prints it.
 
 In devcontainers the file is bind-mounted **read-only** (a single-file mount

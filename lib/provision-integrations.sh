@@ -115,6 +115,19 @@ install_kanban_post_symlink() {
   ok "kanban-post installed at ~/.local/bin/kanban-post -> $src"
 }
 
+# --- transcript redactor ---
+# The one scrubber for transcript material that leaves a machine: the
+# distiller hook's slice tee and the memory-lanes transcript harvester both
+# call it. Deployed as a symlink so hooks and scripts find one implementation.
+install_redact_transcript_symlink() {
+  header "transcript redactor"
+  local src="$SCRIPT_DIR/bin/redact-transcript"
+  [[ -f "$src" ]] || { warn "bin/redact-transcript not found — skipping"; return; }
+  mkdir -p "$HOME/.local/bin"; chmod +x "$src"
+  ln -sf "$src" "$HOME/.local/bin/redact-transcript"
+  ok "redact-transcript installed at ~/.local/bin/redact-transcript -> $src"
+}
+
 # --- memory-lanes measurement client ---
 # Starts, watches and cancels memory-lanes measurement runs on vossisrv over a
 # command=-restricted SSH key in ~/.aicodingsetup. The key path is denied to
