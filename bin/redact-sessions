@@ -13,6 +13,10 @@
 # deliberately not used here; they would eat digests and ids a resumed
 # session needs, and their hits carry no key name to rotate.
 #
+# SQLite stores (cursor store.db, opencode.db) go through lib/redact-sqlite.py:
+# one transaction, secure_delete, WAL checkpointed. Spec:
+# docs/superpowers/specs/2026-09-07-redact-sessions-sqlite-design.md
+#
 # Live files: no harness holds its transcript open (Claude Code appends by
 # path) and the roots are host mounts shared across containers with separate
 # PID namespaces, so there is no open-file test. Safety is a quiet period on
@@ -35,10 +39,13 @@ _rs_self="$(readlink -f "${BASH_SOURCE[0]}")"
 . "$(dirname "$_rs_self")/../lib/redact-literal.sh"
 
 STATE="${REDACT_SESSIONS_STATE:-$HOME/.claude/state/redact-sessions}"
+PY="${REDACT_SESSIONS_PYTHON:-python3}"
+HELPER="$(dirname "$_rs_self")/../lib/redact-sqlite.py"
 QUIET="${REDACT_QUIET_SECONDS:-120}"
 SECRETS="${AICODING_SECRETS_FILE:-$HOME/.aicodingsetup/.secrets.env}"
 HOST="$(hostname 2>/dev/null || echo unknown)"
 RULES=""
+PAIRS=""
 
 # Roots, one per harness: root|glob|write-mode.
 #   rename   write a temp file and rename it over the original. Right for a
@@ -51,8 +58,9 @@ RULES=""
 #            rename would strand its later writes on the unlinked inode; an
 #            O_APPEND writer lands its next record after the rewritten
 #            content instead.
-# OpenCode is listed with no pattern: its store is SQLite and out of scope
-# (spec, non-goals); it stays here so the gap is visible in the code.
+#   sqlite   hand the file to lib/redact-sqlite.py, which rewrites the store
+#            in one transaction and checkpoints its WAL. Cursor's store.db
+#            (content-addressed blobs) and OpenCode's opencode.db.
 # A root may also be a single file (empty glob): the prompt histories both
 # CLIs append to. Those are rewritten in place, which is safe for a writer
 # that appends by path and for one that holds the file with O_APPEND alike.
@@ -65,15 +73,20 @@ ROOTS=(
   "$HOME/.cursor/projects|*.jsonl|rename"
   "$HOME/.cursor/chats|prompt_history.json|rename"
   "$HOME/.cursor/chats|meta.json|rename"
-  "$HOME/.local/share/opencode||rename"
+  "$HOME/.cursor/chats|store.db|sqlite"
+  "$HOME/.cursor/acp-sessions|store.db|sqlite"
+  "$HOME/.local/share/opencode/opencode.db||sqlite"
 )
 
-# write_mode_for <path>: the write mode of the first root containing it.
+# write_mode_for <path>: the write mode of the first root containing it whose
+# pattern (when it has one) matches the file name.
 write_mode_for() {
-  local entry root
+  local entry root pat
   for entry in "${ROOTS[@]}"; do
-    root="${entry%%|*}"
-    case "$1" in "$root"|"$root"/*) printf '%s' "${entry##*|}"; return 0 ;; esac
+    root="${entry%%|*}"; pat="${entry#*|}"; pat="${pat%%|*}"
+    case "$1" in "$root"|"$root"/*) ;; *) continue ;; esac
+    # shellcheck disable=SC2254
+    case "$(basename "$1")" in ${pat:-*}) printf '%s' "${entry##*|}"; return 0 ;; esac
   done
   printf 'rename'
 }
@@ -89,6 +102,7 @@ session_of() {
   case "$1" in
     */subagents/*) basename "$(dirname "$(dirname "$1")")" ;;
     */agent-transcripts/*) basename "$(dirname "$1")" ;;
+    */store.db) basename "$(dirname "$1")" ;;
     *) printf '%s' "${b%.jsonl}" ;;
   esac
 }
@@ -109,7 +123,8 @@ fingerprint_rules() {
 
 # Builds the sed script once per run. Sets RULES; returns 3 on refusal.
 load_rules() {
-  if ! RULES="$(redact_literal_rules sessions "$SECRETS")"; then
+  if ! RULES="$(redact_literal_rules sessions "$SECRETS")" \
+  || ! PAIRS="$(redact_literal_rules pairs "$SECRETS")"; then
     log "refused secrets file unreadable or partially parsed; nothing touched"
     pending_add SECRETS_FILE_UNREADABLE
     echo "redact-sessions: secrets file exists but is unreadable or parsed partially; refusing" >&2
@@ -154,6 +169,37 @@ _swap() {
   return 0
 }
 
+# scrub_sqlite <db>: 0 clean or rewritten, 1 defer (python3 missing, busy,
+# unknown store, helper failed, checkpoint incomplete). The helper gets the
+# pairs on stdin and reports "hit KEY N [session=ID]" lines; it never sees
+# the secrets file. Runs under the state lock like _swap, so two containers
+# cannot rewrite the same store at once; SQLite's own lock covers the harness.
+scrub_sqlite() {
+  local f="$1" out rc=0 sess line key n sid
+  if ! command -v "$PY" >/dev/null 2>&1; then
+    [ -n "${_py_warned:-}" ] || { log "python3 missing: sqlite stores deferred"; _py_warned=1; }
+    return 1
+  fi
+  out="$(printf '%s\n' "$PAIRS" | locked "$PY" "$HELPER" "$f" 2>/dev/null)" || rc=$?
+  case $rc in
+    0) ;;
+    4) log "sqlite busy file=$f"; return 1 ;;
+    5) log "sqlite unrecognised store file=$f"; return 1 ;;
+    *) log "sqlite helper failed rc=$rc file=$f"; return 1 ;;
+  esac
+  sess="$(session_of "$f")"
+  while IFS= read -r line; do
+    case "$line" in
+      hit\ *) read -r _ key n sid <<< "$line"
+              log "hit key=$key count=$n file=$f container=$HOST ${sid:-session=$sess}"
+              pending_add "$key" ;;
+      checkpoint-incomplete) log "sqlite checkpoint incomplete file=$f (rows redacted, wal retried next sweep)"; rc=1 ;;
+      skipped-table\ *) log "sqlite $line file=$f" ;;
+    esac
+  done <<< "$out"
+  return $rc
+}
+
 # scrub_one <file>: 0 when the file is clean or was rewritten; 1 when it
 # could not be handled (swap refused twice, unreadable, unwritable). Never
 # touches a clean file.
@@ -161,6 +207,7 @@ scrub_one() {
   local f="$1" attempt tmp before after sig1 sess key n prev
   [ -n "$RULES" ] || return 0
   [ -f "$f" ] && [ -r "$f" ] && [ -w "$f" ] || return 1
+  if [ "$(write_mode_for "$f")" = sqlite ]; then scrub_sqlite "$f"; return; fi
   for attempt in 1 2; do
     sig1="$(stat -c '%i %s %Y' "$f")" || return 1
     tmp="$(mktemp "$(dirname "$f")/.redact-sessions.XXXXXX")" || return 1
@@ -199,19 +246,24 @@ scrub_one() {
 }
 
 # candidates: files newer than the stamp under every root, plus the deferred
-# set. One absolute path per line; the caller deduplicates.
+# set. One absolute path per line; the caller deduplicates. A WAL-mode
+# database commits into its -wal sibling and the main file's mtime moves only
+# at checkpoint, so a -wal newer than the stamp also makes its database a
+# candidate (the -wal itself is never a candidate).
 candidates() {
   local entry root pat
   for entry in "${ROOTS[@]}"; do
     root="${entry%%|*}"; pat="${entry#*|}"; pat="${pat%%|*}"
     if [ -f "$root" ]; then
-      if [ -e "$STATE/stamp" ]; then find "$root" -newer "$STATE/stamp" 2>/dev/null
+      if [ -e "$STATE/stamp" ]; then
+        { find "$root" -newer "$STATE/stamp" 2>/dev/null
+          [ -f "$root-wal" ] && [ "$root-wal" -nt "$STATE/stamp" ] && printf '%s\n' "$root"; }
       else printf '%s\n' "$root"; fi
       continue
     fi
     [ -n "$pat" ] && [ -d "$root" ] || continue
     if [ -e "$STATE/stamp" ]; then
-      find "$root" -type f -name "$pat" -newer "$STATE/stamp" 2>/dev/null
+      find "$root" -type f \( -name "$pat" -o -name "$pat-wal" \) -newer "$STATE/stamp" 2>/dev/null | sed 's/-wal$//'
     else
       find "$root" -type f -name "$pat" 2>/dev/null
     fi
@@ -219,6 +271,10 @@ candidates() {
   [ -f "$STATE/deferred" ] && cat "$STATE/deferred"
   return 0
 }
+
+# newest_mtime <file>: mtime of the file or its -wal sibling, whichever is
+# later (a WAL-mode writer touches only the -wal between checkpoints).
+newest_mtime() { { stat -c '%Y' "$1" "$1-wal" 2>/dev/null || echo 0; } | sort -n | tail -1; }
 
 sweep() {
   local start f age now inspected=0 done=0 deferred=0 list fp
@@ -246,7 +302,7 @@ sweep() {
   while IFS= read -r f; do
     [ -n "$f" ] && [ -f "$f" ] || continue
     inspected=$(( inspected + 1 ))
-    age=$(( now - $(stat -c '%Y' "$f" 2>/dev/null || echo "$now") ))
+    age=$(( now - $(newest_mtime "$f") ))
     if [ "$age" -lt "$QUIET" ]; then
       printf '%s\n' "$f" >> "$STATE/deferred.next.$$"; deferred=$(( deferred + 1 )); continue
     fi
@@ -285,5 +341,8 @@ main() {
     *) usage ;;
   esac
 }
+
+# Tests source this file to reach candidates(); nothing runs in that case.
+[ -n "${REDACT_SESSIONS_SOURCE_ONLY:-}" ] && return 0 2>/dev/null
 
 main "$@"

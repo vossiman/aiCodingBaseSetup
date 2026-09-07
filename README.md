@@ -128,9 +128,13 @@ the transcript roots are shared across containers with separate PID namespaces,
 so no process list is trustworthy. Claude Code appends by path and never holds
 the file open, so its files are replaced by rename; codex keeps its rollout
 open with `O_APPEND` for the whole run, so its files are rewritten in place
-(both measured 2026-09-07). Cursor's and
-OpenCode's SQLite stores are out of scope (tracked separately). Spec:
-`docs/superpowers/specs/2026-09-07-redact-sessions-design.md`.
+(both measured 2026-09-07). Cursor's `store.db` files and OpenCode's
+`opencode.db` go through `lib/redact-sqlite.py`: one transaction under
+`secure_delete`, then a WAL checkpoint. Cursor's store is content-addressed
+(every blob id is the sha256 of its data), so the helper rehashes changed
+blobs and patches every ancestor up to the root pointer. Specs:
+`docs/superpowers/specs/2026-09-07-redact-sessions-design.md` and
+`docs/superpowers/specs/2026-09-07-redact-sessions-sqlite-design.md`.
 
 Codex implements the *same* PreToolUse contract as Claude Code — same
 `tool_name`/`tool_input.command` input, same

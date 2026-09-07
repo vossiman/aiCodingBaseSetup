@@ -11,6 +11,10 @@
 #   sessions    s/V/[REDACTED:KEY]/g plus JSON-escaped, plus the base64 runs
 #               fully determined by V at each of the three byte alignments,
 #               in both the standard and the URL-safe alphabet.
+#   pairs       the sessions rule set, but one "HEX(PATTERN) MARKER" line
+#               per rule instead of a sed script, for lib/redact-sqlite.py.
+#               Hex keeps any byte unambiguous and lets the caller hold the
+#               set in a bash variable.
 #
 # Floors: values under 8 characters get no rule (too collision-prone to
 # redact globally). Values under 12 get no base64 rule (the aligned core is
@@ -87,7 +91,7 @@ redact_literal_rules() {
   local mode="$1" f="${2:-$HOME/.aicodingsetup/.secrets.env}"
   local line key val marker jval out='' keys=0 expected=0 k core rule i
   local -a vals=() names=()
-  case "$mode" in transcript|sessions) ;; *) return 1 ;; esac
+  case "$mode" in transcript|sessions|pairs) ;; *) return 1 ;; esac
   [ -e "$f" ] || return 0
   [ -r "$f" ] || return 1
 
@@ -137,7 +141,7 @@ redact_literal_rules() {
     _add "$val" "${names[$i]}"
     jval="$(redact_literal_json_escape "$val")"
     [ "$jval" != "$val" ] && _add "$jval" "${names[$i]}"
-    if [ "$mode" = sessions ] && [ "$(LC_ALL=C; printf '%d' "${#val}")" -ge 12 ]; then
+    if [ "$mode" != transcript ] && [ "$(LC_ALL=C; printf '%d' "${#val}")" -ge 12 ]; then
       for k in 0 1 2; do
         core="$(redact_literal_b64_core "$val" "$k")"
         [ "${#core}" -ge 12 ] || continue
@@ -169,13 +173,17 @@ redact_literal_rules() {
 
   for i in "${order[@]}"; do
     marker="[REDACTED]"
-    if [ "$mode" = sessions ]; then
+    if [ "$mode" != transcript ]; then
       # Drop the "_" placeholders left by unnameable keys; keep the rest.
       key="$(printf '%s' "${pnames[$i]}" | tr ',' '\n' | grep -vx '_' | sort -u | paste -sd, -)"
       [ -n "$key" ] && marker="[REDACTED:$key]"
     fi
-    rule="$(_redact_literal_rule "${pats[$i]}" "$marker")" || return 1
-    out+="$rule"$'\n'
+    if [ "$mode" = pairs ]; then
+      out+="$(LC_ALL=C printf '%s' "${pats[$i]}" | od -An -v -tx1 | tr -d ' \n') $marker"$'\n'
+    else
+      rule="$(_redact_literal_rule "${pats[$i]}" "$marker")" || return 1
+      out+="$rule"$'\n'
+    fi
   done
   printf '%s' "$out"
 }
