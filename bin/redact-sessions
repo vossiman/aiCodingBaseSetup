@@ -24,6 +24,7 @@
 #   pending   key names awaiting --ack, or SECRETS_FILE_UNREADABLE
 #   deferred  files skipped this sweep (quiet period, swap refused twice)
 #   stamp     mtime watermark for --sweep
+#   rules.fp  digest of the rule set the stamp was taken under
 #
 # Exit: 0 ok, 2 usage, 3 secrets file unreadable or partially parsed (nothing
 # touched). Never prints a secret value. The secrets file is only ever READ.
@@ -113,9 +114,11 @@ _swap() {
     # Truncate, then append the whole replacement in ONE write(): with
     # O_APPEND on both sides the kernel serialises the two writers, so a
     # record the harness appends in the same instant lands intact before
-    # or after ours instead of being overwritten. The gap between the
-    # truncate and our append is the residual window; a record that slips
-    # into it is out of order but whole, and the size check below logs it.
+    # or after ours instead of being overwritten. Two residual windows,
+    # both microseconds wide and both accepted: an append between the
+    # signature check above and the truncate is lost; one between the
+    # truncate and our append is out of order but whole, and the size check
+    # below logs it. Closing them needs the writer's cooperation.
     local want got
     want="$(stat -c '%s' "$tmp")"
     if ! : > "$f"; then rm -f "$tmp"; return 2; fi
@@ -193,10 +196,23 @@ candidates() {
 }
 
 sweep() {
-  local start f age now inspected=0 done=0 deferred=0 list
+  local start f age now inspected=0 done=0 deferred=0 list fp
   start="$(date +%s)"
   load_rules || exit 3
   mkdir -p "$STATE" 2>/dev/null || exit 0
+  # No secrets file means no rules: nothing to scrub, and the stamp must
+  # not advance, or the file that appears later would never see old
+  # transcripts.
+  if [ -z "$RULES" ]; then log "sweep skipped: no literal rules (secrets file absent)"; exit 0; fi
+  # The stamp only says "inspected under the rules of that time". When the
+  # rule set changes (a key added or rotated), every file is a candidate
+  # again. The fingerprint is a digest of the whole rendered rule set, not
+  # of any single value.
+  fp="$(printf '%s' "$RULES" | sha256sum | cut -c1-16)"
+  if [ "$(cat "$STATE/rules.fp" 2>/dev/null)" != "$fp" ]; then
+    rm -f "$STATE/stamp"
+    log "rules changed: full rescan"
+  fi
   list="$(candidates | sort -u)"
   : > "$STATE/deferred.next.$$"
   now="$(date +%s)"
@@ -214,6 +230,7 @@ sweep() {
   # find -newer compares whole seconds; back the stamp off by one so a file
   # written in the same second as this sweep started is seen next time.
   touch -d "@$(( start - 1 ))" "$STATE/stamp" 2>/dev/null || touch "$STATE/stamp"
+  printf '%s\n' "$fp" > "$STATE/rules.fp"
   log "sweep inspected=$inspected done=$done deferred=$deferred container=$HOST"
   exit 0
 }

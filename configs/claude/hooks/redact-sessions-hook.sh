@@ -5,8 +5,8 @@
 # file is scrubbed now, because the harness has said it is done writing;
 # everything else goes through the sweep, which honours the quiet period.
 #
-# FAIL-OPEN: never blocks the harness. Every path exits 0; the sweep runs in
-# the background unless REDACT_SESSIONS_SYNC=1 (tests).
+# FAIL-OPEN: never blocks the harness. Every path exits 0; the work runs
+# detached unless REDACT_SESSIONS_SYNC=1 (tests).
 # Intentionally no set -e.
 
 bin="${REDACT_SESSIONS_BIN:-}"
@@ -31,13 +31,19 @@ transcript="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/nu
 now=0
 case "$event" in SessionEnd|sessionEnd) now=1 ;; esac
 case "$event:$transcript" in Stop:*/.codex/sessions/*) now=1 ;; esac
-if [ "$now" = 1 ] && [ -n "$transcript" ] && [ -f "$transcript" ]; then
-  timeout 60 "$bin" --now "$transcript" >/dev/null 2>&1 || true
-fi
+[ "$now" = 1 ] && [ -n "$transcript" ] && [ -f "$transcript" ] || transcript=""
 
-if [ "${REDACT_SESSIONS_SYNC:-}" = "1" ]; then
+# Everything runs detached (own session, so the harness exiting does not
+# take it down) and the hook returns at once: codex allows SessionEnd hooks
+# only a few seconds, and nothing here needs the harness to wait.
+work() {
+  [ -n "$transcript" ] && { timeout 60 "$bin" --now "$transcript" >/dev/null 2>&1 || true; }
   timeout 300 "$bin" --sweep >/dev/null 2>&1 || true
+}
+if [ "${REDACT_SESSIONS_SYNC:-}" = "1" ]; then
+  work
 else
-  nohup timeout 300 "$bin" --sweep >/dev/null 2>&1 &
+  setsid -f bash -c "$(declare -f work); bin=$(printf '%q' "$bin"); transcript=$(printf '%q' "$transcript"); work" >/dev/null 2>&1 < /dev/null \
+    || { nohup bash -c "$(declare -f work); bin=$(printf '%q' "$bin"); transcript=$(printf '%q' "$transcript"); work" >/dev/null 2>&1 < /dev/null & }
 fi
 exit 0

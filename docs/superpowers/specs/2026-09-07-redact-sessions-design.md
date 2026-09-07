@@ -107,8 +107,10 @@ Two of the three incidents were printed by subagents; that is the point.
      so `"` and `\` inside a value appear as `\"` and `\\`). It is emitted
      before the raw rule, so a value beginning with `"` or `\` cannot leave
      a dangling escape in front of the marker.
-   - rules are ordered longest value first, so a value that contains another
-     is replaced whole and both keys are reported.
+   - patterns are deduplicated across keys (identical values, or distinct
+     values sharing a base64 core) with the marker naming every key, and
+     ordered longest pattern first, so a pattern that contains another is
+     replaced whole and every key involved is reported.
    - lengths are byte lengths (`LC_ALL=C`): base64 groups bytes, and a
      non-ASCII value has more bytes than characters.
    - the three base64 alignments of `V`. A base64 character encodes six
@@ -212,12 +214,18 @@ only one of them still scrubs. Boot and sync cover crashed sessions.
 | cursor `stop` hook (`~/.cursor/hooks.json`, managed by the blueprint) | `redact-sessions --sweep` | Same role as Claude Code's Stop |
 | `on-start.sh` (container boot) and `aicoding-sync` | `--sweep` | Crashed sessions, files touched from another container |
 
-Every trigger runs the sweep asynchronously with a timeout and `|| true`, so
-a slow or failing scrub never blocks a harness.
+Every trigger returns at once: the hook script detaches its work into its
+own session (`setsid`) and exits 0, so a slow or failing scrub never blocks
+a harness and codex's short SessionEnd budget is never an issue.
 
 **Sweep bookkeeping.** The sweep keeps a stamp `redact-sessions.stamp` in
 the shared state dir (3.6) and inspects files with mtime newer than the
-stamp. Files it skips (quiet period not reached, swap failed twice) go into
+stamp. The stamp only means "inspected under the rules of that time", so
+next to it lives a digest of the rendered rule set; when the secrets file
+changes (a key added or rotated) the digest differs and the next sweep
+rescans everything. With no secrets file there are no rules, and the sweep
+neither scrubs nor advances the stamp, so a file that appears later still
+sees every old transcript. Files it skips (quiet period not reached, swap failed twice) go into
 `redact-sessions.deferred`, one path per line, and the next sweep inspects
 the deferred set first regardless of the stamp. A file leaves the deferred
 set when it has been scrubbed or found clean. Without this, a file skipped

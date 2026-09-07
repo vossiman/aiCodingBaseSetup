@@ -45,13 +45,14 @@ V="abcdefghijklmnopqrstuvwxyz"
   [ "$(printf '%s\n' "$output" | grep -c '^s/')" -eq 2 ]
 }
 
-@test "sessions mode: named marker, raw, and six base64 rules" {
+@test "sessions mode: named marker, raw, and one rule per distinct base64 core" {
   printf 'GH_TOKEN=%s\n' "$V" > "$SECRETS"
   run redact_literal_rules sessions "$SECRETS"
   [ "$status" -eq 0 ]
   [[ "$output" == *'[REDACTED:GH_TOKEN]/g'* ]]
-  # raw + 3 b64 + 3 urlsafe (json variant identical to raw, so omitted)
-  [ "$(printf '%s\n' "$output" | grep -c '^s/')" -eq 7 ]
+  # raw + 3 b64 cores. The URL-safe variants of an alphabet-only core are
+  # identical to the standard ones and fold away, as does the JSON variant.
+  [ "$(printf '%s\n' "$output" | grep -c '^s/')" -eq 4 ]
 }
 
 @test "sessions mode: a value of 8 to 11 chars gets literal rules but no base64" {
@@ -167,4 +168,22 @@ EOF
   [[ "$output" != *"$b0"* ]]
   [[ "$output" != *"$b1"* ]]
   [[ "$output" != *"$b2"* ]]
+}
+
+@test "distinct values sharing a base64 core: the shared rule names both keys" {
+  # 'A' (0x41) and 'Q' (0x51) share their low nibble, so the offset-1 cores
+  # of these two values are identical.
+  printf 'K1=Aabcdefghijk\nK2=Qabcdefghijk\n' > "$SECRETS"
+  local script; script="$(redact_literal_rules sessions "$SECRETS")"
+  local blob; blob="$(printf 'xQabcdefghijk' | base64 -w0)"
+  run sed -E -f <(printf '%s' "$script") <<< "$blob"
+  [[ "$output" == *"REDACTED:K1,K2"* ]]
+  [[ "$output" != *"$blob"* ]]
+}
+
+@test "base64 floor counts bytes: an 8-char two-byte-per-char value gets base64 rules" {
+  printf 'W=ääääääää\n' > "$SECRETS"
+  run redact_literal_rules sessions "$SECRETS"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | grep -c '^s/')" -gt 1 ]
 }

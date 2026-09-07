@@ -427,3 +427,39 @@ EOF
   grep -q 'install_redact_sessions_symlinks' "$BLUEPRINT_ROOT/install-host.sh"
   grep -q 'install_redact_transcript_symlink' "$BLUEPRINT_ROOT/install-host.sh"
 }
+
+@test "sweep: a secrets file that appears after a sweep triggers a full rescan" {
+  local f="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"%s"}\n' "$V1" > "$f"; old "$f"
+  mv "$SECRETS" "$SECRETS.away"
+  "$RS" --sweep
+  grep -q "$V1" "$f"
+  [ ! -e "$STATE/stamp" ]
+  mv "$SECRETS.away" "$SECRETS"
+  "$RS" --sweep
+  [[ "$(cat "$f")" != *"$V1"* ]]
+  grep -q 'full rescan' "$STATE/log"
+}
+
+@test "sweep: a changed rule set rescans files older than the stamp" {
+  local f="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"%s"}\n' "$V1" > "$f"; old "$f"
+  printf 'OTHER=unrelatedvalue123456\n' > "$SECRETS"
+  "$RS" --sweep
+  grep -q "$V1" "$f"
+  printf 'OPENROUTER_API_KEY=%s\n' "$V1" > "$SECRETS"
+  "$RS" --sweep
+  [[ "$(cat "$f")" != *"$V1"* ]]
+}
+
+@test "hook: returns at once and the detached work still scrubs" {
+  local f="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"%s"}\n' "$V1" > "$f"
+  local t0; t0="$(date +%s%N)"
+  REDACT_SESSIONS_SYNC= run bash "$HOOK" <<< "$(jq -nc --arg t "$f" '{hook_event_name:"SessionEnd", transcript_path:$t}')"
+  local t1; t1="$(date +%s%N)"
+  [ "$status" -eq 0 ]
+  [ $(( (t1 - t0) / 1000000 )) -lt 2000 ]
+  local i; for i in 1 2 3 4 5 6 7 8 9 10; do grep -q "$V1" "$f" || break; sleep 0.5; done
+  [[ "$(cat "$f")" != *"$V1"* ]]
+}

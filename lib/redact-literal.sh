@@ -77,10 +77,11 @@ _redact_literal_rule() {
   printf 's/%s/%s/g\n' "$esc" "$2"
 }
 
-# Two keys can hold the same value (a password reused across services). The
-# first sed rule would then eat every occurrence and the second key would
-# never be reported, so keys sharing a value are folded into one marker,
-# [REDACTED:A,B], and the caller reports every name in it.
+# Two keys can hold the same value (a password reused across services), and
+# two different values can share a base64 core. Either way one sed rule
+# would eat every occurrence and the other key would never be reported, so
+# patterns are deduplicated and their marker names every key, [REDACTED:A,B];
+# the caller reports each name.
 redact_literal_rules() {
   local mode="$1" f="${2:-$HOME/.aicodingsetup/.secrets.env}"
   local line key val marker jval out='' keys=0 expected=0 k core rule i
@@ -111,43 +112,54 @@ redact_literal_rules() {
 
   [ "$keys" -eq "$expected" ] || return 1
 
-  # Longest value first: when one value is a prefix (or any substring) of
-  # another, the longer one must be replaced before the shorter rule can
-  # eat part of it and leave the longer key unreported.
-  local -a order=()
-  while IFS= read -r i; do order+=("$i"); done < <(
-    for i in "${!vals[@]}"; do LC_ALL=C printf '%d %d\n' "${#vals[$i]}" "$i"; done | sort -k1,1nr -k2,2n | awk '{print $2}')
-
-  for i in "${order[@]}"; do
+  # Every pattern each value produces (raw, JSON-escaped, base64 cores),
+  # keyed by the pattern text so two values that happen to share a pattern
+  # (identical values, or distinct values with the same base64 core) end up
+  # in ONE rule whose marker names every key involved. Then longest pattern
+  # first: a pattern that contains another must be replaced before the
+  # shorter one can eat part of it and leave its key unreported. That order
+  # also puts a JSON-escaped form ahead of its raw form.
+  local -a pats=() pnames=()
+  local j found
+  _add() {  # _add PATTERN NAMES
+    local pat="$1" nm="$2"
+    for j in "${!pats[@]}"; do
+      if [ "${pats[$j]}" = "$pat" ]; then
+        case ",${pnames[$j]}," in *",$nm,"*) ;; *) pnames[$j]="${pnames[$j]},$nm" ;; esac
+        return 0
+      fi
+    done
+    pats+=("$pat"); pnames+=("$nm")
+  }
+  for i in "${!vals[@]}"; do
     val="${vals[$i]}"
-    marker="[REDACTED]"
-    if [ "$mode" = sessions ]; then
-      # Drop the "_" placeholders left by unnameable keys; keep the rest.
-      key="$(printf '%s' "${names[$i]}" | tr ',' '\n' | grep -vx '_' | paste -sd, -)"
-      [ -n "$key" ] && marker="[REDACTED:$key]"
-    fi
-
-    # JSON-escaped form first: for a value starting with `"` or `\`, the raw
-    # rule would otherwise match from the second character of the escape and
-    # leave a dangling backslash before the marker, which is invalid JSONL.
+    _add "$val" "${names[$i]}"
     jval="$(redact_literal_json_escape "$val")"
-    if [ "$jval" != "$val" ]; then
-      rule="$(_redact_literal_rule "$jval" "$marker")" || return 1
-      out+="$rule"$'\n'
-    fi
-    rule="$(_redact_literal_rule "$val" "$marker")" || return 1
-    out+="$rule"$'\n'
-
-    if [ "$mode" = sessions ] && [ "${#val}" -ge 12 ]; then
+    [ "$jval" != "$val" ] && _add "$jval" "${names[$i]}"
+    if [ "$mode" = sessions ] && [ "$(LC_ALL=C; printf '%d' "${#val}")" -ge 12 ]; then
       for k in 0 1 2; do
         core="$(redact_literal_b64_core "$val" "$k")"
         [ "${#core}" -ge 12 ] || continue
-        rule="$(_redact_literal_rule "$core" "$marker")" || return 1
-        out+="$rule"$'\n'
-        rule="$(_redact_literal_rule "$(printf '%s' "$core" | tr '+/' '-_')" "$marker")" || return 1
-        out+="$rule"$'\n'
+        _add "$core" "${names[$i]}"
+        _add "$(printf '%s' "$core" | tr '+/' '-_')" "${names[$i]}"
       done
     fi
+  done
+  unset -f _add
+
+  local -a order=()
+  while IFS= read -r i; do order+=("$i"); done < <(
+    for i in "${!pats[@]}"; do LC_ALL=C printf '%d %d\n' "${#pats[$i]}" "$i"; done | sort -k1,1nr -k2,2n | awk '{print $2}')
+
+  for i in "${order[@]}"; do
+    marker="[REDACTED]"
+    if [ "$mode" = sessions ]; then
+      # Drop the "_" placeholders left by unnameable keys; keep the rest.
+      key="$(printf '%s' "${pnames[$i]}" | tr ',' '\n' | grep -vx '_' | sort -u | paste -sd, -)"
+      [ -n "$key" ] && marker="[REDACTED:$key]"
+    fi
+    rule="$(_redact_literal_rule "${pats[$i]}" "$marker")" || return 1
+    out+="$rule"$'\n'
   done
   printf '%s' "$out"
 }
