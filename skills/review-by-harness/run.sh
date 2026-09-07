@@ -137,6 +137,34 @@ grep -qxF '.review-round/' "$EXCLUDE" 2>/dev/null \
 
 START_HEAD=$(git -C "$WT" rev-parse HEAD)
 
+# Session rules for the harness, as the worktree's AGENTS.md. Every harness
+# reads a repo-root AGENTS.md ahead of its global instructions, and the global
+# ones tell agents to file work they find on the board; a reviewer that obeys
+# that files tickets for findings the author is about to fix (seen on
+# aiCodingBaseSetup#139: four tickets in one review pass). The block is
+# prepended so a project's own AGENTS.md still applies, and restored before
+# the handback so it never shows up as a change the harness made.
+AGENTS="$WT/AGENTS.md"
+AGENTS_ORIG=""
+if git -C "$WT" cat-file -e "HEAD:AGENTS.md" 2>/dev/null; then AGENTS_ORIG=tracked
+elif [ -e "$AGENTS" ]; then AGENTS_ORIG=untracked; cp "$AGENTS" "$OUT/AGENTS.md.orig"
+fi
+install_agents() {  # install_agents <review|fix>
+    { cat "$SKILL_DIR/prompts/agents-$1.md"
+      case "$AGENTS_ORIG" in
+          tracked)   git -C "$WT" show "HEAD:AGENTS.md" ;;
+          untracked) cat "$OUT/AGENTS.md.orig" ;;
+      esac
+    } > "$AGENTS"
+}
+restore_agents() {
+    case "$AGENTS_ORIG" in
+        tracked)   git -C "$WT" checkout --quiet -- AGENTS.md ;;
+        untracked) cp "$OUT/AGENTS.md.orig" "$AGENTS" ;;
+        *)         rm -f "$AGENTS" ;;
+    esac
+}
+
 echo "### PR #$PR  $TITLE"
 echo "### $HEAD_REF -> $BASE  @ $(git -C "$WT" rev-parse --short HEAD)"
 echo "### harness: $HARNESS   worktree: $WT"
@@ -153,10 +181,13 @@ if git -C "$WT" diff --quiet "origin/$BASE...HEAD"; then
 fi
 
 echo "### phase A: review"
+install_agents review
 "$ADAPTER" review "$WT" "origin/$BASE" "$OUT" || {
     echo "!!! review failed"; tail -20 "$OUT/review.err" 2>/dev/null; exit 1; }
 echo "--- findings ---"
 cat "$OUT/review.md"
+
+restore_agents
 
 if [ "$REVIEW_ONLY" -eq 1 ]; then
     echo "### review-only: no fix pass, no changes made"
@@ -165,6 +196,7 @@ if [ "$REVIEW_ONLY" -eq 1 ]; then
 fi
 
 echo "### phase B: fix"
+install_agents fix
 "$ADAPTER" fix "$WT" "$OUT" || {
     echo "!!! fix failed"; tail -20 "$OUT/fix.err" 2>/dev/null
     echo "### (if this is a bubblewrap/uid-map error, see SKILL.md:"
@@ -183,6 +215,7 @@ cat "$OUT/fix.md"
 # commits despite being told not to would produce a handback that looks clean.
 # So: diff against HEAD (staged + unstaged), list untracked, and check whether
 # HEAD itself moved.
+restore_agents
 echo "### diff produced (verify this before trusting the report above)"
 git -C "$WT" --no-pager diff HEAD
 echo "### files touched"

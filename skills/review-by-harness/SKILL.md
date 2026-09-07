@@ -151,6 +151,21 @@ There are exactly two ways forward, and both are a human's call:
   commit. Decide that deliberately; the adapters deliberately do not decide
   it for you.
 
+## The harness gets session rules, not just a prompt
+
+Every harness reads a repo-root `AGENTS.md` ahead of its global instructions,
+and the global ones (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, the cursor
+estate skill) say to file work you find on the kanban board. A reviewer that
+obeys that files tickets for findings the author is about to fix: on
+aiCodingBaseSetup#139 one review-only pass filed four. So `run.sh` prepends
+`prompts/agents-review.md` (no writes, no tickets, no commits) to the
+worktree's `AGENTS.md` before the review, swaps in `prompts/agents-fix.md`
+(edits allowed, still no tickets, no commits) before the fix pass, keeps the
+project's own `AGENTS.md` content underneath, and restores the file before
+the handback diff. A harness can still ignore instructions; the handback is
+what catches that, and `kanban-post --list-tickets` after a run is the check
+for the board.
+
 ## Layout
 
 ```
@@ -159,6 +174,7 @@ harnesses/codex.sh  adapter: codex exec review / codex exec
 harnesses/cursor.sh adapter: cursor-agent --mode ask / cursor-agent
 prompts/review.md   review instructions (harnesses with no built-in review)
 prompts/fix.md      fix instructions (all harnesses)
+prompts/agents-*.md session rules installed as the worktree's AGENTS.md per phase
 config.env          your sandbox/model choices, untracked
 ```
 

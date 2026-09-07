@@ -12,3 +12,6 @@ Rules, all hard:
 
 Finish with a numbered list matching your findings: for each, either the exact
 change you made (file:line) or the reason you skipped it.
+
+Do not file tickets or board comments (never run `kanban-post`), do not open
+issues or post PR comments. Anything you leave unfixed goes in your report.
