@@ -124,6 +124,7 @@ main() {
   install_dvw_probe_symlink
   install_clip_shim_symlinks
   install_kanban_post_symlink
+  install_measure_remote_symlink
   install_clip_x11_bridge_symlink
   remove_deprecated_shims
   install_ssh_agent_watch_symlink
