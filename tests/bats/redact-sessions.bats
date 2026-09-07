@@ -326,3 +326,28 @@ TURN="$BLUEPRINT_ROOT/bin/codex-turn-done"
   grep -q 'install_redact_sessions_symlinks' "$BLUEPRINT_ROOT/install.sh"
   grep -q 'install_redact_sessions_symlinks' "$BLUEPRINT_ROOT/lib/sync.sh"
 }
+
+@test "codex root: in-place rewrite keeps an O_APPEND writer's later records" {
+  local f="$HOME/.codex/sessions/2026/09/07/r.jsonl"
+  printf '{"text":"%s"}\n' "$V1" > "$f"; old "$f"
+  local ino; ino="$(stat -c '%i' "$f")"
+  exec 7>>"$f"                       # a live codex holds exactly this: O_APPEND
+  "$RS" --now "$f"
+  printf '{"text":"after scrub"}\n' >&7
+  exec 7>&-
+  [ "$(stat -c '%i' "$f")" = "$ino" ]
+  [[ "$(cat "$f")" != *"$V1"* ]]
+  grep -q 'REDACTED:OPENROUTER_API_KEY' "$f"
+  [ "$(tail -n1 "$f")" = '{"text":"after scrub"}' ]
+  [ "$(wc -l < "$f")" -eq 2 ]
+}
+
+@test "claude root: rename changes the inode and a path-based appender follows" {
+  local f="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"%s"}\n' "$V1" > "$f"; old "$f"
+  local ino; ino="$(stat -c '%i' "$f")"
+  "$RS" --now "$f"
+  [ "$(stat -c '%i' "$f")" != "$ino" ]
+  printf '{"text":"by path"}\n' >> "$f"
+  [ "$(wc -l < "$f")" -eq 2 ]
+}

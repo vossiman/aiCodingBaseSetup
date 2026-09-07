@@ -1,7 +1,7 @@
 # redact-sessions: scrub secret values out of agent transcripts on disk
 
-Ticket: AICODINGBASESETUP-15. Date: 2026-09-07. Status: draft, revised after
-codex review (PR #139), awaiting owner review.
+Ticket: AICODINGBASESETUP-15. Date: 2026-09-07. Status: implemented on
+`feat/redact-sessions` (PR #139).
 
 ## 1. Problem
 
@@ -161,12 +161,17 @@ So there is no "is it open" test. Safety comes from two rules instead:
    trigger (3.5) handles it with the quiet period set to zero, because that
    harness has just told us it is done.
 
-Residual risk: a writer that holds a file descriptor open across appends
-(codex, cursor: not measured) would keep appending to the unlinked old inode
-after a rename. The implementation measures this for codex and cursor with
-`lsof` during a live session before enabling their roots in the sweep; a
-harness that holds the descriptor gets scrubbed only by its own end-of-session
-trigger, and the spec is amended with the measurement.
+**Measured 2026-09-07 (codex 0.153.4):** codex keeps its rollout file open
+for the whole run, with `O_APPEND` set (`/proc/<pid>/fdinfo` flags
+`02102002`). A rename would strand its later records on the unlinked inode.
+So the write mode is per root: Claude Code and cursor files are replaced by
+rename; codex files are rewritten in place (truncate and write the same
+inode), which an `O_APPEND` writer follows correctly, its next record landing
+after the scrubbed content. The cost is that an in-place rewrite is not
+atomic for a concurrent reader; codex does not read its rollout mid-session,
+and the window is milliseconds. Cursor: `cursor-agent` is not installed in
+this container, so its behaviour is not measured; its JSON files use rename,
+and it writes them whole rather than appending.
 
 Consequence: a value printed mid-session stays in the file until that
 session ends or goes quiet. That window is accepted. It is the same window

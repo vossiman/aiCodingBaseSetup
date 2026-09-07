@@ -66,6 +66,12 @@ Configured for **all four CLIs**: `claude mcp add` for Claude Code (existing), `
   built-in list is now always enforced and that env var only *adds* patterns. Escape hatch: `secrets-check`.
   Also runs on **Codex** — same script, installed as a managed hook (see Secrets).
   Covered by `tests/bats/secrets-deny-hook.bats` and `tests/bats/codex-managed-hooks.bats`.
+- **redact-sessions-hook.sh** / **redact-sessions-pending.sh** — Stop, SessionEnd and SessionStart hooks
+  around `redact-sessions` (see Secrets). The first sweeps transcripts on disk after every turn and
+  scrubs the session's own file at exit; the second announces, at every session start, any key whose
+  live value was found in a transcript and has not been acknowledged with `redact-sessions --ack KEY`.
+  Both fail-open. The same two scripts are wired into cursor via `~/.cursor/hooks.json`, and codex
+  reaches the sweep through `codex-turn-done`, its `notify` target.
 - **check-archived-docs.sh** — SessionStart hook. Emits a one-line banner when a project using the reference docs layout has docs with `status: done` in any `docs/*/active/` folder. Fail-open.
 
 ### Slash commands
@@ -102,6 +108,27 @@ transcript that is persisted and distilled to the wiki. Four layers enforce this
 | `permission.read` / `permission.bash` maps | OpenCode | hard — file tools + shell patterns |
 | `bw-deny-files.sh` as a codex **managed** hook | Codex | hard — blocks Bash and apply_patch |
 | `AGENTS.md` / `CLAUDE.md` prohibition | all four | soft — backstop |
+
+Those layers are a denylist of **locations**, and a value moves: `docker compose
+config` interpolates it, a build-failure notification carries it base64-encoded,
+a helper script writes it into a scratch env dir. Three such leaks in two days
+(2026-08-27, 2026-09-04) motivated the output side, `redact-sessions`: it sweeps
+the persisted transcripts of every CLI (Claude Code and its subagents, codex,
+cursor's JSON files) for the secrets-file **values**, in raw, JSON-escaped and
+base64-aligned form, replaces each with `[REDACTED:KEYNAME]`, and records the
+hit under `~/.claude/state/redact-sessions/` (a shared mount, so every
+container sees it). A hit still means the value reached an agent, so the next
+session start on any container repeats the warning until the key is rotated and
+`redact-sessions --ack KEY` is run. Triggers: Claude Code Stop and SessionEnd,
+codex `notify`, cursor `stop`/`sessionEnd`, and container boot. Live files are
+handled with a quiet period plus a check-and-swap write, not an open-file test:
+the transcript roots are shared across containers with separate PID namespaces,
+so no process list is trustworthy. Claude Code appends by path and never holds
+the file open, so its files are replaced by rename; codex keeps its rollout
+open with `O_APPEND` for the whole run, so its files are rewritten in place
+(both measured 2026-09-07). Cursor's and
+OpenCode's SQLite stores are out of scope (tracked separately). Spec:
+`docs/superpowers/specs/2026-09-07-redact-sessions-design.md`.
 
 Codex implements the *same* PreToolUse contract as Claude Code — same
 `tool_name`/`tool_input.command` input, same
@@ -175,7 +202,7 @@ transcript — the failure that actually happens — not a determined attacker.
   `AGENTS.md`) gets `{{HOME}}` expanded and **nothing else** — no key is ever
   substituted into a file an agent reads as prose. A skill that needs a
   credential calls a broker (`cloudflare-render`, `kanban-post`,
-  `measure-remote`, `redact-transcript`, `git-credential-aicoding`), which reads the value
+  `measure-remote`, `redact-transcript`, `redact-sessions`, `git-credential-aicoding`), which reads the value
   in-process and never prints it.
 
 In devcontainers the file is bind-mounted **read-only** (a single-file mount
