@@ -84,7 +84,16 @@ deploy_all_managed_files() {
 # after the colored loggers are defined) — shared with aicoding-sync so both
 # reconcile the same MCP/plugin set.
 MANAGED_HOOKS=("custom-statusline.js" "bw-deny-files.sh" "check-archived-docs.sh" "llmwiki-distill.sh" "agent-waiting.sh" "memory-hint.sh" "opus-verbosity.sh" "fable-guidance.sh" "redact-sessions-hook.sh" "redact-sessions-pending.sh")
-MANAGED_SKILLS=("cloudflare-browser" "dataprospectors-design")
+# Skills are whatever skills/ ships; the deploy loop above enumerates the
+# same dir. A hand-kept list here only falls behind and then flags a shipped
+# skill as unmanaged (review-by-harness, 2026-09-08).
+MANAGED_SKILLS=()
+for _skill_dir in "$SCRIPT_DIR/skills"/*/; do
+  [[ -d "$_skill_dir" ]] || continue
+  _skill_dir="${_skill_dir%/}"
+  MANAGED_SKILLS+=("${_skill_dir##*/}")
+done
+unset _skill_dir
 # JSON merge lives in lib/blueprint-deploy.sh as _json_merge_into (unions both
 # permissions.allow and permissions.deny). Do not reintroduce a local merger.
 
