@@ -212,7 +212,7 @@ RB_END='<!-- review-by-harness:end -->'
 validate_instruction_paths() {
     # Resolve links without reading their contents. Python also gives us a
     # portable atomic replacement below (mv treats directory targets specially).
-    python3 - "$WT" "${AGENTS_FILES[@]}" <<'PY'
+    python3 - "$WT" "$@" <<'PY'
 import pathlib, sys
 root = pathlib.Path(sys.argv[1]).resolve()
 for name in sys.argv[2:]:
@@ -234,7 +234,7 @@ _agents_kind() {  # _agents_kind <name>: tracked | untracked | absent
 }
 install_agents() {  # install_agents <review|fix>
     local f kind staged
-    validate_instruction_paths
+    validate_instruction_paths "${AGENTS_FILES[@]}"
     for f in "${AGENTS_FILES[@]}"; do
         kind="$(_agents_kind "$f")"
         if [ -L "$WT/$f" ]; then
@@ -260,18 +260,25 @@ install_agents() {  # install_agents <review|fix>
         python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$staged" "$WT/$f"
     done
 }
+RESTORE_UNSAFE=0
 restore_agents() {
     local f kind
-    validate_instruction_paths || return 1
     for f in "${AGENTS_FILES[@]}"; do
         # An interrupted install may not have reached every instruction file.
         [ -f "$OUT/$f.kind" ] || continue
+        if ! validate_instruction_paths "$f"; then
+            RESTORE_UNSAFE=1
+            continue
+        fi
         kind="$(cat "$OUT/$f.kind" 2>/dev/null || echo absent)"
         if [ -L "$OUT/$f.orig" ] || [ -e "$OUT/$f.orig" ]; then
             # Was a symlink: put the link back, tracked from git, untracked from the copy.
             rm -f "$WT/$f"
             if [ "$kind" = tracked ]; then git -C "$WT" checkout --quiet -- "$f"
             else cp -P "$OUT/$f.orig" "$WT/$f"; fi
+            # The backup came from the validated original. Still detect any
+            # harness tampering with it before allowing another pass/handback.
+            validate_instruction_paths "$f" || RESTORE_UNSAFE=1
             continue
         fi
         [ -f "$WT/$f" ] || continue
@@ -281,6 +288,7 @@ restore_agents() {
         # handback (diff against HEAD) shows the working copy, rules gone.
         [ "$kind" = tracked ] && git -C "$WT" reset --quiet -- "$f" 2>/dev/null || true
     done
+    return 0
 }
 trap restore_agents EXIT
 trap 'exit 129' HUP
@@ -313,7 +321,7 @@ cat "$OUT/review.md"
 restore_agents
 
 if [ "$REVIEW_ONLY" -eq 1 ]; then
-    if ! git -C "$WT" diff --quiet "$START_HEAD" ||
+    if [ "$RESTORE_UNSAFE" -ne 0 ] || ! git -C "$WT" diff --quiet "$START_HEAD" ||
        [ -n "$(git -C "$WT" ls-files --others --exclude-standard)" ] ||
        [ "$(git -C "$WT" rev-parse HEAD)" != "$START_HEAD" ]; then
         echo "!!! review-only harness changed the worktree; inspect $WT"
@@ -326,6 +334,7 @@ if [ "$REVIEW_ONLY" -eq 1 ]; then
     exit 0
 fi
 
+[ "$RESTORE_UNSAFE" -eq 0 ] || { echo '!!! unsafe instruction changes; refusing fix pass'; exit 1; }
 echo "### phase B: fix"
 install_agents fix
 "$ADAPTER" fix "$WT" "$OUT" || {
@@ -364,4 +373,5 @@ if [ "$NOW_HEAD" != "$START_HEAD" ]; then
     echo "### was $START_HEAD, now $NOW_HEAD"
     git -C "$WT" --no-pager log --oneline "$START_HEAD..$NOW_HEAD"
 fi
+[ "$RESTORE_UNSAFE" -eq 0 ] || { echo '!!! unsafe instruction changes; inspect the handback'; exit 1; }
 echo "### END"

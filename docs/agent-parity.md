@@ -82,10 +82,10 @@ Claude review exposes only Read/Glob/Grep, with MCP tools excluded and
 `dontAsk` permission mode. The driver verifies that review left the worktree
 unchanged. PR-controlled `.review-round` paths are refused before any report
 write. Instruction paths must resolve to regular files inside the worktree.
-Replacement is atomic and retains existing file modes; handled termination
-signals strip the injected rules. Fix uses native sandboxing when user
-namespaces work. When they
-do not, Claude honors the existing explicit full-access opt-in
+Replacement is atomic and retains existing file modes. Cleanup restores
+valid instruction files on handled termination; unsafe harness changes are
+reported without preventing cleanup of the other files. Fix uses native
+sandboxing when user namespaces work. When they do not, Claude honors the existing explicit full-access opt-in
 `REVIEW_SANDBOX='-s danger-full-access'`; Cursor's `--force` is not enough.
 The adapters retain existing user/managed hooks. As with the original
 adapters, the worktree is a working location, not an OS security boundary.

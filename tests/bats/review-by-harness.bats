@@ -345,3 +345,32 @@ STUB
     done
   done
 }
+
+@test "unsafe harness changes are reported while other instruction files are restored" {
+  cp "$SKILL/harnesses/stub.sh" "$SKILL/harnesses/claude.sh"
+  sed -i '/verb="$1"/a if [ "$verb" = "$UNSAFE_PHASE" ]; then rm -f "$wt/AGENTS.md"; ln -s "$OUTSIDE_RULES" "$wt/AGENTS.md"; fi' "$SKILL/harnesses/claude.sh"
+  export OUTSIDE_RULES="$TMPDIR/outside-rules"
+  printf 'outside unchanged\n' > "$OUTSIDE_RULES"
+  ( cd "$TMPDIR/seed"
+    printf 'project rules\n' > AGENTS.md
+    printf 'Claude rules\n\n' > CLAUDE.md; chmod +x CLAUDE.md
+    git add AGENTS.md CLAUDE.md; git commit -qm instructions
+    git push -q -f origin HEAD:refs/pull/1/head )
+  printf 'REVIEW_SANDBOX=-s\n' > "$TMPDIR/cfg.env"
+  for phase in review fix; do
+    local args=()
+    [ "$phase" != review ] || args+=(--review-only)
+    UNSAFE_PHASE="$phase" REVIEW_CONFIG="$TMPDIR/cfg.env" run "$SKILL/run.sh" 1 "$REPO" --harness claude --model claude-opus-5 "${args[@]}"
+    [ "$status" -eq 1 ]
+    if [ "$phase" = review ]; then
+      [[ "$output" == *'review-only harness changed the worktree'* ]]
+    else
+      [[ "$output" == *'unsafe instruction changes; inspect the handback'* ]]
+    fi
+    local cw="$REPO/.claude/worktrees/review-pr1-claude"
+    cmp "$TMPDIR/seed/CLAUDE.md" "$cw/CLAUDE.md"
+    [ -x "$cw/CLAUDE.md" ]
+    [ "$(cat "$OUTSIDE_RULES")" = 'outside unchanged' ]
+    [ -L "$cw/AGENTS.md" ]
+  done
+}

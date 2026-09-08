@@ -49,8 +49,8 @@ for older scripts, but skill-driven runs should always make the choice explicit.
   when called from Claude. Pass `--caller codex` or `--caller claude` when the
   runtime marker is unavailable. Explicit `--harness` always wins.
 - `--harness claude` — Claude Code's Opus 5 (`claude-opus-5`) at high effort.
-  Review has only Read/Glob/Grep tools and no MCP tools. Fix uses native sandboxing where
-  available; the existing `REVIEW_SANDBOX='-s danger-full-access'` opt-in
+  Review has only Read/Glob/Grep tools and no MCP tools. Fix uses native
+  sandboxing where available; the existing `REVIEW_SANDBOX='-s danger-full-access'` opt-in
   applies where user namespaces are unavailable. Cursor's `--force` is not
   a Claude opt-in. User and managed hooks remain active.
 - `--harness codex` — GPT-5.6 Sol at high reasoning, via `codex exec
