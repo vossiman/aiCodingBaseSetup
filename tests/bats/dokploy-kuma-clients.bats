@@ -109,6 +109,19 @@ EOF
   grep -q 'POST /api/compose.update .*"env": "DB_PASSWORD=.*PLAIN=1\\nKUMA_PUSH_X=https://kuma.example/api/push/PIPED-URL-TOKEN"' "$TMPDIR/requests"
 }
 
+@test "dokploy-api: set-env --from-secret takes the value from the store and never prints it" {
+  _start_server
+  echo "HUB_KUMA_TOKEN=FROM-STORE-VALUE-91ab" >> "$HOME/.aicodingsetup/.secrets.env"
+  run "$DA" set-env compose c1 HUB_KUMA_TOKEN --from-secret HUB_KUMA_TOKEN
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"FROM-STORE-VALUE-91ab"* ]]
+  [[ "$output" == *"added HUB_KUMA_TOKEN"* ]]
+  grep -q 'compose.update .*HUB_KUMA_TOKEN=FROM-STORE-VALUE-91ab"' "$TMPDIR/requests"
+  run "$DA" set-env compose c1 X --from-secret NOT_THERE
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"NOT_THERE is not set"* ]]
+}
+
 @test "dokploy-api: set-env refuses an empty or multi-line value" {
   _start_server
   run bash -c "printf '' | '$DA' set-env compose c1 X"
