@@ -16,22 +16,22 @@ the last step of every run is you reading the diff, not the report.
 
 ```bash
 ~/.claude/skills/review-by-harness/run.sh <pr-number> [repo-dir] \
-    --harness claude --model fable --effort high [--review-only]
+    --harness claude --model claude-opus-5 --effort high [--review-only]
 ```
 
-Choose the reviewer model deliberately for every run, whichever coding agent
-is orchestrating. Pass `--harness` and `--model` explicitly; pass `--effort`
-for Claude/Codex. Respect the user's selection. Fable and Opus are both valid
-Claude choices; do not assume the caller's model or the machine default is
-what the reviewer will use. For a smaller review, Opus can be sufficient;
-for a demanding review or when requested, use Fable. Check the selected CLI's
-available models when unsure about an identifier.
+Choose the reviewer model explicitly for every run, whichever coding agent
+is orchestrating. Unless the user specifies otherwise, use **GPT-5.6 Sol**
+(`gpt-5.6-sol`) for Codex and **Opus 5** (`claude-opus-5`) for Claude.
+**Fable and Astra require an explicit user override**; do not upgrade based
+on task complexity or inherit either from the caller or machine default.
+Pass `--harness` and `--model` explicitly, plus `--effort` for Claude/Codex.
+Respect any explicit user selection, including a different harness. Check
+the selected CLI's available models when unsure about an identifier.
 
 Examples:
 
 ```bash
-run.sh 123 /path/to/repo --harness claude --model fable --effort high --review-only
-run.sh 123 /path/to/repo --harness claude --model opus --effort high --review-only
+run.sh 123 /path/to/repo --harness claude --model claude-opus-5 --effort high --review-only
 run.sh 123 /path/to/repo --harness codex --model gpt-5.6-sol --effort high --review-only
 run.sh 123 /path/to/repo --harness cursor --model cursor-grok-4.6-high-fast --review-only
 ```
@@ -46,7 +46,7 @@ for older scripts, but skill-driven runs should always make the choice explicit.
 - `--harness auto` (default) chooses Claude when called from Codex and Codex
   when called from Claude. Pass `--caller codex` or `--caller claude` when the
   runtime marker is unavailable. Explicit `--harness` always wins.
-- `--harness claude` — Claude Code's `opus` alias at high effort. Review has
+- `--harness claude` — Claude Code’s Opus 5 (`claude-opus-5`) at high effort. Review has
   only Read/Glob/Grep tools and no MCP tools. Fix uses native sandboxing where
   available; the existing `REVIEW_SANDBOX='-s danger-full-access'` opt-in
   applies where user namespaces are unavailable. Cursor's `--force` is not

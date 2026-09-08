@@ -227,18 +227,21 @@ add_project_agents() {
   [[ "$output" == *'Cursor effort is part of its model selector'* ]]
 }
 
-@test "review preserves instruction files with missing or multiple trailing newlines" {
+@test "review preserves instruction modes and missing or multiple trailing newlines" {
   cp "$SKILL/harnesses/stub.sh" "$SKILL/harnesses/claude.sh"
   for suffix in '' $'\n\n\n'; do
     ( cd "$TMPDIR/seed"
       printf 'project rules%s' "$suffix" > AGENTS.md
       printf 'Claude rules%s' "$suffix" > CLAUDE.md
+      chmod +x AGENTS.md CLAUDE.md
       git add AGENTS.md CLAUDE.md; git commit -qm endings
       git push -q -f origin HEAD:refs/pull/1/head )
     run "$SKILL/run.sh" 1 "$REPO" --harness claude --model opus --review-only
     [ "$status" -eq 0 ]
     cmp "$TMPDIR/seed/AGENTS.md" "$REPO/.claude/worktrees/review-pr1-claude/AGENTS.md"
     cmp "$TMPDIR/seed/CLAUDE.md" "$REPO/.claude/worktrees/review-pr1-claude/CLAUDE.md"
+    [ -x "$REPO/.claude/worktrees/review-pr1-claude/AGENTS.md" ]
+    [ -x "$REPO/.claude/worktrees/review-pr1-claude/CLAUDE.md" ]
   done
 }
 

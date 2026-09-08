@@ -2,7 +2,7 @@
 # Claude Code adapter. Preserve user/managed hooks, including the secrets guard.
 # Contract: review <worktree> <base-ref> <outdir> | fix <worktree> <outdir>
 set -euo pipefail
-MODEL="${REVIEW_MODEL:-opus}"
+MODEL="${REVIEW_MODEL:-claude-opus-5}"
 EFFORT="${REVIEW_EFFORT:-high}"
 verb="$1"
 wt="$2"

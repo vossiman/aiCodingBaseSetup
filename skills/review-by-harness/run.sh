@@ -98,7 +98,7 @@ done
 [ -z "$MODEL_ARG" ] || REVIEW_MODEL="$MODEL_ARG"
 [ -z "$EFFORT_ARG" ] || REVIEW_EFFORT="$EFFORT_ARG"
 case "$HARNESS" in
-    claude) REVIEW_MODEL="${REVIEW_MODEL:-opus}"; REVIEW_EFFORT="${REVIEW_EFFORT:-high}" ;;
+    claude) REVIEW_MODEL="${REVIEW_MODEL:-claude-opus-5}"; REVIEW_EFFORT="${REVIEW_EFFORT:-high}" ;;
     codex) REVIEW_MODEL="${REVIEW_MODEL:-gpt-5.6-sol}"; REVIEW_EFFORT="${REVIEW_EFFORT:-high}" ;;
     cursor)
         REVIEW_MODEL="${REVIEW_MODEL:-cursor-grok-4.6-high-fast}"
@@ -222,7 +222,13 @@ install_agents() {  # install_agents <review|fix>
               sed "/^$RB_BEGIN\$/,/^$RB_END\$/d" "$WT/$f"
           fi
         } > "$OUT/$f.new"
-        mv "$OUT/$f.new" "$WT/$f"
+        if [ -L "$WT/$f" ]; then
+            mv "$OUT/$f.new" "$WT/$f"
+        else
+            # Keep an existing regular file's mode (including its git exec bit).
+            cat "$OUT/$f.new" > "$WT/$f"
+            rm -f "$OUT/$f.new"
+        fi
     done
 }
 restore_agents() {

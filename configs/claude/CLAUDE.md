@@ -241,3 +241,8 @@ switched off), and Cursor/OpenCode use deny rules. Casual reads are blocked; thi
 best-effort layer, not an airlock: determined bypasses (a redirected
 `env`, an interpreter fed by heredoc) are exactly what the hook hardening
 keeps chasing, so do not treat a block as proof nothing else works.
+
+For `review-by-harness`, pass the reviewer harness and model explicitly from
+any coding agent. Default to GPT-5.6 Sol (`gpt-5.6-sol`) for Codex or Opus 5
+(`claude-opus-5`) for Claude. Fable and Astra require an explicit user override;
+task complexity or machine defaults do not authorize an upgrade.
