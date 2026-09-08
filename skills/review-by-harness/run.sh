@@ -6,7 +6,7 @@
 # layout, handback. The harness-specific parts are in harnesses/<name>.sh and
 # the model-facing wording is in prompts/. Nothing here talks to a model.
 #
-# Usage: run.sh <pr-number> [repo-dir] [--harness auto|claude|codex|cursor] [--review-only]
+# Usage: run.sh <pr-number> [repo-dir] [--harness auto|claude|codex|cursor] [--model MODEL] [--effort LEVEL] [--review-only]
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,11 +16,15 @@ REPO_ARG="."
 HARNESS="auto"
 CALLER="${REVIEW_CALLER:-}"
 REVIEW_ONLY=0
+MODEL_ARG=""
+EFFORT_ARG=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --harness)     HARNESS="${2:?--harness needs a value}"; shift 2 ;;
         --caller)      CALLER="${2:?--caller needs claude or codex}"; shift 2 ;;
+        --model)       MODEL_ARG="${2:?--model needs a value}"; shift 2 ;;
+        --effort)      EFFORT_ARG="${2:?--effort needs a value}"; shift 2 ;;
         --review-only) REVIEW_ONLY=1; shift ;;
         -h|--help)
             sed -n '2,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -89,6 +93,27 @@ do
 done
 [ -n "${REVIEW_CONFIG_USED:-}" ] && echo "### config: $REVIEW_CONFIG_USED"
 
+# CLI choices override machine config. Always pass and record a concrete model
+# rather than inheriting the launching agent's default model accidentally.
+[ -z "$MODEL_ARG" ] || REVIEW_MODEL="$MODEL_ARG"
+[ -z "$EFFORT_ARG" ] || REVIEW_EFFORT="$EFFORT_ARG"
+case "$HARNESS" in
+    claude) REVIEW_MODEL="${REVIEW_MODEL:-opus}"; REVIEW_EFFORT="${REVIEW_EFFORT:-high}" ;;
+    codex) REVIEW_MODEL="${REVIEW_MODEL:-gpt-5.6-sol}"; REVIEW_EFFORT="${REVIEW_EFFORT:-high}" ;;
+    cursor)
+        REVIEW_MODEL="${REVIEW_MODEL:-cursor-grok-4.6-high-fast}"
+        if [ -n "$EFFORT_ARG" ]; then
+            echo 'Cursor effort is part of its model selector; use --model with an effort preset or bracket parameters, not --effort.' >&2
+            exit 2
+        fi
+        # A shared Codex/Claude config may carry effort; never imply that
+        # Cursor honors a separate flag it does not have.
+        unset REVIEW_EFFORT
+        ;;
+esac
+export REVIEW_MODEL REVIEW_EFFORT
+
+
 # Does this machine let a harness sandbox itself? Bubblewrap needs unprivileged
 # user namespaces, and `unshare -Ur` is the cheapest honest proxy for that.
 #
@@ -144,6 +169,9 @@ git fetch origin "refs/pull/$PR/head:refs/review-by-harness/pr$PR" --force --qui
 git fetch origin "$BASE" --quiet
 git worktree add --force -B "review-pr$PR-$HARNESS" "$WT" "refs/review-by-harness/pr$PR" >/dev/null
 mkdir -p "$OUT"
+jq -n --arg harness "$HARNESS" --arg model "${REVIEW_MODEL:-adapter-default}" \
+    --arg effort "${REVIEW_EFFORT:-model-defined}" \
+    '{harness:$harness, model:$model, effort:$effort}' > "$OUT/run.json"
 # Keep the harness's own scratch out of the diff we hand back. A linked
 # worktree's gitdir has no info/ directory until something creates it, and
 # --git-path resolves per-worktree paths correctly where --git-dir does not.
@@ -218,6 +246,7 @@ trap restore_agents EXIT
 echo "### PR #$PR  $TITLE"
 echo "### $HEAD_REF -> $BASE  @ $(git -C "$WT" rev-parse --short HEAD)"
 echo "### harness: $HARNESS   worktree: $WT"
+echo "### requested model: ${REVIEW_MODEL:-adapter-default}   effort: ${REVIEW_EFFORT:-model-defined}"
 
 # A merged (or already-fast-forwarded) PR has no diff against its base. Left
 # unchecked, the harness gets an empty patch, answers with nothing, and the

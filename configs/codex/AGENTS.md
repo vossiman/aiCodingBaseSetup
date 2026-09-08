@@ -111,8 +111,10 @@ keeps chasing, so do not treat a block as proof nothing else works.
   relevant planning, debugging, implementation and verification skills when
   the task benefits from them; the user's scope and authorization take precedence.
 - Local estate skills are shared through `~/.agents/skills`. For an independent
-  PR review, use `review-by-harness` with `--caller codex` (selects Claude),
-  unless the user chose a reviewer explicitly. Verify findings against code.
+  PR review, use `review-by-harness` with an explicit `--harness`, `--model`,
+  and supported `--effort`. Choose Claude for a different-vendor review unless
+  the user chose otherwise; select Fable or Opus deliberately. Verify findings
+  against code.
 - `housekeep` archives completed docs and prunes dated completed TODO entries.
 - To start a project, copy `templates/project/` from the aiCodingBaseSetup
   checkout (`/tmp/aicoding` in containers), substitute `{{PROJECT_NAME}}` and

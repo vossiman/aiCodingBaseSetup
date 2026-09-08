@@ -19,9 +19,11 @@ STUB
 }
 teardown() { rm -rf "$TEST_DIR"; }
 @test "Claude review restricts tools and appends rules without disabling hooks" {
-  run "$ADAPTER" review "$TEST_DIR/repo" HEAD "$TEST_DIR/repo/.review-round"
+  REVIEW_MODEL=fable REVIEW_EFFORT=max run "$ADAPTER" review "$TEST_DIR/repo" HEAD "$TEST_DIR/repo/.review-round"
   [ "$status" -eq 0 ]
   grep -qx Read,Glob,Grep "$LOG"
+  grep -qx fable "$LOG"
+  grep -qx max "$LOG"
   grep -qx dontAsk "$LOG"
   grep -qx -- --strict-mcp-config "$LOG"
   grep -q 'Review session rules' "$LOG"

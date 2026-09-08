@@ -208,3 +208,21 @@ add_project_agents() {
   [ "$status" -eq 1 ]
   [[ "$output" == *'review-only harness changed'* ]]
 }
+
+@test "CLI model and effort override shared config and reach both passes" {
+  sed -i '/verb="$1"/a printf "%s:%s\\n" "${REVIEW_MODEL:-}" "${REVIEW_EFFORT:-}" >> "$MODEL_LOG"' "$SKILL/harnesses/stub.sh"
+  export MODEL_LOG="$TMPDIR/models"
+  printf 'REVIEW_MODEL=wrong\nREVIEW_EFFORT=low\nREVIEW_SANDBOX=-s\n' > "$TMPDIR/model.env"
+  REVIEW_CONFIG="$TMPDIR/model.env" run "$SKILL/run.sh" 1 "$REPO" --harness stub --model fable --effort high
+  [ "$status" -eq 0 ]
+  [ "$(cat "$MODEL_LOG")" = "$(printf 'fable:high\nfable:high')" ]
+  [[ "$output" == *'requested model: fable   effort: high'* ]]
+  [ "$(jq -r .model "$WT/.review-round/run.json")" = fable ]
+  [ "$(jq -r .effort "$WT/.review-round/run.json")" = high ]
+}
+
+@test "Cursor separate effort is refused instead of ignored" {
+  run "$SKILL/run.sh" 1 "$REPO" --harness cursor --model custom --effort high --review-only
+  [ "$status" -eq 2 ]
+  [[ "$output" == *'Cursor effort is part of its model selector'* ]]
+}

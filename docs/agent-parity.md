@@ -61,14 +61,19 @@ this change does not use private session sockets or wake unrelated sessions.
 ## Review from either CLI
 
 ```bash
-~/.claude/skills/review-by-harness/run.sh 123 /path/to/repo --caller codex --review-only
-~/.claude/skills/review-by-harness/run.sh 123 /path/to/repo --caller claude --review-only
+~/.claude/skills/review-by-harness/run.sh 123 /path/to/repo --harness claude --model fable --effort high --review-only
+~/.claude/skills/review-by-harness/run.sh 123 /path/to/repo --harness codex --model gpt-5.6-sol --effort high --review-only
 ```
 
 Explicit `--harness claude|codex|cursor` overrides caller-based selection.
 Without `--caller`, the driver recognizes `CLAUDECODE` / `CODEX_THREAD_ID`;
-unknown callers retain the historical Codex default. `REVIEW_MODEL` and
-`REVIEW_EFFORT` override adapter defaults; a model override must be valid for
+unknown callers retain the historical Codex default. Skill-driven runs explicitly pass `--harness`, `--model`, and `--effort`
+(Claude/Codex), regardless of caller. Use `--model opus` when Opus is sufficient,
+or `--model fable` for Fable. CLI flags override machine `REVIEW_MODEL` and
+`REVIEW_EFFORT`; both passes receive the same choice, recorded in
+`.review-round/run.json` and the header. Cursor effort belongs in its model
+selector; `--effort` is rejected for Cursor. For older callers, environment
+settings override adapter defaults; a model override must be valid for
 the selected harness. Claude defaults to `opus`, Codex to `gpt-5.6-sol`.
 
 Claude review exposes only Read/Glob/Grep, with MCP tools excluded and

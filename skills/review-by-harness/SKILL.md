@@ -16,8 +16,32 @@ the last step of every run is you reading the diff, not the report.
 
 ```bash
 ~/.claude/skills/review-by-harness/run.sh <pr-number> [repo-dir] \
-    [--harness auto|claude|codex|cursor] [--review-only]
+    --harness claude --model fable --effort high [--review-only]
 ```
+
+Choose the reviewer model deliberately for every run, whichever coding agent
+is orchestrating. Pass `--harness` and `--model` explicitly; pass `--effort`
+for Claude/Codex. Respect the user's selection. Fable and Opus are both valid
+Claude choices; do not assume the caller's model or the machine default is
+what the reviewer will use. For a smaller review, Opus can be sufficient;
+for a demanding review or when requested, use Fable. Check the selected CLI's
+available models when unsure about an identifier.
+
+Examples:
+
+```bash
+run.sh 123 /path/to/repo --harness claude --model fable --effort high --review-only
+run.sh 123 /path/to/repo --harness claude --model opus --effort high --review-only
+run.sh 123 /path/to/repo --harness codex --model gpt-5.6-sol --effort high --review-only
+run.sh 123 /path/to/repo --harness cursor --model cursor-grok-4.6-high-fast --review-only
+```
+
+CLI choices override `REVIEW_MODEL` / `REVIEW_EFFORT` in machine config.
+Both passes receive the same requested model/effort, printed in the run header
+and saved to `.review-round/run.json`. Cursor encodes effort in its model
+selector (including bracket parameters on supported models); a separate
+`--effort` is rejected rather than silently ignored. Adapter defaults remain
+for older scripts, but skill-driven runs should always make the choice explicit.
 
 - `--harness auto` (default) chooses Claude when called from Codex and Codex
   when called from Claude. Pass `--caller codex` or `--caller claude` when the
@@ -163,8 +187,7 @@ There are exactly two ways forward, and both are a human's call:
 ## The harness gets session rules, not just a prompt
 
 The driver installs repo-root `AGENTS.md` rules and, for Claude, `CLAUDE.md`
-rules plus an appended system prompt.
-and the global ones (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, the cursor
+rules plus an appended system prompt. The global instructions (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, the cursor
 estate skill) say to file work you find on the kanban board. A reviewer that
 obeys that files tickets for findings the author is about to fix: on
 aiCodingBaseSetup#139 one review-only pass filed four. So `run.sh` prepends
