@@ -27,6 +27,7 @@ Usage:
   dokploy-api post PROCEDURE [--input JSON | --input-file FILE]   # tRPC mutation
   dokploy-api set-env compose COMPOSE_ID NAME < value   # one env var, value from stdin
   dokploy-api set-env compose COMPOSE_ID NAME --from-secret KEY   # value = KEY in the store
+  dokploy-api set-env application APP_ID NAME < value   # same, for a Dokploy application
   dokploy-api --selftest
 
 set-env exists so that a value which is itself a credential (a Kuma push
@@ -34,7 +35,10 @@ URL, a token) can travel from the program that made it into an app's env
 without ever being printed: `kuma-admin push-url 12 | dokploy-api set-env
 compose <id> KUMA_PUSH_X`. It reads the app's env, replaces or appends the
 one line, writes it back, and prints only the variable NAMES. Redeploy
-separately (`post compose.redeploy`) once every variable is in place.
+separately (`post compose.redeploy` or `post application.redeploy`) once
+every variable is in place. The kind is `compose` (compose.one /
+compose.update, key composeId) or `application` (application.one /
+application.update, key applicationId).
 `--from-secret KEY` takes the value from the secrets store instead of
 stdin, for credentials the owner keeps there under a different name (the
 notify-hub tokens live as HUB_* in the store and as HUB_* in the app env).
@@ -209,9 +213,13 @@ def call(method: str, procedure: str, payload):
         die(f"request failed: {type(e).__name__}")
 
 
+ENV_TARGETS = {"compose": "composeId", "application": "applicationId"}
+
+
 def set_env(kind: str, target_id: str, name: str, from_secret: str | None) -> int:
-    if kind != "compose":
-        die("set-env supports compose apps only for now")
+    if kind not in ENV_TARGETS:
+        die("set-env kind must be one of: " + ", ".join(ENV_TARGETS))
+    id_key = ENV_TARGETS[kind]
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
         die(f"not a variable name: {name!r}")
     if from_secret:
@@ -224,7 +232,7 @@ def set_env(kind: str, target_id: str, name: str, from_secret: str | None) -> in
         value = sys.stdin.read().strip()
     if not value or "\n" in value:
         die("set-env needs exactly one non-empty value")
-    status, app = call("GET", "compose.one", {"composeId": target_id})
+    status, app = call("GET", f"{kind}.one", {id_key: target_id})
     if status >= 400 or not isinstance(app, dict):
         print(status)
         emit(app)
@@ -237,7 +245,7 @@ def set_env(kind: str, target_id: str, name: str, from_secret: str | None) -> in
             replaced = True
     if not replaced:
         lines.append(f"{name}={value}")
-    status, out = call("POST", "compose.update", {"composeId": target_id, "env": "\n".join(lines)})
+    status, out = call("POST", f"{kind}.update", {id_key: target_id, "env": "\n".join(lines)})
     print(status)
     if status >= 400:
         emit(out)
@@ -256,6 +264,7 @@ def selftest() -> int:
     fake = "FAKE-DOKPLOY-TOKEN-5b1c8e-do-not-use"
     app_secret = "APP-DB-PASSWORD-9f2a-do-not-use"
     seen: list[str] = []
+    paths: list[str] = []
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -263,6 +272,7 @@ def selftest() -> int:
 
         def do_GET(self):
             seen.append(self.headers.get("x-api-key", ""))
+            paths.append(self.path.split("?", 1)[0])
             if self.path.startswith("/redirect"):
                 self.send_response(302)
                 self.send_header("Location", "http://127.0.0.1:1/stolen")
@@ -324,6 +334,22 @@ def selftest() -> int:
     if "KUMA_PUSH_X" not in pr.stdout:
         failures.append("set-env: the variable name was not reported")
 
+    del paths[:]
+    pr = subprocess.run(
+        [sys.executable, __file__, "set-env", "application", "x", "KUMA_PUSH_Y"],
+        input=piped, capture_output=True, text=True, env=env, timeout=30,
+    )
+    if piped in pr.stdout + pr.stderr:
+        failures.append("set-env application: the piped value appeared in the output")
+    if paths[-2:] != ["/api/application.one", "/api/application.update"]:
+        failures.append(f"set-env application: wrong routes {paths[-2:]}")
+    pr = subprocess.run(
+        [sys.executable, __file__, "set-env", "service", "x", "KUMA_PUSH_Z"],
+        input=piped, capture_output=True, text=True, env=env, timeout=30,
+    )
+    if pr.returncode == 0 or "kind must be one of" not in pr.stdout + pr.stderr:
+        failures.append("set-env: an unknown kind was not refused")
+
     env["DOKPLOY_URL"] = f"http://127.0.0.1:{port}/redirect"
     before = len(seen)
     out = run(["get", "project.all"], "redirect")
@@ -363,7 +389,7 @@ def main() -> int:
         return selftest()
     if a.method == "set-env":
         if len(a.rest) != 2 or not a.procedure:
-            p.error("usage: dokploy-api set-env compose COMPOSE_ID NAME [--from-secret KEY] < value")
+            p.error("usage: dokploy-api set-env compose|application ID NAME [--from-secret KEY] < value")
         return set_env(a.procedure, a.rest[0], a.rest[1], a.from_secret)
     if a.from_secret:
         p.error("--from-secret goes with set-env")
