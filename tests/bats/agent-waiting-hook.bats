@@ -41,3 +41,23 @@ teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
   grep -q '.claude/hooks/agent-waiting.sh|overwrite|configs/claude/hooks/agent-waiting.sh' \
     "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
 }
+
+@test "agent-working.sh clears the flag on turn start for both CLIs" {
+  local hook="$BLUEPRINT_ROOT/configs/claude/hooks/agent-working.sh"
+  run bash "$hook" <<< '{"prompt":"go"}'
+  [ "$status" -eq 0 ]
+  grep -qx -- '--clear' "$HOME/notify-args"
+  grep -q 'agent-working.sh' "$BLUEPRINT_ROOT/configs/claude/settings.json"
+  grep -q '.claude/hooks/agent-working.sh|overwrite|configs/claude/hooks/agent-working.sh' \
+    "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  grep -q '^\[\[hooks.UserPromptSubmit\]\]' "$BLUEPRINT_ROOT/configs/codex/requirements.toml"
+  grep -q 'hooks/agent-working.sh' "$BLUEPRINT_ROOT/configs/codex/requirements.toml"
+}
+
+@test "agent-working.sh distiller sessions never touch the flag" {
+  export LLMWIKI_DISTILLER=1
+  run bash "$BLUEPRINT_ROOT/configs/claude/hooks/agent-working.sh" <<< '{}'
+  unset LLMWIKI_DISTILLER
+  [ "$status" -eq 0 ]
+  [ ! -f "$HOME/notify-args" ]
+}

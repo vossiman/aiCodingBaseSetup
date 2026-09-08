@@ -45,6 +45,13 @@ teardown() { cd /; rm -rf "$TMP"; }
   [ ! -s "$TMP/ran.log" ]                  # binaries were NOT refreshed
 }
 
+@test "sync provisioning reconciles the Playwright MCP browser on existing machines" {
+  printf '#!/bin/sh\necho "$*" >> "$TMP/npx-calls"\n' > "$TMP/stubs/npx"
+  export SCRIPT_DIR="$BLUEPRINT_ROOT"
+  AICODINGSETUP_SKIP_NETWORK= _sync_provision yes
+  grep -q -- '^-y @playwright/mcp@latest install-browser --no-remove chromium$' "$TMP/npx-calls"
+}
+
 @test "_sync_binaries: host profile refreshes claude only" {
   printf '#!/bin/sh\necho "codex $*" >> "$TMP/ran.log"\n' > "$TMP/stubs/codex"; chmod +x "$TMP/stubs/codex"
   mkdir -p "$(dirname "$AICODING_MANIFEST")"

@@ -55,6 +55,14 @@ teardown() { rm -rf "$TMPDIR_T"; }
   [ "$(grep -c "command = \"$CODEX_MANAGED_DIR/hooks/redact-sessions-hook.sh\"" "$REQ")" -eq 2 ]
 }
 
+@test "ships agent-working.sh as a managed UserPromptSubmit hook" {
+  ensure_codex_managed_hooks
+  [ -x "$CODEX_MANAGED_DIR/hooks/agent-working.sh" ]
+  cmp "$BLUEPRINT_ROOT/configs/claude/hooks/agent-working.sh" "$CODEX_MANAGED_DIR/hooks/agent-working.sh"
+  grep -q '^\[\[hooks.UserPromptSubmit\]\]' "$REQ"
+  grep -q "command = \"$CODEX_MANAGED_DIR/hooks/agent-working.sh\"" "$REQ"
+}
+
 @test "a stale managed copy of a redact-sessions hook is refreshed" {
   ensure_codex_managed_hooks
   echo "stale" > "$CODEX_MANAGED_DIR/hooks/redact-sessions-pending.sh"
@@ -83,6 +91,9 @@ h=d['hooks']['PreToolUse'][0]
 assert h['matcher'], 'no matcher'
 assert h['hooks'][0]['type']=='command', h
 assert h['hooks'][0]['command'].endswith('bw-deny-files.sh'), h
+for group in d['hooks']['SessionEnd']:
+    for hook in group['hooks']:
+        assert 1 <= hook.get('timeout', 1) <= 3, 'SessionEnd exceeds Codex timeout cap'
 print('ok')
 "
   [ "$status" -eq 0 ]

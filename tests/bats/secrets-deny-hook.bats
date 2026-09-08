@@ -369,6 +369,48 @@ MARK"
   allowed
 }
 
+@test "setting shell options without a trailing operand is allowed" {
+  local cmd
+  for cmd in 'set -e' 'set -u' 'set -eu' 'set -eux' 'set +e' 'set -o'; do
+    bash_hook "$cmd"
+    allowed
+  done
+}
+
+@test "a Git pointer update block starting with set -e is allowed" {
+  # Data fed to the hook only: none of these Git commands are executed.
+  local cmd
+  cmd=$(cat <<'COMMAND'
+set -e
+git diff --cached --quiet
+git update-index --cacheinfo 160000,5bdd5dafad137df48555a295c4b3f5ced235e500,devpod/aicoding
+test "$(git diff --cached --name-only)" = devpod/aicoding
+git diff --cached --submodule=short
+git commit -m 'chore: bump aicoding for SessionEnd and Playwright fixes' -m 'Pins aiCodingBaseSetup PR #150 (AICODINGBASESETUP-24, AICODINGBASESETUP-25).'
+git push origin main
+COMMAND
+)
+  bash_hook "$cmd"
+  allowed
+}
+
+@test "shell options do not exempt later credential reads or environment dumps" {
+  local cmd
+  for cmd in $'set -e\nenv' 'set -eu; set' 'set -u && printenv' \
+      $'set -e\ngit credential fill' 'set -e; gh auth token' \
+      'set -e; echo "$GH_TOKEN"'; do
+    bash_hook "$cmd"
+    denied
+  done
+}
+
+@test "a set dump redirected to an option-like filename is still denied" {
+  bash_hook 'set > -e'
+  denied
+  bash_hook 'set > /tmp/-eu'
+  denied
+}
+
 # --- MCP configs carry live keys too ----------------------------------------
 # The blueprint substitutes API keys into every agent's MCP config at deploy
 # time, so the secrets file is one of six copies on disk. Denying only the

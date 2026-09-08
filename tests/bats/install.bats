@@ -1116,6 +1116,8 @@ EOF
 # $1: what the ldd stub reports — "missing" or "resolved".
 _playwright_fixture() {
   local libs="$1"
+  export AICODINGSETUP_SKIP_NETWORK=
+  export PLAYWRIGHT_TEST_REVISION=1234
   export PLAYWRIGHT_BROWSERS_PATH="$TMPDIR/ms-playwright"
   mkdir -p "$PLAYWRIGHT_BROWSERS_PATH/chromium-1234/chrome-linux64"
   printf '#!/bin/sh\nexit 0\n' > "$PLAYWRIGHT_BROWSERS_PATH/chromium-1234/chrome-linux64/chrome"
@@ -1124,6 +1126,22 @@ _playwright_fixture() {
   cat > "$TMPDIR/stubs/npx" <<NPX
 #!/bin/sh
 echo "\$@" >> '$TMPDIR/npx-calls'
+case "\$*" in
+  '-y @playwright/mcp@latest install-browser --dry-run chromium')
+    [ -z "\${PLAYWRIGHT_TEST_RESOLVE_FAIL:-}" ] || exit 38
+    echo "Chrome for Testing (playwright chromium v\$PLAYWRIGHT_TEST_REVISION)"
+    echo "  Install location:    \$PLAYWRIGHT_BROWSERS_PATH/chromium-\$PLAYWRIGHT_TEST_REVISION"
+    echo "FFmpeg"
+    echo "  Install location:    \$PLAYWRIGHT_BROWSERS_PATH/ffmpeg-1011"
+    ;;
+  '-y @playwright/mcp@latest install-browser --no-remove chromium')
+    [ -z "\${PLAYWRIGHT_TEST_INSTALL_FAIL:-}" ] || exit 37
+    bin="\$PLAYWRIGHT_BROWSERS_PATH/chromium-\$PLAYWRIGHT_TEST_REVISION/chrome-linux64/chrome"
+    mkdir -p "\$(dirname "\$bin")"
+    printf '#!/bin/sh\\nexit 0\\n' > "\$bin"
+    chmod +x "\$bin"
+    ;;
+esac
 exit 0
 NPX
   # \$SUDO must not swallow the recorded call — pass through to the real command.
@@ -1133,18 +1151,21 @@ NPX
     # runs under `set -euo pipefail`, so this must not fail a pipeline.
     cat > "$TMPDIR/stubs/ldd" <<'LDD'
 #!/bin/sh
+echo "$*" >> "$HOME/ldd-calls"
 echo "	not a dynamic executable" >&2
 exit 1
 LDD
   elif [ "$libs" = "missing" ]; then
     cat > "$TMPDIR/stubs/ldd" <<'LDD'
 #!/bin/sh
+echo "$*" >> "$HOME/ldd-calls"
 echo "	libatk-1.0.so.0 => not found"
 echo "	libgbm.so.1 => not found"
 LDD
   else
     cat > "$TMPDIR/stubs/ldd" <<'LDD'
 #!/bin/sh
+echo "$*" >> "$HOME/ldd-calls"
 echo "	libgbm.so.1 => /lib/x86_64-linux-gnu/libgbm.so.1"
 LDD
   fi
@@ -1155,9 +1176,9 @@ LDD
   _playwright_fixture missing
   _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
   [ "$status" -eq 0 ]
-  # Browser download is skipped (cache populated) but install-deps still runs.
+  # The MCP installer reconciles its revision; system deps still get checked.
   grep -q "install-deps chromium" "$TMPDIR/npx-calls"
-  if grep -qE "^-y playwright install chromium$" "$TMPDIR/npx-calls"; then false; fi
+  grep -q -- '^-y @playwright/mcp@latest install-browser --no-remove chromium$' "$TMPDIR/npx-calls"
 }
 
 @test "ensure_playwright_browsers: warns with the manual command when install-deps does not fix the libs" {
@@ -1165,7 +1186,7 @@ LDD
   _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "libatk-1.0.so.0"
-  echo "$output" | grep -q "playwright install-deps chromium"
+  echo "$output" | grep -q "playwright-core install-deps chromium"
 }
 
 @test "ensure_playwright_browsers: no install-deps when the chromium libs already resolve" {
@@ -1180,7 +1201,64 @@ LDD
   rm -rf "$PLAYWRIGHT_BROWSERS_PATH"
   _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
   [ "$status" -eq 0 ]
-  grep -q "playwright install chromium" "$TMPDIR/npx-calls"
+  [ -x "$PLAYWRIGHT_BROWSERS_PATH/chromium-1234/chrome-linux64/chrome" ]
+  grep -q -- '^-y @playwright/mcp@latest install-browser --no-remove chromium$' "$TMPDIR/npx-calls"
+}
+
+@test "ensure_playwright_browsers: repairs an obsolete nonempty cache and checks the required revision" {
+  _playwright_fixture resolved
+  export PLAYWRIGHT_TEST_REVISION=1243
+  _run_install_fn_strict "$(_isolated_path)" ensure_playwright_browsers
+  [ "$status" -eq 0 ]
+  [ -x "$PLAYWRIGHT_BROWSERS_PATH/chromium-1243/chrome-linux64/chrome" ]
+  [ -x "$PLAYWRIGHT_BROWSERS_PATH/chromium-1234/chrome-linux64/chrome" ]
+  grep -q '/chromium-1243/chrome-linux64/chrome$' "$HOME/ldd-calls"
+  if grep -q '/chromium-1234/' "$HOME/ldd-calls"; then false; fi
+}
+
+@test "ensure_playwright_browsers: download failure warns under sync shell options without accepting an old browser" {
+  _playwright_fixture resolved
+  export PLAYWRIGHT_TEST_REVISION=1243 PLAYWRIGHT_TEST_INSTALL_FAIL=1
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"browser install failed"* ]]
+  [ ! -e "$HOME/ldd-calls" ]
+  [ ! -e "$PLAYWRIGHT_BROWSERS_PATH/chromium-1243" ]
+}
+
+@test "ensure_playwright_browsers: respects the offline provisioning guard" {
+  _playwright_fixture resolved
+  export AICODINGSETUP_SKIP_NETWORK=1
+  _run_install_fn_strict "$(_isolated_path)" ensure_playwright_browsers
+  [ "$status" -eq 0 ]
+  [ ! -e "$TMPDIR/npx-calls" ]
+}
+
+@test "check_playwright: an obsolete cached revision does not pass the health check" {
+  _playwright_fixture resolved
+  export PLAYWRIGHT_TEST_REVISION=1243
+  _run_install_fn_strict "$(_isolated_path)" check_playwright
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"required by Playwright MCP is unavailable"* ]]
+  [[ "$output" != *"OK:"* ]]
+  [ ! -e "$HOME/ldd-calls" ]
+}
+
+@test "check_playwright: respects the offline provisioning guard" {
+  _playwright_fixture resolved
+  export AICODINGSETUP_SKIP_NETWORK=1
+  _run_install_fn_strict "$(_isolated_path)" check_playwright
+  [ "$status" -eq 0 ]
+  [ ! -e "$TMPDIR/npx-calls" ]
+}
+
+@test "check_playwright: failure to resolve the required browser does not pass the health check" {
+  _playwright_fixture resolved
+  export PLAYWRIGHT_TEST_RESOLVE_FAIL=1
+  _run_install_fn_strict "$(_isolated_path)" check_playwright
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"required by Playwright MCP is unavailable"* ]]
+  [[ "$output" != *"OK:"* ]]
 }
 
 @test "check_playwright: reports missing system libraries instead of a bare OK" {
@@ -1204,7 +1282,7 @@ LDD
   # install-deps cannot repair a truncated download — must not be attempted.
   [ ! -f "$TMPDIR/npx-calls" ] || ! grep -q "install-deps" "$TMPDIR/npx-calls"
   # The actionable fix is re-downloading the browser.
-  echo "$output" | grep -q "playwright install --force chromium"
+  echo "$output" | grep -q "@playwright/mcp@latest install-browser --force chromium"
 }
 
 @test "check_playwright: survives an ldd failure instead of aborting the run" {

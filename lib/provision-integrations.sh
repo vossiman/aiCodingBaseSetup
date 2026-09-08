@@ -349,26 +349,27 @@ install_infra_audit() {
 # --- Playwright check ---
 check_playwright() {
   header "Playwright"
+  # Resolving the MCP version can contact npm; keep offline installs offline.
+  [[ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ]] || return 0
 
-  if [[ ! -d "$(playwright_cache_dir)" ]] && [[ ! -d "$HOME/Library/Caches/ms-playwright" ]]; then
-    warn "Playwright browsers not found"
-    info "Run: npx playwright install"
+  local bin missing rc=0
+  bin="$(playwright_chromium_bin)" || {
+    warn "The Chromium revision required by Playwright MCP is unavailable"
+    info "Run: npx -y @playwright/mcp@latest install-browser chromium"
     return 0
-  fi
-  ok "Playwright browsers installed"
+  }
+  ok "Playwright MCP's Chromium revision is installed"
 
   # A downloaded browser is not a working browser — report unresolved system
   # libraries here too, so a Chromium that can't launch can't pass as a green
   # check (helpers live in lib/provision-system.sh).
-  local bin missing rc=0
-  bin="$(playwright_chromium_bin)" || return 0
   missing="$(playwright_missing_libs "$bin")" || rc=$?
   if [[ $rc -ne 0 ]]; then
     warn "Playwright chromium present but unreadable — ldd failed (truncated download?)"
-    info "Run: npx playwright install --force chromium"
+    info "Run: npx -y @playwright/mcp@latest install-browser --force chromium"
   elif [[ -n "$missing" ]]; then
     warn "Playwright system libraries missing: $(tr '\n' ' ' <<<"$missing")"
-    info "Run: sudo npx playwright install-deps chromium"
+    info "Run: sudo npx -y --package=@playwright/mcp@latest -c 'playwright-core install-deps chromium'"
   else
     ok "Playwright system libraries present"
   fi
