@@ -485,15 +485,19 @@ ensure_tmux() {
   ok "tmux $(tmux -V 2>/dev/null | awk '{print $2}') (master ${tmux_commit:0:7}) built and installed to /usr/local/bin/tmux"
 }
 
-playwright_cache_dir() {
-  printf '%s' "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
-}
-
-# Path of an installed chromium binary, or non-zero if none. The layout changed
-# across Playwright versions (chrome-linux → chrome-linux64), so glob both.
+# Ask the MCP's own installer which revision it needs. An arbitrary cached
+# chromium (or the separately released `playwright` npm package) can be older
+# than the MCP's playwright-core dependency and must not pass this check.
 playwright_chromium_bin() {
-  local bin
-  for bin in "$(playwright_cache_dir)"/chromium-*/chrome-linux*/chrome; do
+  local plan dir bin
+  command -v npx &>/dev/null || return 1
+  plan="$(npx -y @playwright/mcp@latest install-browser --dry-run chromium 2>/dev/null)" || return 1
+  dir="$(printf '%s\n' "$plan" | sed -n 's/^[[:space:]]*Install location:[[:space:]]*//p' \
+    | awk '/\/chromium-[^/]+$/ {print; exit}')"
+  [[ -n "$dir" ]] || return 1
+  for bin in "$dir"/chrome-linux*/chrome \
+      "$dir"/chrome-mac*/"Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" \
+      "$dir"/chrome-mac*/Chromium.app/Contents/MacOS/Chromium; do
     if [[ -x "$bin" ]]; then printf '%s' "$bin"; return 0; fi
   done
   return 1
@@ -530,7 +534,8 @@ playwright_missing_libs() {
 ensure_playwright_system_deps() {
   local bin missing
   bin="$(playwright_chromium_bin)" || {
-    info "No chromium binary found — skipping Playwright system libraries"
+    warn "The Chromium revision required by Playwright MCP is unavailable"
+    info "Run: npx -y @playwright/mcp@latest install-browser chromium"
     return 0
   }
   local rc=0
@@ -538,7 +543,7 @@ ensure_playwright_system_deps() {
   if [[ $rc -ne 0 ]]; then
     # install-deps cannot repair a bad download — the fix is re-fetching it.
     warn "Could not inspect $bin — ldd failed (truncated or partial download?)"
-    info "Run: npx playwright install --force chromium"
+    info "Run: npx -y @playwright/mcp@latest install-browser --force chromium"
     return 0
   fi
   if [[ -z "$missing" ]]; then
@@ -548,25 +553,31 @@ ensure_playwright_system_deps() {
   info "Installing Playwright system libraries (missing: $(tr '\n' ' ' <<<"$missing"))"
   # install-deps needs root; `env PATH=` because npx is usually nvm-managed and
   # sudo's secure_path would not find it.
-  $SUDO env PATH="$PATH" npx -y playwright install-deps chromium 2>&1 | tail -5 \
+  (set -o pipefail; $SUDO env PATH="$PATH" npx -y --package=@playwright/mcp@latest \
+    -c 'playwright-core install-deps chromium' 2>&1 | tail -5) \
     || warn "playwright install-deps failed"
-  missing="$(playwright_missing_libs "$bin")"
+  missing="$(playwright_missing_libs "$bin")" || {
+    warn "Could not recheck Playwright system libraries — ldd failed"
+    return 0
+  }
   if [[ -n "$missing" ]]; then
     warn "Playwright system libraries still missing: $(tr '\n' ' ' <<<"$missing")"
-    info "Run: sudo npx playwright install-deps chromium"
+    info "Run: sudo npx -y --package=@playwright/mcp@latest -c 'playwright-core install-deps chromium'"
   else
     ok "Playwright system libraries installed"
   fi
 }
 
 ensure_playwright_browsers() {
+  [[ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ]] || return 0
   command -v npx &>/dev/null || return 0
-  local cache_dir; cache_dir="$(playwright_cache_dir)"
-  if [[ -d "$cache_dir" ]] && [[ -n "$(ls -A "$cache_dir" 2>/dev/null)" ]]; then
-    ok "Playwright browsers already installed"
-  else
-    info "Installing Playwright browsers (chromium)"
-    npx -y playwright install chromium 2>&1 | tail -5 || warn "Playwright browser install failed"
+  info "Ensuring Playwright MCP's Chromium revision is installed"
+  # The installer checks its exact revision and skips an existing download.
+  # Keep older revisions: another active MCP session may still be using one.
+  # Explicit pipefail also catches failures when called by fail-open sync.
+  if ! (set -o pipefail; npx -y @playwright/mcp@latest install-browser --no-remove chromium 2>&1 | tail -5); then
+    warn "Playwright MCP browser install failed"
+    return 0
   fi
   ensure_playwright_system_deps
 }
