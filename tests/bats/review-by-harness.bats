@@ -165,3 +165,18 @@ add_project_agents() {
   [ "$(cat "$WT/AGENTS.md")" = "$(printf '# Project rules\nrun the tests')" ]
   git -C "$WT" diff --quiet HEAD
 }
+
+@test "every shipped skill counts as managed, so install.sh never reports it as unmanaged" {
+  # The 2026-09-08 host install flagged review-by-harness as "not managed by
+  # this installer" because MANAGED_SKILLS was a hand-kept list.
+  run bash -c '
+    SCRIPT_DIR="$1"
+    . "$SCRIPT_DIR/lib/provision-managed-files.sh"
+    printf "%s\n" "${MANAGED_SKILLS[@]}"
+  ' _ "$BLUEPRINT_ROOT"
+  [ "$status" -eq 0 ]
+  for d in "$BLUEPRINT_ROOT"/skills/*/; do
+    grep -qx "$(basename "$d")" <<<"$output"
+  done
+  grep -qx review-by-harness <<<"$output"
+}
