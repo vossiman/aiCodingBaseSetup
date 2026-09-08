@@ -122,3 +122,15 @@ keeps chasing, so do not treat a block as proof nothing else works.
   existing contents and announce the path.
 - Automatic memory hints are leads, not facts. Verify them and use
   `memory_feedback` with `confirmed` or `wrong` when the outcome is known.
+
+
+## Worktree isolation and session coordination
+
+For branch implementation, use the shared `worktree-session` skill. Create a
+worktree at `<repo-root>/.claude/worktrees/<branch>` with `aicoding-worktree`
+or `git worktree add`; if already in a linked worktree, continue there.
+Never switch branches in a shared project or submodule checkout. Check for
+other worktrees before broad changes, and surface overlapping work.
+Codex collaboration tools coordinate this session's own subagents. They do
+not message independent sessions or Claude Code. Use `review-by-harness` for
+a fresh independent reviewer; do not mistake that for cross-session messaging.

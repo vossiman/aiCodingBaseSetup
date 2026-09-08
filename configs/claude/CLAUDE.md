@@ -147,6 +147,13 @@ telling the user what you found: file it *and* say so.
 
 ## Parallel-session coordination
 
+The shared `worktree-session` skill applies to branch implementation in both
+Claude and Codex. `aicoding-worktree <branch> [base-ref]` creates the worktree
+without changing the shared checkout. Native Claude messaging reaches Claude
+peers only; `review-by-harness` can launch a fresh Codex reviewer, but cannot
+message an already-open Codex session.
+
+
 Other sessions on this host are the user's own, but not necessarily on this
 project: on a desktop, ListAgents also lists sessions in unrelated repos.
 **Siblings** are only sessions working the same repo family: this repo, any
