@@ -243,6 +243,7 @@ best-effort layer, not an airlock: determined bypasses (a redirected
 keeps chasing, so do not treat a block as proof nothing else works.
 
 For `review-by-harness`, pass the reviewer harness and model explicitly from
-any coding agent. Default to GPT-5.6 Sol (`gpt-5.6-sol`) for Codex or Opus 5
+any coding agent. Choose Codex for a different-vendor review unless the user
+chose otherwise. Default to GPT-5.6 Sol (`gpt-5.6-sol`) for Codex or Opus 5
 (`claude-opus-5`) for Claude. Fable and Astra require an explicit user override;
 task complexity or machine defaults do not authorize an upgrade.

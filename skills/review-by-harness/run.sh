@@ -168,7 +168,14 @@ git worktree remove --force "$WT" 2>/dev/null || true
 git fetch origin "refs/pull/$PR/head:refs/review-by-harness/pr$PR" --force --quiet
 git fetch origin "$BASE" --quiet
 git worktree add --force -B "review-pr$PR-$HARNESS" "$WT" "refs/review-by-harness/pr$PR" >/dev/null
-mkdir -p "$OUT"
+# The PR controls every checked-out path. Never accept its scratch directory
+# (or a symlink/file in its place): even a real directory can contain report
+# symlinks that redirect our writes. mkdir without -p claims a fresh directory
+# atomically and refuses all pre-existing paths, including dangling symlinks.
+if ! mkdir -m 700 "$OUT"; then
+    echo "!!! refusing pre-existing review scratch path: $OUT" >&2
+    exit 1
+fi
 jq -n --arg harness "$HARNESS" --arg model "${REVIEW_MODEL:-adapter-default}" \
     --arg effort "${REVIEW_EFFORT:-model-defined}" \
     '{harness:$harness, model:$model, effort:$effort}' > "$OUT/run.json"
@@ -206,12 +213,17 @@ _agents_kind() {  # _agents_kind <name>: tracked | untracked | absent
     else echo absent; fi
 }
 install_agents() {  # install_agents <review|fix>
-    local f kind
+    local f kind staged
     for f in "${AGENTS_FILES[@]}"; do
         kind="$(_agents_kind "$f")"
-        [ -e "$OUT/$f.kind" ] || echo "$kind" > "$OUT/$f.kind"
         if [ -L "$WT/$f" ]; then
             [ -L "$OUT/$f.orig" ] || cp -P "$WT/$f" "$OUT/$f.orig"
+        fi
+        [ -e "$OUT/$f.kind" ] || echo "$kind" > "$OUT/$f.kind"
+        staged=$(mktemp "$OUT/$f.XXXXXX")
+        if [ -f "$WT/$f" ] && [ ! -L "$WT/$f" ]; then
+            # Portable mode preservation; chmod --reference is GNU-specific.
+            cp -p "$WT/$f" "$staged"
         fi
         # Stream the body: command substitution strips trailing newlines and
         # would make the unchanged-worktree check blame our own normalization
@@ -221,19 +233,17 @@ install_agents() {  # install_agents <review|fix>
           if [ -f "$WT/$f" ]; then
               sed "/^$RB_BEGIN\$/,/^$RB_END\$/d" "$WT/$f"
           fi
-        } > "$OUT/$f.new"
-        if [ -L "$WT/$f" ]; then
-            mv "$OUT/$f.new" "$WT/$f"
-        else
-            # Keep an existing regular file's mode (including its git exec bit).
-            cat "$OUT/$f.new" > "$WT/$f"
-            rm -f "$OUT/$f.new"
-        fi
+        } > "$staged"
+        # Same-filesystem rename is atomic: interruption leaves either the
+        # original or complete injected file for the EXIT restoration trap.
+        mv "$staged" "$WT/$f"
     done
 }
 restore_agents() {
     local f kind
     for f in "${AGENTS_FILES[@]}"; do
+        # An interrupted install may not have reached every instruction file.
+        [ -f "$OUT/$f.kind" ] || continue
         kind="$(cat "$OUT/$f.kind" 2>/dev/null || echo absent)"
         if [ -L "$OUT/$f.orig" ] || [ -e "$OUT/$f.orig" ]; then
             # Was a symlink: put the link back, tracked from git, untracked from the copy.
@@ -251,6 +261,9 @@ restore_agents() {
     done
 }
 trap restore_agents EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 echo "### PR #$PR  $TITLE"
 echo "### $HEAD_REF -> $BASE  @ $(git -C "$WT" rev-parse --short HEAD)"

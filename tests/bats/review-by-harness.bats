@@ -259,3 +259,59 @@ add_project_agents() {
   [ "$(readlink "$cw/CLAUDE.md")" = AGENTS.md ]
   git -C "$cw" diff --quiet HEAD
 }
+
+@test "PR-controlled scratch paths cannot redirect driver writes" {
+  mkdir -p "$TMPDIR/outside"
+  printf 'untouched\n' > "$TMPDIR/outside/run.json"
+  for shape in symlink dangling directory; do
+    ( cd "$TMPDIR/seed"
+      git rm -rf --ignore-unmatch .review-round >/dev/null
+      case "$shape" in
+        symlink) ln -s "$TMPDIR/outside" .review-round ;;
+        dangling) ln -s "$TMPDIR/missing-target" .review-round ;;
+        directory) mkdir .review-round; ln -s "$TMPDIR/outside/run.json" .review-round/run.json ;;
+      esac
+      git add .review-round; git commit -qm "$shape scratch path"
+      git push -q -f origin HEAD:refs/pull/1/head )
+    run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+    [ "$status" -eq 1 ]
+    [[ "$output" == *'refusing pre-existing review scratch path'* ]]
+    [ "$(cat "$TMPDIR/outside/run.json")" = untouched ]
+    [ "$(find "$TMPDIR/outside" -type f | wc -l)" -eq 1 ]
+    [ ! -e "$TMPDIR/missing-target" ]
+    [ ! -e "$WT/.review-round/agents-seen-review.md" ]
+  done
+}
+
+@test "termination before or after atomic instruction replacement restores bytes and modes" {
+  cp "$SKILL/harnesses/stub.sh" "$SKILL/harnesses/claude.sh"
+  ( cd "$TMPDIR/seed"
+    printf 'rules without final newline' > AGENTS.md
+    chmod +x AGENTS.md
+    : > CLAUDE.md
+    git add AGENTS.md CLAUDE.md; git commit -qm instructions
+    git push -q -f origin HEAD:refs/pull/1/head )
+  export REAL_MV
+  REAL_MV=$(command -v mv)
+  cat > "$TMPDIR/bin/mv" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  */.review-round/AGENTS.md.*)
+    if [ "$INTERRUPT_POINT" = after ]; then "$REAL_MV" "$@"; fi
+    kill -TERM "$PPID"
+    exit 143 ;;
+esac
+exec "$REAL_MV" "$@"
+STUB
+  chmod +x "$TMPDIR/bin/mv"
+  for point in before after; do
+    INTERRUPT_POINT="$point" run "$SKILL/run.sh" 1 "$REPO" --harness claude --model claude-opus-5 --review-only
+    [ "$status" -eq 143 ]
+    local cw="$REPO/.claude/worktrees/review-pr1-claude"
+    cmp "$TMPDIR/seed/AGENTS.md" "$cw/AGENTS.md"
+    cmp "$TMPDIR/seed/CLAUDE.md" "$cw/CLAUDE.md"
+    [ -x "$cw/AGENTS.md" ]
+    git -C "$cw" diff --quiet HEAD
+    [ ! -e "$cw/.review-round/agents-seen-review.md" ]
+  done
+}

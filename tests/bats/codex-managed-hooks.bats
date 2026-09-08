@@ -207,7 +207,7 @@ EOF
   ensure_codex_managed_hooks
   cmp "$BLUEPRINT_ROOT/configs/claude/hooks/memory-hint.sh" "$CODEX_MANAGED_DIR/hooks/memory-hint.sh"
   cmp "$BLUEPRINT_ROOT/configs/claude/hooks/check-archived-docs.sh" "$CODEX_MANAGED_DIR/hooks/check-archived-docs.sh"
-  python3 -c 'import tomllib' 2>/dev/null || skip "python3 lacks tomllib (needs 3.11+)"
+  python3 -c 'import tomllib' 2>/dev/null || skip "python3 with tomllib unavailable (needs 3.11+)"
   run python3 -c '
 import sys, tomllib
 with open(sys.argv[1], "rb") as f: hooks=tomllib.load(f)["hooks"]

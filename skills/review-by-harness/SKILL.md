@@ -46,7 +46,8 @@ for older scripts, but skill-driven runs should always make the choice explicit.
 - `--harness auto` (default) chooses Claude when called from Codex and Codex
   when called from Claude. Pass `--caller codex` or `--caller claude` when the
   runtime marker is unavailable. Explicit `--harness` always wins.
-- `--harness claude` — Claude Code’s Opus 5 (`claude-opus-5`) at high effort. Review has
+- `--harness claude` — Claude Code's Opus 5 (`claude-opus-5`) at high effort.
+  Review has
   only Read/Glob/Grep tools and no MCP tools. Fix uses native sandboxing where
   available; the existing `REVIEW_SANDBOX='-s danger-full-access'` opt-in
   applies where user namespaces are unavailable. Cursor's `--force` is not
@@ -59,7 +60,11 @@ for older scripts, but skill-driven runs should always make the choice explicit.
   unfamiliar repo.
 
 Each run makes a fresh worktree at `.claude/worktrees/review-pr<N>-<harness>`,
-reset to the PR head. It never commits and never pushes.
+reset to the PR head. It never commits and never pushes. The PR must not
+contain `.review-round`: the driver refuses any pre-existing scratch path
+before writing reports, including directories containing symlinks.
+Instruction injection uses atomic replacement, preserves existing modes,
+and restores the files after normal exit or handled HUP/INT/TERM signals.
 
 ## Your job when it finishes
 
