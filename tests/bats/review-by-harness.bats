@@ -226,3 +226,33 @@ add_project_agents() {
   [ "$status" -eq 2 ]
   [[ "$output" == *'Cursor effort is part of its model selector'* ]]
 }
+
+@test "review preserves instruction files with missing or multiple trailing newlines" {
+  cp "$SKILL/harnesses/stub.sh" "$SKILL/harnesses/claude.sh"
+  for suffix in '' $'\n\n\n'; do
+    ( cd "$TMPDIR/seed"
+      printf 'project rules%s' "$suffix" > AGENTS.md
+      printf 'Claude rules%s' "$suffix" > CLAUDE.md
+      git add AGENTS.md CLAUDE.md; git commit -qm endings
+      git push -q -f origin HEAD:refs/pull/1/head )
+    run "$SKILL/run.sh" 1 "$REPO" --harness claude --model opus --review-only
+    [ "$status" -eq 0 ]
+    cmp "$TMPDIR/seed/AGENTS.md" "$REPO/.claude/worktrees/review-pr1-claude/AGENTS.md"
+    cmp "$TMPDIR/seed/CLAUDE.md" "$REPO/.claude/worktrees/review-pr1-claude/CLAUDE.md"
+  done
+}
+
+@test "Claude instruction symlink receives one rules block and is restored" {
+  cp "$SKILL/harnesses/stub.sh" "$SKILL/harnesses/claude.sh"
+  sed -i '/verb="$1"/a cp "$wt/CLAUDE.md" "$wt/.review-round/claude-seen.md"' "$SKILL/harnesses/claude.sh"
+  ( cd "$TMPDIR/seed"
+    printf 'project rules\n' > AGENTS.md; ln -s AGENTS.md CLAUDE.md
+    git add AGENTS.md CLAUDE.md; git commit -qm claude-link
+    git push -q -f origin HEAD:refs/pull/1/head )
+  run "$SKILL/run.sh" 1 "$REPO" --harness claude --model opus --review-only
+  [ "$status" -eq 0 ]
+  local cw="$REPO/.claude/worktrees/review-pr1-claude"
+  [ "$(grep -c 'review-by-harness:begin' "$cw/.review-round/claude-seen.md")" -eq 1 ]
+  [ "$(readlink "$cw/CLAUDE.md")" = AGENTS.md ]
+  git -C "$cw" diff --quiet HEAD
+}

@@ -1,6 +1,7 @@
 ---
 name: housekeep
 description: Archive completed project docs and prune dated completed TODO entries when asked to housekeep or tidy project documentation.
+allowed-tools: Read, Write, Edit, Bash(ls:*), Bash(mv:*), Bash(mkdir:*), Bash(find:*), Bash(date:*), Bash(test:*), Grep, Glob
 ---
 
 Sweep `docs/specs/active`, `docs/plans/active`, and `docs/notes/active`.

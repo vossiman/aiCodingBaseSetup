@@ -206,20 +206,23 @@ _agents_kind() {  # _agents_kind <name>: tracked | untracked | absent
     else echo absent; fi
 }
 install_agents() {  # install_agents <review|fix>
-    local f kind body
+    local f kind
     for f in "${AGENTS_FILES[@]}"; do
         kind="$(_agents_kind "$f")"
         [ -e "$OUT/$f.kind" ] || echo "$kind" > "$OUT/$f.kind"
-        body=""
         if [ -L "$WT/$f" ]; then
-            [ -e "$OUT/$f.orig" ] || cp -P "$WT/$f" "$OUT/$f.orig"
-            body="$(cat "$WT/$f" 2>/dev/null || true)"
-            rm -f "$WT/$f"
-        elif [ -e "$WT/$f" ]; then
-            body="$(sed "/^$RB_BEGIN\$/,/^$RB_END\$/d" "$WT/$f")"
+            [ -L "$OUT/$f.orig" ] || cp -P "$WT/$f" "$OUT/$f.orig"
         fi
+        # Stream the body: command substitution strips trailing newlines and
+        # would make the unchanged-worktree check blame our own normalization
+        # on the reviewer. Stage beside the output, then replace a symlink
+        # rather than writing through it. Strip our block in either case.
         { echo "$RB_BEGIN"; cat "$SKILL_DIR/prompts/agents-$1.md"; echo "$RB_END"
-          if [ -n "$body" ]; then printf '%s\n' "$body"; fi; } > "$WT/$f"
+          if [ -f "$WT/$f" ]; then
+              sed "/^$RB_BEGIN\$/,/^$RB_END\$/d" "$WT/$f"
+          fi
+        } > "$OUT/$f.new"
+        mv "$OUT/$f.new" "$WT/$f"
     done
 }
 restore_agents() {

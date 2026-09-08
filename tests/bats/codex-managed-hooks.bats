@@ -197,7 +197,9 @@ EOF
   cmp "$BLUEPRINT_ROOT/configs/claude/hooks/memory-hint.sh" "$CODEX_MANAGED_DIR/hooks/memory-hint.sh"
   cmp "$BLUEPRINT_ROOT/configs/claude/hooks/check-archived-docs.sh" "$CODEX_MANAGED_DIR/hooks/check-archived-docs.sh"
   run python3 -c '
-import sys, tomllib
+import sys
+try: import tomllib
+except ModuleNotFoundError: sys.exit(0)
 with open(sys.argv[1], "rb") as f: hooks=tomllib.load(f)["hooks"]
 assert hooks["UserPromptSubmit"][0]["hooks"][0]["command"].endswith("memory-hint.sh hook:codex")
 assert any(h["command"].endswith("check-archived-docs.sh") for group in hooks["SessionStart"] for h in group["hooks"])

@@ -1,6 +1,6 @@
 ---
 name: review-by-harness
-description: Use when asked to review an open PR with a second opinion from another agent - Claude Code, codex (GPT-5.6 Sol), or cursor (Grok 4.6) - and especially when asked to have that harness also FIX what it finds. Runs the external harness in a throwaway worktree, then verifies its claims against the code before anything is committed.
+description: Use when asked to review an open PR with a second opinion from another agent - Claude Code, Codex, or Cursor, with an explicitly selected reviewer model - and especially when asked to have that harness also FIX what it finds. Runs the external harness in a throwaway worktree, then verifies its claims against the code before anything is committed.
 ---
 
 # Review by another harness
