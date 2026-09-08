@@ -115,6 +115,30 @@ install_kanban_post_symlink() {
   ok "kanban-post installed at ~/.local/bin/kanban-post -> $src"
 }
 
+# --- Dokploy panel and Uptime Kuma clients ---
+# Same pattern as kanban-post: the panel's API token and Kuma's admin login
+# live in the shared secrets store, an agent may not expand them, so each
+# helper reads its own credential in-process and scrubs it from everything
+# it prints. kuma-admin is a uv script (python-socketio); uv is provisioned
+# by provision-system.sh.
+install_dokploy_api_symlink() {
+  header "dokploy panel client"
+  local src="$SCRIPT_DIR/bin/dokploy-api"
+  [[ -f "$src" ]] || { warn "bin/dokploy-api not found — skipping"; return; }
+  mkdir -p "$HOME/.local/bin"; chmod +x "$src"
+  ln -sf "$src" "$HOME/.local/bin/dokploy-api"
+  ok "dokploy-api installed at ~/.local/bin/dokploy-api -> $src"
+}
+
+install_kuma_admin_symlink() {
+  header "uptime kuma client"
+  local src="$SCRIPT_DIR/bin/kuma-admin"
+  [[ -f "$src" ]] || { warn "bin/kuma-admin not found — skipping"; return; }
+  mkdir -p "$HOME/.local/bin"; chmod +x "$src"
+  ln -sf "$src" "$HOME/.local/bin/kuma-admin"
+  ok "kuma-admin installed at ~/.local/bin/kuma-admin -> $src"
+}
+
 # --- transcript redactor ---
 # The one scrubber for transcript material that leaves a machine: the
 # distiller hook's slice tee and the memory-lanes transcript harvester both

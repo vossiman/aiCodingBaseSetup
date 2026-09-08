@@ -198,6 +198,16 @@ teardown() { cd /; rm -rf "$TMP"; }
   readlink "$HOME/.local/bin/kanban-post" | grep -q "bin/kanban-post"
 }
 
+@test "sync --boot restores missing dokploy-api and kuma-admin symlinks" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  rm -f "$HOME/.local/bin/dokploy-api" "$HOME/.local/bin/kuma-admin"
+  AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  for h in dokploy-api kuma-admin; do
+    [ -L "$HOME/.local/bin/$h" ]
+    readlink "$HOME/.local/bin/$h" | grep -q "bin/$h"
+  done
+}
+
 @test "sync right after install reports Nothing to do (no phantom drift)" {
   # Regression: substituted files (raw-source hash compare) and merge targets
   # (unconditional re-merge bucket) used to classify as actionable on every

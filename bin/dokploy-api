@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""Call the Dokploy panel API without any agent handling the API token.
+
+Same shape as kanban-post: the credential is read from the estate's secrets
+store inside this process and used to build one request. It never appears in
+argv, in a file, or in this program's output, which is what lets an agent
+use it under the secrets deny rules instead of expanding $DOKPLOY_API_TOKEN
+into a shell command the hook (correctly) refuses.
+
+This file ships in a PUBLIC repo. It contains no credential: only the path
+to the store, and the rules below that keep values from escaping.
+
+  1. The destination is pinned to DEFAULT_URL (the panel on the LAN).
+     DOKPLOY_URL overrides it only for a loopback test server, and then the
+     credential must come from DOKPLOY_TEST_TOKEN; the store is not read.
+  2. Redirects are refused: urllib would re-send the header to whatever host
+     the response named.
+  3. Responses are scrubbed before printing. The token itself, and every
+     value the panel holds that is a secret by shape: `env` blocks are
+     reduced to their variable NAMES, and any field whose key looks like a
+     password, token, secret or key is replaced. An agent reading
+     `compose.one` gets the structure, never the app's credentials.
+  4. Nothing prints a traceback.
+
+Usage:
+  dokploy-api get  PROCEDURE [--input JSON]          # tRPC query, e.g. project.all
+  dokploy-api post PROCEDURE [--input JSON | --input-file FILE]   # tRPC mutation
+  dokploy-api set-env compose COMPOSE_ID NAME < value   # one env var, value from stdin
+  dokploy-api --selftest
+
+set-env exists so that a value which is itself a credential (a Kuma push
+URL, a token) can travel from the program that made it into an app's env
+without ever being printed: `kuma-admin push-url 12 | dokploy-api set-env
+compose <id> KUMA_PUSH_X`. It reads the app's env, replaces or appends the
+one line, writes it back, and prints only the variable NAMES. Redeploy
+separately (`post compose.redeploy`) once every variable is in place.
+
+PROCEDURE is the tRPC route, e.g. `project.all`, `compose.one`,
+`backup.listBackupFiles`. `--input` is the JSON the route takes
+(`'{"composeId":"..."}'`). --input-file lets a payload holding secrets
+(an env block) be sent without passing through a command line.
+"""
+import argparse
+import json
+import os
+import pathlib
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+DEFAULT_URL = "http://10.0.0.249:3000"
+SECRETS = pathlib.Path.home() / ".aicodingsetup" / ".secrets.env"
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+SECRET_KEY = re.compile(
+    r"(password|passwd|secret|token|apikey|api_key|privatekey|private_key|"
+    r"accesskey|access_key|credential)",
+    re.IGNORECASE,
+)
+
+
+def die(message: str):
+    sys.exit(f"dokploy-api: {message}")
+
+
+def base_url() -> str:
+    override = os.environ.get("DOKPLOY_URL")
+    if not override:
+        return DEFAULT_URL
+    url = override.rstrip("/")
+    parts = urllib.parse.urlsplit(url)
+    if (parts.hostname or "") in LOOPBACK:
+        return url
+    die(
+        "DOKPLOY_URL may only name a loopback test server; refusing to send "
+        f"the API token to {parts.hostname or 'a schemeless URL'}"
+    )
+
+
+def token() -> str:
+    if os.environ.get("DOKPLOY_URL"):
+        value = os.environ.get("DOKPLOY_TEST_TOKEN", "")
+        if not value:
+            die(
+                "DOKPLOY_URL is set, so this is a test run; supply a fake "
+                "credential in DOKPLOY_TEST_TOKEN. The protected store is "
+                "not read for a test destination."
+            )
+        return value
+    if not SECRETS.is_file():
+        die(f"no secrets store at {SECRETS}")
+    for line in SECRETS.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("DOKPLOY_API_TOKEN="):
+            value = line.split("=", 1)[1].strip().strip('"').strip("'")
+            if value:
+                return value
+            break
+    die("DOKPLOY_API_TOKEN is not set in the secrets store")
+
+
+def redact_value(value):
+    """Replace anything secret-shaped inside a decoded response.
+
+    `env` fields keep their variable names (that is what an agent needs to
+    verify a deploy) and lose every value. Keys that look like credentials
+    lose their value wholesale. Everything else passes through.
+    """
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if key == "env" and isinstance(item, str):
+                out[key] = "\n".join(
+                    f"{line.split('=', 1)[0]}=<redacted>" if "=" in line else line
+                    for line in item.splitlines()
+                )
+            elif SECRET_KEY.search(key) and isinstance(item, (str, int)):
+                out[key] = "<redacted>"
+            else:
+                out[key] = redact_value(item)
+        return out
+    if isinstance(value, list):
+        return [redact_value(v) for v in value]
+    return value
+
+
+def scrub(text: str) -> str:
+    try:
+        secret = token()
+    except SystemExit:
+        return text
+    return text.replace(secret, "<redacted>") if secret else text
+
+
+def emit(value) -> None:
+    if isinstance(value, (dict, list)):
+        text = json.dumps(redact_value(value), indent=2)
+    else:
+        text = str(value)
+    print(scrub(text))
+
+
+class NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        die(f"refusing to follow a {code} redirect to another location")
+
+
+def call(method: str, procedure: str, payload):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", procedure):
+        die(f"procedure name looks wrong: {procedure!r}")
+    url = f"{base_url()}/api/{procedure}"
+    data = None
+    if method == "GET":
+        # The panel's REST layer takes a query's fields as plain query
+        # parameters (project.one?projectId=...), not tRPC's input= form.
+        if payload is not None:
+            if not isinstance(payload, dict):
+                die("a GET input must be a JSON object")
+            url += "?" + urllib.parse.urlencode(
+                {k: v if isinstance(v, str) else json.dumps(v) for k, v in payload.items()}
+            )
+    else:
+        data = json.dumps(payload if payload is not None else {}).encode()
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"x-api-key": token(), "Content-Type": "application/json"},
+        method=method,
+    )
+    opener = urllib.request.build_opener(NoRedirects)
+    try:
+        with opener.open(req, timeout=60) as r:
+            body = r.read()
+            try:
+                return r.status, json.loads(body) if body else None
+            except ValueError:
+                return r.status, body.decode(errors="replace")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        try:
+            body = json.loads(body)
+        except ValueError:
+            pass
+        return e.code, body
+    except urllib.error.URLError as e:
+        die(f"cannot reach the panel: {e.reason}")
+    except Exception as e:  # deliberately broad: never surface a traceback
+        die(f"request failed: {type(e).__name__}")
+
+
+def set_env(kind: str, target_id: str, name: str) -> int:
+    if kind != "compose":
+        die("set-env supports compose apps only for now")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        die(f"not a variable name: {name!r}")
+    if sys.stdin.isatty():
+        die("set-env reads the value from stdin; pipe it in")
+    value = sys.stdin.read().strip()
+    if not value or "\n" in value:
+        die("set-env needs exactly one non-empty line on stdin")
+    status, app = call("GET", "compose.one", {"composeId": target_id})
+    if status >= 400 or not isinstance(app, dict):
+        print(status)
+        emit(app)
+        return 1
+    lines = (app.get("env") or "").splitlines()
+    replaced = False
+    for i, line in enumerate(lines):
+        if line.split("=", 1)[0].strip() == name:
+            lines[i] = f"{name}={value}"
+            replaced = True
+    if not replaced:
+        lines.append(f"{name}={value}")
+    status, out = call("POST", "compose.update", {"composeId": target_id, "env": "\n".join(lines)})
+    print(status)
+    if status >= 400:
+        emit(out)
+        return 1
+    print(("replaced" if replaced else "added") + f" {name}; env now: "
+          + ", ".join(l.split("=", 1)[0] for l in lines if "=" in l))
+    return 0
+
+
+def selftest() -> int:
+    import http.server
+    import subprocess
+    import tempfile
+    import threading
+
+    fake = "FAKE-DOKPLOY-TOKEN-5b1c8e-do-not-use"
+    app_secret = "APP-DB-PASSWORD-9f2a-do-not-use"
+    seen: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            seen.append(self.headers.get("x-api-key", ""))
+            if self.path.startswith("/redirect"):
+                self.send_response(302)
+                self.send_header("Location", "http://127.0.0.1:1/stolen")
+                self.end_headers()
+                return
+            body = json.dumps({
+                "echo": self.headers.get("x-api-key"),
+                "env": f"DB_PASSWORD={app_secret}\nPLAIN=1",
+                "nested": [{"apiToken": app_secret, "name": "keep"}],
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        do_POST = do_GET
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+
+    home = tempfile.mkdtemp()
+    store = pathlib.Path(home) / ".aicodingsetup"
+    store.mkdir()
+    (store / ".secrets.env").write_text(f"DOKPLOY_API_TOKEN={fake}\n")
+    env = {
+        **os.environ,
+        "HOME": home,
+        "DOKPLOY_URL": f"http://127.0.0.1:{port}",
+        "DOKPLOY_TEST_TOKEN": fake,
+    }
+    failures = []
+
+    def run(args, label):
+        p = subprocess.run(
+            [sys.executable, __file__, *args],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        out = p.stdout + p.stderr
+        if fake in out:
+            failures.append(f"{label}: the token appeared in the output")
+        if app_secret in out:
+            failures.append(f"{label}: an app secret from the response appeared in the output")
+        return out
+
+    out = run(["get", "compose.one", "--input", '{"composeId":"x"}'], "response scrub")
+    if "DB_PASSWORD=<redacted>" not in out or '"name": "keep"' not in out:
+        failures.append("response scrub: env names or plain fields were lost")
+    run(["post", "compose.update", "--input", "{}"], "post path")
+
+    piped = "PIPED-PUSH-URL-3c9e-do-not-use"
+    pr = subprocess.run(
+        [sys.executable, __file__, "set-env", "compose", "x", "KUMA_PUSH_X"],
+        input=piped, capture_output=True, text=True, env=env, timeout=30,
+    )
+    if piped in pr.stdout + pr.stderr:
+        failures.append("set-env: the piped value appeared in the output")
+    if "KUMA_PUSH_X" not in pr.stdout:
+        failures.append("set-env: the variable name was not reported")
+
+    env["DOKPLOY_URL"] = f"http://127.0.0.1:{port}/redirect"
+    before = len(seen)
+    out = run(["get", "project.all"], "redirect")
+    if "refusing to follow" not in out:
+        failures.append("redirect: was not refused")
+    if len(seen) > before + 1:
+        failures.append("redirect: the header was re-sent to the new location")
+
+    env["DOKPLOY_URL"] = "https://panel.example.invalid"
+    out = run(["get", "project.all"], "arbitrary host")
+    if "loopback" not in out:
+        failures.append("destination: an arbitrary host was not refused")
+
+    srv.shutdown()
+    for f in failures:
+        print("FAIL", f)
+    if failures:
+        return 1
+    print("selftest: ok: token and response secrets never reached the output; "
+          "redirects refused; non-loopback destinations refused")
+    return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(prog="dokploy-api")
+    p.add_argument("method", nargs="?", choices=["get", "post", "set-env"])
+    p.add_argument("procedure", nargs="?")
+    p.add_argument("rest", nargs="*")
+    p.add_argument("--input", default=None, help="JSON input for the procedure")
+    p.add_argument("--input-file", default=None,
+                   help="file holding the JSON input (for payloads carrying secrets)")
+    p.add_argument("--selftest", action="store_true")
+    a = p.parse_args()
+    if a.selftest:
+        return selftest()
+    if a.method == "set-env":
+        if len(a.rest) != 2 or not a.procedure:
+            p.error("usage: dokploy-api set-env compose COMPOSE_ID NAME < value")
+        return set_env(a.procedure, a.rest[0], a.rest[1])
+    if not a.method or not a.procedure:
+        p.error("usage: dokploy-api get|post PROCEDURE [--input JSON | --input-file FILE]")
+    if a.input and a.input_file:
+        p.error("give the input once, as --input or --input-file")
+    payload = None
+    try:
+        if a.input:
+            payload = json.loads(a.input)
+        elif a.input_file:
+            payload = json.loads(pathlib.Path(a.input_file).read_text())
+    except ValueError as e:
+        die(f"input is not valid JSON: {e}")
+    status, out = call(a.method.upper(), a.procedure, payload)
+    print(status)
+    emit(out)
+    return 0 if status < 400 else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

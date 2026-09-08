@@ -208,8 +208,17 @@ transcript — the failure that actually happens — not a determined attacker.
   `AGENTS.md`) gets `{{HOME}}` expanded and **nothing else** — no key is ever
   substituted into a file an agent reads as prose. A skill that needs a
   credential calls a broker (`cloudflare-render`, `kanban-post`,
-  `measure-remote`, `redact-transcript`, `redact-sessions`, `git-credential-aicoding`), which reads the value
+  `dokploy-api`, `kuma-admin`, `measure-remote`, `redact-transcript`,
+  `redact-sessions`, `git-credential-aicoding`), which reads the value
   in-process and never prints it.
+
+  `dokploy-api` (panel API, `DOKPLOY_API_TOKEN`) and `kuma-admin` (Uptime
+  Kuma's socket.io admin session, `KUMA_ADMIN_USER`/`KUMA_ADMIN_PASSWORD`;
+  Kuma has no REST API and its "API keys" only unlock `/metrics`) also
+  redact secret-shaped fields in what the servers return: env blocks come
+  back as variable names only, credential fields as `<redacted>`. A value
+  that is itself a secret moves between them by pipe, never by print:
+  `kuma-admin push-url NAME | dokploy-api set-env compose ID VAR`.
 
 In devcontainers the file is bind-mounted **read-only** (a single-file mount
 stacked over the rw `~/.aicodingsetup` mount) so no in-container tooling or
