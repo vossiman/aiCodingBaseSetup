@@ -218,7 +218,7 @@ transcript — the failure that actually happens — not a determined attacker.
   redact secret-shaped fields in what the servers return: env blocks come
   back as variable names only, credential fields as `<redacted>`. A value
   that is itself a secret moves between them by pipe, never by print:
-  `kuma-admin push-url NAME | dokploy-api set-env compose|application ID VAR`.
+  `kuma-admin push-url NAME | dokploy-api set-env compose ID VAR` (or `set-env application ID VAR` for a Dokploy application).
 
 In devcontainers the file is bind-mounted **read-only** (a single-file mount
 stacked over the rw `~/.aicodingsetup` mount) so no in-container tooling or
