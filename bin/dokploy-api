@@ -26,6 +26,7 @@ Usage:
   dokploy-api get  PROCEDURE [--input JSON]          # tRPC query, e.g. project.all
   dokploy-api post PROCEDURE [--input JSON | --input-file FILE]   # tRPC mutation
   dokploy-api set-env compose COMPOSE_ID NAME < value   # one env var, value from stdin
+  dokploy-api set-env compose COMPOSE_ID NAME --from-secret KEY   # value = KEY in the store
   dokploy-api --selftest
 
 set-env exists so that a value which is itself a credential (a Kuma push
@@ -34,6 +35,9 @@ without ever being printed: `kuma-admin push-url 12 | dokploy-api set-env
 compose <id> KUMA_PUSH_X`. It reads the app's env, replaces or appends the
 one line, writes it back, and prints only the variable NAMES. Redeploy
 separately (`post compose.redeploy`) once every variable is in place.
+`--from-secret KEY` takes the value from the secrets store instead of
+stdin, for credentials the owner keeps there under a different name (the
+notify-hub tokens live as HUB_* in the store and as HUB_* in the app env).
 
 PROCEDURE is the tRPC route, e.g. `project.all`, `compose.one`,
 `backup.listBackupFiles`. `--input` is the JSON the route takes
@@ -76,6 +80,22 @@ def base_url() -> str:
         "DOKPLOY_URL may only name a loopback test server; refusing to send "
         f"the API token to {parts.hostname or 'a schemeless URL'}"
     )
+
+
+def store_value(key: str) -> str:
+    """One value from the secrets store, by key. Never printed by anything
+    in this program; the only consumer is set_env, which sends it to the
+    panel."""
+    if not SECRETS.is_file():
+        die(f"no secrets store at {SECRETS}")
+    for line in SECRETS.read_text().splitlines():
+        line = line.strip()
+        if line.startswith(key + "="):
+            value = line.split("=", 1)[1].strip().strip('"').strip("'")
+            if value:
+                return value
+            break
+    die(f"{key} is not set in the secrets store")
 
 
 def token() -> str:
@@ -189,16 +209,21 @@ def call(method: str, procedure: str, payload):
         die(f"request failed: {type(e).__name__}")
 
 
-def set_env(kind: str, target_id: str, name: str) -> int:
+def set_env(kind: str, target_id: str, name: str, from_secret: str | None) -> int:
     if kind != "compose":
         die("set-env supports compose apps only for now")
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
         die(f"not a variable name: {name!r}")
-    if sys.stdin.isatty():
-        die("set-env reads the value from stdin; pipe it in")
-    value = sys.stdin.read().strip()
+    if from_secret:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", from_secret):
+            die(f"not a secrets-store key: {from_secret!r}")
+        value = store_value(from_secret)
+    else:
+        if sys.stdin.isatty():
+            die("set-env reads the value from stdin; pipe it in, or use --from-secret KEY")
+        value = sys.stdin.read().strip()
     if not value or "\n" in value:
-        die("set-env needs exactly one non-empty line on stdin")
+        die("set-env needs exactly one non-empty value")
     status, app = call("GET", "compose.one", {"composeId": target_id})
     if status >= 400 or not isinstance(app, dict):
         print(status)
@@ -330,14 +355,18 @@ def main() -> int:
     p.add_argument("--input", default=None, help="JSON input for the procedure")
     p.add_argument("--input-file", default=None,
                    help="file holding the JSON input (for payloads carrying secrets)")
+    p.add_argument("--from-secret", metavar="KEY", default=None,
+                   help="set-env only: take the value from KEY in the secrets store")
     p.add_argument("--selftest", action="store_true")
     a = p.parse_args()
     if a.selftest:
         return selftest()
     if a.method == "set-env":
         if len(a.rest) != 2 or not a.procedure:
-            p.error("usage: dokploy-api set-env compose COMPOSE_ID NAME < value")
-        return set_env(a.procedure, a.rest[0], a.rest[1])
+            p.error("usage: dokploy-api set-env compose COMPOSE_ID NAME [--from-secret KEY] < value")
+        return set_env(a.procedure, a.rest[0], a.rest[1], a.from_secret)
+    if a.from_secret:
+        p.error("--from-secret goes with set-env")
     if not a.method or not a.procedure:
         p.error("usage: dokploy-api get|post PROCEDURE [--input JSON | --input-file FILE]")
     if a.input and a.input_file:
