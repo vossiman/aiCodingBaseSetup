@@ -1273,6 +1273,11 @@ LDD
   [ -L "$HOME/.local/bin/kanban-post" ]
   [ -x "$HOME/.local/bin/kanban-post" ]
   readlink "$HOME/.local/bin/kanban-post" | grep -q "bin/kanban-post"
+  for h in dokploy-api kuma-admin; do
+    [ -L "$HOME/.local/bin/$h" ]
+    [ -x "$HOME/.local/bin/$h" ]
+    readlink "$HOME/.local/bin/$h" | grep -q "bin/$h"
+  done
 }
 
 @test "install.sh symlinks clip-x11-bridge into ~/.local/bin" {

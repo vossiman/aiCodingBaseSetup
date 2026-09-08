@@ -1,0 +1,410 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["python-socketio[client]==5.13.0"]
+# ///
+"""Manage Uptime Kuma monitors without any agent handling the admin login.
+
+Uptime Kuma has no REST API: an "API key" there only unlocks the Prometheus
+/metrics export. Everything the UI does goes over a socket.io session that
+authenticates with a username and password. This helper is the kanban-post
+pattern applied to that session: the credential is read from the estate's
+secrets store inside this process, used for one login, and never appears in
+argv, in a file, or in this program's output.
+
+This file ships in a PUBLIC repo. It contains no credential.
+
+  1. The destination is pinned to DEFAULT_URL. KUMA_URL overrides it only
+     for a loopback test server, and then the credential must come from
+     KUMA_TEST_USER / KUMA_TEST_PASSWORD; the store is not read.
+  2. Output is scrubbed: the password, the session token, and monitor fields
+     that carry credentials (basic auth, headers, push tokens) are replaced.
+     A push monitor's URL, which is itself a credential, is only ever
+     written by `push-url`, and that command is meant to be PIPED into
+     `dokploy-api set-env` so the value never lands in a transcript.
+  3. Nothing prints a traceback.
+
+Usage:
+  kuma-admin list
+  kuma-admin get MONITOR
+  kuma-admin add-push NAME [--interval 300] [--retries 2]
+  kuma-admin add-http NAME URL [--keyword TEXT] [--interval 60] [--retries 2]
+  kuma-admin edit MONITOR --set FIELD=JSON [--set FIELD=JSON ...]
+  kuma-admin pause MONITOR | resume MONITOR | delete MONITOR
+  kuma-admin push-url MONITOR        # prints the push URL: pipe it, do not read it
+  kuma-admin notifications
+  kuma-admin emit EVENT [JSON]       # raw socket event, for anything not covered
+  kuma-admin --selftest
+
+MONITOR is a numeric id or an exact monitor name. --set values are JSON
+(`--set type=\"keyword\"`, `--set interval=300`); a bare word that is not
+valid JSON is taken as a string.
+"""
+import argparse
+import json
+import os
+import pathlib
+import secrets
+import sys
+import time
+import urllib.parse
+
+DEFAULT_URL = "https://uptime.dataprospectors.at"
+SECRETS = pathlib.Path.home() / ".aicodingsetup" / ".secrets.env"
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+SECRET_FIELDS = {
+    "basic_auth_pass", "basic_auth_user", "headers", "body", "pushToken",
+    "mqttPassword", "radiusPassword", "radiusSecret", "databaseConnectionString",
+    "oauth_client_secret", "tlsCert", "tlsKey", "tlsCa", "authWorkstation",
+    "authDomain", "grpcBody", "grpcMetadata", "kafkaProducerSaslOptions",
+    "smtpPassword", "rabbitmqPassword", "snmpCommunityString",
+}
+
+# What the 2.x EditMonitor page sends for a new monitor, minus the fields
+# that vary per type. Kuma's `add` handler stores this object as-is, so a
+# missing NOT NULL column (conditions, since 2.0) is a 500 rather than a
+# default: the PyPI uptime-kuma-api client broke on exactly that.
+NEW_MONITOR = {
+    "type": "http", "name": "", "parent": None, "url": "https://",
+    "method": "GET", "interval": 60, "retryInterval": 60,
+    "resendInterval": 0, "maxretries": 0, "timeout": 48,
+    "notificationIDList": {}, "ignoreTls": False, "upsideDown": False,
+    "packetSize": 56, "expiryNotification": False, "maxredirects": 10,
+    "accepted_statuscodes": ["200-299"], "dns_resolve_type": "A",
+    "dns_resolve_server": "1.1.1.1", "docker_container": "",
+    "docker_host": None, "proxyId": None, "mqttUsername": "",
+    "mqttPassword": "", "mqttTopic": "", "mqttSuccessMessage": "",
+    "mqttCheckType": "keyword", "authMethod": None,
+    "oauth_auth_method": "client_secret_basic", "httpBodyEncoding": "json",
+    "kafkaProducerBrokers": [], "kafkaProducerSaslOptions": {"mechanism": "None"},
+    "cacheBust": False, "kafkaProducerSsl": False,
+    "kafkaProducerAllowAutoTopicCreation": False,
+    "gamedigGivenPortOnly": True, "remote_browser": None,
+    "rabbitmqNodes": [], "rabbitmqUsername": "", "rabbitmqPassword": "",
+    "conditions": [], "keyword": "", "invertKeyword": False,
+    "description": "", "headers": "", "body": "",
+    "basic_auth_user": "", "basic_auth_pass": "", "hostname": None,
+    "port": None, "pushToken": None, "snmpVersion": "2c",
+    "jsonPathOperator": "==", "smtpSecurity": None, "ipFamily": None,
+}
+
+
+def die(message: str):
+    sys.exit(f"kuma-admin: {message}")
+
+
+def base_url() -> str:
+    override = os.environ.get("KUMA_URL")
+    if not override:
+        return DEFAULT_URL
+    url = override.rstrip("/")
+    parts = urllib.parse.urlsplit(url)
+    if (parts.hostname or "") in LOOPBACK:
+        return url
+    die(
+        "KUMA_URL may only name a loopback test server; refusing to send "
+        f"the admin login to {parts.hostname or 'a schemeless URL'}"
+    )
+
+
+def credentials() -> tuple[str, str]:
+    if os.environ.get("KUMA_URL"):
+        user = os.environ.get("KUMA_TEST_USER", "")
+        password = os.environ.get("KUMA_TEST_PASSWORD", "")
+        if not user or not password:
+            die(
+                "KUMA_URL is set, so this is a test run; supply a fake login "
+                "in KUMA_TEST_USER and KUMA_TEST_PASSWORD. The protected "
+                "store is not read for a test destination."
+            )
+        return user, password
+    if not SECRETS.is_file():
+        die(f"no secrets store at {SECRETS}")
+    found = {}
+    for line in SECRETS.read_text().splitlines():
+        line = line.strip()
+        for key in ("KUMA_ADMIN_USER", "KUMA_ADMIN_PASSWORD"):
+            if line.startswith(key + "="):
+                found[key] = line.split("=", 1)[1].strip().strip('"').strip("'")
+    user = found.get("KUMA_ADMIN_USER", "")
+    password = found.get("KUMA_ADMIN_PASSWORD", "")
+    if not user or not password:
+        die("KUMA_ADMIN_USER / KUMA_ADMIN_PASSWORD are not both set in the secrets store")
+    return user, password
+
+
+class Session:
+    """One logged-in socket.io session. Kuma pushes the full monitor list
+    and notification list right after login; both are captured here."""
+
+    def __init__(self):
+        import socketio  # inside: the selftest stub and --help need no dep
+
+        self.monitors: dict = {}
+        self.notifications: list = []
+        self.token = ""
+        self.sio = socketio.Client(logger=False, engineio_logger=False)
+        self.sio.on("monitorList", self._on_monitor_list)
+        self.sio.on("notificationList", self._on_notification_list)
+        self.sio.on("heartbeatList", self._on_heartbeat_list)
+        self.last_beat: dict = {}
+        # Credentials before the connection: in test mode the refusal to
+        # read the store must fire even when nothing is listening.
+        url = base_url()
+        user, password = credentials()
+        try:
+            self.sio.connect(url, transports=["websocket"], wait_timeout=20)
+        except Exception as e:
+            die(f"cannot connect to Kuma: {type(e).__name__}")
+        try:
+            res = self.sio.call("login", {"username": user, "password": password, "token": ""}, timeout=20)
+        except Exception as e:
+            self.close()
+            die(f"login failed: {type(e).__name__}")
+        if not isinstance(res, dict) or not res.get("ok"):
+            self.close()
+            die(f"login refused: {res.get('msg') if isinstance(res, dict) else 'no ack'}")
+        self.token = res.get("token") or ""
+        deadline = time.time() + 20
+        while not self.monitors and time.time() < deadline:
+            time.sleep(0.1)
+        # Heartbeat lists trail the monitor list by a moment.
+        time.sleep(1.5)
+
+    def _on_monitor_list(self, data):
+        self.monitors = data or {}
+
+    def _on_notification_list(self, data):
+        self.notifications = data or []
+
+    def _on_heartbeat_list(self, monitor_id, beats, *_):
+        if beats:
+            self.last_beat[str(monitor_id)] = beats[-1]
+
+    def call(self, event: str, *args):
+        try:
+            return self.sio.call(event, *args, timeout=30)
+        except Exception as e:
+            self.close()
+            die(f"{event} failed: {type(e).__name__}")
+
+    def close(self):
+        try:
+            self.sio.disconnect()
+        except Exception:
+            pass
+
+    def resolve(self, ref: str) -> dict:
+        if ref.isdigit() and ref in self.monitors:
+            return self.monitors[ref]
+        matches = [m for m in self.monitors.values() if m.get("name") == ref]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            die(f"more than one monitor is named {ref!r}; use the id")
+        die(f"no monitor {ref!r}")
+
+
+# Push tokens minted by this process. Kuma quotes the whole INSERT in an
+# error ack, token included, so the scrubber must know them too.
+MINTED: list[str] = []
+
+
+def scrub(text: str, session: "Session | None") -> str:
+    secrets_ = list(MINTED)
+    try:
+        secrets_.extend(credentials())
+    except SystemExit:
+        pass
+    if session and session.token:
+        secrets_.append(session.token)
+    for s in secrets_:
+        if s:
+            text = text.replace(s, "<redacted>")
+    return text
+
+
+def redact(value):
+    if isinstance(value, dict):
+        return {
+            k: ("<redacted>" if k in SECRET_FIELDS and v not in (None, "", {}, []) else redact(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [redact(v) for v in value]
+    return value
+
+
+def emit(value, session=None) -> None:
+    text = json.dumps(redact(value), indent=2) if isinstance(value, (dict, list)) else str(value)
+    print(scrub(text, session))
+
+
+def parse_set(items: list[str]) -> dict:
+    out = {}
+    for item in items:
+        if "=" not in item:
+            die(f"--set needs FIELD=VALUE, got {item!r}")
+        key, raw = item.split("=", 1)
+        try:
+            out[key] = json.loads(raw)
+        except ValueError:
+            out[key] = raw
+    return out
+
+
+def default_notifications(session: Session) -> dict:
+    return {str(n["id"]): True for n in session.notifications if n.get("isDefault")}
+
+
+def push_url(monitor: dict) -> str:
+    token = monitor.get("pushToken") or ""
+    if not token:
+        die("that monitor has no push token")
+    return f"{base_url()}/api/push/{token}?status=up&msg=OK&ping="
+
+
+STATUS = {0: "DOWN", 1: "up", 2: "pending", 3: "maint"}
+
+
+def summarize(m: dict, beat: dict | None) -> str:
+    target = m.get("url") or m.get("hostname") or ""
+    extra = f" keyword={m['keyword']!r}" if m.get("type") == "keyword" else ""
+    state = "active" if m.get("active") else "paused"
+    last = STATUS.get(beat.get("status"), "?") if beat else "none"
+    when = (beat.get("time") or "")[:16] if beat else ""
+    return (f"{m['id']:>4}  {m['name']:<28} {m['type']:<10} {state:<7} {last:<8}{when:<17} "
+            f"interval={m.get('interval')} retries={m.get('maxretries')} {target}{extra}")
+
+
+def selftest() -> int:
+    """No Kuma is started here: what the selftest proves is the part that
+    protects the credential. The socket layer is exercised by the bats test
+    with a stub."""
+    import subprocess
+    import tempfile
+
+    fake_pw = "FAKE-KUMA-PASSWORD-7d21-do-not-use"
+    home = tempfile.mkdtemp()
+    store = pathlib.Path(home) / ".aicodingsetup"
+    store.mkdir()
+    (store / ".secrets.env").write_text(f"KUMA_ADMIN_USER=fakeuser\nKUMA_ADMIN_PASSWORD={fake_pw}\n")
+    failures = []
+
+    env = {**os.environ, "HOME": home, "KUMA_URL": "https://kuma.example.invalid"}
+    p = subprocess.run([sys.executable, __file__, "list"], capture_output=True, text=True, env=env, timeout=60)
+    if "loopback" not in p.stdout + p.stderr:
+        failures.append("destination: an arbitrary host was not refused")
+    if fake_pw in p.stdout + p.stderr:
+        failures.append("destination: the password appeared in the output")
+
+    env = {**os.environ, "HOME": home, "KUMA_URL": "http://127.0.0.1:1"}
+    p = subprocess.run([sys.executable, __file__, "list"], capture_output=True, text=True, env=env, timeout=60)
+    if "KUMA_TEST_USER" not in p.stdout + p.stderr:
+        failures.append("test mode: the store was read for a loopback destination")
+
+    sample = {"id": 1, "name": "x", "basic_auth_pass": "SECRET-1", "pushToken": "SECRET-2",
+              "headers": "Authorization: SECRET-3", "url": "https://ok"}
+    text = json.dumps(redact(sample))
+    if "SECRET-" in text or "https://ok" not in text:
+        failures.append("redact: monitor credential fields leaked or plain fields lost")
+
+    MINTED.append("MINTED-TOKEN-4f7a")
+    if "MINTED-TOKEN-4f7a" in scrub("error: insert values ('MINTED-TOKEN-4f7a')", None):
+        failures.append("scrub: a minted push token survived in free text")
+
+    for f in failures:
+        print("FAIL", f)
+    if failures:
+        return 1
+    print("selftest: ok: non-loopback destinations refused; store not read in test mode; "
+          "monitor credential fields redacted")
+    return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(prog="kuma-admin")
+    p.add_argument("command", nargs="?")
+    p.add_argument("args", nargs="*")
+    p.add_argument("--interval", type=int, default=None)
+    p.add_argument("--retries", type=int, default=None)
+    p.add_argument("--keyword", default=None)
+    p.add_argument("--set", action="append", default=[], metavar="FIELD=JSON")
+    p.add_argument("--selftest", action="store_true")
+    a = p.parse_args()
+    if a.selftest:
+        return selftest()
+    if not a.command:
+        p.error("a command is required; see --help")
+
+    s = Session()
+    try:
+        if a.command == "list":
+            for m in sorted(s.monitors.values(), key=lambda m: m["id"]):
+                print(scrub(summarize(m, s.last_beat.get(str(m["id"]))), s))
+        elif a.command == "get":
+            emit(s.resolve(a.args[0]), s)
+        elif a.command == "notifications":
+            emit([{k: n.get(k) for k in ("id", "name", "active", "isDefault")} for n in s.notifications], s)
+        elif a.command == "push-url":
+            print(push_url(s.resolve(a.args[0])))
+        elif a.command in ("add-push", "add-http"):
+            if not a.args:
+                p.error(f"{a.command} needs a NAME")
+            name = a.args[0]
+            if any(m.get("name") == name for m in s.monitors.values()):
+                die(f"a monitor named {name!r} already exists")
+            mon = {**NEW_MONITOR, "name": name, "notificationIDList": default_notifications(s)}
+            if a.command == "add-push":
+                push_token = secrets.token_urlsafe(24)[:32].replace("-", "x").replace("_", "y")
+                MINTED.append(push_token)
+                mon.update({"type": "push", "url": None, "interval": a.interval or 300,
+                            "retryInterval": a.interval or 300, "maxretries": 2 if a.retries is None else a.retries,
+                            "pushToken": push_token})
+            else:
+                if len(a.args) < 2:
+                    p.error("add-http needs NAME URL")
+                mon.update({"url": a.args[1], "interval": a.interval or 60,
+                            "retryInterval": a.interval or 60, "maxretries": 2 if a.retries is None else a.retries})
+                if a.keyword:
+                    mon.update({"type": "keyword", "keyword": a.keyword})
+            mon.update(parse_set(a.set))
+            res = s.call("add", mon)
+            emit(res, s)
+            if not res.get("ok"):
+                return 1
+            if a.command == "add-push":
+                print(f"created push monitor {name} (id {res.get('monitorID')}); "
+                      f"get its URL with: kuma-admin push-url {res.get('monitorID')}")
+        elif a.command == "edit":
+            mon = dict(s.resolve(a.args[0]))
+            changes = parse_set(a.set)
+            if not changes:
+                p.error("edit needs at least one --set FIELD=VALUE")
+            mon.update(changes)
+            if mon.get("type") == "keyword" and not mon.get("keyword"):
+                die("a keyword monitor needs --set keyword=...")
+            res = s.call("editMonitor", mon)
+            emit(res, s)
+            return 0 if res.get("ok") else 1
+        elif a.command in ("pause", "resume", "delete"):
+            mon = s.resolve(a.args[0])
+            event = {"pause": "pauseMonitor", "resume": "resumeMonitor", "delete": "deleteMonitor"}[a.command]
+            res = s.call(event, mon["id"])
+            emit(res, s)
+            return 0 if res.get("ok") else 1
+        elif a.command == "emit":
+            if not a.args:
+                p.error("emit needs an EVENT name")
+            payload = json.loads(a.args[1]) if len(a.args) > 1 else None
+            res = s.call(a.args[0], payload) if payload is not None else s.call(a.args[0])
+            emit(res, s)
+        else:
+            p.error(f"unknown command {a.command!r}")
+    finally:
+        s.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

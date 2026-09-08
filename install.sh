@@ -125,6 +125,8 @@ main() {
   install_clip_shim_symlinks
   install_kanban_post_symlink
   install_measure_remote_symlink
+  install_dokploy_api_symlink
+  install_kuma_admin_symlink
   install_redact_transcript_symlink
   install_redact_sessions_symlinks
   install_clip_x11_bridge_symlink
