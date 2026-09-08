@@ -6,19 +6,21 @@
 # layout, handback. The harness-specific parts are in harnesses/<name>.sh and
 # the model-facing wording is in prompts/. Nothing here talks to a model.
 #
-# Usage: run.sh <pr-number> [repo-dir] [--harness codex|cursor] [--review-only]
+# Usage: run.sh <pr-number> [repo-dir] [--harness auto|claude|codex|cursor] [--review-only]
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PR=""
 REPO_ARG="."
-HARNESS="codex"
+HARNESS="auto"
+CALLER="${REVIEW_CALLER:-}"
 REVIEW_ONLY=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --harness)     HARNESS="$2"; shift 2 ;;
+        --harness)     HARNESS="${2:?--harness needs a value}"; shift 2 ;;
+        --caller)      CALLER="${2:?--caller needs claude or codex}"; shift 2 ;;
         --review-only) REVIEW_ONLY=1; shift ;;
         -h|--help)
             sed -n '2,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -28,7 +30,22 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ -n "$PR" ] || { echo "usage: run.sh <pr-number> [repo-dir] [--harness codex|cursor] [--review-only]" >&2; exit 2; }
+[ -n "$PR" ] || { echo "usage: run.sh <pr-number> [repo-dir] [--harness auto|claude|codex|cursor] [--review-only]" >&2; exit 2; }
+
+# Explicit --caller wins; otherwise use the runtime marker, never process
+# names or a model guess. Unknown callers retain the historical Codex default.
+if [ "$HARNESS" = auto ]; then
+    if [ -z "$CALLER" ]; then
+        if [ -n "${CLAUDECODE:-}" ]; then CALLER=claude
+        elif [ -n "${CODEX_THREAD_ID:-}" ]; then CALLER=codex; fi
+    fi
+    case "$CALLER" in
+        codex) HARNESS=claude ;;
+        claude|"") HARNESS=codex ;;
+        *) echo "unknown caller: $CALLER (use claude or codex)" >&2; exit 2 ;;
+    esac
+fi
+[[ "$HARNESS" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo "invalid harness name" >&2; exit 2; }
 
 ADAPTER="$SKILL_DIR/harnesses/$HARNESS.sh"
 [ -x "$ADAPTER" ] || { echo "no such harness: $HARNESS (have: $(cd "$SKILL_DIR/harnesses" && ls *.sh | sed 's/\.sh$//' | tr '\n' ' '))" >&2; exit 2; }
@@ -151,6 +168,7 @@ START_HEAD=$(git -C "$WT" rev-parse HEAD)
 # link would edit its target. Restore also runs from an EXIT trap, so a
 # failing adapter cannot leave the rules behind in the retained worktree.
 AGENTS_FILES=(AGENTS.md)
+[ "$HARNESS" = claude ] && AGENTS_FILES+=(CLAUDE.md)
 [ -e "$WT/AGENTS.override.md" ] && AGENTS_FILES+=(AGENTS.override.md)
 RB_BEGIN='<!-- review-by-harness:begin -->'
 RB_END='<!-- review-by-harness:end -->'
@@ -222,7 +240,15 @@ cat "$OUT/review.md"
 restore_agents
 
 if [ "$REVIEW_ONLY" -eq 1 ]; then
-    echo "### review-only: no fix pass, no changes made"
+    if ! git -C "$WT" diff --quiet "$START_HEAD" ||
+       [ -n "$(git -C "$WT" ls-files --others --exclude-standard)" ] ||
+       [ "$(git -C "$WT" rev-parse HEAD)" != "$START_HEAD" ]; then
+        echo "!!! review-only harness changed the worktree; inspect $WT"
+        git -C "$WT" --no-pager diff "$START_HEAD"
+        git -C "$WT" status --short
+        exit 1
+    fi
+    echo "### review-only: no fix pass, verified worktree unchanged"
     echo "### END"
     exit 0
 fi

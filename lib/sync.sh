@@ -888,6 +888,7 @@ _sync_provision() {
   install_mcp_packages   || true
   install_claude_mcps    || true
   install_claude_plugins || true
+  install_codex_plugins  || true
   remove_deprecated_shims || true
 
   # Codex's managed hook is install-time work, but syncing it here too is what

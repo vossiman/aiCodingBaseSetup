@@ -1,6 +1,6 @@
 # AI Coding Base Setup
 
-Cross-platform installer/updater for **Claude Code, opencode, OpenAI Codex, and Cursor Agent** configurations. Syncs the same set of MCPs across all four CLIs, plus Claude-specific skills, hooks, plugins, and statusline. Runs on Mint Linux, WSL, Windows, and devcontainers (DevPod / Codespaces / Dev Containers).
+Cross-platform installer/updater for **Claude Code, opencode, OpenAI Codex, and Cursor Agent** configurations. Syncs the same set of MCPs across all four CLIs, plus shared Claude/Codex skills and workflow hooks, native plugins, and CLI-specific status UI. Runs on Mint Linux, WSL, Windows, and devcontainers (DevPod / Codespaces / Dev Containers).
 
 ## Quick Start
 
@@ -75,9 +75,12 @@ Configured for **all four CLIs**: `claude mcp add` for Claude Code (existing), `
   `notify` also goes through `codex-turn-done`, which sweeps after flagging the window.
 - **check-archived-docs.sh** — SessionStart hook. Emits a one-line banner when a project using the reference docs layout has docs with `status: done` in any `docs/*/active/` folder. Fail-open.
 
-### Slash commands
+### Shared workflows
 
-- **/housekeep** — Sweeps `docs/*/active/` for docs with `status: done` frontmatter and moves them into the sibling `archive/`. Also prunes `[x]` items older than 14 days from `TODO.md`.
+See [Claude/Codex parity](docs/agent-parity.md) for plugin installation,
+reciprocal harness review, validation, and the remaining differences.
+
+- **housekeep** — Shared skill (`/housekeep` in Claude, `$housekeep` in Codex). Sweeps `docs/*/active/` for docs with `status: done` frontmatter and moves them into the sibling `archive/`. Also prunes `[x]` items older than 14 days from `TODO.md`.
 
 ### Project templates
 

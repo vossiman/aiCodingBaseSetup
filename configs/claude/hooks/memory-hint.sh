@@ -8,5 +8,5 @@ prompt=$(jq -r '.prompt // empty' 2>/dev/null) || exit 0
 [ -n "$prompt" ] || exit 0
 hint="$HOME/.local/bin/memory-hint"
 [ -x "$hint" ] || exit 0
-printf '%s' "$prompt" | "$hint" --client hook:claude-code 2>/dev/null || true
+printf '%s' "$prompt" | "$hint" --client "${1:-hook:claude-code}" 2>/dev/null || true
 exit 0

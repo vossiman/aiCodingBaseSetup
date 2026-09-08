@@ -252,7 +252,7 @@ ensure_codex_managed_hooks() {
 
   # Every script requirements.toml references, all from configs/claude/hooks:
   # codex runs the same hook contract, so the same files serve both CLIs.
-  local hooks=(bw-deny-files.sh redact-sessions-hook.sh redact-sessions-pending.sh)
+  local hooks=(bw-deny-files.sh redact-sessions-hook.sh redact-sessions-pending.sh memory-hint.sh check-archived-docs.sh)
   local src="$SCRIPT_DIR/configs/claude/hooks/bw-deny-files.sh"
   local req_src="$SCRIPT_DIR/configs/codex/requirements.toml"
   local h

@@ -223,3 +223,24 @@ install_claude_plugins() {
 remove_deprecated_shims() {
   rm -f "$HOME/.local/bin/aicoding-update" "$HOME/.local/bin/update-status"
 }
+
+# --- Codex marketplace plugins ---
+# Use the native catalog, not Claude's versioned plugin cache. Repeated add
+# refreshes the installed version and enables it (verified on codex 0.148+).
+install_codex_plugins() {
+  [[ "${AICODINGSETUP_SKIP_NETWORK:-0}" == 1 ]] && return 0
+  command -v codex >/dev/null 2>&1 || return 0
+  header "Codex Plugins"
+  local plugin="superpowers@openai-curated-remote" installed
+  if ! codex plugin add "$plugin" --json >/dev/null 2>&1; then
+    warn "Could not install/update $plugin — retry with: codex plugin add $plugin"
+    return 0
+  fi
+  installed=$(codex plugin list --json 2>/dev/null) || installed=""
+  if printf '%s' "$installed" | jq -e --arg id "$plugin" \
+      '.installed[] | select(.pluginId == $id and .enabled == true)' >/dev/null 2>&1; then
+    ok "$plugin installed and enabled"
+  else
+    warn "$plugin installation returned success but activation could not be verified"
+  fi
+}

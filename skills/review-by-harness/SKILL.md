@@ -1,6 +1,6 @@
 ---
 name: review-by-harness
-description: Use when asked to review an open PR with a second opinion from another agent - codex (GPT-5.6 Sol) or cursor (Grok 4.6) - and especially when asked to have that harness also FIX what it finds. Runs the external harness in a throwaway worktree, then verifies its claims against the code before anything is committed.
+description: Use when asked to review an open PR with a second opinion from another agent - Claude Code, codex (GPT-5.6 Sol), or cursor (Grok 4.6) - and especially when asked to have that harness also FIX what it finds. Runs the external harness in a throwaway worktree, then verifies its claims against the code before anything is committed.
 ---
 
 # Review by another harness
@@ -16,10 +16,18 @@ the last step of every run is you reading the diff, not the report.
 
 ```bash
 ~/.claude/skills/review-by-harness/run.sh <pr-number> [repo-dir] \
-    [--harness codex|cursor] [--review-only]
+    [--harness auto|claude|codex|cursor] [--review-only]
 ```
 
-- `--harness codex` (default) — GPT-5.6 Sol at high reasoning, via `codex exec
+- `--harness auto` (default) chooses Claude when called from Codex and Codex
+  when called from Claude. Pass `--caller codex` or `--caller claude` when the
+  runtime marker is unavailable. Explicit `--harness` always wins.
+- `--harness claude` — Claude Code's `opus` alias at high effort. Review has
+  only Read/Glob/Grep tools and no MCP tools. Fix uses native sandboxing where
+  available; the existing `REVIEW_SANDBOX='-s danger-full-access'` opt-in
+  applies where user namespaces are unavailable. Cursor's `--force` is not
+  a Claude opt-in. User and managed hooks remain active.
+- `--harness codex` — GPT-5.6 Sol at high reasoning, via `codex exec
   review`. Has a real built-in review mode.
 - `--harness cursor` — Grok 4.6 high, via `cursor-agent`. No built-in review
   mode, so the diff is handed to it with `prompts/review.md`.
@@ -83,6 +91,7 @@ reach for:
 
 | | review | fix |
 |---|---|---|
+| **claude** | file-reading tools only | native sandbox, or existing full-access opt-in |
 | **codex** | works out of the box | needs a sandbox override (below) |
 | **cursor** | works out of the box | works with `REVIEW_APPROVAL=--force` |
 
@@ -153,7 +162,8 @@ There are exactly two ways forward, and both are a human's call:
 
 ## The harness gets session rules, not just a prompt
 
-Every harness reads a repo-root `AGENTS.md` ahead of its global instructions,
+The driver installs repo-root `AGENTS.md` rules and, for Claude, `CLAUDE.md`
+rules plus an appended system prompt.
 and the global ones (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, the cursor
 estate skill) say to file work you find on the kanban board. A reviewer that
 obeys that files tickets for findings the author is about to fix: on
@@ -176,6 +186,7 @@ for the board.
 
 ```
 run.sh              deterministic driver: worktree, base ref, output, handback
+harnesses/claude.sh adapter: claude -p, read tools for review, edit/shell for fix
 harnesses/codex.sh  adapter: codex exec review / codex exec
 harnesses/cursor.sh adapter: cursor-agent --mode ask / cursor-agent
 prompts/review.md   review instructions (harnesses with no built-in review)

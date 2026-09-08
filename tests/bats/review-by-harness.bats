@@ -180,3 +180,31 @@ add_project_agents() {
   done
   grep -qx review-by-harness <<<"$output"
 }
+
+@test "auto selects Claude for Codex caller and restores Claude instructions" {
+  cp "$SKILL/harnesses/stub.sh" "$SKILL/harnesses/claude.sh"
+  ( cd "$TMPDIR/seed"
+    printf 'Claude project rules\n' > CLAUDE.md
+    git add CLAUDE.md; git commit -qm claude; git push -q -f origin HEAD:refs/pull/1/head )
+  run "$SKILL/run.sh" 1 "$REPO" --caller codex --review-only
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'harness: claude'* ]]
+  [ "$(cat "$REPO/.claude/worktrees/review-pr1-claude/CLAUDE.md")" = 'Claude project rules' ]
+}
+
+@test "auto selects Codex for Claude caller and explicit reviewer wins" {
+  cp "$SKILL/harnesses/stub.sh" "$SKILL/harnesses/codex.sh"
+  run "$SKILL/run.sh" 1 "$REPO" --caller claude --review-only
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'harness: codex'* ]]
+  run "$SKILL/run.sh" 1 "$REPO" --caller codex --harness stub --review-only
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'harness: stub'* ]]
+}
+
+@test "review-only detects a reviewer writing instead of claiming no changes" {
+  sed -i '/echo "stub findings"/s/echo "stub findings"/echo bad >> "$wt\/src.txt"; echo "stub findings"/' "$SKILL/harnesses/stub.sh"
+  run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'review-only harness changed'* ]]
+}

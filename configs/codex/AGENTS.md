@@ -103,3 +103,22 @@ switched off), and Cursor/OpenCode use deny rules. Casual reads are blocked; thi
 best-effort layer, not an airlock — determined bypasses (a redirected
 `env`, an interpreter fed by heredoc) are exactly what the hook hardening
 keeps chasing, so do not treat a block as proof nothing else works.
+
+
+## Shared development workflows
+
+- Superpowers is installed through Codex's native plugin catalog. Use its
+  relevant planning, debugging, implementation and verification skills when
+  the task benefits from them; the user's scope and authorization take precedence.
+- Local estate skills are shared through `~/.agents/skills`. For an independent
+  PR review, use `review-by-harness` with `--caller codex` (selects Claude),
+  unless the user chose a reviewer explicitly. Verify findings against code.
+- `housekeep` archives completed docs and prunes dated completed TODO entries.
+- To start a project, copy `templates/project/` from the aiCodingBaseSetup
+  checkout (`/tmp/aicoding` in containers), substitute `{{PROJECT_NAME}}` and
+  `{{PURPOSE}}`, strip `.tpl` suffixes, and rename `dot-claude/` to `.claude/`.
+  The retired scaffold command is not needed.
+- Put deliverable files in `out/` at the repo root for `dvw pull`. Preserve
+  existing contents and announce the path.
+- Automatic memory hints are leads, not facts. Verify them and use
+  `memory_feedback` with `confirmed` or `wrong` when the outcome is known.

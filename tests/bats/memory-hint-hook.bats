@@ -33,3 +33,9 @@ teardown() { rm -rf "$TMPDIR"; }
   run bash -c "printf '%s' '{\"prompt\": \"which ports on vossisrv\"}' | bash '$HOOK'"
   [ "$status" -eq 0 ]; [ -z "$output" ]
 }
+
+@test "Codex uses the same prompt wrapper with its own client tag" {
+  run bash -c "printf '%s' '{\"prompt\": \"which ports on vossisrv\"}' | bash '$HOOK' hook:codex"
+  [ "$status" -eq 0 ]
+  [[ "$output" == 'HINT-FOR:which ports on vossisrv CLIENT:hook:codex' ]]
+}

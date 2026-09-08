@@ -63,3 +63,19 @@ type = "command"
 command = "{{MANAGED_DIR}}/hooks/redact-sessions-hook.sh"
 timeout = 90
 statusMessage = "transcript scrub"
+
+# Shared workflow nudges: same scripts and payload fields as Claude Code.
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "{{MANAGED_DIR}}/hooks/memory-hint.sh hook:codex"
+timeout = 5
+statusMessage = "memory hints"
+
+[[hooks.SessionStart]]
+matcher = ".*"
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "{{MANAGED_DIR}}/hooks/check-archived-docs.sh"
+timeout = 5
+statusMessage = "housekeeping"

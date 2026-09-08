@@ -191,3 +191,16 @@ EOF
   AICODINGSETUP_NONINTERACTIVE=1 run _codex_hook_can_prompt
   [ "$status" -ne 0 ]
 }
+
+@test "managed Codex workflow hooks deploy shared scripts and correct memory client" {
+  ensure_codex_managed_hooks
+  cmp "$BLUEPRINT_ROOT/configs/claude/hooks/memory-hint.sh" "$CODEX_MANAGED_DIR/hooks/memory-hint.sh"
+  cmp "$BLUEPRINT_ROOT/configs/claude/hooks/check-archived-docs.sh" "$CODEX_MANAGED_DIR/hooks/check-archived-docs.sh"
+  run python3 -c '
+import sys, tomllib
+with open(sys.argv[1], "rb") as f: hooks=tomllib.load(f)["hooks"]
+assert hooks["UserPromptSubmit"][0]["hooks"][0]["command"].endswith("memory-hint.sh hook:codex")
+assert any(h["command"].endswith("check-archived-docs.sh") for group in hooks["SessionStart"] for h in group["hooks"])
+' "$REQ"
+  [ "$status" -eq 0 ]
+}

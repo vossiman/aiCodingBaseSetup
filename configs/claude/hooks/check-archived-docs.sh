@@ -39,9 +39,9 @@ main() {
 
   if (( count > 0 )); then
     if (( count == 1 )); then
-      echo "📦 1 doc ready to archive — run /housekeep to sweep."
+      echo "📦 1 doc ready to archive — ask for housekeep to sweep."
     else
-      echo "📦 ${count} docs ready to archive — run /housekeep to sweep."
+      echo "📦 ${count} docs ready to archive — ask for housekeep to sweep."
     fi
   fi
 
