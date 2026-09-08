@@ -21,10 +21,11 @@ log() { printf '%s %s\n' "$(date -Is)" "$*" >> "$LOG" 2>/dev/null || true; }
 
 # --priority/--title/--body and codex's positional JSON described the push
 # payload. They are still accepted and ignored so deployed callers keep working
-# unchanged; only --source (logging) and --window are load-bearing.
-source_kind="unknown" window=""
+# unchanged; only --source (logging), --window and --clear are load-bearing.
+source_kind="unknown" window="" clear=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --clear)    clear=1; shift ;;
     --source)   source_kind="${2:-unknown}"; shift 2 ;;
     --window)   window="${2:-}"; shift 2 ;;
     --priority|--title|--body) shift 2 ;;
@@ -43,25 +44,43 @@ if ! [[ "$window" =~ ^@[0-9]+$ ]]; then
   exit 0
 fi
 
+# --clear: the agent started a turn (UserPromptSubmit), so whatever flagged
+# this window is over. Selecting the window is not the only way to answer
+# an agent: a re-prompt from the phone TUI never fires after-select-window.
+if [ "$clear" = 1 ]; then
+  tmux set-option -w -u -t "$window" @waiting 2>/dev/null || true
+  tmux set-option -w -u -t "$window" @waiting_source 2>/dev/null || true
+  exit 0
+fi
+
 # Focused-window gate: the active window of an attached session is the one the
 # user is already looking at — same policy as tmux.conf's bell/activity/silence
 # "other" actions, which agent CLI hooks (claude Notification, codex notify)
 # otherwise bypass. Flagging it would stick (no clear hook fires without a
-# window *change*, so a single-window session shows "⏸ waiting" forever).
+# window *change*, so a single-window session would stay flagged forever).
 # Clear any stale flag while here: agent activity in a watched window proves
 # the user is present.
 focus="$(tmux display -p -t "$window" '#{window_active} #{session_attached}' 2>/dev/null || true)"
 case "$focus" in
   "1 "[1-9]*)
     tmux set-option -w -u -t "$window" @waiting 2>/dev/null || true
+    tmux set-option -w -u -t "$window" @waiting_source 2>/dev/null || true
     exit 0 ;;
 esac
 
 # Preserve the original episode timestamp: dvw's catalog surfaces @waiting as
 # `waiting_since` and sorts on it, so a later hook in the same waiting-episode
 # must not push the epoch forward.
+# @waiting_source tells the tmux tab badge whether the flag came from a
+# source that knows for sure (claude, codex) or from a heuristic; a sure
+# source may upgrade a heuristic flag, never the reverse.
 existing="$(tmux show-options -w -v -t "$window" @waiting 2>/dev/null || true)"
-[ -n "$existing" ] && exit 0
-
-tmux set-option -w -t "$window" @waiting "$(date +%s)" 2>/dev/null || true
+if [ -z "$existing" ]; then
+  tmux set-option -w -t "$window" @waiting "$(date +%s)" 2>/dev/null || true
+  tmux set-option -w -t "$window" @waiting_source "$source_kind" 2>/dev/null || true
+else
+  case "$source_kind" in
+    claude|codex) tmux set-option -w -t "$window" @waiting_source "$source_kind" 2>/dev/null || true ;;
+  esac
+fi
 exit 0

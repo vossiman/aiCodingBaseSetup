@@ -64,3 +64,14 @@ command = "{{MANAGED_DIR}}/hooks/redact-sessions-hook.sh"
 # Codex caps SessionEnd at 3s; the script detaches the scrub worker.
 timeout = 3
 statusMessage = "transcript scrub"
+
+# Turn start clears the tmux agent-waiting flag (bin/agent-notify --clear);
+# the turn-end half is codex's `notify` in config.toml.
+[[hooks.UserPromptSubmit]]
+matcher = ".*"
+
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "{{MANAGED_DIR}}/hooks/agent-working.sh"
+timeout = 5
+statusMessage = "agent working"

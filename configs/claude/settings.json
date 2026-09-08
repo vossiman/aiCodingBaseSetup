@@ -111,6 +111,12 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash \"{{HOME}}/.claude/hooks/agent-working.sh\"",
+            "async": true,
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "bash \"{{HOME}}/.claude/hooks/memory-hint.sh\"",
             "timeout": 5
           },
