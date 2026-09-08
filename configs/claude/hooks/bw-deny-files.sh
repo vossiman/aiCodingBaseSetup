@@ -569,6 +569,14 @@ is_env_dump() {
     # (review 2026-08-21). `2>&1` has no target word; skip it whole.
     local -a words=() w
     read -r -a words <<< "$rest"
+    # `set -e` changes shell options; unlike bare `set`, it prints no variable
+    # values. Do not strip that flag and then mistake it for a dump. Only a
+    # leading option qualifies: `set > -e` still dumps to a file named -e.
+    # This skips this segment's dump check, not the other credential scans or
+    # later commands in the block (AICODINGBASESETUP-28).
+    if [[ "$head" == set && "${words[0]:-}" =~ ^[-+][abefhkmnoptuvxBCEHPT]+$ ]]; then
+      continue
+    fi
     local i=0 remaining=0 saw_assignment=0 skip_target=0
     while (( i < ${#words[@]} )); do
       w="${words[$i]}"
