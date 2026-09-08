@@ -42,7 +42,9 @@
 # The unsets are belt-and-braces: they clear anything an earlier ~/.bashrc.d
 # fragment, a parent process, or a devcontainer `remoteEnv` may have exported.
 # The list covers every key in .secrets.env.example plus the ones other repos
-# keep in the same file (LOGFIRE_TOKEN, DOKPLOY_API_TOKEN, KANBAN_TOKEN). Add
+# keep in the same file (DOKPLOY_API_TOKEN, KANBAN_TOKEN), plus LOGFIRE_TOKEN,
+# which left the file on 2026-09-08 (memory-lanes#57) and is unset so a
+# stale export cannot leak into a test run's telemetry. Add
 # new keys here too — but note the sourcing is gone, so a key that is NOT
 # listed is no longer exported either; these lines only undo someone else's
 # export.
