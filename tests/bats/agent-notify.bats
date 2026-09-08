@@ -57,7 +57,7 @@ teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
   unset TMUX_STUB_WAITING
   [ "$status" -eq 0 ]
   # dvw sorts on this epoch — a second hook in the same episode must not move it
-  run grep 'set-option -w -t @7 @waiting' "$HOME/tmux-calls"
+  run grep 'set-option -w -t @7 @waiting [0-9]' "$HOME/tmux-calls"
   [ "$status" -ne 0 ]
 }
 
@@ -142,14 +142,47 @@ teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
   awk '/^\[/{exit 1} /^notify = /{found=1} END{exit !found}' "$cfg"
 }
 
-@test "tmux.conf wires alert hooks, clear-on-select, and waiting marker" {
+@test "tmux.conf preserves waiting hooks but displays application titles in both tab states" {
   local conf="$BLUEPRINT_ROOT/configs/tmux/tmux.conf"
   grep -q 'alert-bell.*agent-notify --source tmux-bell' "$conf"
   grep -q 'alert-silence.*agent-notify --source tmux-silence' "$conf"
   grep -q 'alert-activity.*monitor-silence' "$conf"
   grep -q 'after-select-window.*-u.*@waiting' "$conf"
-  grep -q '@catppuccin_window_default_text "#{?#{@waiting},⏸ ,}#W"' "$conf"
-  grep -q '@catppuccin_window_current_text "#{?#{@waiting},⏸ ,}#W"' "$conf"
+  # One label for both tab states, badged only for sure sources, falling
+  # back to #W for untitled panes (their #T is the hostname).
+  grep -q '^set -g @_ctp_tab_label "#{?#{m/r:^(claude|codex)$,#{@waiting_source}},⏸ ,}#{?#{==:#T,#h},#W,#{=25:pane_title}}"$' "$conf"
+  grep -q '^set -gF @catppuccin_window_text "#{@_ctp_tab_label}"$' "$conf"
+  grep -q '^set -gF @catppuccin_window_current_text "#{@_ctp_tab_label}"$' "$conf"
+  # Every place that clears @waiting clears @waiting_source too, and resumed
+  # output (alert-activity) clears both: a producing agent is not waiting.
+  for hook in after-select-window client-attached alert-activity; do
+    grep -q "$hook.*-u.*@waiting .*-u.*@waiting_source" "$conf"
+  done
+}
+
+@test "--clear drops both flags on the window and sets nothing" {
+  run "$CLI" --clear --window @7
+  [ "$status" -eq 0 ]
+  grep -q 'set-option -w -u -t @7 @waiting$' "$HOME/tmux-calls"
+  grep -q 'set-option -w -u -t @7 @waiting_source' "$HOME/tmux-calls"
+  if grep -q 'set-option -w -t' "$HOME/tmux-calls"; then false; fi
+}
+
+@test "agent-notify records @waiting_source and lets a sure source upgrade a heuristic flag" {
+  run "$CLI" --source tmux-silence --window @7
+  [ "$status" -eq 0 ]
+  grep -q 'set-option -w -t @7 @waiting_source tmux-silence' "$HOME/tmux-calls"
+  rm -f "$HOME/tmux-calls"
+  TMUX_STUB_WAITING=1700000000 run "$CLI" --source claude --window @7
+  [ "$status" -eq 0 ]
+  if grep -q 'set-option -w -t @7 @waiting 1' "$HOME/tmux-calls"; then false; fi
+  grep -q 'set-option -w -t @7 @waiting_source claude' "$HOME/tmux-calls"
+  rm -f "$HOME/tmux-calls"
+  TMUX_STUB_WAITING=1700000000 run "$CLI" --source tmux-bell --window @7
+  if grep -q '@waiting_source' "$HOME/tmux-calls"; then false; fi
+  rm -f "$HOME/tmux-calls"
+  TMUX_STUB_FOCUS="1 1" run "$CLI" --source claude --window @7
+  grep -q 'set-option -w -u -t @7 @waiting_source' "$HOME/tmux-calls"
 }
 
 @test "tmux.conf clears @waiting on reattach and does not bell-notify the current window" {

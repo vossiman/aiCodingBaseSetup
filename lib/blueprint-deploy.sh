@@ -555,6 +555,7 @@ $HOME/.pi/agent/extensions/bw-deny-files.ts|overwrite|configs/pi/extensions/bw-d
 $HOME/.claude/hooks/check-archived-docs.sh|overwrite|configs/claude/hooks/check-archived-docs.sh
 $HOME/.claude/hooks/llmwiki-distill.sh|overwrite|configs/claude/hooks/llmwiki-distill.sh
 $HOME/.claude/hooks/agent-waiting.sh|overwrite|configs/claude/hooks/agent-waiting.sh
+$HOME/.claude/hooks/agent-working.sh|overwrite|configs/claude/hooks/agent-working.sh
 $HOME/.claude/hooks/memory-hint.sh|overwrite|configs/claude/hooks/memory-hint.sh
 $HOME/.claude/hooks/opus-verbosity.sh|overwrite|configs/claude/hooks/opus-verbosity.sh
 $HOME/.claude/hooks/fable-guidance.sh|overwrite|configs/claude/hooks/fable-guidance.sh
