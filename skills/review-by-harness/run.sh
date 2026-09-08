@@ -204,9 +204,29 @@ START_HEAD=$(git -C "$WT" rev-parse HEAD)
 # failing adapter cannot leave the rules behind in the retained worktree.
 AGENTS_FILES=(AGENTS.md)
 [ "$HARNESS" = claude ] && AGENTS_FILES+=(CLAUDE.md)
-[ -e "$WT/AGENTS.override.md" ] && AGENTS_FILES+=(AGENTS.override.md)
+if [ -e "$WT/AGENTS.override.md" ] || [ -L "$WT/AGENTS.override.md" ]; then
+    AGENTS_FILES+=(AGENTS.override.md)
+fi
 RB_BEGIN='<!-- review-by-harness:begin -->'
 RB_END='<!-- review-by-harness:end -->'
+validate_instruction_paths() {
+    # Resolve links without reading their contents. Python also gives us a
+    # portable atomic replacement below (mv treats directory targets specially).
+    python3 - "$WT" "${AGENTS_FILES[@]}" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1]).resolve()
+for name in sys.argv[2:]:
+    path = root / name
+    try:
+        if not path.exists() and not path.is_symlink():
+            continue
+        target = path.resolve(strict=True)
+        if root not in target.parents or not target.is_file():
+            raise ValueError("must resolve to a regular file inside the worktree")
+    except (OSError, RuntimeError, ValueError) as exc:
+        sys.exit(f"!!! refusing unsafe instruction path {name}: {exc}")
+PY
+}
 _agents_kind() {  # _agents_kind <name>: tracked | untracked | absent
     if git -C "$WT" cat-file -e "HEAD:$1" 2>/dev/null; then echo tracked
     elif [ -e "$WT/$1" ] || [ -L "$WT/$1" ]; then echo untracked
@@ -214,6 +234,7 @@ _agents_kind() {  # _agents_kind <name>: tracked | untracked | absent
 }
 install_agents() {  # install_agents <review|fix>
     local f kind staged
+    validate_instruction_paths
     for f in "${AGENTS_FILES[@]}"; do
         kind="$(_agents_kind "$f")"
         if [ -L "$WT/$f" ]; then
@@ -236,11 +257,12 @@ install_agents() {  # install_agents <review|fix>
         } > "$staged"
         # Same-filesystem rename is atomic: interruption leaves either the
         # original or complete injected file for the EXIT restoration trap.
-        mv "$staged" "$WT/$f"
+        python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$staged" "$WT/$f"
     done
 }
 restore_agents() {
     local f kind
+    validate_instruction_paths || return 1
     for f in "${AGENTS_FILES[@]}"; do
         # An interrupted install may not have reached every instruction file.
         [ -f "$OUT/$f.kind" ] || continue

@@ -14,6 +14,8 @@ the last step of every run is you reading the diff, not the report.
 
 ## Running it
 
+The driver requires `git`, `gh`, `jq`, and `python3`, plus the selected CLI.
+
 ```bash
 ~/.claude/skills/review-by-harness/run.sh <pr-number> [repo-dir] \
     --harness claude --model claude-opus-5 --effort high [--review-only]
@@ -47,8 +49,7 @@ for older scripts, but skill-driven runs should always make the choice explicit.
   when called from Claude. Pass `--caller codex` or `--caller claude` when the
   runtime marker is unavailable. Explicit `--harness` always wins.
 - `--harness claude` — Claude Code's Opus 5 (`claude-opus-5`) at high effort.
-  Review has
-  only Read/Glob/Grep tools and no MCP tools. Fix uses native sandboxing where
+  Review has only Read/Glob/Grep tools and no MCP tools. Fix uses native sandboxing where
   available; the existing `REVIEW_SANDBOX='-s danger-full-access'` opt-in
   applies where user namespaces are unavailable. Cursor's `--force` is not
   a Claude opt-in. User and managed hooks remain active.
@@ -62,7 +63,9 @@ for older scripts, but skill-driven runs should always make the choice explicit.
 Each run makes a fresh worktree at `.claude/worktrees/review-pr<N>-<harness>`,
 reset to the PR head. It never commits and never pushes. The PR must not
 contain `.review-round`: the driver refuses any pre-existing scratch path
-before writing reports, including directories containing symlinks.
+before writing reports, including directories containing symlinks. Instruction
+paths must be regular files or symlinks resolving to regular files inside the
+worktree; directories, escaping links, dangling links and cycles are refused.
 Instruction injection uses atomic replacement, preserves existing modes,
 and restores the files after normal exit or handled HUP/INT/TERM signals.
 

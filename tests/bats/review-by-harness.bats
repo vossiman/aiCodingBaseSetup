@@ -291,19 +291,19 @@ add_project_agents() {
     : > CLAUDE.md
     git add AGENTS.md CLAUDE.md; git commit -qm instructions
     git push -q -f origin HEAD:refs/pull/1/head )
-  export REAL_MV
-  REAL_MV=$(command -v mv)
-  cat > "$TMPDIR/bin/mv" <<'STUB'
+  export REAL_PYTHON
+  REAL_PYTHON=$(command -v python3)
+  cat > "$TMPDIR/bin/python3" <<'STUB'
 #!/usr/bin/env bash
-case "$1" in
-  */.review-round/AGENTS.md.*)
-    if [ "$INTERRUPT_POINT" = after ]; then "$REAL_MV" "$@"; fi
+case "${2:-}" in
+  *os.replace*)
+    if [ "$INTERRUPT_POINT" = after ]; then "$REAL_PYTHON" "$@"; fi
     kill -TERM "$PPID"
     exit 143 ;;
 esac
-exec "$REAL_MV" "$@"
+exec "$REAL_PYTHON" "$@"
 STUB
-  chmod +x "$TMPDIR/bin/mv"
+  chmod +x "$TMPDIR/bin/python3"
   for point in before after; do
     INTERRUPT_POINT="$point" run "$SKILL/run.sh" 1 "$REPO" --harness claude --model claude-opus-5 --review-only
     [ "$status" -eq 143 ]
@@ -313,5 +313,35 @@ STUB
     [ -x "$cw/AGENTS.md" ]
     git -C "$cw" diff --quiet HEAD
     [ ! -e "$cw/.review-round/agents-seen-review.md" ]
+  done
+}
+
+@test "instruction directories and escaping or invalid links are refused before injection" {
+  cp "$SKILL/harnesses/stub.sh" "$SKILL/harnesses/claude.sh"
+  mkdir -p "$TMPDIR/external"
+  printf 'outside unchanged\n' > "$TMPDIR/external/rules.md"
+  for name in AGENTS.md CLAUDE.md AGENTS.override.md; do
+    for shape in directory directory-link file-link dangling cycle; do
+      ( cd "$TMPDIR/seed"
+        git rm -rf --ignore-unmatch AGENTS.md CLAUDE.md AGENTS.override.md >/dev/null
+        case "$shape" in
+          directory) mkdir "$name"; echo content > "$name/README.md" ;;
+          directory-link) ln -s "$TMPDIR/external" "$name" ;;
+          file-link) ln -s "$TMPDIR/external/rules.md" "$name" ;;
+          dangling) ln -s missing-target "$name" ;;
+          cycle) ln -s "$name" "$name" ;;
+        esac
+        git add "$name"; git commit -qm "$name $shape"
+        git push -q -f origin HEAD:refs/pull/1/head )
+      run "$SKILL/run.sh" 1 "$REPO" --harness claude --model claude-opus-5 --review-only
+      [ "$status" -ne 0 ]
+      [[ "$output" == *"refusing unsafe instruction path $name"* ]]
+      local cw="$REPO/.claude/worktrees/review-pr1-claude"
+      git -C "$cw" diff --quiet HEAD
+      [ ! -e "$cw/.review-round/AGENTS.md.kind" ]
+      [ ! -e "$cw/.review-round/agents-seen-review.md" ]
+      [ "$(cat "$TMPDIR/external/rules.md")" = 'outside unchanged' ]
+      [ "$(find "$TMPDIR/external" -type f | wc -l)" -eq 1 ]
+    done
   done
 }
