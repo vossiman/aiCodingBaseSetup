@@ -899,6 +899,10 @@ _sync_provision() {
     . "$blueprint_lib/provision-system.sh" >/dev/null 2>&1 || true
     command -v ensure_codex_managed_hooks >/dev/null 2>&1 \
       && ensure_codex_managed_hooks || true
+    # @playwright/mcp@latest can require a newer Chromium after an update.
+    # Reconcile existing machines too, rather than waiting for a rebuild.
+    command -v ensure_playwright_browsers >/dev/null 2>&1 \
+      && ensure_playwright_browsers || true
   fi
 
   # dvw-probe's symlink is otherwise only created by install.sh at container

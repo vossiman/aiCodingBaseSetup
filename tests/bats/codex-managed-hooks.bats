@@ -83,6 +83,9 @@ h=d['hooks']['PreToolUse'][0]
 assert h['matcher'], 'no matcher'
 assert h['hooks'][0]['type']=='command', h
 assert h['hooks'][0]['command'].endswith('bw-deny-files.sh'), h
+for group in d['hooks']['SessionEnd']:
+    for hook in group['hooks']:
+        assert 1 <= hook.get('timeout', 1) <= 3, 'SessionEnd exceeds Codex timeout cap'
 print('ok')
 "
   [ "$status" -eq 0 ]
