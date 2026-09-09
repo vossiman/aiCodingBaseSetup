@@ -60,8 +60,33 @@ IMAGE_DIR="$BLUEPRINT_ROOT/image"
 }
 
 @test "image: Dockerfile does not bake Playwright browsers or nvm" {
-  run grep -iE 'playwright|nvm|nvs' "$IMAGE_DIR/Dockerfile"
+  # The Chromium shared libs ARE baked (apt); the browser download is not.
+  run grep -iE 'install-browser|playwright install|ms-playwright|nvm|nvs' "$IMAGE_DIR/Dockerfile"
   [ "$status" -ne 0 ]
+}
+
+@test "image: Dockerfile bakes the Playwright Chromium shared libs" {
+  for lib in libgbm1 libnss3 libatk1.0-0t64 libxkbcommon0; do
+    grep -qF "$lib" "$IMAGE_DIR/Dockerfile" || { echo "missing $lib"; return 1; }
+  done
+}
+
+@test "image: Dockerfile Go pin matches ensure_go's version" {
+  local df_ver lib_ver
+  df_ver=$(grep -oE 'GO_VERSION=[0-9.]+' "$IMAGE_DIR/Dockerfile" | head -1 | cut -d= -f2)
+  lib_ver=$(grep -oE 'goversion="[0-9.]+"' "$BLUEPRINT_ROOT/lib/provision-system.sh" | cut -d'"' -f2)
+  [ -n "$df_ver" ] && [ "$df_ver" = "$lib_ver" ]
+}
+
+@test "image: Dockerfile puts Go on PATH so ensure_go short-circuits" {
+  grep -qE '^ENV PATH=.*(/usr/local/go/bin)' "$IMAGE_DIR/Dockerfile"
+}
+
+@test "image: frogmouth seed lives outside ~/.local/share/uv (host-mount candidate)" {
+  grep -qF 'uv tool install --python 3.12 frogmouth' "$IMAGE_DIR/Dockerfile"
+  grep -qE 'UV_TOOL_DIR=/opt/uv/tools' "$IMAGE_DIR/Dockerfile"
+  grep -qE 'UV_PYTHON_INSTALL_DIR=/opt/uv/python' "$IMAGE_DIR/Dockerfile"
+  grep -qF 'frogmouth' "$IMAGE_DIR/smoke-test.sh"
 }
 
 @test "image: Dockerfile seeds no mount-shadowed path" {
