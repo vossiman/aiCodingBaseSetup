@@ -626,3 +626,63 @@ db_has() { grep -q "$2" "$1" 2>/dev/null || grep -q "$2" "$1-wal" 2>/dev/null; }
   b="$( REDACT_SESSIONS_SOURCE_ONLY=1 . "$RS"; ROOTS+=("$HOME/.extra|*.jsonl|rename"); load_rules; fingerprint_rules )"
   [ "$a" != "$b" ]
 }
+
+@test "sweep: a state lock held elsewhere defers a sqlite store as lock busy, not as helper failure" {
+  local f="$HOME/.cursor/chats/w/c/store.db"
+  sqlite_cursor "$f"; old "$f"
+  mkdir -p "$STATE"
+  ( flock 9; sleep 4 ) 9>>"$STATE/lock" &
+  sleep 0.2
+  REDACT_SESSIONS_LOCK_WAIT=1 "$RS" --sweep
+  wait
+  grep -q "state lock busy file=$f" "$STATE/log"
+  [ "$(grep -c "sqlite helper failed" "$STATE/log")" -eq 0 ]
+  grep -qx "$f" "$STATE/deferred"
+}
+
+@test "sweep: the helper's stderr reason lands in the log" {
+  local e="$HOME/.cursor/chats/w/c/store.db"
+  printf 'not a database\n' > "$e"; old "$e"
+  "$RS" --sweep
+  grep -q "sqlite helper failed rc=1 file=$e reason=redact-sqlite: " "$STATE/log"
+}
+
+@test "sweep: deferred.next leftovers of a killed sweep are removed, a fresh one is kept" {
+  mkdir -p "$STATE"
+  : > "$STATE/deferred.next.999999"; touch -d '-2 hours' "$STATE/deferred.next.999999"
+  : > "$STATE/deferred.next.999998"
+  "$RS" --sweep
+  [ ! -e "$STATE/deferred.next.999999" ]
+  [ -e "$STATE/deferred.next.999998" ]
+}
+
+@test "--ack is logged with the key and the container" {
+  mkdir -p "$STATE"; printf 'A\n' > "$STATE/pending"
+  "$RS" --ack A
+  grep -q "ack key=A container=" "$STATE/log"
+}
+
+@test "--ack under a held state lock leaves the marker, logs the failure, exits non-zero" {
+  mkdir -p "$STATE"; printf 'A\n' > "$STATE/pending"
+  ( flock 9; sleep 3 ) 9>>"$STATE/lock" &
+  sleep 0.2
+  REDACT_SESSIONS_LOCK_WAIT=1 run "$RS" --ack A
+  wait
+  [ "$status" -ne 0 ]
+  [ "$(cat "$STATE/pending")" = "A" ]
+  grep -q "ack failed key=A" "$STATE/log"
+  [ "$(grep -c "^[^ ]* ack key=A" "$STATE/log")" -eq 0 ]
+}
+
+@test "pending hook: names the last hit per key and forbids the agent to ack" {
+  mkdir -p "$STATE"; printf 'GH_TOKEN\n' > "$STATE/pending"
+  printf '%s\n' \
+    '2026-09-09T09:44:02+02:00 hit key=GH_TOKEN count=2 file=/h/old.jsonl container=box session=s1' \
+    '2026-09-09T09:44:03+02:00 hit key=GH_TOKEN count=1 file=/h/new.jsonl container=box session=s2' \
+    '2026-09-09T09:44:04+02:00 hit key=OTHER count=1 file=/h/x.jsonl container=box session=s3' > "$STATE/log"
+  run bash "$PENDING"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"GH_TOKEN"*"2026-09-09T09:44:03"*"/h/new.jsonl"* ]]
+  [[ "$output" != *"/h/x.jsonl"* ]]
+  [[ "$output" == *"must not run"*"--ack"* ]]
+}

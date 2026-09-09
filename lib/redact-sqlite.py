@@ -50,7 +50,13 @@ def read_rules(stream):
         if not line.strip():
             continue
         hexpat, _, marker = line.partition(" ")
-        rules.append((bytes.fromhex(hexpat), marker.encode()))
+        pat = bytes.fromhex(hexpat)
+        # An empty pattern matches between every byte: count() would report
+        # len+1 hits and replace() would splice the marker into every blob.
+        if not pat or not marker:
+            print("redact-sqlite: empty rule ignored", file=sys.stderr)
+            continue
+        rules.append((pat, marker.encode()))
     return rules
 
 
@@ -226,7 +232,7 @@ def main():
             busy, _log, _ckpt = conn.execute("pragma wal_checkpoint(truncate)").fetchone()
             if busy:
                 out.append("checkpoint-incomplete")
-    except sqlite3.OperationalError as e:
+    except sqlite3.DatabaseError as e:
         if "locked" in str(e) or "busy" in str(e):
             return EXIT_BUSY
         print("redact-sqlite: %s" % type(e).__name__, file=sys.stderr)

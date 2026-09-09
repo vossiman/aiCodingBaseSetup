@@ -21,10 +21,19 @@ grep -qx 'SECRETS_FILE_UNREADABLE' "$state/pending" 2>/dev/null && unreadable=1
 
 msg="# redact-sessions: credentials need rotating"$'\n'
 if [ -n "${keys// /}" ]; then
-  msg+="A transcript on this machine contained the live value of: $keys"$'\n'
+  msg+="A transcript on this machine contained a secrets-file value of: $keys"$'\n'
   msg+="The file has been scrubbed, but the value reached an agent and is burned."$'\n'
+  msg+="Last hit per key (a hit in an old session matched against a value the"$'\n'
+  msg+="user rotated elsewhere is stale, so show the user these lines):"$'\n'
+  for k in $keys; do
+    last="$(grep " hit key=$k " "$state/log" 2>/dev/null | tail -n 1)"
+    [ -n "$last" ] || continue
+    msg+="  $k: $(printf '%s' "$last" | awk '{print $1}') $(printf '%s' "$last" | sed 's/.* file=\([^ ]*\).*/\1/')"$'\n'
+  done
   msg+="Tell the user now: rotate each key, edit the host secrets file in place,"$'\n'
   msg+="then run \`redact-sessions --ack KEY\` for each one. Details: $state/log"$'\n'
+  msg+="An agent must not run \`redact-sessions --ack\` itself: the ack is the user's"$'\n'
+  msg+="statement that the key was rotated, and only they know."$'\n'
 fi
 if [ "$unreadable" = 1 ]; then
   msg+="Also: the secrets file exists but could not be read or parsed fully, so"$'\n'
