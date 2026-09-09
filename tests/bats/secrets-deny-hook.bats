@@ -1180,7 +1180,7 @@ EOF"
 }
 
 @test "shell patch guard: decoy shift text cannot swallow a later patch" {
-  bash_hook "echo 'value a<<b'
+  bash_hook "echo 'note <<PATCH'
 apply_patch <<'PATCH'
 *** Begin Patch
 *** Add File: $HOME/work/after-decoy.pem
@@ -1188,7 +1188,7 @@ apply_patch <<'PATCH'
 *** End Patch
 PATCH"
   denied
-  [[ "$output" == *SG-PATCH-TARGET* ]]
+  [[ "$output" == *SG-PATCH-SYNTAX* || "$output" == *SG-PATCH-TARGET* ]]
 }
 
 @test "shell patch guard: expanded cd targets fail closed" {
@@ -1197,6 +1197,34 @@ cd \$D && apply_patch <<'PATCH'
 *** Begin Patch
 *** Add File: memory-lanes-ship
 +private material
+*** End Patch
+PATCH"
+  denied
+  [[ "$output" == *SG-PATCH-CWD* ]]
+}
+
+@test "shell patch guard: normalized and secondary patch starts fail closed" {
+  bash_hook $'apply_patch <<\'PATCH\'\r\n*** Begin Patch\r\n*** Add File: '$HOME$'/work/crlf.pem\r\n+private material\r\n*** End Patch\r\nPATCH\r'
+  denied
+  [[ "$output" == *SG-PATCH-SYNTAX* || "$output" == *SG-PATCH-TARGET* ]]
+
+  bash_hook "apply_patch <<'FIRST' <<'PATCH'
+ordinary
+FIRST
+*** Begin Patch
+*** Add File: $HOME/work/second.pem
++private material
+*** End Patch
+PATCH"
+  denied
+  [[ "$output" == *SG-PATCH-SYNTAX* || "$output" == *SG-PATCH-TARGET* ]]
+}
+
+@test "shell patch guard: relative cd without event cwd stays ambiguous" {
+  bash_hook "cd subdir && apply_patch <<'PATCH'
+*** Begin Patch
+*** Add File: notes.md
++content
 *** End Patch
 PATCH"
   denied

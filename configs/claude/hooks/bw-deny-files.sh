@@ -793,6 +793,23 @@ validate_native_patch() {
   validate_patch_text "$patch_text" "$patch_cwd"
 }
 
+# Set PATCH_BODY_SHAPE to first, later or none. Patch headers accept trailing
+# whitespace and CRLF just like validate_patch_text, but indentation remains
+# significant so documentation examples are not mistaken for executable data.
+classify_patch_body() {
+  local text="$1" line normalized saw_content=0
+  PATCH_BODY_SHAPE=none
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    normalized="${line%$'\r'}"
+    normalized="${normalized%"${normalized##*[![:space:]]}"}"
+    if [[ "$normalized" == "*** Begin Patch" ]]; then
+      if (( saw_content )); then PATCH_BODY_SHAPE=later; else PATCH_BODY_SHAPE=first; fi
+      return
+    fi
+    [[ -z "$normalized" ]] || saw_content=1
+  done <<< "$text"
+}
+
 # Validate patch data hidden from the ordinary Bash token scan by a heredoc.
 # This deliberately recognizes apply_patch through path qualification and
 # wrappers: those change how the executable is reached, not what its patch
@@ -810,12 +827,17 @@ validate_shell_patch_heredocs() {
       (( strip_tabs == 0 )) || candidate="${candidate#"${candidate%%[!$'\t']*}"}"
       if [[ "$candidate" == "$marker" ]]; then
         candidate="$body"
-        while [[ "$candidate" == $'\n'* ]]; do candidate="${candidate#$'\n'}"; done
-        if [[ "$candidate" == "*** Begin Patch"$'\n'* || "$candidate" == "*** Begin Patch" ]]; then
-          (( cwd_ambiguous == 0 )) ||
-            block SG-PATCH-CWD "apply_patch: shell working directory cannot be determined safely."
-          validate_patch_text "$candidate" "$patch_cwd"
-        fi
+        classify_patch_body "$candidate"
+        case "$PATCH_BODY_SHAPE" in
+          first)
+            (( cwd_ambiguous == 0 )) ||
+              block SG-PATCH-CWD "apply_patch: shell working directory cannot be determined safely."
+            validate_patch_text "$candidate" "$patch_cwd"
+            ;;
+          later)
+            block SG-PATCH-SYNTAX "apply_patch: patch data followed an unrecognized shell heredoc."
+            ;;
+        esac
         in_body=0
         strip_tabs=0
         body=""
@@ -837,14 +859,22 @@ validate_shell_patch_heredocs() {
       else
         [[ "$cd_target" =~ $printable && "$cd_target" != *:* ]] ||
           block SG-PATCH-CWD "apply_patch: shell working directory is not a supported local path."
-        [[ "$cd_target" == /* ]] || cd_target="$patch_cwd/$cd_target"
-        patch_cwd="$(realpath -m -- "$cd_target" 2>/dev/null)" ||
-          block SG-PATCH-CWD "apply_patch: shell working directory cannot be resolved."
+        if [[ "$cd_target" != /* && -z "$patch_cwd" ]]; then
+          cwd_ambiguous=1
+        else
+          [[ "$cd_target" == /* ]] || cd_target="$patch_cwd/$cd_target"
+          patch_cwd="$(realpath -m -- "$cd_target" 2>/dev/null)" ||
+            block SG-PATCH-CWD "apply_patch: shell working directory cannot be resolved."
+        fi
       fi
       line="$remainder"
     elif [[ "$line" =~ (^|[[:space:]\;\&\|\(])(cd|pushd)([[:space:]]|$) ]]; then
       cwd_ambiguous=1
     fi
+
+    classify_patch_body "$line"
+    [[ "$PATCH_BODY_SHAPE" == none ]] ||
+      block SG-PATCH-SYNTAX "apply_patch: patch data was not associated with a recognized shell heredoc."
 
     # Capture every outer shell heredoc. A body whose first non-empty line is
     # native patch syntax is validated even when it is assigned or piped into
@@ -859,8 +889,10 @@ validate_shell_patch_heredocs() {
 
   # An unrelated malformed heredoc is the shell's concern. A captured body
   # that already identifies itself as a patch must not evade validation.
-  if (( in_body )) && [[ "$body" == "*** Begin Patch"$'\n'* || "$body" == "*** Begin Patch" || "$body" == *$'\n*** Begin Patch\n'* ]]; then
-    block SG-PATCH-SYNTAX "apply_patch: shell heredoc is unterminated or malformed."
+  if (( in_body )); then
+    classify_patch_body "$body"
+    [[ "$PATCH_BODY_SHAPE" == none ]] ||
+      block SG-PATCH-SYNTAX "apply_patch: shell heredoc is unterminated or malformed."
   fi
 }
 
