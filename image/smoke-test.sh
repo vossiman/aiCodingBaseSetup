@@ -29,6 +29,7 @@ check "kitty terminfo"                 'ls /usr/share/terminfo/x/xterm-kitty /et
 check "node + npm"                     'command -v node && command -v npm'
 check "python3"                        'command -v python3'
 check "uv seed"                        '[ -x ~/.local/bin/uv ]'
+check "seeds on PATH under su"         'sudo su codespace -c "command -v uv"'
 check "tmux runs (deps resolved)"      'tmux -V'
 check "tmux commit marker matches"     '[ "$(cat /usr/local/share/aicoding/tmux-commit)" = b07424224b88fcc02bcb9b58d8655f00b97909c6 ]'
 check "daemon.json log rotation baked" 'jq -e ".\"log-opts\".\"max-size\" == \"20m\"" /etc/docker/daemon.json'
