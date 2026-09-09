@@ -336,7 +336,12 @@ _ack() {
   grep -vx "$1" "$STATE/pending" > "$STATE/pending.next" || true
   mv -f "$STATE/pending.next" "$STATE/pending"
 }
-ack() { locked _ack "$1"; log "ack key=$1 container=$HOST"; exit 0; }
+ack() {
+  if locked _ack "$1"; then log "ack key=$1 container=$HOST"; exit 0; fi
+  log "ack failed key=$1 container=$HOST (state lock busy, marker unchanged)"
+  echo "redact-sessions: state lock busy, $1 still pending; retry" >&2
+  exit 1
+}
 
 usage() { sed -n '2,8p' "$_rs_self" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 

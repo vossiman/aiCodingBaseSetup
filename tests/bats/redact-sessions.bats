@@ -662,6 +662,18 @@ db_has() { grep -q "$2" "$1" 2>/dev/null || grep -q "$2" "$1-wal" 2>/dev/null; }
   grep -q "ack key=A container=" "$STATE/log"
 }
 
+@test "--ack under a held state lock leaves the marker, logs the failure, exits non-zero" {
+  mkdir -p "$STATE"; printf 'A\n' > "$STATE/pending"
+  ( flock 9; sleep 3 ) 9>>"$STATE/lock" &
+  sleep 0.2
+  REDACT_SESSIONS_LOCK_WAIT=1 run "$RS" --ack A
+  wait
+  [ "$status" -ne 0 ]
+  [ "$(cat "$STATE/pending")" = "A" ]
+  grep -q "ack failed key=A" "$STATE/log"
+  [ "$(grep -c "^[^ ]* ack key=A" "$STATE/log")" -eq 0 ]
+}
+
 @test "pending hook: names the last hit per key and forbids the agent to ack" {
   mkdir -p "$STATE"; printf 'GH_TOKEN\n' > "$STATE/pending"
   printf '%s\n' \
