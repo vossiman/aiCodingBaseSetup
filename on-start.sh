@@ -99,10 +99,24 @@ if [ -d "$uv_dir" ] && [ ! -w "$uv_dir" ] && command -v sudo >/dev/null 2>&1; th
   sudo -n chown "$(id -u):$(id -g)" "$uv_dir" 2>/dev/null \
     || echo "WARN: $uv_dir is not writable; uv cannot persist interpreters" >&2
 fi
-if [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ] && [ -f uv.lock ] \
-   && [ -L .venv/bin/python ] && [ ! -e .venv/bin/python ] \
-   && command -v uv >/dev/null 2>&1; then
-  echo "uv: .venv points at a missing interpreter (rebuild or python bump); running uv sync" >&2
+# Two triggers: the interpreter link dangles, or .python-version asks for a
+# version the (persisted) venv does not run. The second is a prefix match so
+# "3.12" accepts 3.12.7; anything odder just costs one idempotent uv sync.
+uv_heal_reason=""
+if [ -f uv.lock ] && [ -L .venv/bin/python ] && command -v uv >/dev/null 2>&1; then
+  if [ ! -e .venv/bin/python ]; then
+    uv_heal_reason="points at a missing interpreter (rebuild or python bump)"
+  elif [ -f .python-version ]; then
+    uv_want=$(head -n1 .python-version | tr -d '[:space:]' | sed 's/^cpython[@-]//')
+    uv_have=$(.venv/bin/python -c 'import platform; print(platform.python_version())' 2>/dev/null || true)
+    case "$uv_have" in
+      "$uv_want"*) ;;
+      *) uv_heal_reason="runs ${uv_have:-nothing}, .python-version wants $uv_want" ;;
+    esac
+  fi
+fi
+if [ -n "$uv_heal_reason" ] && [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ]; then
+  echo "uv: .venv $uv_heal_reason; running uv sync" >&2
   timeout 900 uv sync 2>&1 | tail -3 || echo "WARN: uv sync failed (non-fatal)" >&2
 fi
 

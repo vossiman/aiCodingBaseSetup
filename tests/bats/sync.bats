@@ -350,11 +350,28 @@ _path_without_real_local_bin() {
   echo "$output" | grep -q "missing interpreter"
 }
 
+@test "on-start.sh runs uv sync when .python-version asks for another interpreter" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  printf '#!/bin/sh\necho "uv $*" >> "$TMP/ran.log"\n' > "$TMP/stubs/uv"; chmod +x "$TMP/stubs/uv"
+  mkdir -p "$TMP/ws/.venv/bin"; : > "$TMP/ws/uv.lock"
+  printf '#!/bin/sh\necho 3.12.7\n' > "$TMP/fake-py"; chmod +x "$TMP/fake-py"
+  ln -s "$TMP/fake-py" "$TMP/ws/.venv/bin/python"
+  echo "3.14" > "$TMP/ws/.python-version"
+  run env -C "$TMP/ws" PATH="$(_path_without_real_local_bin)" \
+      AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT" AICODING_UPDATE_TTL=0 \
+      AICODINGSETUP_SKIP_NETWORK= bash "$BLUEPRINT_ROOT/on-start.sh"
+  [ "$status" -eq 0 ]
+  grep -q "^uv sync" "$TMP/ran.log"
+  echo "$output" | grep -q "runs 3.12.7, .python-version wants 3.14"
+}
+
 @test "on-start.sh leaves a healthy .venv alone" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   printf '#!/bin/sh\necho "uv $*" >> "$TMP/ran.log"\n' > "$TMP/stubs/uv"; chmod +x "$TMP/stubs/uv"
   mkdir -p "$TMP/ws/.venv/bin"; : > "$TMP/ws/uv.lock"
-  ln -s /bin/sh "$TMP/ws/.venv/bin/python"
+  printf '#!/bin/sh\necho 3.12.7\n' > "$TMP/fake-py"; chmod +x "$TMP/fake-py"
+  ln -s "$TMP/fake-py" "$TMP/ws/.venv/bin/python"
+  echo "3.12" > "$TMP/ws/.python-version"
   run env -C "$TMP/ws" AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT" AICODING_UPDATE_TTL=0 \
       AICODINGSETUP_SKIP_NETWORK= bash "$BLUEPRINT_ROOT/on-start.sh"
   [ "$status" -eq 0 ]
