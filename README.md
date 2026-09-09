@@ -79,6 +79,8 @@ Configured for **all four CLIs**: `claude mcp add` for Claude Code (existing), `
 
 See [Claude/Codex parity](docs/agent-parity.md) for plugin installation,
 reciprocal harness review, validation, and the remaining differences.
+Accepted tool limitations are recorded in
+[Known upstream issues](docs/known-upstream-issues.md).
 
 - **housekeep** — Shared skill (`/housekeep` in Claude, `$housekeep` in Codex). Sweeps `docs/*/active/` for docs with `status: done` frontmatter and moves them into the sibling `archive/`. Also prunes `[x]` items older than 14 days from `TODO.md`.
 
