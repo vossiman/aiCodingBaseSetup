@@ -86,6 +86,40 @@ if [ -n "$sync_cmd" ]; then
   "$sync_cmd" --boot || echo "WARN: aicoding-sync failed (non-fatal)" >&2
 fi
 
+# uv state. ~/.local/share/uv is a host bind mount (devcontainer.json) so the
+# interpreters uv downloads survive a rebuild or image bump; before that,
+# every rebuild left the workspace's persisted .venv pointing at an
+# interpreter that no longer existed, and each .venv/bin/* died with exit
+# 127 until someone ran uv by hand (dataEnv, 2026-08-17 and 2026-09-09).
+# Docker creates a missing bind source root-owned, so hand it to the user
+# first. Then heal a .venv whose interpreter link dangles anyway (first boot
+# after this mount arrived, or a .python-version bump).
+uv_dir="$HOME/.local/share/uv"
+if [ -d "$uv_dir" ] && [ ! -w "$uv_dir" ] && command -v sudo >/dev/null 2>&1; then
+  sudo -n chown "$(id -u):$(id -g)" "$uv_dir" 2>/dev/null \
+    || echo "WARN: $uv_dir is not writable; uv cannot persist interpreters" >&2
+fi
+# Two triggers: the interpreter link dangles, or .python-version asks for a
+# version the (persisted) venv does not run. The second is a prefix match so
+# "3.12" accepts 3.12.7; anything odder just costs one idempotent uv sync.
+uv_heal_reason=""
+if [ -f uv.lock ] && [ -L .venv/bin/python ] && command -v uv >/dev/null 2>&1; then
+  if [ ! -e .venv/bin/python ]; then
+    uv_heal_reason="points at a missing interpreter (rebuild or python bump)"
+  elif [ -f .python-version ]; then
+    uv_want=$(head -n1 .python-version | tr -d '[:space:]' | sed 's/^cpython[@-]//')
+    uv_have=$(.venv/bin/python -c 'import platform; print(platform.python_version())' 2>/dev/null || true)
+    case "$uv_have" in
+      "$uv_want"*) ;;
+      *) uv_heal_reason="runs ${uv_have:-nothing}, .python-version wants $uv_want" ;;
+    esac
+  fi
+fi
+if [ -n "$uv_heal_reason" ] && [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ]; then
+  echo "uv: .venv $uv_heal_reason; running uv sync" >&2
+  timeout 900 uv sync 2>&1 | tail -3 || echo "WARN: uv sync failed (non-fatal)" >&2
+fi
+
 # Boot sweep: scrub transcripts left by crashed sessions or other containers.
 # Fail-open, bounded, and synchronous: a detached sweep outlives this script
 # and keeps writing state into a HOME the caller may already be tearing down

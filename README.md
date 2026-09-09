@@ -398,7 +398,7 @@ curl -fsSL https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/dev
 
 `remoteUser` must match the image's hardcoded user — `codespace` for `universal:6`, `vscode` for most others (`python`, `base`, etc.). Mismatch → mounts land at the wrong path and nothing works.
 
-The template ships with `"mounts": [...]` wired for a DevPod-style backend (e.g. `vossisrv` hosting all containers): bind-mounting five dirs gives all four CLIs persistent state across every container the user spins up:
+The template ships with `"mounts": [...]` wired for a DevPod-style backend (e.g. `vossisrv` hosting all containers): bind-mounting six dirs gives all four CLIs, plus uv, persistent state across every container the user spins up:
 
 | Host source | Container target | What persists |
 |---|---|---|
@@ -408,6 +408,7 @@ The template ships with `"mounts": [...]` wired for a DevPod-style backend (e.g.
 | `…/opencode/` | `~/.local/share/opencode/` | opencode `auth.json` (per-provider tokens) |
 | `…/codex/` | `~/.codex/` | codex `auth.json` + `config.toml` |
 | `…/cursor/` | `~/.cursor/` | cursor-agent credentials + `mcp.json` |
+| `…/uv/` | `~/.local/share/uv/` | uv-managed Python interpreters and tool venvs, so a persisted project `.venv` survives an image bump (`on-start.sh` re-syncs a `.venv` whose interpreter is gone anyway) |
 
 `install.sh` re-deploys `~/.codex/config.toml` and `~/.cursor/mcp.json` on every rebuild via `reconcile`, so config drift heals automatically — auth files persist untouched.
 
