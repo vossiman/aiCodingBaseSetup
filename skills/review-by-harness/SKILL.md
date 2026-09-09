@@ -1,6 +1,6 @@
 ---
 name: review-by-harness
-description: Use when asked to review an open PR with a second opinion from another agent - codex (GPT-5.6 Sol) or cursor (Grok 4.6) - and especially when asked to have that harness also FIX what it finds. Runs the external harness in a throwaway worktree, then verifies its claims against the code before anything is committed.
+description: Use when asked to review an open PR with a second opinion from another agent - Claude Code, Codex, or Cursor, with an explicitly selected reviewer model - and especially when asked to have that harness also FIX what it finds. Runs the external harness in a throwaway worktree, then verifies its claims against the code before anything is committed.
 ---
 
 # Review by another harness
@@ -14,12 +14,46 @@ the last step of every run is you reading the diff, not the report.
 
 ## Running it
 
+The driver requires `git`, `gh`, `jq`, and `python3`, plus the selected CLI.
+
 ```bash
 ~/.claude/skills/review-by-harness/run.sh <pr-number> [repo-dir] \
-    [--harness codex|cursor] [--review-only]
+    --harness claude --model claude-opus-5 --effort high [--review-only]
 ```
 
-- `--harness codex` (default) — GPT-5.6 Sol at high reasoning, via `codex exec
+Choose the reviewer model explicitly for every run, whichever coding agent
+is orchestrating. Unless the user specifies otherwise, use **GPT-5.6 Sol**
+(`gpt-5.6-sol`) for Codex and **Opus 5** (`claude-opus-5`) for Claude.
+**Fable and Astra require an explicit user override**; do not upgrade based
+on task complexity or inherit either from the caller or machine default.
+Pass `--harness` and `--model` explicitly, plus `--effort` for Claude/Codex.
+Respect any explicit user selection, including a different harness. Check
+the selected CLI's available models when unsure about an identifier.
+
+Examples:
+
+```bash
+run.sh 123 /path/to/repo --harness claude --model claude-opus-5 --effort high --review-only
+run.sh 123 /path/to/repo --harness codex --model gpt-5.6-sol --effort high --review-only
+run.sh 123 /path/to/repo --harness cursor --model cursor-grok-4.6-high-fast --review-only
+```
+
+CLI choices override `REVIEW_MODEL` / `REVIEW_EFFORT` in machine config.
+Both passes receive the same requested model/effort, printed in the run header
+and saved to `.review-round/run.json`. Cursor encodes effort in its model
+selector (including bracket parameters on supported models); a separate
+`--effort` is rejected rather than silently ignored. Adapter defaults remain
+for older scripts, but skill-driven runs should always make the choice explicit.
+
+- `--harness auto` (default) chooses Claude when called from Codex and Codex
+  when called from Claude. Pass `--caller codex` or `--caller claude` when the
+  runtime marker is unavailable. Explicit `--harness` always wins.
+- `--harness claude` — Claude Code's Opus 5 (`claude-opus-5`) at high effort.
+  Review has only Read/Glob/Grep tools and no MCP tools. Fix uses native
+  sandboxing where available; the existing `REVIEW_SANDBOX='-s danger-full-access'` opt-in
+  applies where user namespaces are unavailable. Cursor's `--force` is not
+  a Claude opt-in. User and managed hooks remain active.
+- `--harness codex` — GPT-5.6 Sol at high reasoning, via `codex exec
   review`. Has a real built-in review mode.
 - `--harness cursor` — Grok 4.6 high, via `cursor-agent`. No built-in review
   mode, so the diff is handed to it with `prompts/review.md`.
@@ -27,7 +61,13 @@ the last step of every run is you reading the diff, not the report.
   unfamiliar repo.
 
 Each run makes a fresh worktree at `.claude/worktrees/review-pr<N>-<harness>`,
-reset to the PR head. It never commits and never pushes.
+reset to the PR head. It never commits and never pushes. The PR must not
+contain `.review-round`: the driver refuses any pre-existing scratch path
+before writing reports, including directories containing symlinks. Instruction
+paths must be regular files or symlinks resolving to regular files inside the
+worktree; directories, escaping links, dangling links and cycles are refused.
+Instruction injection uses atomic replacement, preserves existing modes,
+and restores the files after normal exit or handled HUP/INT/TERM signals.
 
 ## Your job when it finishes
 
@@ -83,6 +123,7 @@ reach for:
 
 | | review | fix |
 |---|---|---|
+| **claude** | file-reading tools only | native sandbox, or existing full-access opt-in |
 | **codex** | works out of the box | needs a sandbox override (below) |
 | **cursor** | works out of the box | works with `REVIEW_APPROVAL=--force` |
 
@@ -153,8 +194,8 @@ There are exactly two ways forward, and both are a human's call:
 
 ## The harness gets session rules, not just a prompt
 
-Every harness reads a repo-root `AGENTS.md` ahead of its global instructions,
-and the global ones (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, the cursor
+The driver installs repo-root `AGENTS.md` rules and, for Claude, `CLAUDE.md`
+rules plus an appended system prompt. The global instructions (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, the cursor
 estate skill) say to file work you find on the kanban board. A reviewer that
 obeys that files tickets for findings the author is about to fix: on
 aiCodingBaseSetup#139 one review-only pass filed four. So `run.sh` prepends
@@ -176,6 +217,7 @@ for the board.
 
 ```
 run.sh              deterministic driver: worktree, base ref, output, handback
+harnesses/claude.sh adapter: claude -p, read tools for review, edit/shell for fix
 harnesses/codex.sh  adapter: codex exec review / codex exec
 harnesses/cursor.sh adapter: cursor-agent --mode ask / cursor-agent
 prompts/review.md   review instructions (harnesses with no built-in review)

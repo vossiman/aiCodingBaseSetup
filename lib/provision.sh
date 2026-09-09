@@ -223,3 +223,46 @@ install_claude_plugins() {
 remove_deprecated_shims() {
   rm -f "$HOME/.local/bin/aicoding-update" "$HOME/.local/bin/update-status"
 }
+
+# --- Codex marketplace plugins ---
+# Use the native catalog, not Claude's versioned plugin cache. Repeated add
+# refreshes the installed version and enables it (verified on codex 0.148+).
+install_codex_plugins() {
+  [[ "${AICODINGSETUP_SKIP_NETWORK:-0}" == 1 ]] && return 0
+  command -v codex >/dev/null 2>&1 || return 0
+  header "Codex Plugins"
+  local plugin="superpowers@openai-curated-remote" installed result package link old
+  local codex_home="${CODEX_HOME:-$HOME/.codex}"
+  if ! result=$(codex plugin add "$plugin" --json 2>/dev/null); then
+    warn "Could not install/update $plugin — retry with: codex plugin add $plugin"
+    return 0
+  fi
+  installed=$(codex plugin list --json 2>/dev/null) || installed=""
+  if printf '%s' "$installed" | jq -e --arg id "$plugin" \
+      '.installed[] | select(.pluginId == $id and .enabled == true)' >/dev/null 2>&1; then
+    # Codex 0.153.4 can report remote plugins enabled while omitting their
+    # skills from fresh sessions. Its legacy user skill root is still read.
+    # Keep discovery Codex-only: ~/.agents/skills is shared with Claude, whose
+    # native Superpowers plugin would otherwise be discovered twice.
+    package=$(printf '%s' "$result" | jq -r '.installedPath // empty')
+    case "$package" in
+      "$codex_home"/plugins/cache/*/superpowers/*) ;;
+      *) warn "$plugin returned an unexpected package path; discovery not linked"; return 0 ;;
+    esac
+    [[ -f "$package/skills/using-superpowers/SKILL.md" ]] \
+      || { warn "$plugin package has no using-superpowers skill"; return 0; }
+    link="$codex_home/skills/superpowers"
+    if [[ -e "$link" || -L "$link" ]]; then
+      old=$(readlink "$link" 2>/dev/null) || old=""
+      case "$old" in
+        "$codex_home"/plugins/cache/*/superpowers/*/skills) ;;
+        *) warn "$link is user-owned; leaving it untouched"; return 0 ;;
+      esac
+    fi
+    mkdir -p "$codex_home/skills" || { warn "Cannot create Codex skill directory"; return 0; }
+    ln -sfn "$package/skills" "$link" || { warn "Cannot link Superpowers skills"; return 0; }
+    ok "$plugin installed, enabled and linked for skill discovery"
+  else
+    warn "$plugin installation returned success but activation could not be verified"
+  fi
+}

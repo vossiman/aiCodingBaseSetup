@@ -251,36 +251,15 @@ Candidate work items:
    Store last-run timestamp under `~/.aicodingsetup/state/last-housekeep` per
    project dir hash.
 
-3. **Cross-CLI command + hook parity (codex / opencode / cursor).**
-   The agent-agnostic *conventions* already reach all four CLIs via `AGENTS.md`
-   (shipped). What's still Claude-only is the *automation* — `/scaffold-project`,
-   `/housekeep`, and the SessionStart nudge. The original premise here ("no hook
-   equivalent possible") is **outdated**: as of 2026-06 all three other CLIs have
-   both command and hook/plugin surfaces. Verified capabilities:
-
-   | CLI | Custom commands | Lifecycle hooks | Reads `AGENTS.md`? |
-   |---|---|---|---|
-   | Codex | `~/.codex/prompts/*.md` (deprecated → **Skills**) | **Yes** — `~/.codex/hooks.json` / `.codex/hooks.json`, events incl. `SessionStart`, `PreToolUse`, `PostToolUse`, `Stop` | Yes (also `AGENTS.override.md`, nested) |
-   | OpenCode | `.opencode/commands/*.md` + `~/.config/opencode/commands/` (`$ARGUMENTS`, `` !`cmd` `` ) | **Yes** — JS/TS plugins; `session.created` (~session-start), `tool.execute.before/after` | Yes (CLAUDE.md fallback) |
-   | Cursor CLI | `.cursor/commands/*.md` + `~/.cursor/commands/` | Hooks exist (`.cursor/hooks.json`, `sessionStart`, `preToolUse`…); **local-CLI applicability unconfirmed** (confirmed for IDE + cloud agents) | Yes (also `.cursor/rules/*.mdc`, `CLAUDE.md`) |
-
-   Concrete parity work, in rough effort order:
-   - **Commands.** Port `scaffold-project` / `housekeep` into each CLI's command
-     dir. Blocker: `scaffold-project` uses Claude Code's `AskUserQuestion` tool,
-     which has no cross-tool equivalent — the interactive flow needs a redesign
-     (e.g. positional/`KEY=value` args) before it ports. `housekeep` is
-     instruction-only and ports more directly. Codex's command format is
-     deprecated in favor of **Skills**, so target Skills there, not prompts.
-   - **Hooks.** Re-implement the `check-archived-docs` nudge per tool: Codex
-     `SessionStart` hook (closest 1:1), OpenCode `session.created` plugin, Cursor
-     `sessionStart` (pending local-CLI confirmation). The shell script itself is
-     reusable; only the registration/wiring differs.
-   - **Installer.** Extend deploy to mirror commands/hooks into each CLI's paths,
-     tracked in the manifest like the Claude artifacts.
-
-   Sources (as of 2026-06-02): Codex — developers.openai.com/codex/{hooks,custom-prompts,skills,guides/agents-md};
-   OpenCode — opencode.ai/docs/{commands,plugins,rules}; Cursor — cursor.com/docs/{cli/using,hooks,context/commands}.
-   Sequence by pain (real usage data), not by completeness.
+3. **Cross-CLI workflow parity.**
+   The current Claude/Codex implementation and remaining differences are in
+   [agent-parity.md](agent-parity.md) (AICODINGBASESETUP-26). Superpowers uses
+   each CLI's native plugin catalog; local skills are shared; housekeep and
+   memory/archiving hints work in both. The scaffold command was retired;
+   agents use `templates/project/` directly. The older June capability matrix
+   incorrectly treated the retired scaffold command as work still to port.
+   OpenCode/Cursor automation beyond the existing integrations remains a
+   separate scope.
 
 4. **Frontmatter lint helper (optional).**
    A quick `lint-frontmatter` command or non-blocking PostToolUse hook that

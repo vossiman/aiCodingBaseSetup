@@ -147,6 +147,13 @@ telling the user what you found: file it *and* say so.
 
 ## Parallel-session coordination
 
+The shared `worktree-session` skill applies to branch implementation in both
+Claude and Codex. `aicoding-worktree <branch> [base-ref]` creates the worktree
+without changing the shared checkout. Native Claude messaging reaches Claude
+peers only; `review-by-harness` can launch a fresh Codex reviewer, but cannot
+message an already-open Codex session.
+
+
 Other sessions on this host are the user's own, but not necessarily on this
 project: on a desktop, ListAgents also lists sessions in unrelated repos.
 **Siblings** are only sessions working the same repo family: this repo, any
@@ -234,3 +241,9 @@ switched off), and Cursor/OpenCode use deny rules. Casual reads are blocked; thi
 best-effort layer, not an airlock: determined bypasses (a redirected
 `env`, an interpreter fed by heredoc) are exactly what the hook hardening
 keeps chasing, so do not treat a block as proof nothing else works.
+
+For `review-by-harness`, pass the reviewer harness and model explicitly from
+any coding agent. Choose Codex for a different-vendor review unless the user
+chose otherwise. Default to GPT-5.6 Sol (`gpt-5.6-sol`) for Codex or Opus 5
+(`claude-opus-5`) for Claude. Fable and Astra require an explicit user override;
+task complexity or machine defaults do not authorize an upgrade.

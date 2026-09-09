@@ -103,3 +103,37 @@ switched off), and Cursor/OpenCode use deny rules. Casual reads are blocked; thi
 best-effort layer, not an airlock — determined bypasses (a redirected
 `env`, an interpreter fed by heredoc) are exactly what the hook hardening
 keeps chasing, so do not treat a block as proof nothing else works.
+
+
+## Shared development workflows
+
+- Superpowers is installed through Codex's native plugin catalog. Use its
+  relevant planning, debugging, implementation and verification skills when
+  the task benefits from them; the user's scope and authorization take precedence.
+- Local estate skills are shared through `~/.agents/skills`. For an independent
+  PR review, use `review-by-harness` with an explicit `--harness`, `--model`,
+  and supported `--effort`. Choose Claude for a different-vendor review unless
+  the user chose otherwise. Default to Opus 5 (`claude-opus-5`) or GPT-5.6 Sol
+  (`gpt-5.6-sol`) for the selected harness. Fable and Astra require an explicit
+  user override. Verify findings against code.
+- `housekeep` archives completed docs and prunes dated completed TODO entries.
+- To start a project, copy `templates/project/` from the aiCodingBaseSetup
+  checkout (`/tmp/aicoding` in containers), substitute `{{PROJECT_NAME}}` and
+  `{{PURPOSE}}`, strip `.tpl` suffixes, and rename `dot-claude/` to `.claude/`.
+  The retired scaffold command is not needed.
+- Put deliverable files in `out/` at the repo root for `dvw pull`. Preserve
+  existing contents and announce the path.
+- Automatic memory hints are leads, not facts. Verify them and use
+  `memory_feedback` with `confirmed` or `wrong` when the outcome is known.
+
+
+## Worktree isolation and session coordination
+
+For branch implementation, use the shared `worktree-session` skill. Create a
+worktree at `<repo-root>/.claude/worktrees/<branch>` with `aicoding-worktree`
+or `git worktree add`; if already in a linked worktree, continue there.
+Never switch branches in a shared project or submodule checkout. Check for
+other worktrees before broad changes, and surface overlapping work.
+Codex collaboration tools coordinate this session's own subagents. They do
+not message independent sessions or Claude Code. Use `review-by-harness` for
+a fresh independent reviewer; do not mistake that for cross-session messaging.

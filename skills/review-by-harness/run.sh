@@ -6,19 +6,25 @@
 # layout, handback. The harness-specific parts are in harnesses/<name>.sh and
 # the model-facing wording is in prompts/. Nothing here talks to a model.
 #
-# Usage: run.sh <pr-number> [repo-dir] [--harness codex|cursor] [--review-only]
+# Usage: run.sh <pr-number> [repo-dir] [--harness auto|claude|codex|cursor] [--model MODEL] [--effort LEVEL] [--review-only]
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PR=""
 REPO_ARG="."
-HARNESS="codex"
+HARNESS="auto"
+CALLER="${REVIEW_CALLER:-}"
 REVIEW_ONLY=0
+MODEL_ARG=""
+EFFORT_ARG=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --harness)     HARNESS="$2"; shift 2 ;;
+        --harness)     HARNESS="${2:?--harness needs a value}"; shift 2 ;;
+        --caller)      CALLER="${2:?--caller needs claude or codex}"; shift 2 ;;
+        --model)       MODEL_ARG="${2:?--model needs a value}"; shift 2 ;;
+        --effort)      EFFORT_ARG="${2:?--effort needs a value}"; shift 2 ;;
         --review-only) REVIEW_ONLY=1; shift ;;
         -h|--help)
             sed -n '2,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -28,7 +34,22 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ -n "$PR" ] || { echo "usage: run.sh <pr-number> [repo-dir] [--harness codex|cursor] [--review-only]" >&2; exit 2; }
+[ -n "$PR" ] || { echo "usage: run.sh <pr-number> [repo-dir] [--harness auto|claude|codex|cursor] [--review-only]" >&2; exit 2; }
+
+# Explicit --caller wins; otherwise use the runtime marker, never process
+# names or a model guess. Unknown callers retain the historical Codex default.
+if [ "$HARNESS" = auto ]; then
+    if [ -z "$CALLER" ]; then
+        if [ -n "${CLAUDECODE:-}" ]; then CALLER=claude
+        elif [ -n "${CODEX_THREAD_ID:-}" ]; then CALLER=codex; fi
+    fi
+    case "$CALLER" in
+        codex) HARNESS=claude ;;
+        claude|"") HARNESS=codex ;;
+        *) echo "unknown caller: $CALLER (use claude or codex)" >&2; exit 2 ;;
+    esac
+fi
+[[ "$HARNESS" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo "invalid harness name" >&2; exit 2; }
 
 ADAPTER="$SKILL_DIR/harnesses/$HARNESS.sh"
 [ -x "$ADAPTER" ] || { echo "no such harness: $HARNESS (have: $(cd "$SKILL_DIR/harnesses" && ls *.sh | sed 's/\.sh$//' | tr '\n' ' '))" >&2; exit 2; }
@@ -71,6 +92,27 @@ do
     break
 done
 [ -n "${REVIEW_CONFIG_USED:-}" ] && echo "### config: $REVIEW_CONFIG_USED"
+
+# CLI choices override machine config. Always pass and record a concrete model
+# rather than inheriting the launching agent's default model accidentally.
+[ -z "$MODEL_ARG" ] || REVIEW_MODEL="$MODEL_ARG"
+[ -z "$EFFORT_ARG" ] || REVIEW_EFFORT="$EFFORT_ARG"
+case "$HARNESS" in
+    claude) REVIEW_MODEL="${REVIEW_MODEL:-claude-opus-5}"; REVIEW_EFFORT="${REVIEW_EFFORT:-high}" ;;
+    codex) REVIEW_MODEL="${REVIEW_MODEL:-gpt-5.6-sol}"; REVIEW_EFFORT="${REVIEW_EFFORT:-high}" ;;
+    cursor)
+        REVIEW_MODEL="${REVIEW_MODEL:-cursor-grok-4.6-high-fast}"
+        if [ -n "$EFFORT_ARG" ]; then
+            echo 'Cursor effort is part of its model selector; use --model with an effort preset or bracket parameters, not --effort.' >&2
+            exit 2
+        fi
+        # A shared Codex/Claude config may carry effort; never imply that
+        # Cursor honors a separate flag it does not have.
+        unset REVIEW_EFFORT
+        ;;
+esac
+export REVIEW_MODEL REVIEW_EFFORT
+
 
 # Does this machine let a harness sandbox itself? Bubblewrap needs unprivileged
 # user namespaces, and `unshare -Ur` is the cheapest honest proxy for that.
@@ -126,7 +168,17 @@ git worktree remove --force "$WT" 2>/dev/null || true
 git fetch origin "refs/pull/$PR/head:refs/review-by-harness/pr$PR" --force --quiet
 git fetch origin "$BASE" --quiet
 git worktree add --force -B "review-pr$PR-$HARNESS" "$WT" "refs/review-by-harness/pr$PR" >/dev/null
-mkdir -p "$OUT"
+# The PR controls every checked-out path. Never accept its scratch directory
+# (or a symlink/file in its place): even a real directory can contain report
+# symlinks that redirect our writes. mkdir without -p claims a fresh directory
+# atomically and refuses all pre-existing paths, including dangling symlinks.
+if ! mkdir -m 700 "$OUT"; then
+    echo "!!! refusing pre-existing review scratch path: $OUT" >&2
+    exit 1
+fi
+jq -n --arg harness "$HARNESS" --arg model "${REVIEW_MODEL:-adapter-default}" \
+    --arg effort "${REVIEW_EFFORT:-model-defined}" \
+    '{harness:$harness, model:$model, effort:$effort}' > "$OUT/run.json"
 # Keep the harness's own scratch out of the diff we hand back. A linked
 # worktree's gitdir has no info/ directory until something creates it, and
 # --git-path resolves per-worktree paths correctly where --git-dir does not.
@@ -151,40 +203,82 @@ START_HEAD=$(git -C "$WT" rev-parse HEAD)
 # link would edit its target. Restore also runs from an EXIT trap, so a
 # failing adapter cannot leave the rules behind in the retained worktree.
 AGENTS_FILES=(AGENTS.md)
-[ -e "$WT/AGENTS.override.md" ] && AGENTS_FILES+=(AGENTS.override.md)
+[ "$HARNESS" = claude ] && AGENTS_FILES+=(CLAUDE.md)
+if [ -e "$WT/AGENTS.override.md" ] || [ -L "$WT/AGENTS.override.md" ]; then
+    AGENTS_FILES+=(AGENTS.override.md)
+fi
 RB_BEGIN='<!-- review-by-harness:begin -->'
 RB_END='<!-- review-by-harness:end -->'
+validate_instruction_paths() {
+    # Resolve links without reading their contents. Python also gives us a
+    # portable atomic replacement below (mv treats directory targets specially).
+    python3 - "$WT" "$@" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1]).resolve()
+for name in sys.argv[2:]:
+    path = root / name
+    try:
+        if not path.exists() and not path.is_symlink():
+            continue
+        target = path.resolve(strict=True)
+        if root not in target.parents or not target.is_file():
+            raise ValueError("must resolve to a regular file inside the worktree")
+    except (OSError, RuntimeError, ValueError) as exc:
+        sys.exit(f"!!! refusing unsafe instruction path {name}: {exc}")
+PY
+}
 _agents_kind() {  # _agents_kind <name>: tracked | untracked | absent
     if git -C "$WT" cat-file -e "HEAD:$1" 2>/dev/null; then echo tracked
     elif [ -e "$WT/$1" ] || [ -L "$WT/$1" ]; then echo untracked
     else echo absent; fi
 }
 install_agents() {  # install_agents <review|fix>
-    local f kind body
+    local f kind staged
+    validate_instruction_paths "${AGENTS_FILES[@]}"
     for f in "${AGENTS_FILES[@]}"; do
         kind="$(_agents_kind "$f")"
-        [ -e "$OUT/$f.kind" ] || echo "$kind" > "$OUT/$f.kind"
-        body=""
         if [ -L "$WT/$f" ]; then
-            [ -e "$OUT/$f.orig" ] || cp -P "$WT/$f" "$OUT/$f.orig"
-            body="$(cat "$WT/$f" 2>/dev/null || true)"
-            rm -f "$WT/$f"
-        elif [ -e "$WT/$f" ]; then
-            body="$(sed "/^$RB_BEGIN\$/,/^$RB_END\$/d" "$WT/$f")"
+            [ -L "$OUT/$f.orig" ] || cp -P "$WT/$f" "$OUT/$f.orig"
         fi
+        [ -e "$OUT/$f.kind" ] || echo "$kind" > "$OUT/$f.kind"
+        staged=$(mktemp "$OUT/$f.XXXXXX")
+        if [ -f "$WT/$f" ] && [ ! -L "$WT/$f" ]; then
+            # Portable mode preservation; chmod --reference is GNU-specific.
+            cp -p "$WT/$f" "$staged"
+        fi
+        # Stream the body: command substitution strips trailing newlines and
+        # would make the unchanged-worktree check blame our own normalization
+        # on the reviewer. Stage beside the output, then replace a symlink
+        # rather than writing through it. Strip our block in either case.
         { echo "$RB_BEGIN"; cat "$SKILL_DIR/prompts/agents-$1.md"; echo "$RB_END"
-          if [ -n "$body" ]; then printf '%s\n' "$body"; fi; } > "$WT/$f"
+          if [ -f "$WT/$f" ]; then
+              sed "/^$RB_BEGIN\$/,/^$RB_END\$/d" "$WT/$f"
+          fi
+        } > "$staged"
+        # Same-filesystem rename is atomic: interruption leaves either the
+        # original or complete injected file for the EXIT restoration trap.
+        python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$staged" "$WT/$f"
     done
 }
+RESTORE_UNSAFE=0
 restore_agents() {
     local f kind
     for f in "${AGENTS_FILES[@]}"; do
+        # An interrupted install may not have reached every instruction file.
+        [ -f "$OUT/$f.kind" ] || continue
+        if ! validate_instruction_paths "$f"; then
+            RESTORE_UNSAFE=1
+            continue
+        fi
         kind="$(cat "$OUT/$f.kind" 2>/dev/null || echo absent)"
         if [ -L "$OUT/$f.orig" ] || [ -e "$OUT/$f.orig" ]; then
             # Was a symlink: put the link back, tracked from git, untracked from the copy.
             rm -f "$WT/$f"
             if [ "$kind" = tracked ]; then git -C "$WT" checkout --quiet -- "$f"
             else cp -P "$OUT/$f.orig" "$WT/$f"; fi
+            # The backup came from the validated original. Still detect any
+            # harness tampering with it before allowing another pass/handback.
+            validate_instruction_paths "$f" || RESTORE_UNSAFE=1
             continue
         fi
         [ -f "$WT/$f" ] || continue
@@ -194,12 +288,17 @@ restore_agents() {
         # handback (diff against HEAD) shows the working copy, rules gone.
         [ "$kind" = tracked ] && git -C "$WT" reset --quiet -- "$f" 2>/dev/null || true
     done
+    return 0
 }
 trap restore_agents EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 echo "### PR #$PR  $TITLE"
 echo "### $HEAD_REF -> $BASE  @ $(git -C "$WT" rev-parse --short HEAD)"
 echo "### harness: $HARNESS   worktree: $WT"
+echo "### requested model: ${REVIEW_MODEL:-adapter-default}   effort: ${REVIEW_EFFORT:-model-defined}"
 
 # A merged (or already-fast-forwarded) PR has no diff against its base. Left
 # unchecked, the harness gets an empty patch, answers with nothing, and the
@@ -222,11 +321,20 @@ cat "$OUT/review.md"
 restore_agents
 
 if [ "$REVIEW_ONLY" -eq 1 ]; then
-    echo "### review-only: no fix pass, no changes made"
+    if [ "$RESTORE_UNSAFE" -ne 0 ] || ! git -C "$WT" diff --quiet "$START_HEAD" ||
+       [ -n "$(git -C "$WT" ls-files --others --exclude-standard)" ] ||
+       [ "$(git -C "$WT" rev-parse HEAD)" != "$START_HEAD" ]; then
+        echo "!!! review-only harness changed the worktree; inspect $WT"
+        git -C "$WT" --no-pager diff "$START_HEAD"
+        git -C "$WT" status --short
+        exit 1
+    fi
+    echo "### review-only: no fix pass, verified worktree unchanged"
     echo "### END"
     exit 0
 fi
 
+[ "$RESTORE_UNSAFE" -eq 0 ] || { echo '!!! unsafe instruction changes; refusing fix pass'; exit 1; }
 echo "### phase B: fix"
 install_agents fix
 "$ADAPTER" fix "$WT" "$OUT" || {
@@ -265,4 +373,5 @@ if [ "$NOW_HEAD" != "$START_HEAD" ]; then
     echo "### was $START_HEAD, now $NOW_HEAD"
     git -C "$WT" --no-pager log --oneline "$START_HEAD..$NOW_HEAD"
 fi
+[ "$RESTORE_UNSAFE" -eq 0 ] || { echo '!!! unsafe instruction changes; inspect the handback'; exit 1; }
 echo "### END"

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Create isolated branch work without switching a shared checkout.
+set -euo pipefail
+if [[ $# -lt 1 || $# -gt 2 || "$1" == --help ]]; then
+  echo 'Usage: aicoding-worktree <branch> [base-ref]'
+  echo 'Creates <repo-root>/.claude/worktrees/<branch>; never switches the shared checkout.'
+  [[ "${1:-}" == --help ]] && exit 0
+  exit 2
+fi
+branch=$1
+base=${2:-origin/main}
+git check-ref-format --branch "$branch" >/dev/null
+root=$(git rev-parse --show-toplevel)
+gitdir=$(git rev-parse --absolute-git-dir)
+common=$(git rev-parse --path-format=absolute --git-common-dir)
+if [[ "$gitdir" != "$common" ]]; then
+  if [[ "$(git branch --show-current)" == "$branch" ]]; then
+    printf '%s\n' "$root"
+    exit 0
+  fi
+  echo 'Already in a linked worktree. Use its branch, or run from the primary checkout.' >&2
+  exit 1
+fi
+if [[ $# -eq 1 ]] && ! git rev-parse --verify "$base^{commit}" >/dev/null 2>&1; then
+  base=HEAD
+fi
+commit=$(git rev-parse --verify "$base^{commit}")
+target="$root/.claude/worktrees/$branch"
+if [[ -e "$target" || -L "$target" ]]; then
+  echo "Worktree path already exists; inspect it before reusing: $target" >&2
+  exit 1
+fi
+exclude=$(git rev-parse --git-path info/exclude)
+mkdir -p "$(dirname "$exclude")" "$(dirname "$target")"
+grep -qxF '/.claude/worktrees/' "$exclude" 2>/dev/null || printf '\n/.claude/worktrees/\n' >> "$exclude"
+git worktree add -b "$branch" "$target" "$commit" >&2
+printf '%s\n' "$target"

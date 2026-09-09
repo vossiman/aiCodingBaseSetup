@@ -180,3 +180,197 @@ add_project_agents() {
   done
   grep -qx review-by-harness <<<"$output"
 }
+
+@test "auto selects Claude for Codex caller and restores Claude instructions" {
+  cp "$SKILL/harnesses/stub.sh" "$SKILL/harnesses/claude.sh"
+  ( cd "$TMPDIR/seed"
+    printf 'Claude project rules\n' > CLAUDE.md
+    git add CLAUDE.md; git commit -qm claude; git push -q -f origin HEAD:refs/pull/1/head )
+  run "$SKILL/run.sh" 1 "$REPO" --caller codex --review-only
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'harness: claude'* ]]
+  [ "$(cat "$REPO/.claude/worktrees/review-pr1-claude/CLAUDE.md")" = 'Claude project rules' ]
+}
+
+@test "auto selects Codex for Claude caller and explicit reviewer wins" {
+  cp "$SKILL/harnesses/stub.sh" "$SKILL/harnesses/codex.sh"
+  run "$SKILL/run.sh" 1 "$REPO" --caller claude --review-only
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'harness: codex'* ]]
+  run "$SKILL/run.sh" 1 "$REPO" --caller codex --harness stub --review-only
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'harness: stub'* ]]
+}
+
+@test "review-only detects a reviewer writing instead of claiming no changes" {
+  sed -i '/echo "stub findings"/s/echo "stub findings"/echo bad >> "$wt\/src.txt"; echo "stub findings"/' "$SKILL/harnesses/stub.sh"
+  run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'review-only harness changed'* ]]
+}
+
+@test "CLI model and effort override shared config and reach both passes" {
+  sed -i '/verb="$1"/a printf "%s:%s\\n" "${REVIEW_MODEL:-}" "${REVIEW_EFFORT:-}" >> "$MODEL_LOG"' "$SKILL/harnesses/stub.sh"
+  export MODEL_LOG="$TMPDIR/models"
+  printf 'REVIEW_MODEL=wrong\nREVIEW_EFFORT=low\nREVIEW_SANDBOX=-s\n' > "$TMPDIR/model.env"
+  REVIEW_CONFIG="$TMPDIR/model.env" run "$SKILL/run.sh" 1 "$REPO" --harness stub --model fable --effort high
+  [ "$status" -eq 0 ]
+  [ "$(cat "$MODEL_LOG")" = "$(printf 'fable:high\nfable:high')" ]
+  [[ "$output" == *'requested model: fable   effort: high'* ]]
+  [ "$(jq -r .model "$WT/.review-round/run.json")" = fable ]
+  [ "$(jq -r .effort "$WT/.review-round/run.json")" = high ]
+}
+
+@test "Cursor separate effort is refused instead of ignored" {
+  run "$SKILL/run.sh" 1 "$REPO" --harness cursor --model custom --effort high --review-only
+  [ "$status" -eq 2 ]
+  [[ "$output" == *'Cursor effort is part of its model selector'* ]]
+}
+
+@test "review preserves instruction modes and missing or multiple trailing newlines" {
+  cp "$SKILL/harnesses/stub.sh" "$SKILL/harnesses/claude.sh"
+  for suffix in '' $'\n\n\n'; do
+    ( cd "$TMPDIR/seed"
+      printf 'project rules%s' "$suffix" > AGENTS.md
+      printf 'Claude rules%s' "$suffix" > CLAUDE.md
+      chmod +x AGENTS.md CLAUDE.md
+      git add AGENTS.md CLAUDE.md; git commit -qm endings
+      git push -q -f origin HEAD:refs/pull/1/head )
+    run "$SKILL/run.sh" 1 "$REPO" --harness claude --model opus --review-only
+    [ "$status" -eq 0 ]
+    cmp "$TMPDIR/seed/AGENTS.md" "$REPO/.claude/worktrees/review-pr1-claude/AGENTS.md"
+    cmp "$TMPDIR/seed/CLAUDE.md" "$REPO/.claude/worktrees/review-pr1-claude/CLAUDE.md"
+    [ -x "$REPO/.claude/worktrees/review-pr1-claude/AGENTS.md" ]
+    [ -x "$REPO/.claude/worktrees/review-pr1-claude/CLAUDE.md" ]
+  done
+}
+
+@test "Claude instruction symlink receives one rules block and is restored" {
+  cp "$SKILL/harnesses/stub.sh" "$SKILL/harnesses/claude.sh"
+  sed -i '/verb="$1"/a cp "$wt/CLAUDE.md" "$wt/.review-round/claude-seen.md"' "$SKILL/harnesses/claude.sh"
+  ( cd "$TMPDIR/seed"
+    printf 'project rules\n' > AGENTS.md; ln -s AGENTS.md CLAUDE.md
+    git add AGENTS.md CLAUDE.md; git commit -qm claude-link
+    git push -q -f origin HEAD:refs/pull/1/head )
+  run "$SKILL/run.sh" 1 "$REPO" --harness claude --model opus --review-only
+  [ "$status" -eq 0 ]
+  local cw="$REPO/.claude/worktrees/review-pr1-claude"
+  [ "$(grep -c 'review-by-harness:begin' "$cw/.review-round/claude-seen.md")" -eq 1 ]
+  [ "$(readlink "$cw/CLAUDE.md")" = AGENTS.md ]
+  git -C "$cw" diff --quiet HEAD
+}
+
+@test "PR-controlled scratch paths cannot redirect driver writes" {
+  mkdir -p "$TMPDIR/outside"
+  printf 'untouched\n' > "$TMPDIR/outside/run.json"
+  for shape in symlink dangling directory; do
+    ( cd "$TMPDIR/seed"
+      git rm -rf --ignore-unmatch .review-round >/dev/null
+      case "$shape" in
+        symlink) ln -s "$TMPDIR/outside" .review-round ;;
+        dangling) ln -s "$TMPDIR/missing-target" .review-round ;;
+        directory) mkdir .review-round; ln -s "$TMPDIR/outside/run.json" .review-round/run.json ;;
+      esac
+      git add .review-round; git commit -qm "$shape scratch path"
+      git push -q -f origin HEAD:refs/pull/1/head )
+    run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+    [ "$status" -eq 1 ]
+    [[ "$output" == *'refusing pre-existing review scratch path'* ]]
+    [ "$(cat "$TMPDIR/outside/run.json")" = untouched ]
+    [ "$(find "$TMPDIR/outside" -type f | wc -l)" -eq 1 ]
+    [ ! -e "$TMPDIR/missing-target" ]
+    [ ! -e "$WT/.review-round/agents-seen-review.md" ]
+  done
+}
+
+@test "termination before or after atomic instruction replacement restores bytes and modes" {
+  cp "$SKILL/harnesses/stub.sh" "$SKILL/harnesses/claude.sh"
+  ( cd "$TMPDIR/seed"
+    printf 'rules without final newline' > AGENTS.md
+    chmod +x AGENTS.md
+    : > CLAUDE.md
+    git add AGENTS.md CLAUDE.md; git commit -qm instructions
+    git push -q -f origin HEAD:refs/pull/1/head )
+  export REAL_PYTHON
+  REAL_PYTHON=$(command -v python3)
+  cat > "$TMPDIR/bin/python3" <<'STUB'
+#!/usr/bin/env bash
+case "${2:-}" in
+  *os.replace*)
+    if [ "$INTERRUPT_POINT" = after ]; then "$REAL_PYTHON" "$@"; fi
+    kill -TERM "$PPID"
+    exit 143 ;;
+esac
+exec "$REAL_PYTHON" "$@"
+STUB
+  chmod +x "$TMPDIR/bin/python3"
+  for point in before after; do
+    INTERRUPT_POINT="$point" run "$SKILL/run.sh" 1 "$REPO" --harness claude --model claude-opus-5 --review-only
+    [ "$status" -eq 143 ]
+    local cw="$REPO/.claude/worktrees/review-pr1-claude"
+    cmp "$TMPDIR/seed/AGENTS.md" "$cw/AGENTS.md"
+    cmp "$TMPDIR/seed/CLAUDE.md" "$cw/CLAUDE.md"
+    [ -x "$cw/AGENTS.md" ]
+    git -C "$cw" diff --quiet HEAD
+    [ ! -e "$cw/.review-round/agents-seen-review.md" ]
+  done
+}
+
+@test "instruction directories and escaping or invalid links are refused before injection" {
+  cp "$SKILL/harnesses/stub.sh" "$SKILL/harnesses/claude.sh"
+  mkdir -p "$TMPDIR/external"
+  printf 'outside unchanged\n' > "$TMPDIR/external/rules.md"
+  for name in AGENTS.md CLAUDE.md AGENTS.override.md; do
+    for shape in directory directory-link file-link dangling cycle; do
+      ( cd "$TMPDIR/seed"
+        git rm -rf --ignore-unmatch AGENTS.md CLAUDE.md AGENTS.override.md >/dev/null
+        case "$shape" in
+          directory) mkdir "$name"; echo content > "$name/README.md" ;;
+          directory-link) ln -s "$TMPDIR/external" "$name" ;;
+          file-link) ln -s "$TMPDIR/external/rules.md" "$name" ;;
+          dangling) ln -s missing-target "$name" ;;
+          cycle) ln -s "$name" "$name" ;;
+        esac
+        git add "$name"; git commit -qm "$name $shape"
+        git push -q -f origin HEAD:refs/pull/1/head )
+      run "$SKILL/run.sh" 1 "$REPO" --harness claude --model claude-opus-5 --review-only
+      [ "$status" -ne 0 ]
+      [[ "$output" == *"refusing unsafe instruction path $name"* ]]
+      local cw="$REPO/.claude/worktrees/review-pr1-claude"
+      git -C "$cw" diff --quiet HEAD
+      [ ! -e "$cw/.review-round/AGENTS.md.kind" ]
+      [ ! -e "$cw/.review-round/agents-seen-review.md" ]
+      [ "$(cat "$TMPDIR/external/rules.md")" = 'outside unchanged' ]
+      [ "$(find "$TMPDIR/external" -type f | wc -l)" -eq 1 ]
+    done
+  done
+}
+
+@test "unsafe harness changes are reported while other instruction files are restored" {
+  cp "$SKILL/harnesses/stub.sh" "$SKILL/harnesses/claude.sh"
+  sed -i '/verb="$1"/a if [ "$verb" = "$UNSAFE_PHASE" ]; then rm -f "$wt/AGENTS.md"; ln -s "$OUTSIDE_RULES" "$wt/AGENTS.md"; fi' "$SKILL/harnesses/claude.sh"
+  export OUTSIDE_RULES="$TMPDIR/outside-rules"
+  printf 'outside unchanged\n' > "$OUTSIDE_RULES"
+  ( cd "$TMPDIR/seed"
+    printf 'project rules\n' > AGENTS.md
+    printf 'Claude rules\n\n' > CLAUDE.md; chmod +x CLAUDE.md
+    git add AGENTS.md CLAUDE.md; git commit -qm instructions
+    git push -q -f origin HEAD:refs/pull/1/head )
+  printf 'REVIEW_SANDBOX=-s\n' > "$TMPDIR/cfg.env"
+  for phase in review fix; do
+    local args=()
+    [ "$phase" != review ] || args+=(--review-only)
+    UNSAFE_PHASE="$phase" REVIEW_CONFIG="$TMPDIR/cfg.env" run "$SKILL/run.sh" 1 "$REPO" --harness claude --model claude-opus-5 "${args[@]}"
+    [ "$status" -eq 1 ]
+    if [ "$phase" = review ]; then
+      [[ "$output" == *'review-only harness changed the worktree'* ]]
+    else
+      [[ "$output" == *'unsafe instruction changes; inspect the handback'* ]]
+    fi
+    local cw="$REPO/.claude/worktrees/review-pr1-claude"
+    cmp "$TMPDIR/seed/CLAUDE.md" "$cw/CLAUDE.md"
+    [ -x "$cw/CLAUDE.md" ]
+    [ "$(cat "$OUTSIDE_RULES")" = 'outside unchanged' ]
+    [ -L "$cw/AGENTS.md" ]
+  done
+}

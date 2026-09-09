@@ -568,6 +568,7 @@ $HOME/.bashrc.d/aicoding-update-notify.sh|overwrite|configs/bash/update-notify.s
 $HOME/.bashrc.d/aicoding-aliases.sh|overwrite|configs/bash/aliases.sh
 $HOME/.local/bin/git-credential-aicoding|overwrite|configs/git/git-credential-aicoding
 $HOME/.local/bin/memory-hint|overwrite|configs/memory/memory-hint
+$HOME/.local/bin/aicoding-worktree|overwrite_raw|bin/aicoding-worktree
 $HOME/.local/bin/cloudflare-render|overwrite|configs/cloudflare/cloudflare-render
 $HOME/.local/bin/secrets-check|overwrite|configs/secrets/secrets-check
 $HOME/.codex/config.toml|overwrite|configs/codex/config.toml

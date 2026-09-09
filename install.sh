@@ -117,6 +117,7 @@ main() {
   install_claude_mcps
   ensure_claude_onboarding_state
   install_claude_plugins
+  install_codex_plugins
   install_aicoding_sync_symlink
   install_aicoding_install_symlink
   install_update_status_symlink
@@ -156,6 +157,7 @@ main() {
   esac
 
   remove_legacy_project_templates
+  ensure_agents_skills_symlink
   ensure_codex_managed_hooks
   install_tmux_plugins
   install_bubblewrap
