@@ -604,8 +604,9 @@ is_env_dump() {
   return 1
 }
 
-deny_secret_command() {
-  local reason="This command would print a live credential into the transcript, so it is blocked. The token is reachable this way even though the secrets file itself is denied — that is the hole this rule closes. Do not work around it. Use 'secrets-check' to see which keys are set (names and status only, never values); git and gh are already authenticated, so run them directly instead of handling the token yourself."
+# Diagnostics contain fixed rule descriptions, never caller-supplied text.
+block() {
+  local reason="Blocked [$1]: $2"
   jq -n --arg r "$reason" '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
@@ -616,22 +617,181 @@ deny_secret_command() {
   exit 0
 }
 
+deny_secret_command() {
+  block "$ORACLE_RULE" "$ORACLE_DETAIL Do not bypass; use secrets-check for credential status."
+}
+
 deny() {
-  local filename="$1"
-  local reason="Access to '${filename}' is blocked: it holds secrets or private keys, and reading it would copy them into this transcript. Do not work around this block. Run 'secrets-check' to see which keys are set (names and status only, never values), or ask the user."
-  jq -n --arg r "$reason" '{
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason: $r
-    }
-  }'
-  exit 0
+  # Legacy callers supply a filename. Deliberately do not reflect it.
+  block SG-PROTECTED-PATH "$TOOL_NAME: ${BLOCK_STAGE:-file target} matches a protected path. Do not bypass; use secrets-check for credential status."
+}
+
+patch_syntax_error() {
+  block SG-PATCH-SYNTAX "apply_patch line $patch_line: unsupported or malformed patch structure. Use native patch syntax without shell wrappers or appended commands."
+}
+
+check_patch_target() {
+  local target="$1" operation="$2" number="$3"
+  local absolute lexical resolved candidate links
+  local printable='^[ -~]+$'
+
+  # Conservatively support local, printable ASCII paths. URI syntax and
+  # control/Unicode whitespace need explicit parser support before allowing.
+  if [[ ! "$target" =~ $printable || "$target" == *:* ]]; then
+    block SG-PATCH-PATH "apply_patch $operation at line $number: unsupported target spelling; use a local ASCII path."
+  fi
+
+  absolute="$target"
+  if [[ "$absolute" != /* ]]; then
+    [[ -n "$patch_cwd" ]] ||
+      block SG-PATCH-CWD "apply_patch $operation at line $number: relative target requires an explicit event working directory."
+    absolute="$patch_cwd/$absolute"
+  fi
+
+  # Check both lexical normalization and filesystem symlink resolution.
+  # These commands inspect paths/metadata, never file contents.
+  lexical="$(realpath -ms -- "$absolute" 2>/dev/null)" ||
+    block SG-PATCH-RESOLVE "apply_patch $operation at line $number: target cannot be normalized."
+  resolved="$(realpath -m -- "$absolute" 2>/dev/null)" ||
+    block SG-PATCH-RESOLVE "apply_patch $operation at line $number: target cannot be resolved."
+
+  for candidate in "$absolute" "$lexical" "$resolved"; do
+    case "$candidate" in
+      /dev|/dev/*|/proc|/proc/*|/sys|/sys/*)
+        block SG-PATCH-TARGET "apply_patch $operation at line $number: device or process-filesystem target is forbidden."
+        ;;
+    esac
+    if is_denied_path "$candidate"; then
+      block SG-PATCH-TARGET "apply_patch $operation at line $number: target or resolved alias matches a protected path. Patch body text was not the reason."
+    fi
+  done
+
+  if [[ -e "$resolved" ]]; then
+    [[ -f "$resolved" ]] ||
+      block SG-PATCH-TYPE "apply_patch $operation at line $number: target is not a regular file."
+    links="$(stat -Lc '%h' -- "$resolved" 2>/dev/null)" ||
+      block SG-PATCH-RESOLVE "apply_patch $operation at line $number: target metadata cannot be checked."
+    [[ "$links" == 1 ]] ||
+      block SG-PATCH-LINK "apply_patch $operation at line $number: multiply linked file cannot be safely classified."
+  elif [[ -L "$resolved" ]]; then
+    block SG-PATCH-RESOLVE "apply_patch $operation at line $number: unresolved symbolic link."
+  fi
+}
+
+validate_native_patch() {
+  # Conservative subset of Codex rust-v0.153.4 streaming_parser.rs:
+  # https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/apply-patch/src/streaming_parser.rs
+  # Unsupported wrappers, remote environments and header spellings deny.
+  # Only this native tool uses the data-only path; shell calls keep all scans.
+  local LC_ALL=C
+  local patch_text patch_cwd line header operation target
+  local mode=start need_lines=0 chunk_started=0 move_allowed=0
+  local patch_line=0 printable='^[ -~]+$'
+
+  # Unknown input fields could change the execution context. Fail closed.
+  patch_text="$(printf '%s\n' "$INPUT" | jq -er '
+    select(
+      (.tool_input | type == "object") and
+      (.tool_input | keys == ["command"]) and
+      (.tool_input.command |
+        type == "string" and length > 0 and index("\u0000") == null) and
+      ((.cwd // "") | type == "string" and index("\u0000") == null)
+    ) | .tool_input.command
+  ' 2>/dev/null)" ||
+    block SG-PATCH-INPUT "apply_patch: missing, invalid or unsupported input fields; expected a native patch string."
+
+  patch_cwd="$(printf '%s\n' "$INPUT" | jq -r '.cwd // ""')"
+  if [[ -n "$patch_cwd" ]]; then
+    [[ "$patch_cwd" == /* && "$patch_cwd" =~ $printable && "$patch_cwd" != *:* ]] ||
+      block SG-PATCH-CWD "apply_patch: working directory is not a supported absolute local path."
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    ((patch_line += 1))
+    line="${line%$'\r'}"
+    header="${line%"${line##*[![:space:]]}"}"
+
+    if [[ "$mode" == start ]]; then
+      [[ "$header" == "*** Begin Patch" ]] || patch_syntax_error
+      mode=between
+      continue
+    fi
+    if [[ "$mode" == end ]]; then
+      [[ -z "$header" ]] || patch_syntax_error
+      continue
+    fi
+
+    case "$header" in
+      "*** End Patch")
+        ((need_lines == 0)) || patch_syntax_error
+        mode=end
+        ;;
+      "*** Add File: "*|"*** Update File: "*|"*** Delete File: "*)
+        ((need_lines == 0)) || patch_syntax_error
+        operation="${header#*** }"
+        operation="${operation%% *}"
+        target="${header#*: }"
+        check_patch_target "$target" "$operation" "$patch_line"
+        mode="$operation"
+        chunk_started=0
+        move_allowed=0
+        if [[ "$mode" == Update ]]; then
+          need_lines=1
+          move_allowed=1
+        fi
+        ;;
+      "*** Move to: "*)
+        [[ "$mode" == Update && "$move_allowed" == 1 ]] || patch_syntax_error
+        check_patch_target "${header#*** Move to: }" Move "$patch_line"
+        move_allowed=0
+        ;;
+      *)
+        case "$mode" in
+          Add)
+            [[ "$line" == +* ]] || patch_syntax_error
+            ;;
+          Update|AfterEof)
+            case "$header" in
+              "@@"|"@@ "*)
+                ((need_lines == 0 || chunk_started == 0)) || patch_syntax_error
+                mode=Update
+                chunk_started=1
+                need_lines=1
+                move_allowed=0
+                ;;
+              "*** End of File")
+                [[ "$mode" == Update && "$need_lines" == 0 ]] || patch_syntax_error
+                mode=AfterEof
+                ;;
+              *)
+                if [[ "$mode" == AfterEof ]]; then
+                  [[ -z "$header" ]] || patch_syntax_error
+                else
+                  case "$line" in
+                    +*|-*|" "*|"")
+                      need_lines=0
+                      chunk_started=1
+                      move_allowed=0
+                      ;;
+                    *) patch_syntax_error ;;
+                  esac
+                fi
+                ;;
+            esac
+            ;;
+          *) patch_syntax_error ;;
+        esac
+        ;;
+    esac
+  done <<< "$patch_text"
+
+  [[ "$mode" == end ]] || patch_syntax_error
 }
 
 # --- Main -------------------------------------------------------------------
 
 INPUT="$(cat)"
+BLOCK_STAGE="file target"
 # Malformed input must never make the hook exit non-zero: a failing PreToolUse
 # hook is an error surfaced to the agent, not a clean allow. Fall through to
 # "allow" instead — this hook is a guard, not a validator.
@@ -662,18 +822,18 @@ case "$TOOL_NAME" in
     fi
     ;;
 
-  Bash|apply_patch)
-    # Codex uses the same PreToolUse contract as Claude Code — verified against
-    # codex-cli 0.148.0 by feeding it a real tool call: tool_name "Bash" with
-    # tool_input.command as a plain string, and "apply_patch" with the patch
-    # text in that same field. So one script serves both agents.
+  apply_patch)
+    validate_native_patch
+    ;;
+
+  Bash)
+    # Codex and Claude Code both deliver shell text in tool_input.command.
+    # Native patches are validated separately above, never as shell text.
     CMD="$(echo "$INPUT" | jq -r '.tool_input.command // empty')"
     [[ -z "$CMD" ]] && exit 0
 
-    # Only a real shell command can be prose about a path; an apply_patch body
-    # keeps the strict rule, and so does anything not on the non-reader
-    # allowlist.
-    if [[ "$TOOL_NAME" == "Bash" ]] && command_is_prose_safe "$CMD"; then
+    # Only commands on the non-reader allowlist get the prose exemption.
+    if command_is_prose_safe "$CMD"; then
       PROSE_MENTION_OK=1
     fi
 
@@ -701,35 +861,29 @@ case "$TOOL_NAME" in
     fi
     ORACLE_NAMES="$(blank_quoted_regions "$ORACLE_CMD" all)"
     ORACLE_EXPANSIONS="$(blank_quoted_regions "$ORACLE_CMD" single)"
+    ORACLE_RULE=SG-CREDENTIAL-COMMAND
+    ORACLE_DETAIL='Bash: credential-command signature matched.'
     for secret_pattern in "${SECRET_COMMAND_PATTERNS[@]}"; do
       if echo "$ORACLE_NAMES" | grep -qE "$secret_pattern"; then
         deny_secret_command
       fi
     done
+    ORACLE_RULE=SG-CREDENTIAL-EXPANSION
+    ORACLE_DETAIL='Bash: shell expansion of a credential variable detected.'
     for secret_pattern in "${SECRET_EXPANSION_PATTERNS[@]}"; do
       if echo "$ORACLE_EXPANSIONS" | grep -qE "$secret_pattern"; then
         deny_secret_command
       fi
     done
+    ORACLE_RULE=SG-ENV-FILTER
+    ORACLE_DETAIL='Bash: environment dump filtered for credential names detected.'
     for secret_pattern in "${SECRET_COMMAND_PATTERNS_I[@]}"; do
       if echo "$ORACLE_NAMES" | grep -qiE "$secret_pattern"; then
         deny_secret_command
       fi
     done
-    is_env_dump "$ORACLE_NAMES" && deny_secret_command
-
-    # apply_patch pass 0 — a patch that CREATES a denied file has no existing
-    # path for the token scan below to catch, so match the patch's declared
-    # targets on pattern alone. Only the `*** <verb> File:` headers are read;
-    # matching the whole patch body would trip on any content that merely looks
-    # like a key name.
-    if [[ "$TOOL_NAME" == "apply_patch" ]]; then
-      while IFS= read -r patch_target; do
-        [[ -z "$patch_target" ]] && continue
-        if is_denied_path "$patch_target"; then
-          deny "$(basename -- "$(expand_path "$patch_target")")"
-        fi
-      done < <(echo "$CMD" | sed -nE 's/^\*\*\* (Add|Update|Delete) File: (.*)$/\2/p')
+    if is_env_dump "$ORACLE_NAMES"; then
+      block SG-ENV-DUMP "Bash: whole-environment or shell-variable dump detected. Do not bypass; use secrets-check for credential status."
     fi
 
     # Pass 1 — every token in the whole command, not just arguments to a
@@ -804,6 +958,7 @@ case "$TOOL_NAME" in
       done < <(printf '%s' "$cmd" | tr ' \t\n|;&()<>,{}' '\n')
     }
 
+    BLOCK_STAGE="command token"
     scan_tokens "$HEREDOC_STRIPPED"
 
     # Pass 1b — heredoc bodies are DATA when they are written somewhere, but
@@ -816,6 +971,8 @@ case "$TOOL_NAME" in
     if (( HEREDOC_SHELL_FED )); then
       scan_tokens "$CMD"
     fi
+
+    BLOCK_STAGE="directory content command"
 
     # Pass 1c — the sensitive directories THEMSELVES as arguments to content
     # commands. is_denied_path allows directories ("listing is fine"), but
@@ -874,6 +1031,8 @@ case "$TOOL_NAME" in
         fi
       done < <(printf '%s' "$segment" | tr ' \t\n|;&()<>,{}' '\n')
     done < <(printf '%s' "$CMD" | sed -E 's/(\|\||&&|[;|&])/\n/g')
+
+    BLOCK_STAGE="redirection target"
 
     # Pass 2 — redirection targets are checked on pattern alone, since the
     # file being created (`... > new.pem`) does not exist yet.
