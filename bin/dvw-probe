@@ -219,11 +219,15 @@ def collect_agents(proc, budget):
                 if os.stat(pdir).st_uid != my_uid:
                     continue
             except OSError:
+                if os.path.exists(pdir):
+                    budget.partial = True
                 continue
             try:
                 comm = _read(os.path.join(pdir, "comm")).decode("utf-8", "replace").strip()
                 argv = _read(os.path.join(pdir, "cmdline")).split(b"\0")
             except OSError:
+                if os.path.exists(pdir):
+                    budget.partial = True
                 continue
             argv = [a.decode("utf-8", "replace") for a in argv if a]
             cli = None
@@ -265,6 +269,132 @@ def collect_agents(proc, budget):
         return agents
     except OSError:
         return None
+
+
+def collect_activity(proc, budget):
+    """Observation only; current uid, default tmux socket and DevPod IDE TCP.
+
+    Counts terminal devices, not shells, and established loopback socket pairs,
+    not IDE processes. Does not read command arguments or environment. Custom
+    tmux sockets and IDE transports other than DevPod TCP are outside scope.
+    Incomplete metadata gives null rather than a potentially unsafe zero.
+    """
+    out = dict(tmux_sessions=None, terminals=None,
+               cursor_connections=None, vscode_connections=None)
+    try:
+        # Force the default socket even if invoked from inside another tmux.
+        r = _run(['tmux', '-L', 'default', 'list-sessions', '-F', '#{session_id}'],
+                 budget.remaining(0.5))
+        if r.returncode == 0:
+            lines = r.stdout.splitlines()
+            if lines and all(s.startswith('$') and s[1:].isdigit() for s in lines):
+                out['tmux_sessions'] = len(lines)
+        elif r.returncode == 1 and (r.stderr.startswith('no server running on ')
+                or (r.stderr.startswith('error connecting to ')
+                    and r.stderr.rstrip().endswith('(No such file or directory)'))):
+            out['tmux_sessions'] = 0
+    except subprocess.TimeoutExpired:
+        budget.partial = True
+    except OSError:
+        pass
+    deadline = time.monotonic() + budget.remaining(0.75)
+    terminals, owners = set(), {}
+    terminals_ok = ide_ok = True
+    tmux_metadata_ok = True
+    uid = _int(os.environ.get('DVW_PROBE_UID'), os.getuid())
+    try:
+        names = os.listdir(proc)
+    except OSError:
+        if out['tmux_sessions'] == 0:
+            out['tmux_sessions'] = None
+        return out
+    try:
+        for name in names:
+            if time.monotonic() >= deadline:
+                budget.partial = True
+                if out['tmux_sessions'] == 0:
+                    out['tmux_sessions'] = None
+                return out
+            if not name.isdigit():
+                continue
+            d = os.path.join(proc, name)
+            try:
+                if os.stat(d).st_uid != uid:
+                    continue
+            except OSError:
+                terminals_ok = ide_ok = tmux_metadata_ok = False
+                continue
+            state = None
+            try:
+                stat = _read(os.path.join(d, 'stat')).decode('ascii')
+                fields = stat[stat.rindex(')') + 2:].split()
+                state = fields[0]
+                tty = int(fields[4])
+                if tty and state != 'Z':
+                    terminals.add(tty)
+            except (OSError, ValueError, IndexError, UnicodeError):
+                terminals_ok = False
+            if state == 'Z':
+                continue  # zombies have no executable or live sockets
+            try:
+                exe = os.readlink(os.path.join(d, 'exe'))
+                if os.path.basename(exe) == 'tmux' and out['tmux_sessions'] == 0:
+                    out['tmux_sessions'] = None
+                kind = ('cursor_connections' if '/.cursor-server/' in exe else
+                        'vscode_connections' if '/.vscode-server/' in exe else
+                        'devpod' if os.path.basename(exe) == 'devpod' else None)
+                if kind is None:
+                    continue
+                for fd in os.listdir(os.path.join(d, 'fd')):
+                    target = os.readlink(os.path.join(d, 'fd', fd))
+                    if target.startswith('socket:[') and target.endswith(']'):
+                        owners.setdefault(target[8:-1], set()).add(kind)
+            except OSError:
+                ide_ok = tmux_metadata_ok = False
+        if not tmux_metadata_ok and out['tmux_sessions'] == 0:
+            out['tmux_sessions'] = None
+        if terminals_ok:
+            out['terminals'] = len(terminals)
+        sockets = {}
+        live_ide = {"cursor_connections": set(), "vscode_connections": set()}
+        for version in ('tcp', 'tcp6'):
+            lines = _read(os.path.join(proc, 'net', version)).decode('ascii').splitlines()
+            if not lines or 'local_address' not in lines[0]:
+                raise ValueError('missing TCP header')
+            for line in lines[1:]:
+                f = line.split()
+                if len(f) < 10:
+                    raise ValueError('malformed TCP entry')
+                local, remote, state, inode = f[1], f[2], f[3], f[9]
+                for endpoint in (local, remote):
+                    address, port = endpoint.split(':')
+                    if len(address) != (8 if version == 'tcp' else 32) or len(port) != 4:
+                        raise ValueError('malformed TCP address')
+                    int(address, 16)
+                    int(port, 16)
+                if len(state) != 2 or not inode.isdigit():
+                    raise ValueError('malformed TCP state or inode')
+                int(state, 16)
+                if state == '01':
+                    for kind in live_ide:
+                        if kind in owners.get(inode, set()):
+                            live_ide[kind].add((version, local, remote))
+                # Linux /proc presents address words in host byte order.
+                loopbacks = ('0100007F', '00000000000000000000000001000000',
+                             '0000000000000000FFFF00000100007F')
+                if state == '01' and all(a.split(':')[0] in loopbacks for a in (local, remote)):
+                    sockets[(version, local, remote)] = owners.get(inode, set())
+        if time.monotonic() >= deadline:
+            budget.partial = True
+            return dict(out, terminals=None)
+        if ide_ok:
+            for kind in ('cursor_connections', 'vscode_connections'):
+                matched = {endpoint for endpoint in live_ide[kind]
+                           if 'devpod' in sockets.get((endpoint[0], endpoint[2], endpoint[1]), set())}
+                out[kind] = len(matched) if matched == live_ide[kind] else None
+    except (OSError, ValueError, UnicodeError):
+        pass
+    return out
 
 
 def _workspace_root():
@@ -389,11 +519,13 @@ def main():
         proc = os.environ.get("DVW_PROBE_PROC", "/proc")
         cg = os.environ.get("DVW_PROBE_CGROUP", "/sys/fs/cgroup")
         doc = {"schema": SCHEMA, "ts": int(time.time()), "partial": False,
-               "tmux": None, "agents": None, "git": None, "cgroup": None}
+               "tmux": None, "agents": None, "git": None, "cgroup": None,
+               "activity": dict(tmux_sessions=None, terminals=None, cursor_connections=None, vscode_connections=None)}
         _arm_deadline(doc, seconds)
         for key, fn in (("cgroup", lambda: collect_cgroup(cg)),
                         ("agents", lambda: collect_agents(proc, budget)),
                         ("tmux", lambda: collect_tmux(budget)),
+                        ("activity", lambda: collect_activity(proc, budget)),
                         ("git", lambda: collect_git(budget))):
             try:
                 doc[key] = fn()
