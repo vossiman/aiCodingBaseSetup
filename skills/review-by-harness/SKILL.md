@@ -27,8 +27,35 @@ is orchestrating. Unless the user specifies otherwise, use **GPT-5.6 Sol**
 **Fable and Astra require an explicit user override**; do not upgrade based
 on task complexity or inherit either from the caller or machine default.
 Pass `--harness` and `--model` explicitly, plus `--effort` for Claude/Codex.
-Respect any explicit user selection, including a different harness. Check
-the selected CLI's available models when unsure about an identifier.
+Respect any explicit user selection, including a different harness. Take
+the identifier from the table below; do not query the CLI for it.
+
+### Model identifiers (verified 2026-09-09 against the installed CLIs)
+
+| harness | `--model` | `--effort` | note |
+|---|---|---|---|
+| claude | `claude-opus-5` | `high` | **default** |
+| claude | `claude-sonnet-5` | `high` | cheaper second reader |
+| claude | `claude-fable-5-1` | `high` | user override only |
+| codex | `gpt-5.6-sol` | `high` | **default** |
+| codex | `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5` | `high` | alternatives |
+| codex | `gpt-6-astra` | `high` | user override only |
+| cursor | `cursor-grok-4.6-high-fast` | (none) | **default**; effort is in the name |
+| cursor | `gpt-5.6-sol-high`, `claude-opus-5-thinking-high`, `gpt-5.3-codex-high` | (none) | alternatives |
+
+Effort levels: Claude and Codex accept `low`, `medium`, `high`, `xhigh`,
+`max` (Codex also `ultra` on Sol, Terra and Astra). Cursor takes no
+`--effort`; pick a selector with the level in its name (`-low`, `-medium`,
+`-high`, `-xhigh`, `-max`, optional `-fast`), or use bracket parameters such
+as `'claude-opus-5[effort=high,fast=false]'`.
+
+Refresh the table only when a run rejects an identifier:
+
+```bash
+claude --help | grep -A4 -- --model          # aliases; full ids are claude-<family>-<version>
+codex debug models | jq -r '.models[] | select(.visibility=="list") | .slug'
+cursor-agent --list-models
+```
 
 Examples:
 
