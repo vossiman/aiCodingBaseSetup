@@ -1131,6 +1131,54 @@ PATCH"
   allowed
 }
 
+@test "shell patch guard: ambiguous cwd forms fail closed" {
+  bash_hook "(cd $HOME/.aicodingsetup && apply_patch <<'PATCH'
+*** Begin Patch
+*** Add File: memory-lanes-ship
++private material
+*** End Patch
+PATCH
+)"
+  denied
+  [[ "$output" == *SG-PATCH-CWD* ]]
+}
+
+@test "shell patch guard: patch-shaped assigned heredocs are validated" {
+  bash_hook "BODY=\$(cat <<'PATCH'
+*** Begin Patch
+*** Add File: $HOME/.ssh/id_ed25519
++private material
+*** End Patch
+PATCH
+)
+apply_patch \"\$BODY\""
+  denied
+  [[ "$output" == *SG-PATCH-TARGET* ]]
+}
+
+@test "shell patch guard: nested documentation examples remain data" {
+  bash_hook "cat > $HOME/work/patch-guard.md <<'EOF'
+Example:
+
+    apply_patch <<'PATCH'
+    *** Begin Patch
+    *** Add File: ~/.ssh/id_ed25519
+EOF"
+  allowed
+}
+
+@test "shell patch guard: tab-stripped heredocs are validated" {
+  local command="apply_patch <<-'PATCH'
+	*** Begin Patch
+	*** Add File: $HOME/work/tabbed.pem
+	+private material
+	*** End Patch
+	PATCH"
+  bash_hook "$command"
+  denied
+  [[ "$output" == *SG-PATCH-TARGET* ]]
+}
+
 @test "patch guard: colon-space in a target cannot discard its prefix" {
   patch_hook "*** Begin Patch
 *** Add File: $HOME/work/note: readme.md
