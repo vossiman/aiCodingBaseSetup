@@ -1169,14 +1169,38 @@ EOF"
 
 @test "shell patch guard: tab-stripped heredocs are validated" {
   local command="apply_patch <<-'PATCH'
-	*** Begin Patch
-	*** Add File: $HOME/work/tabbed.pem
-	+private material
-	*** End Patch
-	PATCH"
+		*** Begin Patch
+		*** Add File: $HOME/work/tabbed.pem
+		+private material
+		*** End Patch
+		PATCH"
   bash_hook "$command"
   denied
   [[ "$output" == *SG-PATCH-TARGET* ]]
+}
+
+@test "shell patch guard: decoy shift text cannot swallow a later patch" {
+  bash_hook "echo 'value a<<b'
+apply_patch <<'PATCH'
+*** Begin Patch
+*** Add File: $HOME/work/after-decoy.pem
++private material
+*** End Patch
+PATCH"
+  denied
+  [[ "$output" == *SG-PATCH-TARGET* ]]
+}
+
+@test "shell patch guard: expanded cd targets fail closed" {
+  bash_hook "D=$HOME/.aicodingsetup
+cd \$D && apply_patch <<'PATCH'
+*** Begin Patch
+*** Add File: memory-lanes-ship
++private material
+*** End Patch
+PATCH"
+  denied
+  [[ "$output" == *SG-PATCH-CWD* ]]
 }
 
 @test "patch guard: colon-space in a target cannot discard its prefix" {

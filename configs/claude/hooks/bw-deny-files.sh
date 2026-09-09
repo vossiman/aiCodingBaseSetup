@@ -807,7 +807,7 @@ validate_shell_patch_heredocs() {
   while IFS= read -r line || [[ -n "$line" ]]; do
     if (( in_body )); then
       candidate="$line"
-      (( strip_tabs == 0 )) || candidate="${candidate#$'\t'}"
+      (( strip_tabs == 0 )) || candidate="${candidate#"${candidate%%[!$'\t']*}"}"
       if [[ "$candidate" == "$marker" ]]; then
         candidate="$body"
         while [[ "$candidate" == $'\n'* ]]; do candidate="${candidate#$'\n'}"; done
@@ -832,11 +832,15 @@ validate_shell_patch_heredocs() {
       cd_target="${BASH_REMATCH[1]}"
       remainder="${BASH_REMATCH[3]}"
       cd_target="$(expand_path "$cd_target")"
-      [[ "$cd_target" =~ $printable && "$cd_target" != *:* ]] ||
-        block SG-PATCH-CWD "apply_patch: shell working directory is not a supported local path."
-      [[ "$cd_target" == /* ]] || cd_target="$patch_cwd/$cd_target"
-      patch_cwd="$(realpath -m -- "$cd_target" 2>/dev/null)" ||
-        block SG-PATCH-CWD "apply_patch: shell working directory cannot be resolved."
+      if [[ "$cd_target" == *'$'* || "$cd_target" == *'`'* ]]; then
+        cwd_ambiguous=1
+      else
+        [[ "$cd_target" =~ $printable && "$cd_target" != *:* ]] ||
+          block SG-PATCH-CWD "apply_patch: shell working directory is not a supported local path."
+        [[ "$cd_target" == /* ]] || cd_target="$patch_cwd/$cd_target"
+        patch_cwd="$(realpath -m -- "$cd_target" 2>/dev/null)" ||
+          block SG-PATCH-CWD "apply_patch: shell working directory cannot be resolved."
+      fi
       line="$remainder"
     elif [[ "$line" =~ (^|[[:space:]\;\&\|\(])(cd|pushd)([[:space:]]|$) ]]; then
       cwd_ambiguous=1
@@ -845,17 +849,17 @@ validate_shell_patch_heredocs() {
     # Capture every outer shell heredoc. A body whose first non-empty line is
     # native patch syntax is validated even when it is assigned or piped into
     # apply_patch later. Nested examples inside documentation remain data.
-    if [[ "$line" =~ \<\<(-?)[[:space:]]*[\"\']?([A-Za-z_][A-Za-z0-9_]*)[\"\']? ]]; then
+    if [[ "$line" =~ (^|[[:space:]])\<\<(-?)[[:space:]]*[\"\']?([A-Za-z_][A-Za-z0-9_]*)[\"\']? ]]; then
       strip_tabs=0
-      [[ "${BASH_REMATCH[1]}" != - ]] || strip_tabs=1
-      marker="${BASH_REMATCH[2]}"
+      [[ "${BASH_REMATCH[2]}" != - ]] || strip_tabs=1
+      marker="${BASH_REMATCH[3]}"
       in_body=1
     fi
   done <<< "$command"
 
   # An unrelated malformed heredoc is the shell's concern. A captured body
   # that already identifies itself as a patch must not evade validation.
-  if (( in_body )) && [[ "$body" == "*** Begin Patch"$'\n'* || "$body" == "*** Begin Patch" ]]; then
+  if (( in_body )) && [[ "$body" == "*** Begin Patch"$'\n'* || "$body" == "*** Begin Patch" || "$body" == *$'\n*** Begin Patch\n'* ]]; then
     block SG-PATCH-SYNTAX "apply_patch: shell heredoc is unterminated or malformed."
   fi
 }
@@ -904,8 +908,7 @@ case "$TOOL_NAME" in
     CMD="$(echo "$INPUT" | jq -r '.tool_input.command // empty')"
     [[ -z "$CMD" ]] && exit 0
 
-    SHELL_EVENT_CWD="$(printf '%s\n' "$INPUT" | jq -er '(.cwd // "") | select(type == "string" and index("\u0000") == null)' 2>/dev/null)" ||
-      block SG-PATCH-CWD "apply_patch: event working directory is invalid."
+    SHELL_EVENT_CWD="$(printf '%s\n' "$INPUT" | jq -r 'if ((.cwd // "") | type) == "string" then (.cwd // "") else "" end' 2>/dev/null || true)"
     validate_shell_patch_heredocs "$CMD" "$SHELL_EVENT_CWD"
 
     # Only commands on the non-reader allowlist get the prose exemption.
