@@ -784,14 +784,14 @@ _seed_codex_config() {
   denied
 }
 
-@test "apply_patch keeps the strict rule regardless of quoting" {
+@test "apply_patch allows quoted protected-path prose in its body" {
   patch_hook "*** Begin Patch
 *** Update File: $HOME/work/README.md
 @@
 -hello
 +see \"$HOME/.aicodingsetup/.secrets.env\"
 *** End Patch"
-  denied
+  allowed
 }
 
 # --- credential NAMES in prose vs credential VALUES (AICODINGBASESETUP-6) ---
@@ -920,4 +920,169 @@ X"
   allowed
   bash_hook "echo 'the hook now catches grep -f\$HOME/.aicodingsetup/.secrets.env'"
   allowed
+}
+
+
+# AICODINGBASESETUP-33: native patches and real shell calls stay separate.
+
+@test "patch guard: removed prose and literal printing examples are data" {
+  patch_hook "*** Begin Patch
+*** Update File: $HOME/work/README.md
+@@
+-old reference to ~/.aicodingsetup/.secrets.env
++new reference
+ Documentation: echo \"\$GH_TOKEN\"; printenv GH_TOKEN
+*** End Patch"
+  allowed
+}
+
+@test "patch guard: shell-looking additions are not executed" {
+  patch_hook "*** Begin Patch
+*** Add File: $HOME/work/example.sh
++echo \"\$GH_TOKEN\"
++printf '%s' \"\$(touch $HOME/should-not-exist)\"
++gh auth token
+*** End Patch"
+  allowed
+  [ ! -e "$HOME/should-not-exist" ]
+}
+
+@test "patch guard: malformed inputs cannot obtain a patch exemption" {
+  local input
+  for input in '{}' '{"command":null}' '{"command":""}' \
+    '{"command":["echo","oops"]}' '{"command":"hello","workdir":"/tmp"}'; do
+    hook "$(jq -nc --argjson i "$input" '{tool_name:"apply_patch",tool_input:$i}')"
+    denied
+    [[ "$output" == *SG-PATCH-INPUT* || "$output" == *SG-PATCH-SYNTAX* ]]
+  done
+}
+
+@test "patch guard: appended and embedded commands are rejected without reflection" {
+  local patch="*** Begin Patch
+*** Add File: $HOME/work/example.md
++hello
+*** End Patch"
+  local input
+  for input in "echo DO_NOT_REFLECT" "$patch
+printf DO_NOT_REFLECT" "echo DO_NOT_REFLECT
+$patch" "*** Begin Patch
+*** Add File: $HOME/work/example.md
+echo DO_NOT_REFLECT
+*** End Patch"; do
+    patch_hook "$input"
+    denied
+    [[ "$output" == *SG-PATCH-SYNTAX* ]]
+    [[ "$output" != *DO_NOT_REFLECT* ]]
+  done
+}
+
+@test "patch guard: moves check both source and destination" {
+  patch_hook "*** Begin Patch
+*** Update File: $HOME/work/README.md
+*** Move to: $HOME/work/DO_NOT_REFLECT.pem
+@@
+-hello
++goodbye
+*** End Patch"
+  denied
+  [[ "$output" == *SG-PATCH-TARGET* && "$output" == *Move* && "$output" == *"line 3"* ]]
+  [[ "$output" != *DO_NOT_REFLECT* ]]
+
+  patch_hook "*** Begin Patch
+*** Update File: $HOME/.ssh/id_ed25519
+*** Move to: $HOME/work/notes.md
+@@
+-old
++new
+*** End Patch"
+  denied
+}
+
+@test "patch guard: ordinary moves and multiple targets remain allowed" {
+  patch_hook "*** Begin Patch
+*** Update File: $HOME/work/README.md
+*** Move to: $HOME/work/renamed.md
+@@
+-hello
++goodbye
+*** Add File: $HOME/work/second.md
++content
+*** Delete File: $HOME/work/third.md
+*** End Patch"
+  allowed
+}
+
+@test "patch guard: aliases special files and protected path spellings are denied" {
+  ln -s "$HOME/.aicodingsetup" "$HOME/work/linked"
+  ln -s "$HOME/.ssh/id_ed25519" "$HOME/work/innocent.md"
+  ln -s loop "$HOME/work/loop"
+  ln "$HOME/.ssh/id_ed25519" "$HOME/work/hardlink.md"
+  mkfifo "$HOME/work/pipe"
+
+  local target
+  for target in "$HOME/work/linked/memory-lanes-ship" \
+    "$HOME/work/innocent.md" "$HOME/work/hardlink.md" \
+    "$HOME/work/../.aicodingsetup/memory-lanes-ship" \
+    "$HOME/work/linked/../.ssh/id_ed25519" \
+    "$HOME/work/../.codex/config.toml" \
+    "$HOME/.ssh/id_ed25519   " "$HOME/.ssh/id_ed25519/" \
+    "$HOME/work/loop" "$HOME/work/pipe" /dev/stdout /proc/self/environ; do
+    patch_hook "*** Begin Patch
+*** Add File: $target
++placeholder
+*** End Patch"
+    denied
+  done
+}
+
+@test "patch guard: relative targets use event cwd" {
+  local patch="*** Begin Patch
+*** Update File: memory-lanes-ship
+@@
+-old
++new
+*** End Patch"
+  hook "$(jq -nc --arg c "$patch" --arg cwd "$HOME/.aicodingsetup" \
+    '{tool_name:"apply_patch",cwd:$cwd,tool_input:{command:$c}}')"
+  denied
+}
+
+@test "patch guard: indented headers cannot hide targets in an add" {
+  patch_hook "*** Begin Patch
+*** Add File: $HOME/work/README.md
++hello
+  *** Add File: $HOME/.ssh/id_ed25519
++placeholder
+*** End Patch"
+  denied
+}
+
+@test "patch guard: shell markers never exempt real credential printing" {
+  local command
+  for command in 'echo "$GH_TOKEN"' 'printf "%s" "${GH_TOKEN}"' \
+    'echo "$(printenv GH_TOKEN)"' 'printf "%s" "$(gh auth token)"' \
+    'echo "$(cat ~/.aicodingsetup/.secrets.env)"' env printenv; do
+    bash_hook "# *** Begin Patch
+$command
+# *** End Patch"
+    denied
+  done
+}
+
+@test "patch guard: shell reasons distinguish expansion dump and command" {
+  bash_hook 'echo "$GH_TOKEN" DO_NOT_REFLECT'
+  denied
+  [[ "$output" == *SG-CREDENTIAL-EXPANSION* && "$output" != *DO_NOT_REFLECT* ]]
+
+  bash_hook env
+  denied
+  [[ "$output" == *SG-ENV-DUMP* ]]
+
+  bash_hook 'gh auth token'
+  denied
+  [[ "$output" == *SG-CREDENTIAL-COMMAND* ]]
+
+  bash_hook "cat $HOME/.aicodingsetup/DO_NOT_REFLECT"
+  denied
+  [[ "$output" == *SG-PROTECTED-PATH* && "$output" != *DO_NOT_REFLECT* ]]
 }
