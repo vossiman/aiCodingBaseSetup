@@ -37,7 +37,7 @@ fi
 exit 0
 STUB
   chmod +x "$TMPDIR/stubs/tmux"
-  printf '%s\n' 'b07424224b88fcc02bcb9b58d8655f00b97909c6' > "$AICODING_TMUX_COMMIT_FILE"
+  printf '%s\n' '13c10f672c7a6bc64b2d4829ae550d8d6caf61fe' > "$AICODING_TMUX_COMMIT_FILE"
 }
 
 teardown() {
@@ -121,7 +121,7 @@ blueprint_copy() {
   printf '%s\n' '5356c62eadf8650ad1ffc95f52755d6f66029a20' > "$AICODING_TMUX_COMMIT_FILE"
   _run_install_fn "$(_isolated_path)" ensure_tmux
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q "tmux 3.8 is not pinned commit b074242"
+  echo "$output" | grep -q "tmux 3.8 is not pinned commit 13c10f6"
   echo "$output" | grep -q "Skipping tmux rebuild while network operations are disabled"
 }
 

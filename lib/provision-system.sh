@@ -391,6 +391,7 @@ ensure_cursor_agent() {
 ensure_go() {
   command -v go &>/dev/null && return 0
   command -v curl &>/dev/null || { warn "curl not available — skipping Go install"; return 0; }
+  # Pin MUST match GO_VERSION in image/Dockerfile; tests/bats/image.bats enforces it.
   local goversion="1.22.5"
   local arch
   case "$(uname -m)" in
@@ -424,9 +425,11 @@ ensure_tmux() {
   # 2026-07-06: mark the complete scroll region dirty after scrolling during
   # a DEC 2026 synchronized update (tmux#5330). Without this, Codex output is
   # present in capture-pane but remains invisible until a forced redraw.
-  # b074242 is the portable-tree merge containing OpenBSD commit d33d5b7;
-  # pinning d33d5b7 directly would fetch the non-autoconf OpenBSD source tree.
-  local tmux_commit="b07424224b88fcc02bcb9b58d8655f00b97909c6"
+  # The fix first shipped as b074242, the portable-tree merge containing
+  # OpenBSD commit d33d5b7 (pinning d33d5b7 directly would fetch the
+  # non-autoconf OpenBSD source tree). 13c10f6 is portable master as of
+  # 2026-09-09; upstream still has no 3.8 release tag.
+  local tmux_commit="13c10f672c7a6bc64b2d4829ae550d8d6caf61fe"
   local tmux_commit_file="${AICODING_TMUX_COMMIT_FILE:-/usr/local/share/aicoding/tmux-commit}"
   if command -v tmux &>/dev/null; then
     local current installed_commit=""

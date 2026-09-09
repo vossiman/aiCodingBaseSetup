@@ -11,7 +11,7 @@
 # tests/bats/image.bats enforces it.
 FROM mcr.microsoft.com/devcontainers/base:ubuntu AS tmux-build
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-ARG TMUX_COMMIT=b07424224b88fcc02bcb9b58d8655f00b97909c6
+ARG TMUX_COMMIT=13c10f672c7a6bc64b2d4829ae550d8d6caf61fe
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       build-essential libevent-dev libncurses-dev pkg-config bison autoconf automake \
@@ -25,7 +25,7 @@ RUN apt-get update \
 # --- Stage 2: the image -----------------------------------------------------
 FROM mcr.microsoft.com/devcontainers/base:ubuntu
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-ARG TMUX_COMMIT=b07424224b88fcc02bcb9b58d8655f00b97909c6
+ARG TMUX_COMMIT=13c10f672c7a6bc64b2d4829ae550d8d6caf61fe
 
 # Release stamp for the ⬆rebuild staleness check (bin/aicoding-status):
 # the repo commit this image was built from. An empty sha merely disables
@@ -45,11 +45,20 @@ RUN usermod -l codespace vscode \
  && rm -f /etc/sudoers.d/vscode
 
 # CLI staples auto_install_prereqs otherwise apt-installs per-container, plus
-# gh (universal shipped it via feature) and tmux runtime libs.
+# gh (universal shipped it via feature) and tmux runtime libs. The lib*
+# block is the Chromium shared-library set from playwright-core's
+# nativeDeps table (ubuntu24.04/26.04-x64, identical), so
+# ensure_playwright_system_deps finds nothing missing. Only the libs are
+# baked: the browser download stays provision-time, since it must match
+# each project's pinned Playwright version.
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       git git-lfs jq ripgrep parallel bubblewrap kitty-terminfo locales \
       python3 python3-venv libevent-core-2.1-7t64 libncurses6 \
+      libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
+      libcairo2 libcups2t64 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0t64 \
+      libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 \
+      libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 \
  && mkdir -p /etc/apt/keyrings \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
@@ -57,6 +66,14 @@ RUN apt-get update \
       > /etc/apt/sources.list.d/github-cli.list \
  && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
+
+# Go toolchain. Pin MUST match goversion in lib/provision-system.sh
+# (ensure_go); tests/bats/image.bats enforces it. PATH is extended below so
+# `command -v go` succeeds and ensure_go short-circuits.
+ARG GO_VERSION=1.22.5
+RUN arch="$(dpkg --print-architecture)" \
+ && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz" | tar -C /usr/local -xz \
+ && /usr/local/go/bin/go version
 
 # Node LTS via NodeSource apt — intentionally using apt instead of node version managers
 # (alternative version managers' shell exports are problematic in non-interactive contexts).
@@ -134,14 +151,26 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
  && [ -x ~/.local/bin/uv ]
 
 USER root
+# frogmouth: terminal markdown reader (Textual TUI, reflows inside tmux).
+# Pinned to CPython 3.12: on 3.14 its old httpx/httpcore pins crash at
+# import. Installed as root into /opt/uv, NOT ~/.local/share/uv: that
+# directory is a candidate host bind mount (uv interpreter persistence),
+# and a seed living only there would be shadowed at runtime.
+RUN UV_PYTHON_INSTALL_DIR=/opt/uv/python UV_TOOL_DIR=/opt/uv/tools UV_TOOL_BIN_DIR=/usr/local/bin \
+      /home/codespace/.local/bin/uv tool install --python 3.12 frogmouth \
+ && [ -x /usr/local/bin/frogmouth ] \
+ && su codespace -c '/usr/local/bin/frogmouth --version'
+USER codespace
+
+USER root
 # Surface the seeds for non-interactive shells (postCreate/postStart run
 # before the managed ~/.bashrc exists).
-ENV PATH=/home/codespace/.local/bin:$PATH
+ENV PATH=/home/codespace/.local/bin:/usr/local/go/bin:$PATH
 # devpod runs lifecycle hooks as `su codespace -c ...`, and su discards the
 # image's PATH in favour of pam_env's /etc/environment, so a hook calling any
 # seeded tool (uv, node, the agent CLIs) fails with 127 unless it is listed
 # here too.
-RUN printf '%s\n' 'PATH="/home/codespace/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' > /etc/environment
+RUN printf '%s\n' 'PATH="/home/codespace/.local/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' > /etc/environment
 # NodeSource npm's global prefix is root-owned /usr/lib — unlike universal's
 # version-manager-based node, whose prefix was user-writable. Point npm -g at
 # user space so install_mcp_packages (and agents) install without sudo;
