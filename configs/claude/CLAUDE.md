@@ -212,6 +212,22 @@ message unrelated sessions, because cross-project chatter just burns tokens.
   overlapping files, cleanup cost). Notable saves (a message that
   demonstrably prevented a conflict) get a row in the saves table.
 
+## Configuration scope
+
+Default configuration changes to the current repository. This includes model
+and reasoning-effort changes: a request such as "use Astra" applies to the
+current repo unless the user explicitly asks for a default across all repos
+from now on. Use the tool's supported repo-local configuration, for example
+`<repo>/.codex/config.toml` for Codex. Follow the user's preference on whether
+to commit that file or keep it local with Git ignore rules.
+
+Change home-level or other shared configuration only when the user explicitly
+requests that scope. If the shared file is managed by `aicoding-sync`, make
+that change in the aiCodingBaseSetup blueprint via PR so future syncs retain
+it. If a tool has no repo-local override, explain that limitation instead of
+silently broadening the change to all repos. This rule governs agent edits;
+it does not redirect runtime state that a tool writes to its home directory.
+
 ## Secrets: never read them
 
 `~/.aicodingsetup/.secrets.env` and any private key (`*.pem`, `*.key`,
