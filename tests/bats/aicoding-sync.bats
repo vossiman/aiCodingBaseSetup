@@ -92,7 +92,7 @@ EOF
   echo "$output" | grep -q "never fetch or reset"
 }
 
-@test "aicoding-sync: 'n' answer aborts without writing" {
+@test "aicoding-sync: 'n' answer preserves the existing managed config" {
   mkdir -p "$HOME/.aicodingsetup"
   echo "user-line" > "$HOME/.tmux.conf"
   echo "blueprint-line" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"

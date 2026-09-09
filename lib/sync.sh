@@ -498,13 +498,14 @@ _sync_reconcile() {
   fi
 
   if [[ "$mode" == interactive ]]; then
-    printf 'Apply? [y/N] '
+    echo 'This choice only controls config changes; tool updates and provisioning continue either way.'
+    printf 'Apply managed config changes? [y/N] '
     local answer
     read -r answer
     [ -t 0 ] || echo
     case "$answer" in
       y|Y|yes) ;;
-      *) echo "Aborted."; return 0 ;;
+      *) echo "Skipped managed config changes. Continuing the rest of sync."; return 0 ;;
     esac
   fi
 
