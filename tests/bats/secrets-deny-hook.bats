@@ -1070,6 +1070,67 @@ echo DO_NOT_REFLECT
   allowed
 }
 
+# AICODINGBASESETUP-35: a patch delivered through Bash is still a patch. Its
+# quoted heredoc body is data to the shell scanner, but its declared targets
+# must go through the same validation as the native tool.
+
+@test "shell patch guard: quoted heredoc cannot create a private key" {
+  bash_hook "apply_patch <<'PATCH'
+*** Begin Patch
+*** Add File: $HOME/work/DO_NOT_REFLECT.pem
++private material
+*** End Patch
+PATCH"
+  denied
+  [[ "$output" == *SG-PATCH-TARGET* ]]
+  [[ "$output" != *DO_NOT_REFLECT* ]]
+}
+
+@test "shell patch guard: wrappers and cd affect relative target resolution" {
+  bash_hook "cd $HOME/.ssh && command apply_patch <<'PATCH'
+*** Begin Patch
+*** Add File: id_ed25519
++private material
+*** End Patch
+PATCH"
+  denied
+  [[ "$output" == *SG-PATCH-TARGET* ]]
+
+  bash_hook "cd $HOME/.aicodingsetup
+true
+/usr/local/bin/apply_patch <<'PATCH'
+*** Begin Patch
+*** Update File: memory-lanes-ship
+@@
+-old
++private material
+*** End Patch
+PATCH"
+  denied
+  [[ "$output" == *SG-PATCH-TARGET* || "$output" == *SG-PATCH-CWD* ]]
+
+  bash_hook "env PATCH_MODE=test apply_patch <<'PATCH'
+*** Begin Patch
+*** Add File: $HOME/work/also-private.key
++private material
+*** End Patch
+PATCH"
+  denied
+  [[ "$output" == *SG-PATCH-TARGET* ]]
+}
+
+@test "shell patch guard: ordinary target and protected-path prose remain allowed" {
+  bash_hook "cd $HOME/work && apply_patch <<'PATCH'
+*** Begin Patch
+*** Update File: README.md
+@@
+-hello
++Documentation mentions ~/.aicodingsetup/.secrets.env without reading it.
+*** End Patch
+PATCH"
+  allowed
+}
+
 @test "patch guard: colon-space in a target cannot discard its prefix" {
   patch_hook "*** Begin Patch
 *** Add File: $HOME/work/note: readme.md

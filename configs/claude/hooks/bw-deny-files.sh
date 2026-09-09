@@ -678,29 +678,15 @@ check_patch_target() {
   fi
 }
 
-validate_native_patch() {
+validate_patch_text() {
   # Conservative subset of Codex rust-v0.153.4 streaming_parser.rs:
   # https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/apply-patch/src/streaming_parser.rs
-  # Unsupported wrappers, remote environments and header spellings deny.
-  # Only this native tool uses the data-only path; shell calls keep all scans.
+  # Unsupported remote environments and header spellings deny.
   local LC_ALL=C
-  local patch_text patch_cwd line header operation target
+  local patch_text="$1" patch_cwd="$2" line header operation target
   local mode=start need_lines=0 chunk_started=0 move_allowed=0
   local patch_line=0 printable='^[ -~]+$'
 
-  # Unknown input fields could change the execution context. Fail closed.
-  patch_text="$(printf '%s\n' "$INPUT" | jq -er '
-    select(
-      (.tool_input | type == "object") and
-      (.tool_input | keys == ["command"]) and
-      (.tool_input.command |
-        type == "string" and length > 0 and index("\u0000") == null) and
-      ((.cwd // "") | type == "string" and index("\u0000") == null)
-    ) | .tool_input.command
-  ' 2>/dev/null)" ||
-    block SG-PATCH-INPUT "apply_patch: missing, invalid or unsupported input fields; expected a native patch string."
-
-  patch_cwd="$(printf '%s\n' "$INPUT" | jq -r '.cwd // ""')"
   if [[ -n "$patch_cwd" ]]; then
     [[ "$patch_cwd" == /* && "$patch_cwd" =~ $printable && "$patch_cwd" != *:* ]] ||
       block SG-PATCH-CWD "apply_patch: working directory is not a supported absolute local path."
@@ -788,6 +774,75 @@ validate_native_patch() {
   [[ "$mode" == end ]] || patch_syntax_error
 }
 
+validate_native_patch() {
+  local patch_text patch_cwd
+
+  # Unknown input fields could change the execution context. Fail closed.
+  patch_text="$(printf '%s\n' "$INPUT" | jq -er '
+    select(
+      (.tool_input | type == "object") and
+      (.tool_input | keys == ["command"]) and
+      (.tool_input.command |
+        type == "string" and length > 0 and index("\u0000") == null) and
+      ((.cwd // "") | type == "string" and index("\u0000") == null)
+    ) | .tool_input.command
+  ' 2>/dev/null)" ||
+    block SG-PATCH-INPUT "apply_patch: missing, invalid or unsupported input fields; expected a native patch string."
+
+  patch_cwd="$(printf '%s\n' "$INPUT" | jq -r '.cwd // ""')"
+  validate_patch_text "$patch_text" "$patch_cwd"
+}
+
+# Validate patch data hidden from the ordinary Bash token scan by a heredoc.
+# This deliberately recognizes apply_patch through path qualification and
+# wrappers: those change how the executable is reached, not what its patch
+# headers mean. Shell credential/expansion scanning still runs afterwards.
+validate_shell_patch_heredocs() {
+  local command="$1" event_cwd="$2"
+  local line marker patch_text="" in_patch=0 patch_cwd="$event_cwd"
+  local scan matched cd_target printable='^[ -~]+$'
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if (( in_patch )); then
+      if [[ "$line" == "$marker" ]]; then
+        validate_patch_text "$patch_text" "$patch_cwd"
+        in_patch=0
+        patch_text=""
+      else
+        patch_text+="${patch_text:+$'\n'}$line"
+      fi
+      continue
+    fi
+
+    # Track simple shell-directory changes across lines and chained commands.
+    # The hook event cwd is the starting point; each relative cd resolves from
+    # the last known shell cwd, matching the shell that will run apply_patch.
+    scan="${line%%apply_patch*}"
+    while [[ "$scan" =~ (^|.*[\;\&\|][[:space:]]*)cd[[:space:]]+([^[:space:]\;\&\|]+)([[:space:]]*\&\&|[[:space:]]*\;|[[:space:]]*$) ]]; do
+      matched="${BASH_REMATCH[0]}"
+      cd_target="${BASH_REMATCH[2]}"
+      cd_target="$(expand_path "$cd_target")"
+      [[ "$cd_target" =~ $printable && "$cd_target" != *:* ]] ||
+        block SG-PATCH-CWD "apply_patch: shell working directory is not a supported local path."
+      [[ "$cd_target" == /* ]] || cd_target="$patch_cwd/$cd_target"
+      patch_cwd="$(realpath -m -- "$cd_target" 2>/dev/null)" ||
+        block SG-PATCH-CWD "apply_patch: shell working directory cannot be resolved."
+      scan="${scan:${#matched}}"
+    done
+
+    # Only a command line that both invokes apply_patch and opens a heredoc
+    # claims the following data as a shell-delivered patch.
+    if [[ "$line" =~ (^|[[:space:]/\;\|\&])apply_patch([[:space:]\<]|$) ]] \
+       && [[ "$line" =~ \<\<-?[[:space:]]*[\"\']?([A-Za-z_][A-Za-z0-9_]*)[\"\']? ]]; then
+      marker="${BASH_REMATCH[1]}"
+      in_patch=1
+    fi
+  done <<< "$command"
+
+  (( in_patch == 0 )) ||
+    block SG-PATCH-SYNTAX "apply_patch: shell heredoc is unterminated or malformed."
+}
+
 # --- Main -------------------------------------------------------------------
 
 INPUT="$(cat)"
@@ -831,6 +886,10 @@ case "$TOOL_NAME" in
     # Native patches are validated separately above, never as shell text.
     CMD="$(echo "$INPUT" | jq -r '.tool_input.command // empty')"
     [[ -z "$CMD" ]] && exit 0
+
+    SHELL_EVENT_CWD="$(printf '%s\n' "$INPUT" | jq -r '.cwd // empty')"
+    [[ -n "$SHELL_EVENT_CWD" ]] || SHELL_EVENT_CWD="$PWD"
+    validate_shell_patch_heredocs "$CMD" "$SHELL_EVENT_CWD"
 
     # Only commands on the non-reader allowlist get the prose exemption.
     if command_is_prose_safe "$CMD"; then
