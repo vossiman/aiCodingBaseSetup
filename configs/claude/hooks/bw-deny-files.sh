@@ -642,7 +642,11 @@ check_patch_target() {
   fi
 
   absolute="$target"
-  [[ "$absolute" == /* ]] || absolute="$patch_cwd/$absolute"
+  if [[ "$absolute" != /* ]]; then
+    [[ -n "$patch_cwd" ]] ||
+      block SG-PATCH-CWD "apply_patch $operation at line $number: relative target requires an explicit event working directory."
+    absolute="$patch_cwd/$absolute"
+  fi
 
   # Check both lexical normalization and filesystem symlink resolution.
   # These commands inspect paths/metadata, never file contents.
@@ -697,9 +701,10 @@ validate_native_patch() {
     block SG-PATCH-INPUT "apply_patch: missing, invalid or unsupported input fields; expected a native patch string."
 
   patch_cwd="$(printf '%s\n' "$INPUT" | jq -r '.cwd // ""')"
-  [[ -n "$patch_cwd" ]] || patch_cwd="$PWD"
-  [[ "$patch_cwd" == /* && "$patch_cwd" =~ $printable && "$patch_cwd" != *:* ]] ||
-    block SG-PATCH-CWD "apply_patch: working directory is not a supported absolute local path."
+  if [[ -n "$patch_cwd" ]]; then
+    [[ "$patch_cwd" == /* && "$patch_cwd" =~ $printable && "$patch_cwd" != *:* ]] ||
+      block SG-PATCH-CWD "apply_patch: working directory is not a supported absolute local path."
+  fi
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     ((patch_line += 1))

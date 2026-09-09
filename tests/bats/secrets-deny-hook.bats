@@ -1047,6 +1047,38 @@ echo DO_NOT_REFLECT
   denied
 }
 
+@test "patch guard: relative targets require an explicit event cwd" {
+  patch_hook "*** Begin Patch
+*** Add File: notes.md
++content
+*** End Patch"
+  denied
+  [[ "$output" == *SG-PATCH-CWD* ]]
+}
+
+@test "patch guard: known Codex payload allows ordinary relative targets" {
+  # Codex 0.153.4 apply_patch.rs pre_tool_use_payload supplies command only;
+  # the event carries cwd separately. Unknown new fields remain fail-closed.
+  local patch="*** Begin Patch
+*** Update File: README.md
+@@
+-hello
++goodbye
+*** End Patch"
+  hook "$(jq -nc --arg c "$patch" --arg cwd "$HOME/work" \
+    '{tool_name:"apply_patch",cwd:$cwd,tool_input:{command:$c}}')"
+  allowed
+}
+
+@test "patch guard: colon-space in a target cannot discard its prefix" {
+  patch_hook "*** Begin Patch
+*** Add File: $HOME/work/note: readme.md
++content
+*** End Patch"
+  denied
+  [[ "$output" == *SG-PATCH-PATH* ]]
+}
+
 @test "patch guard: indented headers cannot hide targets in an add" {
   patch_hook "*** Begin Patch
 *** Add File: $HOME/work/README.md
