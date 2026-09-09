@@ -92,7 +92,11 @@ write_mode_for() {
 }
 
 log() { mkdir -p "$STATE" 2>/dev/null; printf '%s %s\n' "$(date -Is)" "$*" >> "$STATE/log" 2>/dev/null || true; }
-locked() { mkdir -p "$STATE" 2>/dev/null; ( flock -w 5 9 && "$@" ) 9>>"$STATE/lock"; }
+# locked CMD...: runs CMD under the state lock. Exit 75 (EX_TEMPFAIL) means
+# the lock was not obtained in time, so callers can tell "busy" from CMD's
+# own failure; a full rescan in another container holds it for a while.
+LOCK_WAIT="${REDACT_SESSIONS_LOCK_WAIT:-5}"
+locked() { mkdir -p "$STATE" 2>/dev/null; ( flock -w "$LOCK_WAIT" 9 || exit 75; "$@" ) 9>>"$STATE/lock"; }
 _pending_add() { grep -qx "$1" "$STATE/pending" 2>/dev/null || printf '%s\n' "$1" >> "$STATE/pending"; }
 pending_add() { locked _pending_add "$1"; }
 
@@ -184,12 +188,15 @@ scrub_sqlite() {
     [ -n "${_py_warned:-}" ] || { log "python3 missing: sqlite stores deferred"; _py_warned=1; }
     return 1
   fi
-  out="$(printf '%s\n' "$PAIRS" | locked "$PY" "$HELPER" "$f" 2>/dev/null)" || rc=$?
+  local err; err="$(mktemp)" || return 1
+  out="$(printf '%s\n' "$PAIRS" | locked "$PY" "$HELPER" "$f" 2>"$err")" || rc=$?
+  local reason; reason="$(tail -n 1 "$err" 2>/dev/null)"; rm -f "$err"
   case $rc in
     0) ;;
     4) log "sqlite busy file=$f"; return 1 ;;
     5) log "sqlite unrecognised store file=$f"; return 1 ;;
-    *) log "sqlite helper failed rc=$rc file=$f"; return 1 ;;
+    75) log "state lock busy file=$f"; return 1 ;;
+    *) log "sqlite helper failed rc=$rc file=$f reason=$reason"; return 1 ;;
   esac
   sess="$(session_of "$f")"
   while IFS= read -r line; do
@@ -301,6 +308,8 @@ sweep() {
     log "rules changed: full rescan (rule set or roots differ from the stamp)"
   fi
   list="$(candidates | sort -u)"
+  # A sweep killed mid-run (hook timeout) leaves its deferred.next behind.
+  find "$STATE" -maxdepth 1 -name 'deferred.next.*' -mmin +60 -delete 2>/dev/null
   : > "$STATE/deferred.next.$$"
   now="$(date +%s)"
   while IFS= read -r f; do
@@ -327,7 +336,7 @@ _ack() {
   grep -vx "$1" "$STATE/pending" > "$STATE/pending.next" || true
   mv -f "$STATE/pending.next" "$STATE/pending"
 }
-ack() { locked _ack "$1"; exit 0; }
+ack() { locked _ack "$1"; log "ack key=$1 container=$HOST"; exit 0; }
 
 usage() { sed -n '2,8p' "$_rs_self" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 

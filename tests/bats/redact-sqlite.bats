@@ -302,3 +302,24 @@ PYEOF
   [[ "$output" == *"hit OPENROUTER_API_KEY 1 session=-"* ]]
   [ "$(col "$HOME/opencode.db" "select count(*) from part where instr(data,'[REDACTED:OPENROUTER_API_KEY]')>0")" -eq 2 ]
 }
+
+@test "a rule with an empty pattern is dropped: nothing written, no hit" {
+  local db="$HOME/opencode.db"
+  make_opencode "$db"
+  python3 -c "import sqlite3,sys; sqlite3.connect(sys.argv[1]).execute('pragma wal_checkpoint(truncate)')" "$db"
+  cp "$db" "$db.before"
+  run --separate-stderr bash -c "printf ' [REDACTED:EMPTY]\n' | python3 '$PY' '$db'"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"empty rule ignored"* ]]
+  cmp -s "$db" "$db.before"
+  [ "$(leaked "$db" "$V1")" -gt 0 ]
+}
+
+@test "a non-database file exits 1 with a one-line reason on stderr, no traceback" {
+  printf 'not a database\n' > "$HOME/store.db"
+  run --separate-stderr run_helper "$HOME/store.db"
+  [ "$status" -eq 1 ]
+  [[ "$stderr" == "redact-sqlite: "* ]]
+  [[ "$stderr" != *"Traceback"* ]]
+}
