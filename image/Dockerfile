@@ -170,7 +170,7 @@ ENV PATH=/home/codespace/.local/bin:/usr/local/go/bin:$PATH
 # image's PATH in favour of pam_env's /etc/environment, so a hook calling any
 # seeded tool (uv, node, the agent CLIs) fails with 127 unless it is listed
 # here too.
-RUN printf '%s\n' 'PATH="/home/codespace/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' > /etc/environment
+RUN printf '%s\n' 'PATH="/home/codespace/.local/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' > /etc/environment
 # NodeSource npm's global prefix is root-owned /usr/lib — unlike universal's
 # version-manager-based node, whose prefix was user-writable. Point npm -g at
 # user space so install_mcp_packages (and agents) install without sudo;

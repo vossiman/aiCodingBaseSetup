@@ -80,6 +80,9 @@ IMAGE_DIR="$BLUEPRINT_ROOT/image"
 
 @test "image: Dockerfile puts Go on PATH so ensure_go short-circuits" {
   grep -qE '^ENV PATH=.*(/usr/local/go/bin)' "$IMAGE_DIR/Dockerfile"
+  # devpod lifecycle hooks run under su, which takes PATH from /etc/environment.
+  grep -E "/etc/environment" "$IMAGE_DIR/Dockerfile" | grep -q '/usr/local/go/bin'
+  grep -F 'seeds on PATH under su' "$IMAGE_DIR/smoke-test.sh" | grep -q 'command -v go'
 }
 
 @test "image: frogmouth seed lives outside ~/.local/share/uv (host-mount candidate)" {
