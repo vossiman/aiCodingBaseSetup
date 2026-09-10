@@ -13,6 +13,7 @@ DVW_PROBE_BUDGET (seconds), DVW_PROBE_UID (the uid to treat as "mine" in the
 /proc walk, so the owner filter can be exercised without root). Spec: dvw
 docs/superpowers/specs/2026-09-01-docker-proxy-probe-design.md.
 """
+import errno
 import json
 import os
 import signal
@@ -271,6 +272,12 @@ def collect_agents(proc, budget):
         return None
 
 
+# A process that exits mid-walk reports ENOENT (gone, or a zombie with no
+# exe) or ESRCH (reaped between two reads of the same pid). Neither is a
+# failure to measure: the process simply is not there to be counted.
+_GONE = frozenset((errno.ENOENT, errno.ESRCH))
+
+
 def collect_activity(proc, budget):
     """Observation only; current uid, default tmux socket and DevPod IDE TCP.
 
@@ -321,12 +328,11 @@ def collect_activity(proc, budget):
             try:
                 if os.stat(d).st_uid != uid:
                     continue
-            except OSError:
-                # A pid that vanished between the listdir and this stat is the
+            except OSError as exc:
+                # A pid that went away between the listdir and this stat is the
                 # normal case, not a measurement failure: distrusting the whole
                 # sample for it makes a busy workspace permanently unmeasurable.
-                # Same distinction collect_agents already draws.
-                if os.path.exists(d):
+                if exc.errno not in _GONE:
                     terminals_ok = ide_ok = tmux_metadata_ok = False
                 continue
             state = None
@@ -337,8 +343,8 @@ def collect_activity(proc, budget):
                 tty = int(fields[4])
                 if tty and state != 'Z':
                     terminals.add(tty)
-            except OSError:
-                if not os.path.exists(d):
+            except OSError as exc:
+                if exc.errno in _GONE:
                     continue  # exited mid-walk; nothing left to read
                 terminals_ok = False
             except (ValueError, IndexError, UnicodeError):
@@ -358,8 +364,13 @@ def collect_activity(proc, budget):
                     target = os.readlink(os.path.join(d, 'fd', fd))
                     if target.startswith('socket:[') and target.endswith(']'):
                         owners.setdefault(target[8:-1], set()).add(kind)
-            except OSError:
-                if os.path.exists(d):
+            except OSError as exc:
+                # ENOENT here means the process is gone or has become a zombie
+                # since its state was read (a zombie keeps /proc/<pid> but has
+                # no exe), which is why an existence check cannot tell the two
+                # apart. Neither can be an IDE or devpod process, so skipping
+                # is exact rather than merely tolerant.
+                if exc.errno not in _GONE:
                     ide_ok = tmux_metadata_ok = False
         if not tmux_metadata_ok and out['tmux_sessions'] == 0:
             out['tmux_sessions'] = None

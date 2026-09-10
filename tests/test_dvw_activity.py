@@ -69,10 +69,28 @@ class ActivityTests(unittest.TestCase):
 
     def test_missing_metadata_is_unknown(self):
         d = self.process(1)
-        (d / 'exe').unlink()
-        self.assertIsNone(self.collect()['cursor_connections'])
+        real_readlink = os.readlink
+
+        def denied(path, *a, **kw):
+            if str(path).endswith('/exe'):
+                raise PermissionError(13, 'Permission denied')
+            return real_readlink(path, *a, **kw)
+
+        with patch.object(os, 'readlink', denied):
+            self.assertIsNone(self.collect()['cursor_connections'])
         (d / 'stat').write_text('malformed')
         self.assertIsNone(self.collect()['terminals'])
+
+    def test_a_process_with_no_exe_is_skipped_not_distrusted(self):
+        """A zombie keeps /proc/<pid> but has no exe, so an existence check
+        cannot tell it from a live process. It can never be an IDE or devpod
+        process either way, so skip it instead of nulling the whole sample.
+        """
+        d = self.process(1)
+        (d / 'exe').unlink()
+        self.assertEqual(self.collect(), dict(tmux_sessions=0, terminals=0,
+                                              cursor_connections=0,
+                                              vscode_connections=0))
 
     def test_malformed_tcp_address_is_unknown(self):
         tcp = self.proc / 'net' / 'tcp'
