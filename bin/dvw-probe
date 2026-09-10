@@ -322,7 +322,12 @@ def collect_activity(proc, budget):
                 if os.stat(d).st_uid != uid:
                     continue
             except OSError:
-                terminals_ok = ide_ok = tmux_metadata_ok = False
+                # A pid that vanished between the listdir and this stat is the
+                # normal case, not a measurement failure: distrusting the whole
+                # sample for it makes a busy workspace permanently unmeasurable.
+                # Same distinction collect_agents already draws.
+                if os.path.exists(d):
+                    terminals_ok = ide_ok = tmux_metadata_ok = False
                 continue
             state = None
             try:
@@ -332,7 +337,11 @@ def collect_activity(proc, budget):
                 tty = int(fields[4])
                 if tty and state != 'Z':
                     terminals.add(tty)
-            except (OSError, ValueError, IndexError, UnicodeError):
+            except OSError:
+                if not os.path.exists(d):
+                    continue  # exited mid-walk; nothing left to read
+                terminals_ok = False
+            except (ValueError, IndexError, UnicodeError):
                 terminals_ok = False
             if state == 'Z':
                 continue  # zombies have no executable or live sockets
@@ -350,7 +359,8 @@ def collect_activity(proc, budget):
                     if target.startswith('socket:[') and target.endswith(']'):
                         owners.setdefault(target[8:-1], set()).add(kind)
             except OSError:
-                ide_ok = tmux_metadata_ok = False
+                if os.path.exists(d):
+                    ide_ok = tmux_metadata_ok = False
         if not tmux_metadata_ok and out['tmux_sessions'] == 0:
             out['tmux_sessions'] = None
         if terminals_ok:
