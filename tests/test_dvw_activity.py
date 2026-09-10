@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import runpy
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -101,6 +102,32 @@ class ActivityTests(unittest.TestCase):
         fn = P['collect_activity']
         with patch.dict(fn.__globals__, {'_run': lambda *a: subprocess.CompletedProcess([], 1, '', 'permission denied')}):
             self.assertIsNone(fn(str(self.proc), P['Budget'](3))['tmux_sessions'])
+
+    def test_a_pid_that_exits_mid_walk_does_not_blank_the_sample(self):
+        """The whole reason dvw idle countdowns kept restarting.
+
+        A pid listed by listdir and gone by the time it is stat'd is routine
+        on a busy workspace. Treating it as a measurement failure nulled all
+        four signals while leaving partial False, so the catalog saw a
+        complete report it could not use and reset the idle countdown.
+        """
+        self.process(1)
+        fn = P['collect_activity']
+        budget = P['Budget'](3)
+        real_listdir = os.listdir
+
+        def listing(path, *a, **kw):
+            entries = real_listdir(path, *a, **kw)
+            if str(path) == str(self.proc):
+                entries = entries + ['999']  # exited between listdir and stat
+            return entries
+
+        with patch.dict(fn.__globals__, {'_run': lambda *a: subprocess.CompletedProcess([], 1, '', 'no server running on /tmp/tmux-1000/default\n')}):
+            with patch.object(os, 'listdir', listing):
+                result = fn(str(self.proc), budget)
+        self.assertEqual(result, dict(tmux_sessions=0, terminals=0,
+                                      cursor_connections=0, vscode_connections=0))
+        self.assertFalse(budget.partial)
 
     def test_budget_exhaustion_is_unknown(self):
         fn = P['collect_activity']
