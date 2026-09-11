@@ -15,6 +15,14 @@ _aicoding_command_is_linux() {
 }
 
 aicoding_installed_components() {
+  local selection="$AICODING_STATE_DIR/component-selection.json"
+  if [ -f "$selection" ] \
+      && [ "$(jq -r '.profile // empty' "$selection" 2>/dev/null)" = minimal-pi ]; then
+    jq -r 'select(.schema == 1 and (.components | type == "array"))
+      | .components[] | select(. == "aicoding" or . == "dvw")' \
+      "$selection" 2>/dev/null
+    return 0
+  fi
   printf 'aicoding\n'
   _aicoding_command_is_linux claude && printf 'claude\n'
   _aicoding_command_is_linux codex && printf 'codex\n'
@@ -147,7 +155,7 @@ aicoding_exact_mcp_config_ready() {
       current|updated) ;;
       *) return 1 ;;
     esac
-    _aicoding_shared_consumers_allow "$component" "" "$dest" || return 1
+    _aicoding_shared_consumers_require "$component" "" "$dest" || return 1
   done
   case "$dest" in
     "$HOME/.claude/settings.json")
@@ -221,6 +229,14 @@ _aicoding_shared_consumers_allow() {
     '.roots[] | select(.shared_root == $root) | .consumers[].components[$c].version' "$registry")
 }
 
+# Mutation/readiness call sites use this wrapper so shared-root authorization
+# follows the destination itself and cannot be disabled by a caller unsetting a
+# temporary reconcile flag.
+_aicoding_shared_consumers_require() {
+  AICODING_REQUIRE_SHARED_COMPATIBILITY=1 \
+    _aicoding_shared_consumers_allow "$@"
+}
+
 _aicoding_update_receipt_allows() {
   [ "${AICODING_REQUIRE_UPDATE_RECEIPT:-0}" != 1 ] && return 0
   [ -f "$AICODING_RESULTS_FILE" ] || return 1
@@ -254,6 +270,25 @@ _aicoding_claude_mcp_get() {
   timeout "${AICODING_PROBE_TIMEOUT:-15}" claude mcp get "$1" </dev/null 2>/dev/null
 }
 
+_aicoding_registration_recovery_write() {
+  local name=$1; shift
+  local dir="$AICODING_STATE_DIR/registration-recovery" final tmp
+  final="$dir/claude-$name.json"
+  mkdir -p "$dir" || return 1
+  tmp=$(mktemp "$dir/.claude-$name.XXXXXX") || return 1
+  if ! jq -n --arg command npx --args \
+      '{schema:1,command:$command,args:$ARGS.positional}' -- "$@" >"$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  chmod 0600 "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$final" || { rm -f "$tmp"; return 1; }
+}
+
+_aicoding_registration_recovery_clear() {
+  rm -f "$AICODING_STATE_DIR/registration-recovery/claude-$1.json"
+}
+
 # Migrate only known blueprint-era moving registrations. Unknown commands are
 # user configuration and remain byte-for-byte untouched. If replacement fails,
 # restore the exact recognized command/argument vector before returning failure.
@@ -264,18 +299,21 @@ _aicoding_reconcile_claude_mcp_registration() {
   local -a wanted_args=("$@") old_args=()
   [ "${AICODING_MCP_REGISTRATION_DISABLE:-0}" != 1 ] || return 0
   [ -x "$launcher" ] || { aicoding_result_record "$registration_component" failed "$version" stable_launcher_missing; return 1; }
-  [ "${AICODING_MCP_REGISTRATION_FORCE:-0}" = 1 ] || _aicoding_claude_mcp_selected "$name" || return 0
+  if [ "${AICODING_MCP_REGISTRATION_FORCE:-0}" != 1 ] \
+      && ! _aicoding_claude_mcp_selected "$name"; then
+    aicoding_result_record "$registration_component" blocked "$version" registration_not_selected
+    return 0
+  fi
   _aicoding_update_receipt_allows claude \
     || { aicoding_result_record "$registration_component" blocked "$version" claude_update_not_verified; return 1; }
   local claude_version
   claude_version=$(_aicoding_version_from_command claude) || true
   [ -n "$claude_version" ] \
     || { aicoding_result_record "$registration_component" blocked "$version" claude_version_unavailable; return 1; }
-  _aicoding_shared_consumers_allow claude "" "$HOME/.claude" \
+  _aicoding_shared_consumers_require claude "" "$HOME/.claude" \
     || { aicoding_result_record "$registration_component" blocked "$version" claude_consumers_incompatible; return 1; }
   if aicoding_config_is_shared "$HOME/.claude"; then
-    AICODING_REQUIRE_SHARED_COMPATIBILITY=1 \
-      _aicoding_shared_consumers_allow "$component" "" "$HOME/.claude" \
+    _aicoding_shared_consumers_require "$component" "" "$HOME/.claude" \
       || { aicoding_result_record "$registration_component" blocked "$version" shared_registration_consumers_incompatible; return 1; }
   fi
   if declare -F aicoding_shared_locks_acquire >/dev/null 2>&1; then
@@ -298,6 +336,8 @@ _aicoding_reconcile_claude_mcp_registration() {
       'playwright|npx|-y @playwright/mcp@latest --browser chromium') old_args=(-y @playwright/mcp@latest --browser chromium) ;;
       *) aicoding_result_record "$registration_component" conflict "$version" registration_conflict; return 1 ;;
     esac
+    _aicoding_registration_recovery_write "$name" "${old_args[@]}" \
+      || { aicoding_result_record "$registration_component" failed "$version" registration_recovery_write_failed; return 1; }
     timeout "$AICODING_VENDOR_TIMEOUT" claude mcp remove -s user "$name" </dev/null >/dev/null 2>&1 \
       || { aicoding_result_record "$registration_component" failed "$version" registration_remove_failed; return 1; }
   fi
@@ -307,14 +347,34 @@ _aicoding_reconcile_claude_mcp_registration() {
     command_line=$(printf '%s\n' "$current" | sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' | head -1)
     args_line=$(printf '%s\n' "$current" | sed -n 's/^[[:space:]]*Args:[[:space:]]*//p' | head -1)
     if [ "$command_line" = "$launcher" ] && [ "$args_line" = "${wanted_args[*]}" ]; then
+      _aicoding_registration_recovery_clear "$name" \
+        || { aicoding_result_record "$registration_component" failed "$version" registration_recovery_cleanup_failed; return 1; }
       aicoding_result_record "$registration_component" updated "$version" registration_migrated "$version"
       return 0
     fi
   fi
-  timeout "$AICODING_VENDOR_TIMEOUT" claude mcp remove -s user "$name" </dev/null >/dev/null 2>&1 || true
+  current=$(_aicoding_claude_mcp_get "$name") || current=""
+  command_line=$(printf '%s\n' "$current" | sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' | head -1)
+  if [ -n "$command_line" ] \
+      && ! timeout "$AICODING_VENDOR_TIMEOUT" claude mcp remove -s user "$name" </dev/null >/dev/null 2>&1; then
+      aicoding_result_record "$registration_component" failed "$version" registration_rollback_cleanup_failed
+      return 1
+  fi
   if [ "$had" -eq 1 ]; then
-    timeout "$AICODING_VENDOR_TIMEOUT" claude mcp add "$name" -s user -- npx "${old_args[@]}" \
-      </dev/null >/dev/null 2>&1 || true
+    if ! timeout "$AICODING_VENDOR_TIMEOUT" claude mcp add "$name" -s user -- npx "${old_args[@]}" \
+        </dev/null >/dev/null 2>&1; then
+      aicoding_result_record "$registration_component" failed "$version" registration_rollback_restore_failed
+      return 1
+    fi
+    current=$(_aicoding_claude_mcp_get "$name") || current=""
+    command_line=$(printf '%s\n' "$current" | sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' | head -1)
+    args_line=$(printf '%s\n' "$current" | sed -n 's/^[[:space:]]*Args:[[:space:]]*//p' | head -1)
+    if [ "$command_line" != npx ] || [ "$args_line" != "${old_args[*]}" ]; then
+      aicoding_result_record "$registration_component" failed "$version" registration_rollback_restore_failed
+      return 1
+    fi
+    _aicoding_registration_recovery_clear "$name" \
+      || { aicoding_result_record "$registration_component" failed "$version" registration_recovery_cleanup_failed; return 1; }
   fi
   aicoding_result_record "$registration_component" failed "$version" registration_migration_failed
   return 1
@@ -503,13 +563,21 @@ _aicoding_prepare_playwright_browser() {
   local cli="$release/node_modules/@playwright/mcp/cli.js"
   local core_cli="$release/node_modules/playwright-core/cli.js" bin missing="" rc=0 node_path
   local runtime_home="$AICODING_STATE_DIR/playwright-stage/$version"
-  rm -rf "$runtime_home"; mkdir -p "$cache" "$runtime_home" || return 1
+  if ! rm -rf "$runtime_home"; then
+    aicoding_result_record "$component" failed "$version" browser_stage_cleanup_failed
+    return 1
+  fi
+  mkdir -p "$cache" "$runtime_home" \
+    || { aicoding_result_record "$component" failed "$version" browser_stage_prepare_failed; return 1; }
   HOME="$runtime_home" XDG_CONFIG_HOME="$runtime_home/.config" \
     XDG_DATA_HOME="$runtime_home/.local/share" XDG_CACHE_HOME="$runtime_home/.cache" \
     PLAYWRIGHT_BROWSERS_PATH="$cache" timeout "$AICODING_VENDOR_TIMEOUT" \
       "$cli" install-browser --no-remove chromium </dev/null >/dev/null 2>&1 \
     || { rm -rf "$runtime_home"; aicoding_result_record "$component" failed "$version" browser_install_failed; return 1; }
-  rm -rf "$runtime_home"
+  if ! rm -rf "$runtime_home"; then
+    aicoding_result_record "$component" failed "$version" browser_stage_cleanup_failed
+    return 1
+  fi
   bin=$(_aicoding_playwright_browser_bin "$version") \
     || { aicoding_result_record "$component" failed "$version" browser_validation_failed; return 1; }
   missing=$(_aicoding_playwright_missing_libs "$bin") || rc=$?
@@ -535,8 +603,12 @@ _aicoding_prepare_playwright_browser() {
     aicoding_result_record "$component" blocked "$version" "$reason"
     return 1
   fi
-  printf '%s\n' "$bin" > "$cache/.browser-bin.tmp.$$" \
-    && mv "$cache/.browser-bin.tmp.$$" "$cache/.browser-bin"
+  if ! printf '%s\n' "$bin" > "$cache/.browser-bin.tmp.$$" \
+      || ! mv "$cache/.browser-bin.tmp.$$" "$cache/.browser-bin"; then
+    rm -f "$cache/.browser-bin.tmp.$$"
+    aicoding_result_record "$component" failed "$version" browser_marker_commit_failed
+    return 1
+  fi
 }
 
 _aicoding_entry_min_node() {
@@ -554,6 +626,53 @@ _aicoding_npm_lock_valid() {
     and (.packages[$key].version == $version)
     and (.packages[$key].integrity | type == "string" and startswith("sha"))
   ' "$lock" >/dev/null 2>&1
+}
+
+# npm was deliberately invoked with --ignore-scripts. Reject any resolved
+# package whose install lifecycle would therefore be skipped.
+_aicoding_npm_tree_ignores_scripts_safely() {
+  local root=$1 manifest
+  jq -e '[.packages[] | select(.hasInstallScript == true)] | length == 0' \
+    "$root/package-lock.json" >/dev/null 2>&1 || return 1
+  while IFS= read -r -d '' manifest; do
+    jq -e '(.scripts // {}) as $s
+      | all(["preinstall","install","postinstall","prepublish","preprepare","prepare","postprepare"][];
+          ($s[.] // "") == "")' "$manifest" >/dev/null 2>&1 || return 1
+  done < <(find "$root/node_modules" -type f -name package.json -print0 2>/dev/null)
+}
+
+_aicoding_npm_entry_release_valid() {
+  local root=$1 component=$2 command_name=$3 package=$4 version=$5
+  local package_dir="$root/node_modules/$package" entry
+  entry=$(jq -r --arg n "$command_name" \
+    'if (.bin|type)=="string" then .bin else .bin[$n] // empty end' \
+    "$package_dir/package.json" 2>/dev/null) || return 1
+  case "$entry" in ''|/*|*'..'*) return 1 ;; esac
+  jq -e --arg p "$package" --arg v "$version" '.name == $p and .version == $v' \
+      "$package_dir/package.json" >/dev/null 2>&1 \
+    && _aicoding_npm_lock_valid "$root/package-lock.json" "$package" "$version" \
+    && _aicoding_npm_tree_ignores_scripts_safely "$root" \
+    && [ -f "$package_dir/$entry" ] && [ ! -L "$package_dir/$entry" ] && [ -x "$package_dir/$entry" ] \
+    && { [ "$component" != mcp-playwright ] || [ -x "$root/bin/playwright-mcp" ]; }
+}
+
+# MCP entrypoints commonly start a server for --version. Read retained package
+# metadata and the version-bound browser marker instead of executing them.
+_aicoding_active_npm_entry_valid() {
+  local component=$1 command_name=$2 package=$3 current version receipt browser missing rc=0
+  current=$(readlink -f "$AICODING_DATA_DIR/current/$component" 2>/dev/null) || return 1
+  case "$current" in "$AICODING_DATA_DIR/versions/$component/"*) ;; *) return 1 ;; esac
+  version=${current##*/}
+  receipt=$(jq -r --arg c "$component" '.components[$c].successful_version // empty' \
+    "$AICODING_RESULTS_FILE" 2>/dev/null) || return 1
+  [ "$receipt" = "$version" ] || return 1
+  _aicoding_npm_entry_release_valid "$current" "$component" "$command_name" "$package" "$version" || return 1
+  [ -x "$HOME/.local/bin/$command_name" ] || return 1
+  if [ "$component" = mcp-playwright ]; then
+    browser=$(_aicoding_playwright_browser_bin "$version") || return 1
+    missing=$(_aicoding_playwright_missing_libs "$browser") || rc=$?
+    [ "$rc" -eq 0 ] && [ -z "$missing" ] || return 1
+  fi
 }
 
 _aicoding_missing_runtime_reason() {
@@ -590,7 +709,14 @@ aicoding_update_npm_entry_component() {
   stage="$AICODING_DATA_DIR/versions/$component/.staging.$target.$$"
   package_dir="$stage/node_modules/$package"
   install_log="$stage/.npm-install.log"
-  rm -rf "$stage"; mkdir -p "$(dirname "$stage")" "$stage"
+  if ! rm -rf "$stage"; then
+    aicoding_result_record "$component" failed "$target" stage_cleanup_failed
+    return 1
+  fi
+  if ! mkdir -p "$(dirname "$stage")" "$stage"; then
+    aicoding_result_record "$component" failed "$target" stage_prepare_failed
+    return 1
+  fi
   if ! HOME="$stage/home" XDG_CONFIG_HOME="$stage/home/.config" \
     XDG_DATA_HOME="$stage/home/.local/share" XDG_CACHE_HOME="$stage/home/.cache" \
     XDG_STATE_HOME="$stage/home/.local/state" NPM_CONFIG_CACHE="$stage/.npm-cache" \
@@ -605,10 +731,20 @@ aicoding_update_npm_entry_component() {
     aicoding_result_record "$component" "$failure_state" "$target" "$failure_reason"
     return 1
   fi
-  rm -f "$install_log"
-  rm -rf "$stage/home" "$stage/.npm-cache"
+  rm -f "$install_log" \
+    || { aicoding_result_record "$component" failed "$target" stage_cleanup_failed; return 1; }
+  if ! rm -rf "$stage/home" "$stage/.npm-cache"; then
+    aicoding_result_record "$component" failed "$target" stage_cleanup_failed
+    return 1
+  fi
   entry=$(jq -r --arg n "$command_name" 'if (.bin|type)=="string" then .bin else .bin[$n] // empty end' "$package_dir/package.json" 2>/dev/null)
   case "$entry" in ''|/*|*'..'*) rm -rf "$stage"; aicoding_result_record "$component" failed "$target" entrypoint_invalid; return 1 ;; esac
+  if ! _aicoding_npm_tree_ignores_scripts_safely "$stage"; then
+    rm -rf "$stage" \
+      || { aicoding_result_record "$component" failed "$target" stage_cleanup_failed; return 1; }
+    aicoding_result_record "$component" blocked "$target" lifecycle_scripts_required
+    return 1
+  fi
   jq -e --arg p "$package" --arg v "$target" '.name == $p and .version == $v' \
       "$package_dir/package.json" >/dev/null 2>&1 \
     && _aicoding_npm_lock_valid "$stage/package-lock.json" "$package" "$target" \
@@ -616,28 +752,39 @@ aicoding_update_npm_entry_component() {
     || { rm -rf "$stage"; aicoding_result_record "$component" failed "$target" staged_metadata_mismatch; return 1; }
   relative_bin="node_modules/$package/$entry"
   if [ "$component" = mcp-playwright ]; then
-    mkdir -p "$stage/bin"
-    {
+    mkdir -p "$stage/bin" \
+      || { rm -rf "$stage"; aicoding_result_record "$component" failed "$target" wrapper_prepare_failed; return 1; }
+    if ! {
       printf '#!/usr/bin/env bash\n'
       printf 'release=$(cd "$(dirname "$0")/.." && pwd -P) || exit 1\n'
       printf 'export PLAYWRIGHT_BROWSERS_PATH=%q\n' "$AICODING_DATA_DIR/browser-cache/mcp-playwright/$target"
       printf 'exec "$release/node_modules/@playwright/mcp/cli.js" "$@"\n'
-    } > "$stage/bin/playwright-mcp"
-    chmod 0755 "$stage/bin/playwright-mcp"
+    } > "$stage/bin/playwright-mcp"; then
+      rm -rf "$stage"
+      aicoding_result_record "$component" failed "$target" wrapper_write_failed
+      return 1
+    fi
+    chmod 0755 "$stage/bin/playwright-mcp" \
+      || { rm -rf "$stage"; aicoding_result_record "$component" failed "$target" wrapper_chmod_failed; return 1; }
     relative_bin=bin/playwright-mcp
   fi
   if [ -d "$final" ]; then
-    rm -rf "$stage"
-    package_dir="$final/node_modules/$package"
-    jq -e --arg p "$package" --arg v "$target" '.name == $p and .version == $v' \
-        "$package_dir/package.json" >/dev/null 2>&1 \
-      && _aicoding_npm_lock_valid "$final/package-lock.json" "$package" "$target" \
-      && [ -f "$package_dir/$entry" ] && [ ! -L "$package_dir/$entry" ] && [ -x "$package_dir/$entry" ] \
-      || { aicoding_result_record "$component" failed "$target" existing_release_invalid; return 1; }
-    [ "$component" != mcp-playwright ] || [ -x "$final/bin/playwright-mcp" ] \
-      || { aicoding_result_record "$component" failed "$target" existing_release_invalid; return 1; }
+    if ! diff -qr --no-dereference "$stage" "$final" >/dev/null 2>&1 \
+        || ! _aicoding_npm_entry_release_valid "$final" "$component" "$command_name" "$package" "$target"; then
+      rm -rf "$stage"
+      aicoding_result_record "$component" failed "$target" existing_release_invalid
+      return 1
+    fi
+    rm -rf "$stage" \
+      || { aicoding_result_record "$component" failed "$target" stage_cleanup_failed; return 1; }
   else
-    mv "$stage" "$final" || return 1
+    if ! mv "$stage" "$final"; then
+      rm -rf "$stage"
+      aicoding_result_record "$component" failed "$target" release_commit_failed
+      return 1
+    fi
+    _aicoding_npm_entry_release_valid "$final" "$component" "$command_name" "$package" "$target" \
+      || { aicoding_result_record "$component" failed "$target" committed_release_invalid; return 1; }
   fi
   [ "$component" != mcp-playwright ] \
     || _aicoding_prepare_playwright_browser "$component" "$target" "$final" || return 1

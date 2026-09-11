@@ -44,6 +44,19 @@ EOF
   [ "$output" = aicoding ]
 }
 
+@test "minimal Pi discovery honors persisted selection and ignores ambient harnesses" {
+  _tool claude '2.1.50 (Claude Code)'
+  _tool codex 'codex-cli 0.150.0'
+  _tool dvw 'dvw 1.0.0'
+  mkdir -p "$AICODING_STATE_DIR"
+  printf '{"schema":1,"profile":"minimal-pi","components":["aicoding","dvw"]}\n' \
+    > "$AICODING_STATE_DIR/component-selection.json"
+
+  run aicoding_installed_components
+  [ "$status" -eq 0 ]
+  [ "$output" = $'aicoding\ndvw' ]
+}
+
 @test "Codex config capability requires the verified minimum version" {
   _tool codex 'codex-cli 0.147.0'
   run aicoding_config_is_compatible "$HOME/.codex/config.toml"
@@ -393,6 +406,14 @@ if [ "$package" = context7 ]; then
   mkdir -p "$dir/dist"
   printf '{"lockfileVersion":3,"packages":{"node_modules/@upstash/context7-mcp":{"version":"4.1.0","integrity":"sha512-fixture"}}}\n' > "$prefix/package-lock.json"
   printf '{"name":"@upstash/context7-mcp","version":"4.1.0","bin":{"context7-mcp":"dist/index.js"}}\n' > "$dir/package.json"
+  if [ "${MCP_LIFECYCLE:-}" = top ]; then
+    jq '.scripts.postinstall="node build.js"' "$dir/package.json" > "$dir/package.tmp"
+    mv "$dir/package.tmp" "$dir/package.json"
+  elif [ "${MCP_LIFECYCLE:-}" = dependency ]; then
+    mkdir -p "$prefix/node_modules/lifecycle-dep"
+    printf '{"name":"lifecycle-dep","version":"1.0.0","scripts":{"install":"node install.js"}}\n' \
+      > "$prefix/node_modules/lifecycle-dep/package.json"
+  fi
   printf '#!/bin/sh\nexit 0\n' > "$dir/dist/index.js"
   chmod +x "$dir/dist/index.js"
 else
@@ -414,6 +435,72 @@ CLI
 fi
 EOF
   chmod +x "$TMP/stubs/npm"
+}
+
+@test "exact MCP staging rejects ignored install lifecycle scripts in package dependencies" {
+  export MCP_LIFECYCLE=dependency
+  _stub_exact_mcp_npm
+
+  run aicoding_update_component mcp-context7
+  [ "$status" -ne 0 ]
+  [ ! -e "$AICODING_DATA_DIR/current/mcp-context7" ]
+  jq -e '.components["mcp-context7"].reason == "lifecycle_scripts_required"' \
+    "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "corrupt retained MCP release is rejected against the fresh exact stage" {
+  _stub_exact_mcp_npm
+  mkdir -p "$AICODING_DATA_DIR/versions/mcp-context7/old" "$AICODING_DATA_DIR/current"
+  ln -s ../versions/mcp-context7/old "$AICODING_DATA_DIR/current/mcp-context7"
+  "$TMP/stubs/npm" install --prefix \
+    "$AICODING_DATA_DIR/versions/mcp-context7/4.1.0" @upstash/context7-mcp@4.1.0
+  printf '#!/bin/sh\necho corrupted\n' \
+    > "$AICODING_DATA_DIR/versions/mcp-context7/4.1.0/node_modules/@upstash/context7-mcp/dist/index.js"
+
+  run aicoding_update_component mcp-context7
+  [ "$status" -ne 0 ]
+  [ "$(readlink "$AICODING_DATA_DIR/current/mcp-context7")" = ../versions/mcp-context7/old ]
+  jq -e '.components["mcp-context7"].reason == "existing_release_invalid"' \
+    "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "failed exact MCP release commit replaces an old success receipt" {
+  _stub_exact_mcp_npm
+  aicoding_result_record mcp-context7 current 4.0.0 installed 4.0.0
+  mv() {
+    local last=${!#}
+    [[ "$last" == "$AICODING_DATA_DIR/versions/mcp-context7/4.1.0" ]] && return 8
+    command mv "$@"
+  }
+
+  run aicoding_update_component mcp-context7
+  [ "$status" -ne 0 ]
+  jq -e '.components["mcp-context7"].state == "failed"
+    and .components["mcp-context7"].reason == "release_commit_failed"
+    and .components["mcp-context7"].successful_version == "4.0.0"' \
+    "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "failed Playwright browser marker commit replaces an old success receipt" {
+  _stub_exact_mcp_npm
+  aicoding_result_record mcp-playwright current 0.0.79 installed 0.0.79
+  cat > "$TMP/stubs/ldd" <<'EOF'
+#!/bin/sh
+echo 'libgbm.so.1 => /lib/libgbm.so.1'
+EOF
+  chmod +x "$TMP/stubs/ldd"
+  mv() {
+    local last=${!#}
+    [[ "$last" == */browser-cache/mcp-playwright/0.0.80/.browser-bin ]] && return 8
+    command mv "$@"
+  }
+
+  run aicoding_update_component mcp-playwright
+  [ "$status" -ne 0 ]
+  jq -e '.components["mcp-playwright"].state == "failed"
+    and .components["mcp-playwright"].reason == "browser_marker_commit_failed"
+    and .components["mcp-playwright"].successful_version == "0.0.79"' \
+    "$AICODING_STATE_DIR/update-results.json"
 }
 
 @test "Context7 stages an exact immutable tree and activates its stable launcher" {

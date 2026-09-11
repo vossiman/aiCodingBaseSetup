@@ -83,6 +83,7 @@ EOF
   run _provision_reconcile_exact_mcp playwright mcp-playwright playwright-mcp --browser chromium
   [ "$status" -ne 0 ]
   [ -f "$TMP/restored" ]
+  [ ! -e "$AICODING_STATE_DIR/registration-recovery/claude-playwright.json" ]
   jq -e '.components["mcp-playwright"].state == "current"
     and .components["mcp-registration-claude-playwright"].state == "failed"' \
     "$AICODING_STATE_DIR/update-results.json"
@@ -120,6 +121,99 @@ EOF
   run aicoding_prepare_exact_mcps
   [ "$status" -eq 0 ]
   [ "$(cat "$TMP/prepared")" = $'mcp-context7|0|1\nmcp-playwright|0|1' ]
+}
+
+@test "offline exact MCP preprovision fails closed when local packages are not ready" {
+  export AICODINGSETUP_SKIP_NETWORK=1
+  aicoding_update_component() { : > "$TMP/network-called"; }
+
+  run aicoding_prepare_exact_mcps
+  [ "$status" -ne 0 ]
+  [ ! -e "$TMP/network-called" ]
+  jq -e '.components["mcp-context7"].state == "blocked"
+    and .components["mcp-playwright"].state == "blocked"' \
+    "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "scheduled tool readiness enforces shared inventory without a caller flag" {
+  aicoding_result_record claude current 2.1.50 installed 2.1.50
+  mkdir -p "$HOME/.claude"
+  export AICODING_SHARED_CONFIG_ROOTS="$(readlink -f "$HOME/.claude")"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMP/missing-consumers.json"
+  unset AICODING_REQUIRE_SHARED_COMPATIBILITY
+  cat > "$TMP/stubs/claude" <<'EOF'
+#!/bin/sh
+echo '2.1.50 (Claude Code)'
+EOF
+  chmod +x "$TMP/stubs/claude"
+
+  run _provision_tool_ready claude claude "" "$HOME/.claude"
+  [ "$status" -ne 0 ]
+  jq -e '.components["provision-claude"].reason == "claude_shared_consumers_incompatible"' \
+    "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "scheduled Claude MCP migration enforces shared inventory before mutation" {
+  _managed_launcher context7-mcp mcp-context7 4.1.0
+  aicoding_result_record claude current 2.1.50 installed 2.1.50
+  mkdir -p "$HOME/.claude"
+  export AICODING_SHARED_CONFIG_ROOTS="$(readlink -f "$HOME/.claude")"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMP/missing-consumers.json"
+  unset AICODING_REQUIRE_SHARED_COMPATIBILITY
+  cat > "$TMP/stubs/claude" <<'EOF'
+#!/bin/sh
+echo "$*" >> "$TMP/claude-calls"
+case "$*" in
+  '--version') echo '2.1.50 (Claude Code)' ;;
+  'mcp get context7') printf 'Command: npx\nArgs: -y @upstash/context7-mcp\n' ;;
+esac
+EOF
+  chmod +x "$TMP/stubs/claude"
+
+  run _provision_reconcile_exact_mcp context7 mcp-context7 context7-mcp
+  [ "$status" -ne 0 ]
+  if grep -q 'mcp remove\|mcp add' "$TMP/claude-calls"; then false; fi
+  jq -e '.components["mcp-registration-claude-context7"].reason == "claude_consumers_incompatible"' \
+    "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "missing actual Claude registration invalidates its prior success receipt" {
+  _managed_launcher context7-mcp mcp-context7 4.1.0
+  aicoding_result_record mcp-registration-claude-context7 current 4.1.0 registration_verified 4.1.0
+  cat > "$TMP/stubs/claude" <<'EOF'
+#!/bin/sh
+case "$*" in '--version') echo '2.1.50 (Claude Code)' ;; 'mcp get context7') exit 1 ;; esac
+EOF
+  chmod +x "$TMP/stubs/claude"
+
+  run _provision_reconcile_exact_mcp context7 mcp-context7 context7-mcp
+  [ "$status" -eq 0 ]
+  jq -e '.components["mcp-registration-claude-context7"].state == "blocked"
+    and .components["mcp-registration-claude-context7"].reason == "registration_not_selected"' \
+    "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "failed registration restoration keeps recovery material and reports rollback failure" {
+  _managed_launcher playwright-mcp mcp-playwright 0.0.80
+  cat > "$TMP/stubs/claude" <<'EOF'
+#!/bin/sh
+echo "$*" >> "$TMP/claude-calls"
+case "$*" in
+  '--version') echo '2.1.50 (Claude Code)' ;;
+  'mcp get playwright') printf 'Command: npx\nArgs: @playwright/mcp@latest --browser chromium\n' ;;
+  'mcp remove -s user playwright') exit 0 ;;
+  'mcp add playwright -s user -- '*'/playwright-mcp --browser chromium') exit 7 ;;
+  'mcp add playwright -s user -- npx @playwright/mcp@latest --browser chromium') exit 9 ;;
+esac
+EOF
+  chmod +x "$TMP/stubs/claude"
+
+  run _provision_reconcile_exact_mcp playwright mcp-playwright playwright-mcp --browser chromium
+  [ "$status" -ne 0 ]
+  jq -e '.components["mcp-registration-claude-playwright"].reason == "registration_rollback_restore_failed"' \
+    "$AICODING_STATE_DIR/update-results.json"
+  jq -e '.command == "npx" and .args == ["@playwright/mcp@latest","--browser","chromium"]' \
+    "$AICODING_STATE_DIR/registration-recovery/claude-playwright.json"
 }
 
 @test "scheduled provision skips an exact MCP that is not registered or enabled" {

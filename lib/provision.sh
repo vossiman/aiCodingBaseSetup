@@ -94,12 +94,22 @@ aicoding_prepare_exact_mcps() {
     *) return 2 ;;
   esac
   [ "$#" -eq 0 ] || return 2
-  [ "${AICODINGSETUP_SKIP_NETWORK:-0}" != 1 ] || return 0
   _provision_ensure_update_components || {
     _provision_record_blocked mcp-context7 staged_updater_unavailable
     _provision_record_blocked mcp-playwright staged_updater_unavailable
     return 1
   }
+  if [ "${AICODINGSETUP_SKIP_NETWORK:-0}" = 1 ]; then
+    if ! _aicoding_active_npm_entry_valid mcp-context7 context7-mcp @upstash/context7-mcp; then
+      _provision_record_blocked mcp-context7 offline_exact_package_not_ready
+      rc=1
+    fi
+    if ! _aicoding_active_npm_entry_valid mcp-playwright playwright-mcp @playwright/mcp; then
+      _provision_record_blocked mcp-playwright offline_exact_package_not_ready
+      rc=1
+    fi
+    return "$rc"
+  fi
   for component in mcp-context7 mcp-playwright; do
     if [ "$register_claude" -eq 1 ]; then
       AICODING_MCP_REGISTRATION_FORCE=1 aicoding_update_component "$component" || rc=1
@@ -123,7 +133,7 @@ _provision_tool_ready() {
   [ -n "$version" ] || { _provision_record_blocked "provision-$component" "${component}_version_unavailable"; return 1; }
   [ -z "$minimum" ] || _aicoding_version_at_least "$version" "$minimum" \
     || { _provision_record_blocked "provision-$component" "${component}_runtime_incompatible"; return 1; }
-  _aicoding_shared_consumers_allow "$component" "$minimum" "$root" \
+  _aicoding_shared_consumers_require "$component" "$minimum" "$root" \
     || { _provision_record_blocked "provision-$component" "${component}_shared_consumers_incompatible"; return 1; }
 }
 
