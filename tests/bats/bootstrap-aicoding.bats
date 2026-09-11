@@ -31,14 +31,19 @@ exit 1
 EOF
   cat > "$TEST_ROOT/bin/curl" <<'EOF'
 #!/usr/bin/env bash
-output= url=
+output= url= headers=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o) output=$2; shift 2 ;;
+    -D) headers=$2; shift 2 ;;
     https://api.github.com/*) url=$1; shift ;;
     *) shift ;;
   esac
 done
+if [ "${BOOTSTRAP_RATE_LIMIT:-0}" = 1 ]; then
+  [ -z "$headers" ] || printf 'HTTP/2 403\r\nx-ratelimit-remaining: 0\r\n\r\n' > "$headers"
+  exit 22
+fi
 if [ -n "$output" ]; then cp "$TEST_ROOT/source.tar.gz" "$output"; exit $?; fi
 case "${url#https://api.github.com/}" in
   repos/vossiman/aiCodingBaseSetup/actions/workflows/tests.yml) file=workflow ;;
@@ -70,6 +75,21 @@ teardown() { rm -rf "$TEST_ROOT"; }
   run "$BLUEPRINT_ROOT/bootstrap-aicoding.sh" --profile container </dev/null
   [ "$status" -ne 0 ]
   [ ! -e "$BOOTSTRAP_CALLS" ]
+}
+
+@test "bootstrap reports exhausted public API quota without executing a source" {
+  BOOTSTRAP_RATE_LIMIT=1 run "$BLUEPRINT_ROOT/bootstrap-aicoding.sh" --profile container </dev/null
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'GitHub API rate limit exhausted'* ]]
+  [ ! -e "$BOOTSTRAP_CALLS" ]
+}
+
+@test "bootstrap required workflow identity matches the runtime selector" {
+  local boot_id selector_id
+  boot_id=$(sed -n 's/^workflow_id=//p' "$BLUEPRINT_ROOT/bootstrap-aicoding.sh")
+  selector_id=$(bash -c '. "$BLUEPRINT_ROOT/lib/ci-selector.sh"; _aicoding_ci_policy aicoding; printf "%s\n" "$_CI_ID"')
+  [ -n "$boot_id" ]
+  [ "$boot_id" = "$selector_id" ]
 }
 
 @test "a CI-qualified legacy source without enrollment capability is never executed" {
@@ -122,4 +142,33 @@ EOF
   [ "$status" -ne 0 ]
   [[ "$output" == *'manual rebuild required'* ]]
   [ ! -e "$BOOTSTRAP_CALLS" ]
+}
+
+@test "host bootstrap distinguishes package index and package installation failures from denied privilege" {
+  local minimal="$TEST_ROOT/package-path" command phase
+  mkdir -p "$minimal"
+  for command in bash curl tar timeout git gh flock apt-get; do
+    ln -s "$(command -v "$command")" "$minimal/$command"
+  done
+  cat > "$minimal/sudo" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  '-n true') exit 0 ;;
+  '-n apt-get update') [ "$FAIL_PHASE" != update ] ;;
+  '-n apt-get install '*) exit 1 ;;
+  *) exit 91 ;;
+esac
+EOF
+  chmod +x "$minimal/sudo"
+  for phase in update install; do
+    run env PATH="$minimal" FAIL_PHASE="$phase" "$minimal/bash" "$BLUEPRINT_ROOT/bootstrap-aicoding.sh" --profile host </dev/null
+    [ "$status" -ne 0 ]
+    [[ "$output" != *'privilege unavailable'* ]]
+    if [ "$phase" = update ]; then
+      [[ "$output" == *'package index update failed'* ]]
+    else
+      [[ "$output" == *'required package installation failed'* ]]
+    fi
+    [ ! -e "$BOOTSTRAP_CALLS" ]
+  done
 }

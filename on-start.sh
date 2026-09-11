@@ -1,7 +1,7 @@
 #!/bin/bash
-# on-start.sh — legacy postStart compatibility hook. Persistent installs call
-# aicoding-auto-update --ensure directly; this file keeps older templates
-# nonblocking while they migrate.
+# on-start.sh — container startup maintenance and scheduler enrollment.
+# Persistent templates resolve this hook through the active immutable release;
+# older templates may still invoke their retained source copy.
 # Invoked two ways:
 #   - submodule projects:  bash devpod/aicoding/on-start.sh   ($0 is a real file)
 #   - self-contained:      curl -fsSL .../on-start.sh | bash  ($0 is the bash bin)

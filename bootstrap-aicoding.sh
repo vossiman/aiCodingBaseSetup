@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Self-contained, reviewed first-install verifier. This file is embedded byte
-# for byte into devcontainer.json; it must not source downloaded code until
+# Self-contained, reviewed first-install verifier, invoked directly or embedded
+# byte for byte in a template. It must not source downloaded code until
 # the selected main commit's exact required workflow run is verified.
 set -uo pipefail
 
@@ -30,10 +30,17 @@ bootstrap_prerequisites() {
     echo 'bootstrap-aicoding: minimal prerequisites unavailable and cannot be installed safely' >&2
     return 1
   }
-  timeout 120 sudo -n apt-get update </dev/null >/dev/null 2>&1 \
-    && timeout 300 sudo -n apt-get install -y --no-install-recommends \
+  timeout 15 sudo -n true </dev/null >/dev/null 2>&1 || {
+    echo 'bootstrap-aicoding: minimal prerequisite install deferred: noninteractive privilege unavailable' >&2
+    return 1
+  }
+  timeout 120 sudo -n apt-get update </dev/null >/dev/null 2>&1 || {
+    echo 'bootstrap-aicoding: package index update failed; prerequisite installation deferred' >&2
+    return 1
+  }
+  timeout 300 sudo -n apt-get install -y --no-install-recommends \
       curl jq tar coreutils git gh util-linux </dev/null >/dev/null 2>&1 || {
-    echo 'bootstrap-aicoding: minimal prerequisite install deferred (noninteractive privilege unavailable)' >&2
+    echo 'bootstrap-aicoding: required package installation failed; check distro repositories' >&2
     return 1
   }
   for command in bash curl jq tar timeout git gh flock setsid; do
@@ -48,13 +55,19 @@ workflow_id=330421083
 workflow_name=tests
 
 bootstrap_api() {
-  local endpoint=$1
+  local endpoint=$1 headers rc=0
   # Public repository metadata does not require stored gh credentials. Using
   # curl directly also avoids treating an installed-but-logged-out gh as an
   # API outage on a fresh image.
-  timeout 20 curl -fsSL --max-time 20 \
+  headers=$(mktemp) || return 1
+  timeout 20 curl -fsSL --max-time 20 -D "$headers" \
     -H 'Accept: application/vnd.github+json' \
-    "https://api.github.com/$endpoint" </dev/null
+    "https://api.github.com/$endpoint" </dev/null || rc=$?
+  if [ "$rc" -ne 0 ] && grep -qi '^x-ratelimit-remaining:[[:space:]]*0[[:space:]]*$' "$headers"; then
+    echo 'bootstrap-aicoding: GitHub API rate limit exhausted; retry after the public quota resets' >&2
+  fi
+  rm -f -- "$headers"
+  return "$rc"
 }
 
 metadata=$(bootstrap_api "repos/$repo/actions/workflows/$workflow") || {

@@ -89,3 +89,20 @@ DEVCONTAINER="$BLUEPRINT_ROOT/devcontainer.json"
   [ "$status" -eq 0 ]
   [ "$output" = '--hostname ${containerWorkspaceFolderBasename}' ]
 }
+
+@test "devcontainer startup calls the physical runtime hook and tolerates missing enrollment" {
+  local scratch command
+  scratch=$(mktemp -d)
+  command=$(jq -r '.postStartCommand' "$DEVCONTAINER")
+  run env HOME="$scratch" AICODING_DATA_DIR="$scratch/data" bash -c "$command"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not enrolled"* ]]
+  mkdir -p "$scratch/data/versions/aicoding/fixture" "$scratch/data/current"
+  printf 'printf "%%s\\n" "$0" > "$HOME/startup-path"\n' \
+    > "$scratch/data/versions/aicoding/fixture/on-start.sh"
+  ln -s ../versions/aicoding/fixture "$scratch/data/current/aicoding"
+  run env HOME="$scratch" AICODING_DATA_DIR="$scratch/data" bash -c "$command"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$scratch/startup-path")" = "$scratch/data/versions/aicoding/fixture/on-start.sh" ]
+  rm -rf "$scratch"
+}
