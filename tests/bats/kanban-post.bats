@@ -513,7 +513,8 @@ EOF
   _fake_checkout myrepo
   run "$KP" "unclassified" --repo myrepo
   [ "$status" -eq 0 ]
-  ! grep -q 'swimlane' "$TMPDIR/requests"
+  run grep -q 'swimlane' "$TMPDIR/requests"
+  [ "$status" -eq 1 ]
 }
 
 @test "invalid swimlane is refused before making a request" {
