@@ -271,7 +271,7 @@ STUB
   run install_claude_plugins
 
   [ "$status" -eq 0 ]
-  ! grep -q '^plugin ' "$TMPDIR/claude-calls" 2>/dev/null
+  if grep -q '^plugin ' "$TMPDIR/claude-calls" 2>/dev/null; then false; fi
   jq -e '.components["provision-claude"].state == "blocked"
     and .components["provision-claude"].reason == "claude_shared_consumers_incompatible"' \
     "$AICODING_RESULTS_FILE"
@@ -306,7 +306,7 @@ STUB
   run install_codex_plugins
 
   [ "$status" -eq 0 ]
-  ! grep -q '^plugin ' "$TMPDIR/codex-calls" 2>/dev/null
+  if grep -q '^plugin ' "$TMPDIR/codex-calls" 2>/dev/null; then false; fi
   jq -e '.components["provision-codex"].state == "blocked"
     and .components["provision-codex"].reason == "codex_shared_config_busy"' \
     "$AICODING_RESULTS_FILE"
@@ -339,7 +339,7 @@ STUB
   run install_codex_plugins
 
   [ "$status" -eq 0 ]
-  ! grep -q '^plugin ' "$TMPDIR/codex-calls" 2>/dev/null
+  if grep -q '^plugin ' "$TMPDIR/codex-calls" 2>/dev/null; then false; fi
   jq -e '.components["provision-codex"].state == "blocked"
     and .components["provision-codex"].reason == "codex_update_not_verified"' \
     "$AICODING_RESULTS_FILE"

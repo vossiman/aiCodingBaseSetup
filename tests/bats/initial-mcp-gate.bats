@@ -13,6 +13,12 @@ setup() {
   printf '{"managed":true}\n' > "$SCRIPT_DIR/configs/claude"
   printf '{"personal":true}\n' > "$HOME/.claude/settings.json"
 
+  # The initial helper classifies every destination and locks shared roots
+  # before checking runtime compatibility, just as installer main does.
+  unset AICODING_SHARED_CONFIG_ROOTS _AICODING_INSTALL_SHARED_LOCKS_READY
+  source "$BLUEPRINT_ROOT/lib/runtime.sh"
+  source "$BLUEPRINT_ROOT/lib/update-components.sh"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   source "$BLUEPRINT_ROOT/lib/provision-managed-files.sh"
   manifest_stage_begin() { :; }
   manifest_stage_commit() { :; }
