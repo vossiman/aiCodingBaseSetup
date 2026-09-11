@@ -438,11 +438,16 @@ class CliBehaviorTests(CliFixture):
         isolated.mkdir()
         for name in ("codex-merge.py", "codex_merge.py", "codex_merge_state.py"):
             shutil.copy2(LIB / name, isolated / name)
+        fake_site = self.root / "fake-site"
+        fake_site.mkdir()
+        (fake_site / "tomlkit.py").write_text(
+            '"""Unpinned package that must never satisfy the runtime."""\n',
+            encoding="utf-8",
+        )
         self.dest.write_text("x = 9\n", encoding="utf-8")
         before = self.dest.read_bytes()
         command = [
             sys.executable,
-            "-S",
             str(isolated / "codex-merge.py"),
             "apply",
             "--source",
@@ -463,7 +468,12 @@ class CliBehaviorTests(CliFixture):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1"),
+            env=dict(
+                os.environ,
+                PYTHONDONTWRITEBYTECODE="1",
+                PYTHONNOUSERSITE="1",
+                PYTHONPATH=str(fake_site),
+            ),
         )
         self.assertNotEqual(completed.returncode, 0)
         self.assertEqual(completed.stderr, "")
@@ -472,6 +482,35 @@ class CliBehaviorTests(CliFixture):
         )
         self.assertEqual(self.dest.read_bytes(), before)
         self.assertFalse(self.state_path.parent.exists())
+
+    def test_empty_quoted_key_conflict_can_be_acknowledged_by_public_decision(self):
+        self.source.write_text('"" = 1\n', encoding="utf-8")
+        self.initial_apply()
+        self.dest.write_text('"" = 2\n', encoding="utf-8")
+        self.source.write_text('"" = 3\n', encoding="utf-8")
+        completed, plan = self.cli("plan")
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(plan["conflicts"], [{"path": [""]}])
+
+        decisions = self.root / "decisions.json"
+        decisions.write_text(
+            json.dumps([{"path": [""], "choice": "local"}]), encoding="utf-8"
+        )
+        completed, applied = self.cli(
+            "apply",
+            "--expected",
+            plan["token"],
+            "--decisions",
+            str(decisions),
+        )
+        self.assertEqual(completed.returncode, 0)
+        self.assertTrue(applied["applied"])
+        self.assertEqual(applied["conflicts"], [])
+        self.assertEqual(self.dest.read_text(encoding="utf-8"), '"" = 2\n')
+
+        completed, repeat = self.cli("plan")
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(repeat["conflicts"], [])
 
     def test_plan_is_read_only_and_apply_creates_private_config_and_receipt(self):
         completed, plan = self.cli("plan")

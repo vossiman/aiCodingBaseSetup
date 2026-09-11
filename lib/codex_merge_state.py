@@ -311,7 +311,7 @@ def _normalize_decisions(
         if (
             not isinstance(path, list)
             or not path
-            or not all(isinstance(segment, str) and segment for segment in path)
+            or not all(isinstance(segment, str) for segment in path)
             or choice not in ("local", "blueprint")
         ):
             raise RequestFailure("invalid_decisions")

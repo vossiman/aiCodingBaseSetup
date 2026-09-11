@@ -7,17 +7,53 @@ from copy import deepcopy
 from dataclasses import dataclass
 import datetime as datetime_module
 import hashlib
+import importlib.util
 import math
 from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
-VENDOR = Path(__file__).resolve().parent / "vendor"
-if str(VENDOR) not in sys.path:
-    sys.path.insert(0, str(VENDOR))
+VENDORED_TOMLKIT = Path(__file__).resolve().parent / "vendor" / "tomlkit"
 
-import tomlkit  # noqa: E402
+
+def _load_vendored_tomlkit() -> Any:
+    """Load exactly the pinned package, never a site-package fallback."""
+
+    package_init = VENDORED_TOMLKIT / "__init__.py"
+    if not package_init.is_file():
+        raise ImportError("vendored tomlkit unavailable")
+    specification = importlib.util.spec_from_file_location(
+        "tomlkit",
+        str(package_init),
+        submodule_search_locations=[str(VENDORED_TOMLKIT)],
+    )
+    if specification is None or specification.loader is None:
+        raise ImportError("vendored tomlkit unavailable")
+
+    previous = {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "tomlkit" or name.startswith("tomlkit.")
+    }
+    for name in previous:
+        del sys.modules[name]
+    module = importlib.util.module_from_spec(specification)
+    sys.modules["tomlkit"] = module
+    try:
+        specification.loader.exec_module(module)
+        if getattr(module, "__version__", None) != "0.13.3":
+            raise ImportError("vendored tomlkit version mismatch")
+    except Exception:
+        for name in list(sys.modules):
+            if name == "tomlkit" or name.startswith("tomlkit."):
+                del sys.modules[name]
+        sys.modules.update(previous)
+        raise
+    return module
+
+
+tomlkit = _load_vendored_tomlkit()
 
 
 USER_SCALARS = frozenset(("model", "model_reasoning_effort"))
