@@ -254,6 +254,72 @@ EOF
   export NPM_LOG="$TMP/npm.log"
 }
 
+_managed_codex_release() {
+  local version=$1 sidecar=${2:-present}
+  local release="$AICODING_DATA_DIR/versions/codex/$version"
+  mkdir -p "$release/node_modules/.bin" \
+    "$release/node_modules/@openai/codex-linux-x64/bin"
+  cat > "$release/node_modules/.bin/codex" <<EOF
+#!/bin/sh
+echo 'codex-cli $version'
+EOF
+  chmod +x "$release/node_modules/.bin/codex"
+  if [ "$sidecar" = present ]; then
+    printf '#!/bin/sh\nexit 0\n' \
+      > "$release/node_modules/@openai/codex-linux-x64/bin/codex-code-mode-host"
+    chmod +x "$release/node_modules/@openai/codex-linux-x64/bin/codex-code-mode-host"
+  fi
+  aicoding_activate_version codex "$version" codex node_modules/.bin/codex
+}
+
+_stub_npm_view_then_fail_install() {
+  cat > "$TMP/stubs/npm" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$NPM_LOG"
+if [ "$1" = view ]; then printf '"0.151.0"\n'; exit 0; fi
+exit 91
+EOF
+  chmod +x "$TMP/stubs/npm"
+  export NPM_LOG="$TMP/npm.log"
+}
+
+@test "matching managed Codex verifies its sidecar in the physical active release" {
+  _managed_codex_release 0.151.0
+  _stub_npm_view_then_fail_install
+
+  run aicoding_update_npm_component codex codex @openai/codex
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$NPM_LOG")" -eq 1 ]
+  grep -q '^view @openai/codex version --json$' "$NPM_LOG"
+  jq -e '.components.codex.state == "current" and .components.codex.successful_version == "0.151.0"' \
+    "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "managed Codex with a missing active sidecar still attempts repair" {
+  _managed_codex_release 0.151.0 missing
+  _stub_npm_view_then_fail_install
+
+  run aicoding_update_npm_component codex codex @openai/codex
+  [ "$status" -ne 0 ]
+  grep -q '^install --prefix ' "$NPM_LOG"
+  [ "$(readlink "$AICODING_DATA_DIR/current/codex")" = "../versions/codex/0.151.0" ]
+  jq -e '.components.codex.state == "failed" and .components.codex.reason == "stage_install_failed"' \
+    "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "matching legacy Codex still verifies a sidecar beside its resolved binary" {
+  _tool codex 'codex-cli 0.151.0'
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/stubs/codex-code-mode-host"
+  chmod +x "$TMP/stubs/codex-code-mode-host"
+  _stub_npm_view_then_fail_install
+
+  run aicoding_update_npm_component codex codex @openai/codex
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$NPM_LOG")" -eq 1 ]
+  jq -e '.components.codex.state == "current" and .components.codex.successful_version == "0.151.0"' \
+    "$AICODING_STATE_DIR/update-results.json"
+}
+
 @test "Codex stages an exact npm version, validates its sidecar, then atomically activates" {
   _tool codex 'codex-cli 0.150.0'
   _stub_npm_codex

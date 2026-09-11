@@ -409,6 +409,35 @@ _aicoding_stage_git_source() {
   mv "$stage" "$final"
 }
 
+_aicoding_codex_sidecar_ready() {
+  local installed=$1 command_path resolved_command current active versions_root physical sidecar
+  command_path=$(command -v codex 2>/dev/null) || return 1
+  resolved_command=$(readlink -f "$command_path" 2>/dev/null) || return 1
+
+  # A legacy direct install keeps the sidecar beside its resolved binary.
+  if [ "$command_path" != "$HOME/.local/bin/codex" ] \
+      || ! grep -Fxq '# Managed by aicoding immutable runtime.' "$command_path" 2>/dev/null; then
+    [ -x "$(dirname "$resolved_command")/codex-code-mode-host" ]
+    return $?
+  fi
+
+  # The stable managed launcher is a regular wrapper, so its sidecar lives in
+  # the physical release selected by current/codex. Tie that release to the
+  # installed version and keep every resolved path inside versions/codex.
+  current="$AICODING_DATA_DIR/current/codex"
+  [ -L "$current" ] || return 1
+  [ "$(readlink "$current" 2>/dev/null)" = "../versions/codex/$installed" ] || return 1
+  active=$(readlink -f "$current" 2>/dev/null) || return 1
+  versions_root=$(readlink -f "$AICODING_DATA_DIR/versions/codex" 2>/dev/null) || return 1
+  case "$active" in "$versions_root"/*) ;; *) return 1 ;; esac
+  physical="$active/node_modules/.bin/codex"
+  [ -x "$physical" ] || return 1
+  [ "$(_aicoding_version_from_command "$physical" 2>/dev/null || true)" = "$installed" ] || return 1
+  sidecar=$(find "$active/node_modules" -type f -name codex-code-mode-host \
+    -perm -u+x -print -quit 2>/dev/null) || return 1
+  [ -n "$sidecar" ]
+}
+
 # Stage an exact npm package under an immutable version directory, validate the
 # staged executable (and Codex sidecar), then switch the managed launcher.
 aicoding_update_npm_component() {
@@ -421,11 +450,7 @@ aicoding_update_npm_component() {
     return 1
   fi
   if [ "$installed" = "$target" ]; then
-    if [ "$component" != codex ] || {
-      local active_codex
-      active_codex=$(readlink -f "$(command -v codex)" 2>/dev/null || true)
-      [ -x "$(dirname "$active_codex")/codex-code-mode-host" ]
-    }; then
+    if [ "$component" != codex ] || _aicoding_codex_sidecar_ready "$installed"; then
       aicoding_result_record "$component" current "$target" current "$installed"
       return 0
     fi
