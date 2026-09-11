@@ -57,15 +57,23 @@ teardown() { cd /; rm -rf "$TMP"; }
   if grep -Eq 'claude update|opencode upgrade|agent update|codex update' "$TMP/ran.log"; then false; fi
 }
 
-@test "sync provisioning defers moving Playwright and Context7 resources without invoking npx" {
+@test "sync provisioning blocks selected exact MCPs when staging is absent without invoking npx" {
   printf '#!/bin/sh\necho "$*" >> "$TMP/npx-calls"\n' > "$TMP/stubs/npx"
+  mkdir -p "$HOME/.claude"
+  jq -n '{enabledPlugins: {
+    "context7@claude-plugins-official": true,
+    "playwright@claude-plugins-official": true
+  }}' > "$HOME/.claude/settings.json"
   export SCRIPT_DIR="$BLUEPRINT_ROOT"
   _sync_source_update_libraries "$BLUEPRINT_ROOT"
   AICODINGSETUP_SKIP_NETWORK= run _sync_provision yes
   [ "$status" -ne 0 ]
   [ ! -s "$TMP/npx-calls" ]
   jq -e '.components["mcp-context7"].state == "blocked"
-    and .components["mcp-playwright"].state == "blocked"' "$AICODING_STATE_DIR/update-results.json"
+    and .components["mcp-context7"].reason == "exact_package_not_staged"
+    and .components["mcp-playwright"].state == "blocked"
+    and .components["mcp-playwright"].reason == "exact_package_not_staged"' \
+    "$AICODING_STATE_DIR/update-results.json"
 }
 
 @test "unattended provisioning preserves an aggregate failure receipt and does not stamp" {
@@ -137,22 +145,39 @@ EOF
   # define manifest_get_profile; plumbing is exactly where the host used to be
   # misclassified as a container.
   local clone="$TMP/tracking-clone"
-  mkdir -p "$clone/lib" "$(dirname "$AICODING_MANIFEST")" \
+  git clone -q "$BLUEPRINT_ROOT" "$clone"
+  mkdir -p "$(dirname "$AICODING_MANIFEST")" \
     "$TMP/.claude/jobs" "$TMP/.claude/sessions" "$TMP/.claude/daemon" \
     "$AICODING_UPDATE_STATE"
-  cp "$BLUEPRINT_ROOT/lib/sync.sh" "$clone/lib/sync.sh"
-  echo '{"profile":"host"}' > "$AICODING_MANIFEST"
+  echo '{"schema_version":1,"profile":"host","files":{}}' > "$AICODING_MANIFEST"
   local runtime_dir
   for runtime_dir in jobs sessions daemon; do
     echo "live-host-$runtime_dir" > "$TMP/.claude/$runtime_dir/live"
   done
   : > "$AICODING_UPDATE_STATE/.binaries.stamp"
+  # This entrypoint regression is about profile ordering. Model a completed
+  # prior update so boot-time capability gates do not obscure that behavior.
+  . "$BLUEPRINT_ROOT/lib/update-results.sh"
+  local component
+  for component in claude codex opencode cursor pi mcp-context7 mcp-playwright \
+      mcp-registration-claude-context7 mcp-registration-claude-playwright; do
+    aicoding_result_record "$component" current 2.1.0 installed 2.1.0
+  done
+  cat > "$TMP/stubs/codex" <<'EOF'
+#!/bin/sh
+echo "codex $*" >> "$TMP/ran.log"
+[ "$*" != --version ] || printf 'codex-cli 0.148.0\n'
+exit 0
+EOF
+  chmod +x "$TMP/stubs/codex"
+  printf '#!/bin/sh\nprintf "pi 0.50.0\\n"\n' > "$TMP/stubs/pi"
+  chmod +x "$TMP/stubs/pi"
   _kvm_stub_sudo; _kvm_stub_stat 994
 
   AICODING_KVM_DEVICE=/dev/null AICODING_UPDATE_TTL=3600 \
-    run env AICODING_BLUEPRINT_CLONE="$clone" \
-      "$BLUEPRINT_ROOT/bin/aicoding-sync" --boot
+    run "$BLUEPRINT_ROOT/bin/aicoding-sync" --blueprint "$clone" --boot
   [ "$status" -eq 0 ]
+  [ "$(readlink "$HOME/.local/bin/dvw-probe")" = "$clone/bin/dvw-probe" ]
   for runtime_dir in jobs sessions daemon; do
     [ -d "$TMP/.claude/$runtime_dir" ]
     [ ! -L "$TMP/.claude/$runtime_dir" ]
@@ -184,7 +209,8 @@ EOF
   : > "$TMP/ran.log"
   run bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_sync --yes'
   [ "$status" -eq 0 ]
-  grep -q "claude mcp add" "$TMP/ran.log"
+  grep -q "claude mcp get logfire" "$TMP/ran.log"
+  if grep -q "claude mcp add" "$TMP/ran.log"; then false; fi
   grep -q "claude plugin install" "$TMP/ran.log"
 }
 
@@ -192,7 +218,9 @@ EOF
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   : > "$TMP/ran.log"
   AICODING_UPDATE_TTL=0 aicoding_sync --boot
-  grep -q "claude mcp add" "$TMP/ran.log"
+  grep -q "claude mcp get logfire" "$TMP/ran.log"
+  if grep -q "claude mcp add" "$TMP/ran.log"; then false; fi
+  grep -q "claude plugin install" "$TMP/ran.log"
 }
 
 @test "sync removes the retired shim symlinks (aicoding-update, update-status)" {
