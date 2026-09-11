@@ -33,6 +33,9 @@ EOF
   done
   export PATH="$TMP/stubs:$PATH"
   . "$BLUEPRINT_ROOT/lib/sync.sh"
+  # This HOME is an isolated test root, not one of the estate's shared mounts.
+  # Production update-components supplies the physical-root implementation.
+  aicoding_config_is_shared() { return 1; }
   # cwd must leave the real checkout: _sync_devcontainer_pin targets the
   # cwd's repo, and tests must never write into $BLUEPRINT_ROOT.
   cd "$TMP"
@@ -81,6 +84,16 @@ EOF
     "$AICODING_STATE_DIR/update-results.json"
 }
 
+@test "unattended provisioning skips Claude work when Claude is not installed" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  _sync_source_update_libraries "$BLUEPRINT_ROOT"
+  rm -f "$TMP/stubs/claude"
+  PATH="$TMP/stubs:/usr/bin:/bin" run _sync_provision boot
+
+  [ "$status" -eq 0 ]
+  jq -e '.components.provision.state == "current"' "$AICODING_STATE_DIR/update-results.json"
+}
+
 @test "_sync_binaries: host profile refreshes claude only" {
   printf '#!/bin/sh\necho "codex $*" >> "$TMP/ran.log"\n' > "$TMP/stubs/codex"; chmod +x "$TMP/stubs/codex"
   mkdir -p "$(dirname "$AICODING_MANIFEST")"
@@ -103,11 +116,11 @@ EOF
   grep -q "^agent update" "$TMP/ran.log"
 }
 
-@test "sync exits 0 even if a binary update fails (fail-open)" {
+@test "sync continues after a component failure but returns aggregate failure" {
   printf '#!/bin/sh\nexit 7\n' > "$TMP/stubs/claude"; chmod +x "$TMP/stubs/claude"
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   run env AICODING_UPDATE_TTL=0 bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_sync --boot'
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
 }
 
 @test "aicoding-sync --boot runs end to end (exit 0)" {
@@ -261,8 +274,164 @@ EOF
   # conservative apply set excludes, so it must NOT be reverted.
   echo "# user edit" >> "$HOME/.tmux.conf"
   local before; before=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
-  AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  run env AICODING_UPDATE_TTL=0 bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_sync --boot'
+  [ "$status" -ne 0 ]
   [ "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')" = "$before" ]
+}
+
+@test "boot records preserved user drift as a conflict without advancing blueprint stamp" {
+  local clone="$TMP/conflict-blueprint"
+  rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$clone/"
+  export AICODING_BLUEPRINT_CLONE="$clone" AICODING_BLUEPRINT_LOCAL=1 SCRIPT_DIR="$clone"
+  bash "$clone/install.sh" </dev/null
+  local old_commit new_commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  old_commit=$(jq -r '.blueprint_commit' "$AICODING_MANIFEST")
+  printf '%s\n' "$new_commit" > "$clone/.aicoding-version"
+  printf '\n# blueprint update\n' >> "$clone/configs/tmux/tmux.conf"
+  printf '\n# user edit\n' >> "$HOME/.tmux.conf"
+  _sync_source_update_libraries "$clone"
+  _SYNC_REFRESHED=1 run _sync_reconcile boot
+
+  [ "$status" -ne 0 ]
+  [ "$(jq -r '.blueprint_commit' "$AICODING_MANIFEST")" = "$old_commit" ]
+  jq -e --arg target "$new_commit" \
+    '.components.config.state == "conflict"
+      and .components.config.target_version == $target
+      and .components.config.reason == "managed_config_conflict"' \
+    "$AICODING_STATE_DIR/update-results.json"
+  grep -q '# user edit' "$HOME/.tmux.conf"
+}
+
+@test "reconcile acquires shared writer locks before classifying destination state" {
+  local clone="$TMP/lock-blueprint" holder
+  rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$clone/"
+  cat >> "$clone/lib/blueprint-deploy.sh" <<'EOF'
+classify_managed_files() { : > "$CLASSIFY_MARKER"; }
+EOF
+  export AICODING_BLUEPRINT_CLONE="$clone" AICODING_BLUEPRINT_LOCAL=1
+  export CLASSIFY_MARKER="$TMP/classified" _SYNC_REFRESHED=1
+  mkdir -p "$HOME/.claude" "$(dirname "$AICODING_MANIFEST")"
+  echo '{"schema_version":1,"files":{},"blueprint_commit":"old"}' > "$AICODING_MANIFEST"
+  (
+    exec 9> "$HOME/.claude/.aicoding-update.lock"
+    flock 9
+    : > "$TMP/lock-ready"
+    sleep 30
+  ) &
+  holder=$!
+  while [ ! -f "$TMP/lock-ready" ]; do sleep 0.01; done
+
+  run _sync_reconcile yes
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+
+  [ "$status" -ne 0 ]
+  [ ! -e "$CLASSIFY_MARKER" ]
+}
+
+@test "network suppression does not disable shared compatibility authorization" {
+  local clone="$TMP/shared-gate-blueprint" dest="$HOME/.codex/config.toml"
+  rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$clone/"
+  cat >> "$clone/lib/blueprint-deploy.sh" <<EOF
+classify_managed_files() {
+  FILE_MODE["$dest"]=overwrite
+  FILE_SOURCE["$dest"]=configs/codex/config.toml
+  BUCKETS["$dest"]=will_update
+}
+EOF
+  export AICODING_BLUEPRINT_CLONE="$clone" AICODING_BLUEPRINT_LOCAL=1 _SYNC_REFRESHED=1
+  mkdir -p "$(dirname "$AICODING_MANIFEST")" "$(dirname "$dest")"
+  echo '{"schema_version":1,"files":{},"blueprint_commit":"old"}' > "$AICODING_MANIFEST"
+  printf 'old\n' > "$dest"
+  aicoding_config_is_shared() { return 0; }
+  aicoding_config_is_compatible() {
+    [ "${AICODING_REQUIRE_UPDATE_RECEIPT:-0}" = 1 ] \
+      && [ "${AICODING_REQUIRE_SHARED_COMPATIBILITY:-0}" = 1 ] \
+      || { echo shared_authorization_missing; return 1; }
+  }
+
+  run _sync_reconcile boot
+
+  [ "$status" -eq 0 ]
+  grep -q '^model' "$dest"
+}
+
+@test "provisioning defers shared mutations on lock contention but continues local work" {
+  local clone="$TMP/provision-lock-blueprint" holder
+  mkdir -p "$clone/lib" "$HOME/.claude"
+  printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > "$clone/.aicoding-version"
+  cat > "$clone/lib/provision.sh" <<'EOF'
+install_mcp_packages() { echo packages >> "$PROVISION_LOG"; }
+install_claude_mcps() { echo claude-mcps >> "$PROVISION_LOG"; }
+install_claude_plugins() { echo claude-plugins >> "$PROVISION_LOG"; }
+install_codex_plugins() { echo codex-plugins >> "$PROVISION_LOG"; }
+remove_deprecated_shims() { echo local-cleanup >> "$PROVISION_LOG"; }
+EOF
+  export AICODING_BLUEPRINT_CLONE="$clone" PROVISION_LOG="$TMP/provision.log"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  (
+    exec 9> "$HOME/.claude/.aicoding-update.lock"
+    flock 9
+    : > "$TMP/provision-lock-ready"
+    sleep 30
+  ) &
+  holder=$!
+  while [ ! -f "$TMP/provision-lock-ready" ]; do sleep 0.01; done
+
+  run _sync_provision boot
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+
+  [ "$status" -ne 0 ]
+  grep -q '^packages$' "$PROVISION_LOG"
+  grep -q '^local-cleanup$' "$PROVISION_LOG"
+  if grep -qE 'claude-|codex-' "$PROVISION_LOG"; then false; fi
+}
+
+@test "a component config failure defers only its matching shared provisioning" {
+  local clone="$TMP/provision-component-blueprint"
+  mkdir -p "$clone/lib"
+  printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > "$clone/.aicoding-version"
+  cat > "$clone/lib/provision.sh" <<'EOF'
+install_mcp_packages() { echo packages >> "$PROVISION_LOG"; }
+install_claude_mcps() { echo claude-mcps >> "$PROVISION_LOG"; }
+install_claude_plugins() { echo claude-plugins >> "$PROVISION_LOG"; }
+install_codex_plugins() { echo codex-plugins >> "$PROVISION_LOG"; }
+remove_deprecated_shims() { echo local-cleanup >> "$PROVISION_LOG"; }
+EOF
+  export AICODING_BLUEPRINT_CLONE="$clone" PROVISION_LOG="$TMP/provision.log"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  declare -gA _SYNC_DEFERRED_PROVISION_COMPONENTS=([claude]=1)
+
+  run _sync_provision boot
+
+  [ "$status" -ne 0 ]
+  if grep -q '^claude-' "$PROVISION_LOG"; then false; fi
+  grep -q '^codex-plugins$' "$PROVISION_LOG"
+  grep -q '^local-cleanup$' "$PROVISION_LOG"
+}
+
+@test "selected Gitless release retains historical generated-file provenance" {
+  local repo="$TMP/provenance-repo" sha release source_path=configs/claude/hooks/bw-deny-files.sh
+  git clone -q "$BLUEPRINT_ROOT" "$repo"
+  git -C "$repo" config user.email test@example.invalid
+  git -C "$repo" config user.name test
+  printf '#!/bin/sh\necho historical\n' > "$repo/$source_path"
+  git -C "$repo" add "$source_path"
+  git -C "$repo" commit -qm historical
+  mkdir -p "$HOME/.claude/hooks"
+  cp "$repo/$source_path" "$HOME/.claude/hooks/bw-deny-files.sh"
+  printf '#!/bin/sh\necho selected\n' > "$repo/$source_path"
+  git -C "$repo" commit -qam selected
+  sha=$(git -C "$repo" rev-parse HEAD)
+  export AICODING_BLUEPRINT_REMOTE="$repo" AICODING_DATA_DIR="$TMP/data"
+
+  release=$(_sync_stage_selected_blueprint "$sha")
+  [ ! -d "$release/.git" ]
+  export AICODING_BLUEPRINT_CLONE="$release"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run owned_file_has_generated_provenance "$HOME/.claude/hooks/bw-deny-files.sh" "$source_path"
+  [ "$status" -eq 0 ]
 }
 
 @test "sync --boot leaves an existing unmanaged file at a newly managed path alone" {

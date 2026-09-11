@@ -95,12 +95,12 @@ read_manifest() {
 # write_manifest <json> — atomically write the manifest JSON to disk.
 write_manifest() {
   local json=$1
-  local dir
+  local dir rc
   dir=$(dirname "$AICODING_MANIFEST")
-  mkdir -p "$dir"
+  mkdir -p "$dir" || return 1
   local tmp="$AICODING_MANIFEST.tmp"
-  printf '%s\n' "$json" | jq '.' > "$tmp"
-  mv "$tmp" "$AICODING_MANIFEST"
+  printf '%s\n' "$json" | jq '.' > "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }
+  mv "$tmp" "$AICODING_MANIFEST" || { rc=$?; rm -f "$tmp"; return "$rc"; }
 }
 
 # manifest_stamp_provision <sha> — record that full provisioning ran at this
@@ -158,11 +158,12 @@ manifest_stage_begin() {
 }
 
 manifest_stage_commit() {
-  local now
+  local now updated rc
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  _aicoding_pending_manifest=$(printf '%s' "$_aicoding_pending_manifest" \
-    | jq --arg t "$now" '.deployed_at = $t')
-  write_manifest "$_aicoding_pending_manifest"
+  updated=$(printf '%s' "$_aicoding_pending_manifest" \
+    | jq --arg t "$now" '.deployed_at = $t') || return $?
+  _aicoding_pending_manifest=$updated
+  write_manifest "$_aicoding_pending_manifest" || { rc=$?; return "$rc"; }
   _aicoding_pending_manifest=""
 }
 
@@ -231,17 +232,32 @@ _is_owned_overwrite() {
 # at the manifest's source path. This distinguishes a stale generated hook
 # restored from an image from a genuine local edit whose provenance is unknown.
 owned_file_has_generated_provenance() {
-  local dest=$1 source=$2 commit tmp
-  [ -f "$dest" ] && [ -d "$AICODING_BLUEPRINT_CLONE/.git" ] || return 1
-  tmp=$(mktemp)
-  while IFS= read -r commit; do
-    [ -n "$commit" ] || continue
-    git -C "$AICODING_BLUEPRINT_CLONE" show "$commit:$source" >"$tmp" 2>/dev/null || continue
+  local dest=$1 source=$2 commit tmp historical
+  [ -f "$dest" ] || return 1
+  tmp=$(mktemp) || return 1
+
+  # Exact selected releases intentionally omit .git. Their staging path keeps
+  # only historical bytes for owned files, which lets this proof render them
+  # with the current HOME/profile without retaining a repository per release.
+  for historical in "$AICODING_BLUEPRINT_CLONE/.aicoding-generated-provenance/$source"/*; do
+    [ -f "$historical" ] || continue
+    cp "$historical" "$tmp" || continue
     local rendered="$tmp.rendered"
     _render_managed_source "$tmp" "$dest" "$rendered" 2>/dev/null || { rm -f "$rendered"; continue; }
     if cmp -s "$rendered" "$dest"; then rm -f "$tmp" "$rendered"; return 0; fi
     rm -f "$rendered"
-  done < <(git -C "$AICODING_BLUEPRINT_CLONE" log --format=%H --all -- "$source" 2>/dev/null)
+  done
+
+  if [ -d "$AICODING_BLUEPRINT_CLONE/.git" ]; then
+    while IFS= read -r commit; do
+      [ -n "$commit" ] || continue
+      git -C "$AICODING_BLUEPRINT_CLONE" show "$commit:$source" >"$tmp" 2>/dev/null || continue
+      local rendered="$tmp.rendered"
+      _render_managed_source "$tmp" "$dest" "$rendered" 2>/dev/null || { rm -f "$rendered"; continue; }
+      if cmp -s "$rendered" "$dest"; then rm -f "$tmp" "$rendered"; return 0; fi
+      rm -f "$rendered"
+    done < <(git -C "$AICODING_BLUEPRINT_CLONE" log --format=%H --all -- "$source" 2>/dev/null)
+  fi
   rm -f "$tmp"
   return 1
 }
@@ -275,6 +291,17 @@ aicoding_shared_locks_acquire() {
     _AICODING_SHARED_LOCKED_ROOTS[$root]=1
     _AICODING_SHARED_LOCK_FDS+=("$fd")
   done < <(printf '%s\n' "${roots[@]}" | LC_ALL=C sort)
+}
+
+# Lock every managed shared root before classification reads any destination.
+# The inventory always contains paths in these roots; fixed sentinels avoid a
+# read-before-lock cycle just to discover which roots need locking.
+aicoding_shared_locks_acquire_managed_roots() {
+  aicoding_shared_locks_acquire \
+    "$HOME/.claude/.aicoding-managed" \
+    "$HOME/.codex/.aicoding-managed" \
+    "$HOME/.cursor/.aicoding-managed" \
+    "$HOME/.config/opencode/.aicoding-managed"
 }
 
 # enumerate_skill_files <skills_root> — one file path per line, relative to
@@ -412,14 +439,14 @@ classify_file() {
 # group or world bit.
 _write_atomic() {
   local src=$1 dest=$2 mode=${3:-0600}
-  local dir tmp
+  local dir tmp rc
   dir=$(dirname "$dest")
-  mkdir -p "$dir"
+  mkdir -p "$dir" || return 1
   # Same filesystem as dest, so the rename below is atomic.
-  tmp=$(mktemp "$dir/.aicoding-deploy.XXXXXX")
-  cat "$src" > "$tmp"
-  chmod "$mode" "$tmp"
-  mv -f "$tmp" "$dest"
+  tmp=$(mktemp "$dir/.aicoding-deploy.XXXXXX") || return 1
+  cat "$src" > "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }
+  chmod "$mode" "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }
+  mv -f "$tmp" "$dest" || { rc=$?; rm -f "$tmp"; return "$rc"; }
 }
 
 # _write_text_atomic <dest> <content> [mode] — same contract as _write_atomic
@@ -432,13 +459,13 @@ _write_atomic() {
 # at 0664 forever — the two most credential-dense files in the deploy set.
 _write_text_atomic() {
   local dest=$1 content=$2 mode=${3:-0600}
-  local dir tmp
+  local dir tmp rc
   dir=$(dirname "$dest")
-  mkdir -p "$dir"
-  tmp=$(mktemp "$dir/.aicoding-deploy.XXXXXX")
-  printf '%s\n' "$content" > "$tmp"
-  chmod "$mode" "$tmp"
-  mv -f "$tmp" "$dest"
+  mkdir -p "$dir" || return 1
+  tmp=$(mktemp "$dir/.aicoding-deploy.XXXXXX") || return 1
+  printf '%s\n' "$content" > "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }
+  chmod "$mode" "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }
+  mv -f "$tmp" "$dest" || { rc=$?; rm -f "$tmp"; return "$rc"; }
 }
 
 # _ensure_merge_dest <dest> — create an empty JSON merge target at 0600.
@@ -448,11 +475,11 @@ _ensure_merge_dest() {
   [[ -f "$dest" ]] && return 0
   local dir tmp
   dir=$(dirname "$dest")
-  mkdir -p "$dir"
-  tmp=$(mktemp "$dir/.aicoding-deploy.XXXXXX")
-  printf '{}' > "$tmp"
-  chmod 0600 "$tmp"
-  mv -f "$tmp" "$dest"
+  mkdir -p "$dir" || return 1
+  tmp=$(mktemp "$dir/.aicoding-deploy.XXXXXX") || return 1
+  printf '{}' > "$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 0600 "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dest" || { local rc=$?; rm -f "$tmp"; return "$rc"; }
 }
 
 # deploy_overwrite_file <src> <dest> <source_label_relative_to_blueprint>
@@ -462,12 +489,13 @@ deploy_overwrite_file() {
   local src=$1 dest=$2 label=$3
   local mode=0600
   [[ -x "$src" ]] && mode=0700
-  _write_atomic "$src" "$dest" "$mode"
+  _write_atomic "$src" "$dest" "$mode" || return $?
   local h
-  h=$(compute_managed_hash "$dest")
+  h=$(compute_managed_hash "$dest") || return $?
+  [ -n "$h" ] || return 1
   local entry
   entry=$(jq -n --arg s "$label" --arg h "$h" \
-    '{mode:"overwrite", source:$s, deployed_hash:$h}')
+    '{mode:"overwrite", source:$s, deployed_hash:$h}') || return $?
   manifest_set_file "$dest" "$entry"
 }
 
@@ -519,10 +547,10 @@ _json_merge_into() {
 # deploy_merge_file <src> <dest> <source_label>
 deploy_merge_file() {
   local src=$1 dest=$2 label=$3
-  mkdir -p "$(dirname "$dest")"
-  _json_merge_into "$dest" "$src"
+  mkdir -p "$(dirname "$dest")" || return 1
+  _json_merge_into "$dest" "$src" || return $?
   local entry
-  entry=$(jq -n --arg s "$label" '{mode:"merge", source:$s}')
+  entry=$(jq -n --arg s "$label" '{mode:"merge", source:$s}') || return $?
   manifest_set_file "$dest" "$entry"
 }
 
@@ -532,7 +560,7 @@ deploy_merge_file() {
 # the content between them (the markers themselves are preserved).
 deploy_marker_block() {
   local dest=$1 body=$2 start=$3 end=$4
-  mkdir -p "$(dirname "$dest")"
+  mkdir -p "$(dirname "$dest")" || return 1
   # The destination is the user's own dotfile (~/.bashrc), so an existing
   # mode is theirs to keep. What must never happen is the rename below
   # WIDENING it: the old "$dest.tmp" redirect took the ambient umask, so a
@@ -540,7 +568,7 @@ deploy_marker_block() {
   local mode=0600
   [[ -f "$dest" ]] && mode=$(stat -c '%a' "$dest")
   local tmp
-  tmp=$(mktemp)
+  tmp=$(mktemp) || return 1
 
   if [[ -f "$dest" ]] && grep -qxF "$start" "$dest" && grep -qxF "$end" "$dest"; then
     # Replace existing block.
@@ -548,7 +576,7 @@ deploy_marker_block() {
       $0 == s { print; print b; in_block = 1; next }
       $0 == e { print; in_block = 0; next }
       !in_block { print }
-    ' "$dest" > "$tmp"
+    ' "$dest" > "$tmp" || { rm -f "$tmp"; return 1; }
   else
     # Append a new block at the end.
     {
@@ -556,22 +584,23 @@ deploy_marker_block() {
       printf '\n%s\n' "$start"
       printf '%s\n' "$body"
       printf '%s\n' "$end"
-    } > "$tmp"
+    } > "$tmp" || { rm -f "$tmp"; return 1; }
   fi
-  _write_atomic "$tmp" "$dest" "$mode"
+  _write_atomic "$tmp" "$dest" "$mode" || { local rc=$?; rm -f "$tmp"; return "$rc"; }
   rm -f "$tmp"
 
   local h
-  h=$(compute_block_hash "$dest" "$start" "$end")
+  h=$(compute_block_hash "$dest" "$start" "$end") || return $?
+  [ -n "$h" ] || return 1
   local entry
   entry=$(jq -n --arg s "$start" --arg e "$end" --arg h "$h" \
-    '{mode:"marker_block", source:"(composed)", marker_start:$s, marker_end:$e, deployed_block_hash:$h}')
+    '{mode:"marker_block", source:"(composed)", marker_start:$s, marker_end:$e, deployed_block_hash:$h}') || return $?
   manifest_set_file "$dest" "$entry"
 }
 
 remove_managed_file() {
   local dest=$1
-  rm -f "$dest"
+  rm -f "$dest" || return $?
   manifest_remove_file "$dest"
 }
 
@@ -819,9 +848,9 @@ _strip_absent_secret_servers() {
 # is expanded, so no credential can reach the deployed file.
 deploy_overwrite_file_prose() {
   local src=$1 dest=$2 label=$3
-  local tmp; tmp=$(mktemp)
-  _substitute_home_only "$src" "$tmp"
-  deploy_overwrite_file "$tmp" "$dest" "$label"
+  local tmp rc; tmp=$(mktemp) || return 1
+  _substitute_home_only "$src" "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }
+  deploy_overwrite_file "$tmp" "$dest" "$label" || { rc=$?; rm -f "$tmp"; return "$rc"; }
   rm -f "$tmp"
 }
 
@@ -833,13 +862,13 @@ deploy_overwrite_file_prose() {
 # substituted deploy over it is how a credential gets back into prose.
 deploy_overwrite_file_rendered() {
   local src=$1 dest=$2 label=$3
-  local tmp; tmp=$(mktemp)
-  _render_managed_source "$src" "$dest" "$tmp"
+  local tmp rc; tmp=$(mktemp) || return 1
+  _render_managed_source "$src" "$dest" "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }
   # Substitution writes through a 0600 mktemp, which strips the source's
   # executable bit — fatal for hook scripts. Propagate +x, same as
   # deploy_overwrite_file_rendered.
-  [[ -x "$src" ]] && chmod +x "$tmp"
-  deploy_overwrite_file "$tmp" "$dest" "$label"
+  if [[ -x "$src" ]]; then chmod +x "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }; fi
+  deploy_overwrite_file "$tmp" "$dest" "$label" || { rc=$?; rm -f "$tmp"; return "$rc"; }
   rm -f "$tmp"
 }
 
@@ -847,9 +876,9 @@ deploy_overwrite_file_rendered() {
 # Like deploy_merge_file, but expands placeholders in src before merging.
 deploy_merge_file_substituted() {
   local src=$1 dest=$2 label=$3
-  local tmp; tmp=$(mktemp)
-  _substitute_file_to "$src" "$tmp"
-  deploy_merge_file "$tmp" "$dest" "$label"
+  local tmp rc; tmp=$(mktemp) || return 1
+  _substitute_file_to "$src" "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }
+  deploy_merge_file "$tmp" "$dest" "$label" || { rc=$?; rm -f "$tmp"; return "$rc"; }
   rm -f "$tmp"
 }
 
@@ -1036,7 +1065,8 @@ classify_managed_files() {
 #   to_remove             — delete file and drop from manifest.
 apply_managed_buckets() {
   local allowed=" $1 "  # space-pad for substring match
-  local dest src bucket mode
+  local dest src bucket mode rc=0
+  declare -gA APPLY_FAILURES=()
   for dest in "${!BUCKETS[@]}"; do
     bucket=${BUCKETS[$dest]}
     case "$allowed" in
@@ -1047,50 +1077,52 @@ apply_managed_buckets() {
     src="$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]:-}"
     case "$bucket" in
       restore|new_file|will_update)
-        _apply_deploy "$mode" "$dest" "$src"
+        _apply_deploy "$mode" "$dest" "$src" || { APPLY_FAILURES[$dest]=1; rc=1; }
         ;;
       drifted_and_updating|will_update_owned|new_file_existing)
         if [[ -e "$dest" ]] && ! _incoming_matches_dest "$mode" "$src" "$dest"; then
-          _backup_file "$dest"
+          _backup_file "$dest" || { APPLY_FAILURES[$dest]=1; rc=1; continue; }
         fi
-        _apply_deploy "$mode" "$dest" "$src"
+        _apply_deploy "$mode" "$dest" "$src" || { APPLY_FAILURES[$dest]=1; rc=1; }
         ;;
       drifted_but_aligned)
         if [[ "$mode" = "marker_block" ]]; then
           local h
           h=$(compute_block_hash "$dest" \
-              "$(managed_marker_block_start)" "$(managed_marker_block_end)")
+              "$(managed_marker_block_start)" "$(managed_marker_block_end)") \
+            || { APPLY_FAILURES[$dest]=1; rc=1; continue; }
+          [ -n "$h" ] || { APPLY_FAILURES[$dest]=1; rc=1; continue; }
           manifest_set_file "$dest" \
             "$(jq -n --arg s "$(managed_marker_block_start)" \
                      --arg e "$(managed_marker_block_end)" \
                      --arg h "$h" \
-                '{mode:"marker_block",source:"(composed)",marker_start:$s,marker_end:$e,deployed_block_hash:$h}')"
+                '{mode:"marker_block",source:"(composed)",marker_start:$s,marker_end:$e,deployed_block_hash:$h}')" \
+            || { APPLY_FAILURES[$dest]=1; rc=1; }
         else
           local h
           # compute_managed_hash, not compute_hash: classification compares
           # managed hashes, so recording a raw hash here (which for codex's
           # config.toml includes the ignored [projects.*] trust sections)
           # would disagree with the next classify and re-drift every sync.
-          h=$(compute_managed_hash "$dest")
+          h=$(compute_managed_hash "$dest") || { APPLY_FAILURES[$dest]=1; rc=1; continue; }
+          [ -n "$h" ] || { APPLY_FAILURES[$dest]=1; rc=1; continue; }
           manifest_set_file "$dest" \
             "$(jq -n --arg s "${FILE_SOURCE[$dest]}" --arg h "$h" \
-                '{mode:"overwrite",source:$s,deployed_hash:$h}')"
+                '{mode:"overwrite",source:$s,deployed_hash:$h}')" \
+            || { APPLY_FAILURES[$dest]=1; rc=1; }
         fi
         ;;
       merge)
-        [[ -f "$src" ]] && _apply_deploy merge "$dest" "$src"
+        if [[ -f "$src" ]]; then
+          _apply_deploy merge "$dest" "$src" || { APPLY_FAILURES[$dest]=1; rc=1; }
+        fi
         ;;
       to_remove)
-        remove_managed_file "$dest"
+        remove_managed_file "$dest" || { APPLY_FAILURES[$dest]=1; rc=1; }
         ;;
     esac
   done
-  # Ensure a clean exit code under `set -e` — the for loop's last iteration
-  # may have been the `merge)` case with `[[ -f $src ]] && ...` returning 1
-  # (because the blueprint clone in test fixtures only stages a subset of
-  # managed sources). Without this, the function would propagate that 1
-  # depending on associative-array iteration order — flaky-as-baselined.
-  return 0
+  return "$rc"
 }
 
 # Internal: dispatch deploy by mode. Substitutes secrets so {{HOME}} and
@@ -1105,7 +1137,7 @@ _apply_deploy() {
       deploy_overwrite_file "$src" "$dest" "${FILE_SOURCE[$dest]}"
       ;;
     merge)
-      _ensure_merge_dest "$dest"
+      _ensure_merge_dest "$dest" || return $?
       deploy_merge_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
       ;;
     marker_block)
@@ -1154,6 +1186,6 @@ _backup_file() {
   # bits, only the executable bit survives as 0700.
   mode=0600
   [[ -x "$dest" ]] && mode=0700
-  _write_atomic "$dest" "$dest.bak.$stamp" "$mode"
+  _write_atomic "$dest" "$dest.bak.$stamp" "$mode" || return $?
   echo "      backup: $dest.bak.$stamp"
 }

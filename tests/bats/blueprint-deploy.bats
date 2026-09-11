@@ -116,6 +116,16 @@ EOF
   [ -f "$AICODING_MANIFEST" ]
 }
 
+@test "manifest_stage_commit reports a manifest write failure" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  write_manifest() { return 17; }
+
+  run manifest_stage_commit
+
+  [ "$status" -eq 17 ]
+}
+
 @test "manifest_get_file: returns per-file entry as JSON" {
   cp "$BLUEPRINT_ROOT/tests/bats/fixtures/sample-manifest.json" "$AICODING_MANIFEST"
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
@@ -272,6 +282,46 @@ EOF
   [ -n "$bak" ]
   grep -q "personal codex config" "$bak"
   jq -e '.files["'"$HOME"'/.codex/config.toml"]' "$AICODING_MANIFEST"
+}
+
+@test "apply_managed_buckets: reports a failed write and continues unrelated paths" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs"
+  printf 'first\n' > "$AICODING_BLUEPRINT_CLONE/configs/first"
+  printf 'second\n' > "$AICODING_BLUEPRINT_CLONE/configs/second"
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE
+  BUCKETS[$TMPDIR/first]=new_file
+  FILE_MODE[$TMPDIR/first]=overwrite
+  FILE_SOURCE[$TMPDIR/first]=configs/first
+  BUCKETS[$TMPDIR/second]=new_file
+  FILE_MODE[$TMPDIR/second]=overwrite
+  FILE_SOURCE[$TMPDIR/second]=configs/second
+  _apply_deploy() {
+    [ "$2" != "$TMPDIR/first" ] || return 23
+    printf 'applied\n' > "$2"
+  }
+
+  run apply_managed_buckets "new_file"
+
+  [ "$status" -ne 0 ]
+  [ -f "$TMPDIR/second" ]
+}
+
+@test "deploy helpers do not stage manifest entries after failed writes" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  printf 'source\n' > "$TMPDIR/source"
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  manifest_stage_begin
+  _write_atomic() { return 24; }
+
+  run deploy_overwrite_file "$TMPDIR/source" "$TMPDIR/dest" configs/source
+  [ "$status" -eq 24 ]
+
+  _json_merge_into() { return 25; }
+  run deploy_merge_file "$TMPDIR/source" "$TMPDIR/merge" configs/source
+  [ "$status" -eq 25 ]
 }
 
 @test "apply_managed_buckets: no backup when disk already matches incoming content" {
@@ -910,6 +960,25 @@ EOF
   run owned_file_has_generated_provenance "$dest" "$source_path"
   [ "$status" -eq 0 ]
   printf '#!/bin/sh\necho user edit\n' > "$dest"
+  run owned_file_has_generated_provenance "$dest" "$source_path"
+  [ "$status" -ne 0 ]
+}
+
+@test "owned hook provenance works after Git metadata is removed" {
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/release"
+  local source_path=configs/claude/hooks/example.sh
+  local dest="$HOME/.claude/hooks/example.sh"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE/.aicoding-generated-provenance/$source_path" \
+    "$(dirname "$dest")"
+  printf '#!/bin/sh\necho old\n' \
+    > "$AICODING_BLUEPRINT_CLONE/.aicoding-generated-provenance/$source_path/old"
+  printf '#!/bin/sh\necho old\n' > "$dest"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+
+  run owned_file_has_generated_provenance "$dest" "$source_path"
+  [ "$status" -eq 0 ]
+
+  printf '#!/bin/sh\necho edited\n' > "$dest"
   run owned_file_has_generated_provenance "$dest" "$source_path"
   [ "$status" -ne 0 ]
 }
