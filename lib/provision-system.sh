@@ -34,12 +34,19 @@ apt_install() {
     return 1
   fi
   drop_broken_apt_sources
+  # Keep an unreachable mirror from stalling provisioning for minutes.
+  # These are connection/data inactivity timeouts, not a whole-command limit.
+  local -a apt_options=(
+    -o Acquire::http::Timeout=10
+    -o Acquire::https::Timeout=10
+    -o Acquire::Retries=1
+  )
   # Tolerate a non-zero update exit — third-party repos that we don't manage
   # may still fail on stale GPG keys; we've cleaned the known offenders.
-  $SUDO apt-get update -qq || warn "apt-get update had issues — continuing"
+  $SUDO apt-get "${apt_options[@]}" update -qq || warn "apt-get update had issues — continuing"
   # Use `env` after sudo so DEBIAN_FRONTEND survives sudo's env_reset and
   # debconf doesn't fall back to Dialog/Readline/Teletype frontends.
-  $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@"
+  $SUDO env DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" install -y --no-install-recommends "$@"
 }
 
 # Universal:2 ships an apt source for dl.yarnpkg.com with a stale GPG key
