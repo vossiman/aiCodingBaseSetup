@@ -18,7 +18,16 @@ setup() {
     printf '#!/bin/sh\nexit 0\n' > "$TMP/stubs/$cmd"
     chmod +x "$TMP/stubs/$cmd"
   done
-  for c in claude opencode agent; do
+  cat > "$TMP/stubs/claude" <<'EOF'
+#!/bin/sh
+echo "claude $*" >> "$TMP/ran.log"
+case "$*" in
+  "mcp get logfire") printf '  URL: https://logfire-eu.pydantic.dev/mcp\n' ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMP/stubs/claude"
+  for c in opencode agent codex; do
     printf '#!/bin/sh\necho "%s $*" >> "$TMP/ran.log"\n' "$c" > "$TMP/stubs/$c"
     chmod +x "$TMP/stubs/$c"
   done
@@ -30,11 +39,10 @@ setup() {
 }
 teardown() { cd /; rm -rf "$TMP"; }
 
-@test "sync --boot is non-interactive and refreshes binaries" {
+@test "sync --boot is non-interactive and honors the suite network guard" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   AICODING_UPDATE_TTL=0 aicoding_sync --boot
-  grep -q "claude" "$TMP/ran.log"
-  grep -q "opencode" "$TMP/ran.log"
+  if grep -qE 'claude update|opencode upgrade|agent update' "$TMP/ran.log"; then false; fi
 }
 
 @test "sync --boot skips binaries when the throttle stamp is fresh" {
@@ -42,14 +50,35 @@ teardown() { cd /; rm -rf "$TMP"; }
   : > "$TMP/ran.log"                       # ignore anything install.sh logged
   mkdir -p "$AICODING_UPDATE_STATE"; : > "$AICODING_UPDATE_STATE/.binaries.stamp"
   AICODING_UPDATE_TTL=3600 aicoding_sync --boot
-  [ ! -s "$TMP/ran.log" ]                  # binaries were NOT refreshed
+  if grep -Eq 'claude update|opencode upgrade|agent update|codex update' "$TMP/ran.log"; then false; fi
 }
 
-@test "sync provisioning reconciles the Playwright MCP browser on existing machines" {
+@test "sync provisioning defers moving Playwright and Context7 resources without invoking npx" {
   printf '#!/bin/sh\necho "$*" >> "$TMP/npx-calls"\n' > "$TMP/stubs/npx"
   export SCRIPT_DIR="$BLUEPRINT_ROOT"
-  AICODINGSETUP_SKIP_NETWORK= _sync_provision yes
-  grep -q -- '^-y @playwright/mcp@latest install-browser --no-remove chromium$' "$TMP/npx-calls"
+  _sync_source_update_libraries "$BLUEPRINT_ROOT"
+  AICODINGSETUP_SKIP_NETWORK= run _sync_provision yes
+  [ "$status" -ne 0 ]
+  [ ! -s "$TMP/npx-calls" ]
+  jq -e '.components["mcp-context7"].state == "blocked"
+    and .components["mcp-playwright"].state == "blocked"' "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "unattended provisioning preserves an aggregate failure receipt and does not stamp" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  _sync_source_update_libraries "$BLUEPRINT_ROOT"
+  local before
+  before=$(jq -r '.provision_commit' "$AICODING_MANIFEST")
+  cat > "$TMP/stubs/claude" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+  chmod +x "$TMP/stubs/claude"
+  run _sync_provision boot
+  [ "$status" -ne 0 ]
+  [ "$(jq -r '.provision_commit' "$AICODING_MANIFEST")" = "$before" ]
+  jq -e '.components.provision.state == "blocked" and .components.provision.reason == "partial_provision_failure"' \
+    "$AICODING_STATE_DIR/update-results.json"
 }
 
 @test "_sync_binaries: host profile refreshes claude only" {
@@ -248,6 +277,36 @@ teardown() { cd /; rm -rf "$TMP"; }
   AICODING_UPDATE_TTL=0 aicoding_sync --boot
   grep -q 'my-personal-model' "$HOME/.codex/config.toml"
   run ls "$HOME/.codex/config.toml.bak."*
+  [ "$status" -ne 0 ]
+}
+
+@test "boot blocks incompatible Codex config while unrelated config advances" {
+  local clone="$TMP/compat-blueprint"
+  rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$clone/"
+  export AICODING_BLUEPRINT_CLONE="$clone" AICODING_BLUEPRINT_LOCAL=1 SCRIPT_DIR="$clone"
+  bash "$clone/install.sh" </dev/null
+  local old_codex old_tmux
+  old_codex=$(cat "$HOME/.codex/config.toml")
+  old_tmux=$(cat "$HOME/.tmux.conf")
+  printf '\nfuture_setting = true\n' >> "$clone/configs/codex/config.toml"
+  printf '\n# unrelated safe update\n' >> "$clone/configs/tmux/tmux.conf"
+  cat > "$TMP/stubs/codex" <<'EOF'
+#!/bin/sh
+echo 'codex-cli 0.147.0'
+EOF
+  chmod +x "$TMP/stubs/codex"
+  _sync_source_update_libraries "$clone"
+
+  run aicoding_config_is_compatible "$HOME/.codex/config.toml"
+  [ "$status" -ne 0 ]
+  [ "$output" = codex_requires_0.148 ]
+
+  run aicoding_sync --boot
+  [ "$(cat "$HOME/.codex/config.toml")" = "$old_codex" ]
+  [ "$(cat "$HOME/.tmux.conf")" != "$old_tmux" ]
+  grep -q 'unrelated safe update' "$HOME/.tmux.conf"
+  jq -e '.components.config.state == "blocked" and .components.config.reason == "partial_config_blocked"' \
+    "$AICODING_STATE_DIR/update-results.json"
   [ "$status" -ne 0 ]
 }
 

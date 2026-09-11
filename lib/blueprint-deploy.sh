@@ -227,6 +227,56 @@ _is_owned_overwrite() {
   esac
 }
 
+# Return success only when the current bytes are a version previously shipped
+# at the manifest's source path. This distinguishes a stale generated hook
+# restored from an image from a genuine local edit whose provenance is unknown.
+owned_file_has_generated_provenance() {
+  local dest=$1 source=$2 commit tmp
+  [ -f "$dest" ] && [ -d "$AICODING_BLUEPRINT_CLONE/.git" ] || return 1
+  tmp=$(mktemp)
+  while IFS= read -r commit; do
+    [ -n "$commit" ] || continue
+    git -C "$AICODING_BLUEPRINT_CLONE" show "$commit:$source" >"$tmp" 2>/dev/null || continue
+    local rendered="$tmp.rendered"
+    _render_managed_source "$tmp" "$dest" "$rendered" 2>/dev/null || { rm -f "$rendered"; continue; }
+    if cmp -s "$rendered" "$dest"; then rm -f "$tmp" "$rendered"; return 0; fi
+    rm -f "$rendered"
+  done < <(git -C "$AICODING_BLUEPRINT_CLONE" log --format=%H --all -- "$source" 2>/dev/null)
+  rm -f "$tmp"
+  return 1
+}
+
+# Acquire non-blocking writer locks inside the physical shared destinations.
+# FDs remain open for the process lifetime, including a refresh exec.
+aicoding_shared_locks_acquire() {
+  local dest logical root fd
+  local -a roots=()
+  local -A seen=()
+  declare -gA _AICODING_SHARED_LOCKED_ROOTS
+  declare -ga _AICODING_SHARED_LOCK_FDS
+  for dest in "$@"; do
+    case "$dest" in
+      "$HOME/.claude"/*) logical="$HOME/.claude" ;;
+      "$HOME/.codex"/*) logical="$HOME/.codex" ;;
+      "$HOME/.cursor"/*) logical="$HOME/.cursor" ;;
+      "$HOME/.config/opencode"/*|"$HOME/.local/share/opencode"/*) logical="$HOME/.local/share/opencode" ;;
+      *) continue ;;
+    esac
+    mkdir -p "$logical" || return 1
+    root=$(readlink -f "$logical") || return 1
+    [ -z "${seen[$root]:-}" ] || continue
+    seen[$root]=1
+    roots+=("$root")
+  done
+  while IFS= read -r root; do
+    [ -z "${_AICODING_SHARED_LOCKED_ROOTS[$root]:-}" ] || continue
+    exec {fd}>"$root/.aicoding-update.lock" || return 1
+    flock -n "$fd" || { exec {fd}>&-; return 1; }
+    _AICODING_SHARED_LOCKED_ROOTS[$root]=1
+    _AICODING_SHARED_LOCK_FDS+=("$fd")
+  done < <(printf '%s\n' "${roots[@]}" | LC_ALL=C sort)
+}
+
 # enumerate_skill_files <skills_root> — one file path per line, relative to
 # <skills_root>, sorted. The single source of truth for what a skill dir
 # ships: install (provision-managed-files.sh) and sync inventory

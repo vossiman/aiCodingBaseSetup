@@ -884,6 +884,36 @@ EOF
   echo "$output" | grep -qF "$HOME/.claude/hooks/bw-deny-files.sh|overwrite|configs/claude/hooks/bw-deny-files.sh"
 }
 
+@test "shared destination lock lives in the shared root and excludes a second writer" {
+  mkdir -p "$HOME/.claude"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  aicoding_shared_locks_acquire "$HOME/.claude/hooks/x.sh"
+  [ -f "$HOME/.claude/.aicoding-update.lock" ]
+  run bash -c '. "$1/lib/blueprint-deploy.sh"; aicoding_shared_locks_acquire "$HOME/.claude/settings.json"' _ "$BLUEPRINT_ROOT"
+  [ "$status" -ne 0 ]
+}
+
+@test "owned hook restoration requires historical generated provenance" {
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
+  git init -q -b main "$AICODING_BLUEPRINT_CLONE"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs/claude/hooks" "$HOME/.claude/hooks"
+  local source_path=configs/claude/hooks/example.sh dest="$HOME/.claude/hooks/example.sh"
+  printf '#!/bin/sh\necho old\n' > "$AICODING_BLUEPRINT_CLONE/$source_path"
+  git -C "$AICODING_BLUEPRINT_CLONE" add .
+  git -C "$AICODING_BLUEPRINT_CLONE" -c user.email=t@t -c user.name=t commit -qm old
+  cp "$AICODING_BLUEPRINT_CLONE/$source_path" "$dest"
+  printf '#!/bin/sh\necho new\n' > "$AICODING_BLUEPRINT_CLONE/$source_path"
+  git -C "$AICODING_BLUEPRINT_CLONE" -c user.email=t@t -c user.name=t commit -qam new
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+
+  run owned_file_has_generated_provenance "$dest" "$source_path"
+  [ "$status" -eq 0 ]
+  printf '#!/bin/sh\necho user edit\n' > "$dest"
+  run owned_file_has_generated_provenance "$dest" "$source_path"
+  [ "$status" -ne 0 ]
+}
+
 @test "managed_inventory_merge: includes cursor mcp.json" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run managed_inventory_merge

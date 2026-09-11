@@ -546,7 +546,7 @@ ensure_playwright_system_deps() {
   bin="$(playwright_chromium_bin)" || {
     warn "The Chromium revision required by Playwright MCP is unavailable"
     info "Run: npx -y @playwright/mcp@latest install-browser chromium"
-    return 0
+    _provision_soft_failure; return $?
   }
   local rc=0
   missing="$(playwright_missing_libs "$bin")" || rc=$?
@@ -554,7 +554,7 @@ ensure_playwright_system_deps() {
     # install-deps cannot repair a bad download — the fix is re-fetching it.
     warn "Could not inspect $bin — ldd failed (truncated or partial download?)"
     info "Run: npx -y @playwright/mcp@latest install-browser --force chromium"
-    return 0
+    _provision_soft_failure; return $?
   fi
   if [[ -z "$missing" ]]; then
     ok "Playwright system libraries present"
@@ -568,11 +568,12 @@ ensure_playwright_system_deps() {
     || warn "playwright install-deps failed"
   missing="$(playwright_missing_libs "$bin")" || {
     warn "Could not recheck Playwright system libraries — ldd failed"
-    return 0
+    _provision_soft_failure; return $?
   }
   if [[ -n "$missing" ]]; then
     warn "Playwright system libraries still missing: $(tr '\n' ' ' <<<"$missing")"
     info "Run: sudo npx -y --package=@playwright/mcp@latest -c 'playwright-core install-deps chromium'"
+    _provision_soft_failure; return $?
   else
     ok "Playwright system libraries installed"
   fi
@@ -580,14 +581,20 @@ ensure_playwright_system_deps() {
 
 ensure_playwright_browsers() {
   [[ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ]] || return 0
-  command -v npx &>/dev/null || return 0
+  if [ -n "${AICODING_SYNC_MODE:-}" ]; then
+    warn "Playwright MCP browser refresh deferred — exact staged package unavailable"
+    command -v aicoding_result_record >/dev/null 2>&1 \
+      && aicoding_result_record mcp-playwright blocked "" exact_version_staging_unavailable || true
+    return 1
+  fi
+  command -v npx &>/dev/null || { _provision_soft_failure; return $?; }
   info "Ensuring Playwright MCP's Chromium revision is installed"
   # The installer checks its exact revision and skips an existing download.
   # Keep older revisions: another active MCP session may still be using one.
   # Explicit pipefail also catches failures when called by fail-open sync.
   if ! (set -o pipefail; npx -y @playwright/mcp@latest install-browser --no-remove chromium 2>&1 | tail -5); then
     warn "Playwright MCP browser install failed"
-    return 0
+    _provision_soft_failure; return $?
   fi
   ensure_playwright_system_deps
 }

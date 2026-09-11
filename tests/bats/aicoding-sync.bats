@@ -22,7 +22,13 @@ setup() {
   # network; assertions check file/manifest state, not this output.
   export AICODING_UPDATE_STATE="$TMPDIR/state/updates"
   mkdir -p "$TMPDIR/stubs"
-  for c in claude opencode agent cursor-agent npx npm; do
+  cat > "$TMPDIR/stubs/claude" <<'EOF'
+#!/bin/sh
+case "$*" in "mcp get logfire") printf '  URL: https://logfire-eu.pydantic.dev/mcp\n';; esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+  for c in opencode agent cursor-agent npx npm; do
     printf '#!/bin/sh\nexit 0\n' > "$TMPDIR/stubs/$c"
     chmod +x "$TMPDIR/stubs/$c"
   done
@@ -247,4 +253,39 @@ _seed_origin_ahead() {
   run "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
   [ "$status" -eq 0 ]
   if echo "$output" | grep -q "re-running from the refreshed clone"; then false; fi
+}
+
+@test "aicoding-sync serializes manual and boot runs before blueprint refresh" {
+  mkdir -p "$HOME/.local/state/aicoding"
+  exec 8>"$HOME/.local/state/aicoding/sync.lock"
+  flock -n 8
+
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --boot </dev/null
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "already running"
+  [ ! -e "$AICODING_STATE_DIR/update-results.json" ]
+}
+
+@test "selected blueprint refresh advances to the exact CI-qualified SHA, not newer main" {
+  local first newer
+  (cd "$AICODING_BLUEPRINT_CLONE" && git checkout -q -B main)
+  first=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD)
+  git clone -q --bare "$AICODING_BLUEPRINT_CLONE" "$TMPDIR/exact-origin.git"
+  git -C "$AICODING_BLUEPRINT_CLONE" remote add origin "$TMPDIR/exact-origin.git"
+  local work="$TMPDIR/exact-work"
+  git clone -q "$TMPDIR/exact-origin.git" "$work"
+  echo newer >> "$work/README.md"
+  git -C "$work" -c user.email=t@t -c user.name=t commit -qam newer
+  git -C "$work" push -q origin HEAD:main
+  newer=$(git -C "$work" rev-parse HEAD)
+  [ "$first" != "$newer" ]
+
+  . "$BLUEPRINT_ROOT/lib/sync.sh"
+  export AICODING_DATA_DIR="$TMPDIR/data"
+  export AICODING_BLUEPRINT_REMOTE="$TMPDIR/exact-origin.git"
+  local staged
+  staged=$(_sync_stage_selected_blueprint "$first")
+  [ "$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD)" = "$first" ]
+  [ "$staged" = "$AICODING_DATA_DIR/versions/aicoding/$first" ]
+  [ "$(cat "$staged/.aicoding-version")" = "$first" ]
 }

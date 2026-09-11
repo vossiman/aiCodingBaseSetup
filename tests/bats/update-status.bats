@@ -294,6 +294,28 @@ _mk_clone() {  # fixture: commit A (stamp point), then commit B touching $1
   echo "$output" | grep -q "run: aicoding-install"
 }
 
+@test "failed automatic provisioning reports its receipt without obsolete install advice" {
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  export AICODING_RESULTS_FILE="$TMP/results.json"
+  _mk_clone lib/provision-system.sh
+  jq -n --arg s "$A_SHA" '{provision_commit:$s}' > "$AICODING_MANIFEST"
+  jq -n '{schema:1,components:{provision:{state:"blocked",reason:"partial_provision_failure",target:"target"}}}' > "$AICODING_RESULTS_FILE"
+  run "$BIN" --banner
+  [[ "$output" == *"automatic provisioning blocked"* ]]
+  [[ "$output" != *"run: aicoding-install"* ]]
+}
+
+@test "successful provisioning receipt suppresses stale legacy provision stamp" {
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  export AICODING_RESULTS_FILE="$TMP/results.json"
+  _mk_clone lib/provision-system.sh
+  local head; head=$(git -C "$CLONE" rev-parse HEAD)
+  jq -n --arg s "$A_SHA" '{provision_commit:$s}' > "$AICODING_MANIFEST"
+  jq -n --arg h "$head" '{schema:1,components:{provision:{state:"current",reason:"verified",successful_version:$h}}}' > "$AICODING_RESULTS_FILE"
+  run "$BIN" --banner
+  [[ "$output" != *"provisioning behind"* ]]
+}
+
 @test "host provision drift tracks install-host.sh instead of install.sh" {
   export AICODING_MANIFEST="$TMP/manifest.json"
   _mk_clone install-host.sh

@@ -2,6 +2,28 @@
 set -uo pipefail
 SCRIPT_REAL=$(readlink -f "$0"); SCRIPT_DIR=$(dirname "$(dirname "$SCRIPT_REAL")")
 : "${AICODING_BLUEPRINT_CLONE:=/tmp/aicoding}"
+
+# The scheduled entrypoint is incapable of prompting, including in code
+# reached after a refresh exec.
+for _aicoding_arg in "$@"; do
+  [ "$_aicoding_arg" = --boot ] && { exec </dev/null; break; }
+done
+unset _aicoding_arg
+
+# Serialize the entire run before loading a possibly stale tracking clone. The
+# descriptor and owner PID survive refresh's exec; a separately forked command
+# gets a new PID and must contend for the lock normally.
+: "${AICODING_STATE_DIR:=$HOME/.local/state/aicoding}"
+mkdir -p "$AICODING_STATE_DIR"
+if [ "${AICODING_SYNC_LOCK_PID:-}" != "$$" ] || [ -z "${AICODING_SYNC_LOCK_FD:-}" ]; then
+  if [ -n "${AICODING_SYNC_LOCK_FD:-}" ]; then exec {AICODING_SYNC_LOCK_FD}>&- 2>/dev/null || true; fi
+  exec {AICODING_SYNC_LOCK_FD}>"$AICODING_STATE_DIR/sync.lock" || exit 1
+  if ! flock -n "$AICODING_SYNC_LOCK_FD"; then
+    echo "aicoding-sync: update already running" >&2
+    exit 0
+  fi
+  export AICODING_SYNC_LOCK_FD AICODING_SYNC_LOCK_PID=$$
+fi
 # NO AICODING_MANIFEST default here. lib/sync.sh and blueprint-deploy.sh share
 # the canonical container-local default. A duplicate entrypoint default once
 # silently won — `:=` in the libraries became a no-op — so sync wrote the old

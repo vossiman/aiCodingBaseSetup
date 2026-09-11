@@ -1,8 +1,8 @@
 # lib/provision.sh — machine-state provisioning shared by install.sh and
 # aicoding-sync: MCP server registration, marketplace plugins, and the npm
-# packages backing stdio MCPs. Everything here is idempotent and fail-open so
-# sync can re-run it on every boot (throttled) to converge existing machines,
-# not just fresh provisions. Sourced (no shebang / set -e); matches lib/*.sh.
+# packages backing stdio MCPs. Interactive installs remain fail-open; sync
+# aggregates known failures so it cannot stamp partial provisioning complete.
+# Sourced (no shebang / set -e); matches lib/*.sh.
 
 # Managed component lists (also used for unmanaged component detection).
 MANAGED_MCPS=("firecrawl" "brave-search" "context7" "playwright" "logfire" "memory-router")
@@ -36,17 +36,41 @@ declare -F warn   >/dev/null || warn()   { echo "WARN: $*"; }
 declare -F header >/dev/null || header() { echo "=== $* ==="; }
 declare -F err    >/dev/null || err()    { echo "ERROR: $*"; }
 
+# Installers remain fail-open for people running install.sh. Unattended sync
+# needs truthful aggregate status, so known failures propagate in that mode.
+_provision_soft_failure() { [ -z "${AICODING_SYNC_MODE:-}" ]; }
+
+# Scheduled calls are closed-stdin and bounded. Interactive install.sh keeps
+# the upstream command behavior because a person can answer its prompts.
+_provision_run() {
+  if [ -n "${AICODING_SYNC_MODE:-}" ]; then
+    timeout "${AICODING_PROVISION_TIMEOUT:-120}" "$@" </dev/null
+  else
+    "$@"
+  fi
+}
+
+_provision_record_blocked() {
+  command -v aicoding_result_record >/dev/null 2>&1 \
+    && aicoding_result_record "$1" blocked "" "$2" || true
+}
+
 # --- MCP npm packages ---
 # Install MCP server binaries that aren't run via npx
 install_mcp_packages() {
   header "MCP npm packages"
 
-  if ! command -v npm &>/dev/null; then
-    warn "npm not found — skipping MCP package installation"
-    return
+  if [ -n "${AICODING_SYNC_MODE:-}" ]; then
+    info "Installed MCP packages are reconciled by the staged component updater"
+    return 0
   fi
 
-  local packages=("firecrawl-mcp" "@brave/brave-search-mcp-server")
+  if ! command -v npm &>/dev/null; then
+    warn "npm not found — skipping MCP package installation"
+    _provision_soft_failure; return $?
+  fi
+
+  local packages=("firecrawl-mcp" "@brave/brave-search-mcp-server") rc=0
   for pkg in "${packages[@]}"; do
     if npm list -g "$pkg" &>/dev/null; then
       ok "$pkg already installed"
@@ -60,9 +84,11 @@ install_mcp_packages() {
         ok "$pkg installed (sudo)"
       else
         warn "Failed to install $pkg — install manually with: npm install -g $pkg"
+        rc=1
       fi
     fi
   done
+  [ "$rc" -eq 0 ] || { _provision_soft_failure; return $?; }
 }
 
 # Per-server fingerprint of the extra `claude mcp add` args (headers). The
@@ -88,7 +114,7 @@ ensure_http_mcp() {
   # stay fail-open under install.sh's set -e/pipefail — empty means "not
   # registered", and the add path below reports any real trouble.
   local current
-  current="$(claude mcp get "$name" 2>/dev/null | sed -n 's/^ *URL: //p' | head -n1)" || true
+  current="$(_provision_run claude mcp get "$name" 2>/dev/null | sed -n 's/^ *URL: //p' | head -n1)" || true
   if [[ -n "$current" ]]; then
     if [[ "$current" == "$url" && "$stored" == "$fp" ]]; then
       ok "$name MCP already configured"
@@ -99,25 +125,27 @@ ensure_http_mcp() {
     else
       info "$name MCP connection args changed — re-registering"
     fi
-    if ! claude mcp remove -s user "$name" 2>/dev/null; then
+    if ! _provision_run claude mcp remove -s user "$name" 2>/dev/null; then
       warn "$name MCP: failed to remove stale registration — still at $current"
-      return
+      _provision_soft_failure; return $?
     fi
   fi
-  if claude mcp add --transport http -s user "$name" "$url" "$@" 2>/dev/null; then
+  if _provision_run claude mcp add --transport http -s user "$name" "$url" "$@" 2>/dev/null; then
     # Read back and verify: an add that "succeeded" against a lingering old
     # registration would otherwise report a config that isn't there.
     local after
-    after="$(claude mcp get "$name" 2>/dev/null | sed -n 's/^ *URL: //p' | head -n1)" || true
+    after="$(_provision_run claude mcp get "$name" 2>/dev/null | sed -n 's/^ *URL: //p' | head -n1)" || true
     if [[ "$after" == "$url" ]]; then
       mkdir -p "$AICODING_MCP_STATE" 2>/dev/null || true
       printf '%s\n' "$fp" > "$fp_file" 2>/dev/null || true
       ok "$name MCP configured"
     else
       warn "$name MCP: registration did not verify (URL is '${after:-none}', wanted $url)"
+      _provision_soft_failure; return $?
     fi
   else
     warn "$name MCP may need manual setup"
+    _provision_soft_failure; return $?
   fi
 }
 
@@ -127,17 +155,20 @@ install_claude_mcps() {
 
   if ! command -v claude &>/dev/null; then
     warn "Claude Code CLI not found — skipping MCP installation"
-    return
+    return 0
   fi
+
+  local rc=0
 
   # firecrawl
   if [[ -n "${FIRECRAWL_API_KEY:-}" ]]; then
-    if claude mcp add firecrawl -s user -e "FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}" -- firecrawl-mcp 2>/dev/null; then
+    if _provision_run claude mcp add firecrawl -s user -e "FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}" -- firecrawl-mcp 2>/dev/null; then
       ok "firecrawl MCP configured"
-    elif claude mcp get firecrawl &>/dev/null; then
+    elif _provision_run claude mcp get firecrawl &>/dev/null; then
       ok "firecrawl MCP already configured"
     else
       warn "firecrawl MCP may need manual setup"
+      rc=1
     fi
   else
     warn "Skipping firecrawl MCP — no API key"
@@ -145,25 +176,32 @@ install_claude_mcps() {
 
   # brave-search
   if [[ -n "${BRAVE_API_KEY:-}" ]]; then
-    if claude mcp add brave-search -s user -e "BRAVE_API_KEY=${BRAVE_API_KEY}" -- brave-search-mcp-server 2>/dev/null; then
+    if _provision_run claude mcp add brave-search -s user -e "BRAVE_API_KEY=${BRAVE_API_KEY}" -- brave-search-mcp-server 2>/dev/null; then
       ok "brave-search MCP configured"
-    elif claude mcp get brave-search &>/dev/null; then
+    elif _provision_run claude mcp get brave-search &>/dev/null; then
       ok "brave-search MCP already configured"
     else
       warn "brave-search MCP may need manual setup"
+      rc=1
     fi
   else
     warn "Skipping brave-search MCP — no API key"
   fi
 
-  # context7 — register at user scope explicitly. The plugin reports
-  # "installed" but doesn't always surface the MCP, so we don't rely on it.
-  if claude mcp add context7 -s user -- npx -y @upstash/context7-mcp 2>/dev/null; then
+  # The current registration is a moving npx package. Scheduled sync keeps an
+  # existing registration byte-for-byte and defers until its exact immutable
+  # package tree can be staged. Interactive first install retains prior setup.
+  if [ -n "${AICODING_SYNC_MODE:-}" ] && [ "${AICODINGSETUP_SKIP_NETWORK:-0}" != 1 ]; then
+    warn "context7 MCP refresh deferred — exact staged launcher unavailable"
+    _provision_record_blocked mcp-context7 exact_version_staging_unavailable
+    rc=1
+  elif _provision_run claude mcp add context7 -s user -- npx -y @upstash/context7-mcp 2>/dev/null; then
     ok "context7 MCP configured"
-  elif claude mcp get context7 &>/dev/null; then
+  elif _provision_run claude mcp get context7 &>/dev/null; then
     ok "context7 MCP already configured"
   else
     warn "context7 MCP may need manual setup"
+    rc=1
   fi
 
   # playwright — provided by the playwright plugin, not as a standalone MCP
@@ -174,7 +212,7 @@ install_claude_mcps() {
   # in its bundled .mcp.json (no env override); its README tells EU users to
   # register a user-scope entry at the EU endpoint instead. The plugin's US
   # server stays unauthenticated. Auth: run /mcp once (OAuth).
-  ensure_http_mcp logfire https://logfire-eu.pydantic.dev/mcp
+  ensure_http_mcp logfire https://logfire-eu.pydantic.dev/mcp || rc=1
 
   # memory-router — the central memory-lanes retrieval router on vossisrv
   # (the memory_search tool). HTTP MCP with bearer auth; the token is a
@@ -182,10 +220,11 @@ install_claude_mcps() {
   # server.
   if [[ -n "${MEMORY_ROUTER_TOKEN:-}" ]]; then
     ensure_http_mcp memory-router http://10.0.0.249:8091/mcp \
-      -H "Authorization: Bearer ${MEMORY_ROUTER_TOKEN}"
+      -H "Authorization: Bearer ${MEMORY_ROUTER_TOKEN}" || rc=1
   else
     warn "memory-router MCP skipped (MEMORY_ROUTER_TOKEN not set)"
   fi
+  [ "$rc" -eq 0 ] || { _provision_soft_failure; return $?; }
 }
 
 # --- Claude Code marketplace plugins ---
@@ -194,27 +233,40 @@ install_claude_plugins() {
 
   if ! command -v claude &>/dev/null; then
     warn "Claude Code CLI not found — skipping plugin installation"
-    return
+    return 0
   fi
 
-  local plugin
+  local plugin rc=0
   for plugin in "${MANAGED_PLUGINS[@]}"; do
+    if [ -n "${AICODING_SYNC_MODE:-}" ] && [ "${AICODINGSETUP_SKIP_NETWORK:-0}" != 1 ]; then
+      case "$plugin" in
+        playwright@*)
+          warn "$plugin refresh deferred — exact staged launcher unavailable"
+          _provision_record_blocked mcp-playwright exact_version_staging_unavailable
+          rc=1; continue ;;
+        context7@*)
+          # Context7's moving registration was already recorded above. Do not
+          # let its marketplace plugin refresh it through another path.
+          _provision_record_blocked mcp-context7 exact_version_staging_unavailable
+          rc=1; continue ;;
+      esac
+    fi
     # Try install first; if already installed, try update
-    if claude plugin install "$plugin" 2>/dev/null; then
+    if _provision_run claude plugin install "$plugin" 2>/dev/null; then
       ok "Installed $plugin"
-    elif claude plugin update "$plugin" 2>/dev/null; then
+    elif _provision_run claude plugin update "$plugin" 2>/dev/null; then
       ok "Updated $plugin"
     else
-      # Already installed and up to date, or install failed
-      ok "$plugin (already installed)"
+      warn "$plugin could not be installed or updated"
+      rc=1
     fi
   done
-
   for plugin in "${RETIRED_PLUGINS[@]}"; do
-    if claude plugin uninstall "$plugin" 2>/dev/null; then
+    if _provision_run claude plugin uninstall "$plugin" 2>/dev/null; then
       ok "Removed retired plugin $plugin"
     fi
   done
+  [ "$rc" -eq 0 ] || { _provision_soft_failure; return $?; }
 }
 
 # --- Retired CLI shims ---
@@ -233,11 +285,11 @@ install_codex_plugins() {
   header "Codex Plugins"
   local plugin="superpowers@openai-curated-remote" installed result package link old
   local codex_home="${CODEX_HOME:-$HOME/.codex}"
-  if ! result=$(codex plugin add "$plugin" --json 2>/dev/null); then
+  if ! result=$(_provision_run codex plugin add "$plugin" --json 2>/dev/null); then
     warn "Could not install/update $plugin — retry with: codex plugin add $plugin"
-    return 0
+    _provision_soft_failure; return $?
   fi
-  installed=$(codex plugin list --json 2>/dev/null) || installed=""
+  installed=$(_provision_run codex plugin list --json 2>/dev/null) || installed=""
   if printf '%s' "$installed" | jq -e --arg id "$plugin" \
       '.installed[] | select(.pluginId == $id and .enabled == true)' >/dev/null 2>&1; then
     # Codex 0.153.4 can report remote plugins enabled while omitting their
@@ -247,22 +299,23 @@ install_codex_plugins() {
     package=$(printf '%s' "$result" | jq -r '.installedPath // empty')
     case "$package" in
       "$codex_home"/plugins/cache/*/superpowers/*) ;;
-      *) warn "$plugin returned an unexpected package path; discovery not linked"; return 0 ;;
+      *) warn "$plugin returned an unexpected package path; discovery not linked"; _provision_soft_failure; return $? ;;
     esac
     [[ -f "$package/skills/using-superpowers/SKILL.md" ]] \
-      || { warn "$plugin package has no using-superpowers skill"; return 0; }
+      || { warn "$plugin package has no using-superpowers skill"; _provision_soft_failure; return $?; }
     link="$codex_home/skills/superpowers"
     if [[ -e "$link" || -L "$link" ]]; then
       old=$(readlink "$link" 2>/dev/null) || old=""
       case "$old" in
         "$codex_home"/plugins/cache/*/superpowers/*/skills) ;;
-        *) warn "$link is user-owned; leaving it untouched"; return 0 ;;
+        *) warn "$link is user-owned; leaving it untouched"; _provision_soft_failure; return $? ;;
       esac
     fi
-    mkdir -p "$codex_home/skills" || { warn "Cannot create Codex skill directory"; return 0; }
-    ln -sfn "$package/skills" "$link" || { warn "Cannot link Superpowers skills"; return 0; }
+    mkdir -p "$codex_home/skills" || { warn "Cannot create Codex skill directory"; _provision_soft_failure; return $?; }
+    ln -sfn "$package/skills" "$link" || { warn "Cannot link Superpowers skills"; _provision_soft_failure; return $?; }
     ok "$plugin installed, enabled and linked for skill discovery"
   else
     warn "$plugin installation returned success but activation could not be verified"
+    _provision_soft_failure; return $?
   fi
 }
