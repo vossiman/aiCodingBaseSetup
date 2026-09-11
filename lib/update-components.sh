@@ -189,7 +189,7 @@ aicoding_exact_mcp_config_ready() {
 # local. OpenCode's shared runtime root does not make ~/.config/opencode shared.
 # C may supply colon-separated canonical roots with AICODING_SHARED_CONFIG_ROOTS.
 aicoding_config_shared_root() {
-  local dest=$1 candidate="" physical mount_target
+  local dest=$1 candidate="" physical mount_target redirected=0
   local -a configured=()
   case "$dest" in
     "$HOME/.claude"|"$HOME/.claude/"*) candidate="$HOME/.claude" ;;
@@ -199,15 +199,24 @@ aicoding_config_shared_root() {
       candidate="$HOME/.local/share/opencode" ;;
     *) return 1 ;;
   esac
-  physical=$(readlink -f "$candidate" 2>/dev/null) || return 1
+  [ -L "$candidate" ] && redirected=1
+  # A missing ordinary directory cannot currently be a mount target. It is a
+  # local first-deploy destination; a dangling symlink remains unknown.
+  [ "$redirected" -eq 1 ] || [ -e "$candidate" ] || return 1
+  # A recognized config root that cannot be resolved is unknown, not proven
+  # local. Return 2 so the authorization layer can fail closed.
+  physical=$(readlink -f "$candidate" 2>/dev/null) || return 2
   IFS=: read -ra configured <<< "${AICODING_SHARED_CONFIG_ROOTS:-}"
   local root
   for root in "${configured[@]}"; do
     [ -n "$root" ] || continue
     [ "$(readlink -f "$root" 2>/dev/null)" = "$physical" ] && { printf '%s\n' "$physical"; return 0; }
   done
-  command -v findmnt >/dev/null 2>&1 || return 1
-  mount_target=$(findmnt -T "$physical" -n -o TARGET 2>/dev/null) || return 1
+  # Redirecting one of the known config roots may place it below a shared
+  # mount whose target is an ancestor. Treat that ambiguity conservatively.
+  [ "$redirected" -eq 0 ] || { printf '%s\n' "$physical"; return 0; }
+  command -v findmnt >/dev/null 2>&1 || return 2
+  mount_target=$(findmnt -T "$physical" -n -o TARGET 2>/dev/null) || return 2
   [ "$(readlink -f "$mount_target" 2>/dev/null)" = "$physical" ] || return 1
   printf '%s\n' "$physical"
 }
@@ -218,10 +227,16 @@ aicoding_config_is_shared() { aicoding_config_shared_root "$1" >/dev/null; }
 # shared aicodingsetup mount. Until every known consumer opts in, changing
 # version-dependent shared settings is unsafe and remains deferred.
 _aicoding_shared_consumers_allow() {
-  local component=$1 minimum=${2:-} destination=${3:-} registry shared_root
+  local component=$1 minimum=${2:-} destination=${3:-} registry shared_root shared_rc
   registry=${AICODING_SHARED_CONSUMERS_FILE:-$HOME/.aicodingsetup/consumer-versions.json}
   [ "${AICODING_REQUIRE_SHARED_COMPATIBILITY:-0}" != 1 ] && return 0
-  shared_root=$(aicoding_config_shared_root "$destination") || return 0
+  if shared_root=$(aicoding_config_shared_root "$destination"); then
+    :
+  else
+    shared_rc=$?
+    [ "$shared_rc" -eq 1 ] && return 0
+    return 1
+  fi
   local now version
   [ -f "$registry" ] || return 1
   now=$(date +%s)
@@ -327,10 +342,8 @@ _aicoding_reconcile_claude_mcp_registration() {
     || { _aicoding_record_deferred "$registration_component" blocked "$version" claude_version_unavailable; return 1; }
   _aicoding_shared_consumers_require claude "" "$HOME/.claude" \
     || { _aicoding_record_deferred "$registration_component" blocked "$version" claude_consumers_incompatible; return 1; }
-  if aicoding_config_is_shared "$HOME/.claude"; then
-    _aicoding_shared_consumers_require "$component" "" "$HOME/.claude" \
-      || { _aicoding_record_deferred "$registration_component" blocked "$version" shared_registration_consumers_incompatible; return 1; }
-  fi
+  _aicoding_shared_consumers_require "$component" "" "$HOME/.claude" \
+    || { _aicoding_record_deferred "$registration_component" blocked "$version" shared_registration_consumers_incompatible; return 1; }
   if declare -F aicoding_shared_locks_acquire >/dev/null 2>&1; then
     aicoding_shared_locks_acquire "$HOME/.claude/settings.json" \
       || { _aicoding_record_deferred "$registration_component" blocked "$version" shared_registration_busy; return 1; }

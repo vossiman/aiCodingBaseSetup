@@ -8,6 +8,9 @@ setup() {
   export AICODING_DATA_DIR="$TMP/data"
   mkdir -p "$HOME/.local/bin" "$TMP/stubs"
   export PATH="$HOME/.local/bin:$TMP/stubs:/usr/bin:/bin"
+  # GitHub-hosted Node lives outside /usr/bin. Keep package tests independent
+  # of the runner image; tests for old Node replace this through _tool below.
+  _tool node 'v22.14.0'
   . "$BLUEPRINT_ROOT/lib/update-results.sh"
   . "$BLUEPRINT_ROOT/lib/update-components.sh"
 }
@@ -210,6 +213,31 @@ EOF
   [ "$status" -ne 0 ]
   run aicoding_config_is_compatible "$HOME/.codex/config.toml"
   [ "$status" -eq 0 ]
+}
+
+@test "shared authorization fails closed when mount classification is unavailable" {
+  mkdir -p "$HOME/.codex"
+  export AICODING_REQUIRE_SHARED_COMPATIBILITY=1
+  export AICODING_SHARED_CONSUMERS_FILE="$TMP/missing-consumers.json"
+  unset AICODING_SHARED_CONFIG_ROOTS
+  findmnt() { return 1; }
+
+  run _aicoding_shared_consumers_allow codex 0.148.0 "$HOME/.codex/config.toml"
+
+  [ "$status" -ne 0 ]
+}
+
+@test "redirected known config root requires shared inventory" {
+  mkdir -p "$TMP/redirected-codex"
+  ln -s "$TMP/redirected-codex" "$HOME/.codex"
+  export AICODING_REQUIRE_SHARED_COMPATIBILITY=1
+  export AICODING_SHARED_CONSUMERS_FILE="$TMP/missing-consumers.json"
+  unset AICODING_SHARED_CONFIG_ROOTS
+  findmnt() { printf '/\n'; }
+
+  run _aicoding_shared_consumers_allow codex 0.148.0 "$HOME/.codex/config.toml"
+
+  [ "$status" -ne 0 ]
 }
 
 @test "consumer evidence is bound independently to each shared root and freshness" {

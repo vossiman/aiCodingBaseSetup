@@ -558,21 +558,17 @@ _sync_reconcile() {
 
   local blocked_count=0 reason component
   local -A blocked_reasons=()
-  if [ "$mode" = boot ] && command -v aicoding_config_is_compatible >/dev/null 2>&1; then
+  if [ "$mode" != dry-run ] && command -v aicoding_config_is_compatible >/dev/null 2>&1; then
     export AICODING_REQUIRE_UPDATE_RECEIPT=1
+    # The compatibility helper resolves each destination and treats confirmed
+    # local roots as a no-op. Always request shared authorization here so a
+    # manual/first pass cannot bypass fleet evidence for an actual shared root.
+    export AICODING_REQUIRE_SHARED_COMPATIBILITY=1
     for d in "${!BUCKETS[@]}"; do
       case "${BUCKETS[$d]}" in
         restore|new_file|will_update|will_update_owned|drifted_but_aligned|merge) ;;
         *) continue ;;
       esac
-      # Network suppression controls I/O only. Shared authorization remains
-      # required for actual shared destinations, even in an offline/test pass.
-      if ! command -v aicoding_config_is_shared >/dev/null 2>&1 \
-          || aicoding_config_is_shared "$d"; then
-        export AICODING_REQUIRE_SHARED_COMPATIBILITY=1
-      else
-        unset AICODING_REQUIRE_SHARED_COMPATIBILITY
-      fi
       if ! reason=$(aicoding_config_is_compatible "$d"); then
         BUCKETS[$d]=blocked
         blocked_count=$((blocked_count + 1))
@@ -1165,8 +1161,15 @@ _sync_provision() {
       && ensure_codex_managed_hooks || rc=1
     # @playwright/mcp@latest can require a newer Chromium after an update.
     # Reconcile existing machines too, rather than waiting for a rebuild.
-    command -v ensure_playwright_browsers >/dev/null 2>&1 \
-      && ensure_playwright_browsers || rc=1
+    if command -v ensure_playwright_browsers >/dev/null 2>&1; then
+      step_rc=0
+      ensure_playwright_browsers || step_rc=$?
+      case "$step_rc" in
+        0) ;;
+        3) provision_deferred=1 ;;
+        *) rc=1 ;;
+      esac
+    fi
   fi
 
   # dvw-probe's symlink is otherwise only created by install.sh at container
@@ -1213,7 +1216,7 @@ _sync_provision() {
     source="$(dirname "$blueprint_lib")/bin/$name"
     dest="$HOME/.local/bin/$name"
     [ -f "$source" ] || continue
-    [ -L "$dest" ] && [ "$(readlink -f "$dest" 2>/dev/null)" = "$(readlink -f "$source" 2>/dev/null)" ] || rc=1
+    _sync_provision_artifact_matches "$name" "$source" "$dest" || rc=1
   done
   if command -v _aicoding_command_is_linux >/dev/null 2>&1 \
       && _aicoding_command_is_linux codex 2>/dev/null; then
@@ -1248,6 +1251,31 @@ _sync_provision() {
       && aicoding_result_record provision blocked "$target" preparation_deferred || true
   fi
   return "$rc"
+}
+
+_sync_provision_artifact_matches() {
+  local name=$1 source=$2 dest=$3 current active expected result=1
+  if [ -L "$dest" ] \
+      && [ "$(readlink -f "$dest" 2>/dev/null)" = "$(readlink -f "$source" 2>/dev/null)" ]; then
+    return 0
+  fi
+  # aicoding-status is enrolled as a stable regular-file wrapper. Validate it
+  # byte-for-byte with the runtime writer and require its current pointer to
+  # select the same physical source checked by this provision pass.
+  [ "$name" = aicoding-status ] || return 1
+  [ -f "$dest" ] && [ -x "$dest" ] || return 1
+  current="$AICODING_DATA_DIR/current/aicoding"
+  [ -L "$current" ] || return 1
+  active=$(readlink -f -- "$current" 2>/dev/null) || return 1
+  [ "$active/bin/aicoding-status" = "$(readlink -f -- "$source" 2>/dev/null)" ] || return 1
+  declare -F _aicoding_runtime_write_wrapper >/dev/null 2>&1 || return 1
+  expected=$(mktemp) || return 1
+  if _aicoding_runtime_write_wrapper "$expected" "$current" bin/aicoding-status \
+      && cmp -s -- "$expected" "$dest"; then
+    result=0
+  fi
+  rm -f -- "$expected" || return 1
+  return "$result"
 }
 
 # Returns 0 if the binary-refresh throttle window is still fresh.

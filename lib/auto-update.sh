@@ -28,7 +28,10 @@ aicoding_auto_update_once() {
   output=$(mktemp "$state/.once.XXXXXX") || return 1
   # Capture synchronously so a late process-substitution writer cannot race
   # the busy check or append into a removed attempt file.
-  (cd "$state" && "$sync" --boot </dev/null) >"$output" 2>&1 || rc=$?
+  # A scheduler tick and an explicit --once are update requests, rather than
+  # shell-start noise. Bypass sync's legacy boot throttle for this invocation
+  # so a timer firing at the same cadence as the TTL still checks components.
+  (cd "$state" && AICODING_UPDATE_TTL=0 "$sync" --boot </dev/null) >"$output" 2>&1 || rc=$?
   cat "$output"
   AICODING_AUTO_UPDATE_PERFORMED=1
   AICODING_AUTO_UPDATE_DEFERRED=0

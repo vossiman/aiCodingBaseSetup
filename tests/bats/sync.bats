@@ -5,6 +5,7 @@ setup() {
   export AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT"
   export AICODING_MANIFEST="$TMP/.aicodingsetup/manifest.json"
   export AICODING_UPDATE_STATE="$TMP/state/updates"
+  export CODEX_MANAGED_DIR="$TMP/etc-codex"
   export AICODINGSETUP_NONINTERACTIVE=1
   mkdir -p "$TMP/stubs"
   # install.sh's ensure_cursor_agent ends on `[[ -d "$HOME/.local/bin" ]]`,
@@ -18,6 +19,15 @@ setup() {
     printf '#!/bin/sh\nexit 0\n' > "$TMP/stubs/$cmd"
     chmod +x "$TMP/stubs/$cmd"
   done
+  # Managed-hook tests write only below the per-test CODEX_MANAGED_DIR. Make
+  # the sudo seam execute those isolated mkdir/install/cp operations rather
+  # than reporting success without creating the artifacts sync verifies.
+  cat > "$TMP/stubs/sudo" <<'EOF'
+#!/bin/sh
+[ "${1:-}" != -n ] || shift
+exec "$@"
+EOF
+  chmod +x "$TMP/stubs/sudo"
   cat > "$TMP/stubs/claude" <<'EOF'
 #!/bin/sh
 echo "claude $*" >> "$TMP/ran.log"
@@ -111,6 +121,58 @@ remove_deprecated_shims() { return 0; }
 EOF
   export AICODING_BLUEPRINT_CLONE="$clone"
   source "$BLUEPRINT_ROOT/lib/update-results.sh"
+
+  run _sync_provision boot
+
+  [ "$status" -ne 0 ]
+  jq -e '.components.provision.state == "failed"
+    and .components.provision.reason == "partial_provision_failure"' \
+    "$AICODING_RESULTS_FILE"
+}
+
+@test "Playwright capability return 3 records a provision deferral" {
+  local clone="$TMP/playwright-deferral-blueprint"
+  mkdir -p "$clone/lib"
+  printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > "$clone/.aicoding-version"
+  cat > "$clone/lib/provision.sh" <<'EOF'
+install_mcp_packages() { return 0; }
+install_claude_mcps() { return 0; }
+install_claude_plugins() { return 0; }
+install_codex_plugins() { return 0; }
+remove_deprecated_shims() { return 0; }
+EOF
+  cat > "$clone/lib/provision-system.sh" <<'EOF'
+ensure_codex_managed_hooks() { return 0; }
+ensure_playwright_browsers() { return 3; }
+EOF
+  export AICODING_BLUEPRINT_CLONE="$clone"
+  . "$BLUEPRINT_ROOT/lib/update-results.sh"
+
+  run _sync_provision boot
+
+  [ "$status" -eq 0 ]
+  jq -e '.components.provision.state == "blocked"
+    and .components.provision.reason == "preparation_deferred"' \
+    "$AICODING_RESULTS_FILE"
+}
+
+@test "Playwright failure remains failed even when it also marks preparation deferred" {
+  local clone="$TMP/playwright-failure-blueprint"
+  mkdir -p "$clone/lib"
+  printf '%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > "$clone/.aicoding-version"
+  cat > "$clone/lib/provision.sh" <<'EOF'
+install_mcp_packages() { return 0; }
+install_claude_mcps() { return 0; }
+install_claude_plugins() { return 0; }
+install_codex_plugins() { return 0; }
+remove_deprecated_shims() { return 0; }
+EOF
+  cat > "$clone/lib/provision-system.sh" <<'EOF'
+ensure_codex_managed_hooks() { return 0; }
+ensure_playwright_browsers() { _AICODING_PREPARATION_DEFERRED=1; return 1; }
+EOF
+  export AICODING_BLUEPRINT_CLONE="$clone"
+  . "$BLUEPRINT_ROOT/lib/update-results.sh"
 
   run _sync_provision boot
 
@@ -317,6 +379,36 @@ EOF
   readlink "$HOME/.local/bin/aicoding-status" | grep -q "bin/aicoding-status"
 }
 
+@test "managed aicoding-status wrapper satisfies provision artifact verification" {
+  local sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa source="$TMP/managed-source" release
+  mkdir -p "$source/bin" "$source/lib"
+  cp "$BLUEPRINT_ROOT/bin/aicoding-status" "$source/bin/aicoding-status"
+  chmod +x "$source/bin/aicoding-status"
+  printf '%s\n' "$sha" > "$source/.aicoding-version"
+  cat > "$source/lib/provision.sh" <<'EOF'
+install_mcp_packages() { return 0; }
+install_claude_mcps() { return 0; }
+install_claude_plugins() { return 0; }
+install_codex_plugins() { return 0; }
+remove_deprecated_shims() { return 0; }
+EOF
+  . "$BLUEPRINT_ROOT/lib/runtime.sh"
+  aicoding_stage_source aicoding "$source" "$sha"
+  aicoding_activate_version aicoding "$sha" aicoding-status bin/aicoding-status
+  release="$AICODING_DATA_DIR/versions/aicoding/$sha"
+  [ -f "$HOME/.local/bin/aicoding-status" ]
+  [ ! -L "$HOME/.local/bin/aicoding-status" ]
+  grep -qF '# Managed by aicoding immutable runtime.' "$HOME/.local/bin/aicoding-status"
+  export AICODING_BLUEPRINT_CLONE="$release"
+  . "$BLUEPRINT_ROOT/lib/update-results.sh"
+
+  run _sync_provision boot
+
+  [ "$status" -eq 0 ]
+  jq -e --arg sha "$sha" '.components.provision.state == "current"
+    and .components.provision.successful_version == $sha' "$AICODING_RESULTS_FILE"
+}
+
 @test "sync --boot restores a missing kanban-post symlink" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   rm -f "$HOME/.local/bin/kanban-post"
@@ -409,7 +501,7 @@ EOF
   [ ! -e "$CLASSIFY_MARKER" ]
 }
 
-@test "network suppression does not disable shared compatibility authorization" {
+@test "every config-writing mode carries tool receipts and shared compatibility authorization" {
   local clone="$TMP/shared-gate-blueprint" dest="$HOME/.codex/config.toml"
   rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$clone/"
   cat >> "$clone/lib/blueprint-deploy.sh" <<EOF
@@ -425,15 +517,22 @@ EOF
   printf 'old\n' > "$dest"
   aicoding_config_is_shared() { return 0; }
   aicoding_config_is_compatible() {
+    printf '%s:%s\n' "${AICODING_REQUIRE_UPDATE_RECEIPT:-0}" \
+      "${AICODING_REQUIRE_SHARED_COMPATIBILITY:-0}" >> "$TMP/compat-calls"
     [ "${AICODING_REQUIRE_UPDATE_RECEIPT:-0}" = 1 ] \
       && [ "${AICODING_REQUIRE_SHARED_COMPATIBILITY:-0}" = 1 ] \
       || { echo shared_authorization_missing; return 1; }
   }
 
-  run _sync_reconcile boot
-
-  [ "$status" -eq 0 ]
-  grep -q '^model' "$dest"
+  local sync_mode
+  for sync_mode in boot yes first; do
+    : > "$TMP/compat-calls"
+    printf 'old\n' > "$dest"
+    run _sync_reconcile "$sync_mode"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$TMP/compat-calls")" = 1:1 ]
+    grep -q '^model' "$dest"
+  done
 }
 
 @test "provisioning defers shared mutations on lock contention but continues local work" {
@@ -874,7 +973,16 @@ _kvm_stub_stat() {   # $1 = gid the fake device reports
   printf '#!/bin/sh\necho "%s"\n' "$1" > "$TMP/stubs/stat"; chmod +x "$TMP/stubs/stat"
 }
 _kvm_stub_sudo() {   # log calls instead of running them
-  printf '#!/bin/sh\necho "sudo $*" >> "$TMP/ran.log"\n' > "$TMP/stubs/sudo"; chmod +x "$TMP/stubs/sudo"
+  cat > "$TMP/stubs/sudo" <<'EOF'
+#!/bin/sh
+echo "sudo $*" >> "$TMP/ran.log"
+[ "${1:-}" != -n ] || shift
+case "${1:-}" in
+  groupadd|usermod) exit 0 ;;
+  *) exec "$@" ;;
+esac
+EOF
+  chmod +x "$TMP/stubs/sudo"
 }
 _kvm_unused_gid() {
   local gid=42424 groups=" $(id -G) "

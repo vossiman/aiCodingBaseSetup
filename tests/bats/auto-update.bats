@@ -29,6 +29,7 @@ fi
 exec {sync_fd}>"$AICODING_STATE_DIR/sync.lock"
 flock -n "$sync_fd" || exit 0
 printf '%s %s\n' "$PWD" "$*" >> "$AICODING_TEST_ATTEMPTS"
+printf '%s\n' "${AICODING_UPDATE_TTL:-unset}" >> "$AICODING_TEST_TTLS"
 if [ "${AICODING_TEST_DEFERRED:-0}" = 1 ]; then
   echo 'aicoding-sync: completed with deferrals' >&2
   exit 0
@@ -38,7 +39,9 @@ if [ "$count" -le "${AICODING_TEST_FAILS:-0}" ]; then exit 1; fi
 EOF
   chmod +x "$TEST_ROOT/bin/aicoding-sync"
   export AICODING_TEST_ATTEMPTS="$TEST_ROOT/attempts"
+  export AICODING_TEST_TTLS="$TEST_ROOT/ttls"
   : > "$AICODING_TEST_ATTEMPTS"
+  : > "$AICODING_TEST_TTLS"
 }
 
 teardown() {
@@ -75,6 +78,7 @@ EOF
   [ "$status" -eq 0 ]
   [ "$(wc -l < "$AICODING_TEST_ATTEMPTS")" -eq 1 ]
   [ "$(cat "$AICODING_TEST_ATTEMPTS")" = "$AICODING_STATE_DIR/auto-update --boot" ]
+  [ "$(cat "$AICODING_TEST_TTLS")" = 0 ]
 }
 
 @test "a success-exit systemctl shim falls back to one persistent worker" {
