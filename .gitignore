@@ -3,6 +3,10 @@
 
 # Vendor repos (cloned by install script)
 vendor/
+!lib/vendor/
+!lib/vendor/**
+lib/vendor/**/__pycache__/
+lib/vendor/**/*.pyc
 
 # OS artifacts
 .DS_Store
