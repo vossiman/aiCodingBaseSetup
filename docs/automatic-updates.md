@@ -24,6 +24,12 @@ uses the new one. A failed validation or activation keeps the old command
 usable; an incomplete rollback retains its recovery directory and reports the
 path.
 
+Old release, source, and browser trees intentionally remain available because
+a running process may still hold a physical path after a pointer advances.
+Monitor disk use under `~/.local/share/aicoding`; do not delete retained trees
+solely by age or the `previous` pointer. Liveness-aware retention is tracked in
+`AICODINGBASESETUP-52`.
+
 Source releases carry `.aicoding-version` and a retained-tree digest. Exact npm
 components retain the dependency tree and validate package metadata,
 entrypoints and integrity data. Codex also requires the matching

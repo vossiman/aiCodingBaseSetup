@@ -6,6 +6,7 @@ setup() {
   export HOME="$TMPDIR"
   export AICODING_MANIFEST="$TMPDIR/.aicodingsetup/manifest.json"
   export AICODINGSETUP_NONINTERACTIVE=1
+  export CODEX_MANAGED_DIR="$TMPDIR/etc-codex"
   export AICODING_TMUX_COMMIT_FILE="$TMPDIR/tmux-commit"
   export BASHRC_BLOCK_START_LIT='# >>> aicoding managed block — do not edit between markers >>>'
   export BASHRC_BLOCK_END_LIT='# <<< aicoding managed block <<<'
@@ -27,6 +28,12 @@ exit 0
 STUB
     chmod +x "$TMPDIR/stubs/$cmd"
   done
+  cat > "$TMPDIR/stubs/sudo" <<'STUB'
+#!/bin/sh
+[ "${1:-}" != -n ] || shift
+exec "$@"
+STUB
+  chmod +x "$TMPDIR/stubs/sudo"
   cat > "$TMPDIR/stubs/claude" <<'STUB'
 #!/bin/sh
 case "$*" in
@@ -46,6 +53,7 @@ fi
 exit 0
 STUB
   chmod +x "$TMPDIR/stubs/tmux"
+  ln -s "$(command -v node)" "$TMPDIR/stubs/node"
   printf '%s\n' '13c10f672c7a6bc64b2d4829ae550d8d6caf61fe' > "$AICODING_TMUX_COMMIT_FILE"
 }
 
@@ -1174,6 +1182,7 @@ _playwright_fixture() {
 echo "mcp $*" >> "$HOME/playwright-exact-calls"
 [ -z "${PLAYWRIGHT_TEST_INSTALL_FAIL:-}" ] || exit 37
 if [ "$1" = install-browser ]; then
+  [ -z "${PLAYWRIGHT_TEST_NO_BROWSER:-}" ] || exit 0
   bin="$PLAYWRIGHT_BROWSERS_PATH/chromium-$PLAYWRIGHT_TEST_REVISION/chrome-linux64/chrome"
   mkdir -p "$(dirname "$bin")"
   printf '#!/bin/sh\nexit 0\n' > "$bin"
@@ -1261,8 +1270,63 @@ LDD
   _playwright_fixture missing
   export AICODING_SYNC_MODE=boot
   _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 3 ]
   [[ "$output" == *"still missing"* ]]
+}
+
+@test "scheduled Playwright provisioning defers an unreadable browser" {
+  _playwright_fixture unreadable
+  export AICODING_SYNC_MODE=boot
+
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"Could not inspect"* ]]
+}
+
+@test "scheduled Playwright provisioning skips an unselected package" {
+  export AICODINGSETUP_SKIP_NETWORK=
+  export AICODING_DATA_DIR="$TMPDIR/aicoding-data"
+  mkdir -p "$AICODING_DATA_DIR/current"
+
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"CLI is unavailable"* ]]
+}
+
+@test "scheduled Playwright provisioning defers a dangling selected package" {
+  export AICODINGSETUP_SKIP_NETWORK= AICODING_SYNC_MODE=boot
+  export AICODING_DATA_DIR="$TMPDIR/aicoding-data"
+  mkdir -p "$AICODING_DATA_DIR/current"
+  ln -s ../versions/mcp-playwright/missing "$AICODING_DATA_DIR/current/mcp-playwright"
+
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"CLI is unavailable"* ]]
+}
+
+@test "scheduled Playwright browser installation failure remains a failure" {
+  _playwright_fixture resolved
+  export AICODING_SYNC_MODE=boot PLAYWRIGHT_TEST_INSTALL_FAIL=1
+
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"browser install failed"* ]]
+}
+
+@test "scheduled Playwright browser validation failure remains a failure" {
+  _playwright_fixture resolved
+  export AICODING_SYNC_MODE=boot PLAYWRIGHT_TEST_NO_BROWSER=1 PLAYWRIGHT_TEST_REVISION=missing
+  rm -rf "$AICODING_DATA_DIR/browser-cache/mcp-playwright/0.0.80"/chromium-* \
+    "$AICODING_DATA_DIR/browser-cache/mcp-playwright/0.0.80/.browser-bin"
+
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"browser did not validate"* ]]
 }
 
 @test "ensure_playwright_browsers respects the offline provisioning guard" {

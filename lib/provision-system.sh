@@ -546,11 +546,11 @@ playwright_missing_libs() {
 # browser cache is already populated (restored volume, earlier provision) still
 # needs its libs checked.
 ensure_playwright_system_deps() {
-  local bin missing current core_cli node_path
+  local bin missing current current_link core_cli node_path
   bin="$(playwright_chromium_bin)" || {
     warn "The Chromium revision required by Playwright MCP is unavailable"
     info "Run: playwright-mcp install-browser --no-remove chromium"
-    _provision_soft_failure; return $?
+    _provision_deferred; return $?
   }
   local rc=0
   missing="$(playwright_missing_libs "$bin")" || rc=$?
@@ -558,14 +558,20 @@ ensure_playwright_system_deps() {
     # install-deps cannot repair a bad download — the fix is re-fetching it.
     warn "Could not inspect $bin — ldd failed (truncated or partial download?)"
     info "Run: playwright-mcp install-browser --no-remove chromium"
-    _provision_soft_failure; return $?
+    _provision_deferred; return $?
   fi
   if [[ -z "$missing" ]]; then
     ok "Playwright system libraries present"
     return 0
   fi
   info "Installing Playwright system libraries (missing: $(tr '\n' ' ' <<<"$missing"))"
-  current=$(readlink -f "${AICODING_DATA_DIR:-$HOME/.local/share/aicoding}/current/mcp-playwright" 2>/dev/null) || return 1
+  current_link="${AICODING_DATA_DIR:-$HOME/.local/share/aicoding}/current/mcp-playwright"
+  if [[ ! -L "$current_link" ]] \
+      || ! current=$(readlink -f "$current_link" 2>/dev/null) \
+      || [[ ! -d "$current" ]]; then
+    warn "Exact Playwright MCP release is unavailable"
+    _provision_deferred; return $?
+  fi
   core_cli="$current/node_modules/playwright-core/cli.js"
   node_path=$(command -v node 2>/dev/null) || true
   if [[ ! -x "$core_cli" || -z "$node_path" ]]; then
@@ -584,12 +590,12 @@ ensure_playwright_system_deps() {
   fi
   missing="$(playwright_missing_libs "$bin")" || {
     warn "Could not recheck Playwright system libraries — ldd failed"
-    _provision_soft_failure; return $?
+    _provision_deferred; return $?
   }
   if [[ -n "$missing" ]]; then
     warn "Playwright system libraries still missing: $(tr '\n' ' ' <<<"$missing")"
     info "Rebuild the container or run the exact staged playwright-core install-deps command"
-    _provision_soft_failure; return $?
+    _provision_deferred; return $?
   else
     ok "Playwright system libraries installed"
   fi
@@ -597,11 +603,16 @@ ensure_playwright_system_deps() {
 
 ensure_playwright_browsers() {
   [[ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ]] || return 0
-  local data=${AICODING_DATA_DIR:-$HOME/.local/share/aicoding} current version cache cli
-  current=$(readlink -f "$data/current/mcp-playwright" 2>/dev/null) || return 0
+  local data=${AICODING_DATA_DIR:-$HOME/.local/share/aicoding} current link version cache cli
+  link="$data/current/mcp-playwright"
+  [[ -L "$link" ]] || return 0
+  if ! current=$(readlink -f "$link" 2>/dev/null) || [[ ! -d "$current" ]]; then
+    warn "Exact Playwright MCP CLI is unavailable"
+    _provision_deferred; return $?
+  fi
   version=${current##*/}; cache="$data/browser-cache/mcp-playwright/$version"
   cli="$current/node_modules/@playwright/mcp/cli.js"
-  [[ -x "$cli" ]] || { warn "Exact Playwright MCP CLI is unavailable"; _provision_soft_failure; return $?; }
+  [[ -x "$cli" ]] || { warn "Exact Playwright MCP CLI is unavailable"; _provision_deferred; return $?; }
   info "Ensuring exact Playwright MCP Chromium is installed"
   if ! PLAYWRIGHT_BROWSERS_PATH="$cache" timeout "${AICODING_VENDOR_TIMEOUT:-600}" \
       "$cli" install-browser --no-remove chromium </dev/null >/dev/null 2>&1; then

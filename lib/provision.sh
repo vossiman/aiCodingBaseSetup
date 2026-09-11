@@ -42,6 +42,14 @@ _provision_soft_failure() {
   [ -z "${AICODING_SYNC_MODE:-}" ] && [ "${AICODING_PERSISTENT_ENROLLMENT:-0}" != 1 ]
 }
 
+# Record an unavailable capability without turning a healthy enrollment into
+# a failed install. Scheduled sync handles status 3 as a completed deferral.
+_provision_deferred() {
+  _AICODING_PREPARATION_DEFERRED=1
+  [ -z "${AICODING_SYNC_MODE:-}" ] && return 0
+  return 3
+}
+
 # Scheduled calls are closed-stdin and bounded. Interactive install.sh keeps
 # the upstream command behavior because a person can answer its prompts.
 _provision_run() {
@@ -466,7 +474,12 @@ install_codex_plugins() {
       old=$(readlink "$link" 2>/dev/null) || old=""
       case "$old" in
         "$codex_home"/plugins/cache/*/superpowers/*/skills) ;;
-        *) warn "$link is user-owned; leaving it untouched"; _provision_soft_failure; return $? ;;
+        *)
+          warn "$link is user-owned; leaving it untouched"
+          _provision_record_blocked provision-codex codex_superpowers_link_user_owned
+          _provision_deferred
+          return $?
+          ;;
       esac
     fi
     mkdir -p "$codex_home/skills" || { warn "Cannot create Codex skill directory"; _provision_soft_failure; return $?; }

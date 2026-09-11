@@ -14,6 +14,7 @@ setup() {
   export AICODING_MANIFEST="$TMPDIR/.aicodingsetup/manifest.json"
   export AICODING_BLUEPRINT_CLONE="$TMPDIR/aicoding"
   export AICODINGSETUP_NONINTERACTIVE=1
+  export CODEX_MANAGED_DIR="$TMPDIR/etc-codex"
   # Stub apt/curl/etc.
   export PATH="$TMPDIR/stubs:$PATH"
   mkdir -p "$TMPDIR/stubs"
@@ -24,6 +25,12 @@ exit 0
 STUB
     chmod +x "$TMPDIR/stubs/$cmd"
   done
+  cat > "$TMPDIR/stubs/sudo" <<'STUB'
+#!/bin/sh
+[ "${1:-}" != -n ] || shift
+exec "$@"
+STUB
+  chmod +x "$TMPDIR/stubs/sudo"
   cat > "$TMPDIR/stubs/claude" <<'STUB'
 #!/bin/sh
 case "$*" in
