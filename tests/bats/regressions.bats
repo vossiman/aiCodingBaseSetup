@@ -60,6 +60,18 @@ teardown() {
   rm -rf "$TMPDIR"
 }
 
+seed_verified_claude_config_dependencies() {
+  export AICODING_STATE_DIR="$HOME/.local/state/aicoding"
+  export AICODING_RESULTS_FILE="$AICODING_STATE_DIR/update-results.json"
+  source "$AICODING_BLUEPRINT_CLONE/lib/update-results.sh"
+  aicoding_result_record claude current 2.1.50 verified 2.1.50
+  local component
+  for component in mcp-context7 mcp-playwright \
+      mcp-registration-claude-context7 mcp-registration-claude-playwright; do
+    aicoding_result_record "$component" current 1.0.0 verified 1.0.0
+  done
+}
+
 # Bug 1 regression: ~/.bashrc must survive aicoding-sync --yes.
 @test "regression: aicoding-sync does not delete ~/.bashrc" {
   # Bootstrap via install.sh.
@@ -116,6 +128,7 @@ teardown() {
 @test "regression: aicoding-sync preserves placeholder substitutions" {
   bash "$AICODING_BLUEPRINT_CLONE/install.sh" </dev/null
   [ -f "$HOME/.claude/settings.json" ]
+  seed_verified_claude_config_dependencies
 
   # install.sh's deploy substituted {{HOME}} -> $HOME — settings.json on
   # disk has no literal placeholders.

@@ -9,6 +9,7 @@ setup() {
   export HOME="$TMPDIR"
   export AICODING_MANIFEST="$TMPDIR/.aicodingsetup/manifest.json"
   export AICODING_BLUEPRINT_CLONE="$TMPDIR/aicoding"
+  export CODEX_MANAGED_DIR="$TMPDIR/etc-codex"
   # Build a stand-in "blueprint" by copying the real one (skipping .git).
   mkdir -p "$AICODING_BLUEPRINT_CLONE"
   rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$AICODING_BLUEPRINT_CLONE/"
@@ -35,6 +36,12 @@ EOF
     printf '#!/bin/sh\nexit 0\n' > "$TMPDIR/stubs/$c"
     chmod +x "$TMPDIR/stubs/$c"
   done
+  cat > "$TMPDIR/stubs/sudo" <<'EOF'
+#!/bin/sh
+[ "${1:-}" != -n ] || shift
+exec "$@"
+EOF
+  chmod +x "$TMPDIR/stubs/sudo"
   export PATH="$TMPDIR/stubs:$PATH"
   # cwd must leave the real checkout: _sync_devcontainer_pin targets the
   # cwd's repo, and tests must never write into $BLUEPRINT_ROOT.
@@ -44,6 +51,33 @@ EOF
 # Refuse to remove anything but a mktemp sandbox: if setup ever aborts before
 # assigning TMPDIR, the inherited value is /tmp itself (bats exports it).
 teardown() { cd /; case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
+
+# These tests assert the result of a fully completed config pass. Seed the
+# successful dependency receipts and local probes that the production
+# compatibility gate now requires before it can advance the blueprint stamp.
+seed_verified_config_dependencies() {
+  export AICODING_STATE_DIR="$HOME/.local/state/aicoding"
+  export AICODING_RESULTS_FILE="$AICODING_STATE_DIR/update-results.json"
+  mkdir -p "$AICODING_STATE_DIR"
+
+  cat > "$TMPDIR/stubs/codex" <<'EOF'
+#!/bin/sh
+printf 'codex-cli 0.200.0\n'
+EOF
+  cat > "$TMPDIR/stubs/pi" <<'EOF'
+#!/bin/sh
+printf 'pi 1.0.0\n'
+EOF
+  chmod +x "$TMPDIR/stubs/codex" "$TMPDIR/stubs/pi"
+
+  # Use the real receipt writer so the fixture follows the persisted schema.
+  source "$AICODING_BLUEPRINT_CLONE/lib/update-results.sh"
+  local component
+  for component in codex opencode cursor pi claude mcp-context7 mcp-playwright \
+      mcp-registration-claude-context7 mcp-registration-claude-playwright; do
+    aicoding_result_record "$component" current 1.0.0 verified 1.0.0
+  done
+}
 
 @test "aicoding-sync: exits with error when no manifest" {
   run "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync"
@@ -124,6 +158,7 @@ EOF
 }
 
 @test "aicoding-sync --yes: busts stale aicoding-status cache when commit advances" {
+  seed_verified_config_dependencies
   mkdir -p "$HOME/.aicodingsetup"
   echo "old-blueprint" > "$HOME/.tmux.conf"
   echo "new-blueprint" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
@@ -161,6 +196,7 @@ EOF
 }
 
 @test "aicoding-sync --yes: records the FULL blueprint SHA (badge comparison needs >=12 chars)" {
+  seed_verified_config_dependencies
   mkdir -p "$HOME/.aicodingsetup"
   echo "old-blueprint" > "$HOME/.tmux.conf"
   echo "new-blueprint" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
