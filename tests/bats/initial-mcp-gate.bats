@@ -61,7 +61,7 @@ teardown() { rm -rf "$TEST_ROOT"; }
   adopt_existing_files
 
   [ "$(cat "$HOME/.codex/config.toml")" = personal-codex ]
-  ! grep -Fxq "$HOME/.codex/config.toml" "$TEST_ROOT/manifest-files" 2>/dev/null
+  if grep -Fxq "$HOME/.codex/config.toml" "$TEST_ROOT/manifest-files" 2>/dev/null; then false; fi
   [ "$_AICODING_INITIAL_CONFIG_DEFERRED" = 1 ]
 }
 

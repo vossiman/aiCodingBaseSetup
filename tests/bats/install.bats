@@ -1268,8 +1268,8 @@ LDD
   run bash -c '. "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"; manifest_stamp_provision deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
   [ "$status" -eq 0 ]
   [ "$(jq -r .provision_commit "$AICODING_MANIFEST")" = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" ]
-  # install.sh wires it: the call site exists and derives the sha from the blueprint checkout
-  grep -q 'manifest_stamp_provision "$(git -C "$SCRIPT_DIR" rev-parse HEAD' "$BLUEPRINT_ROOT/install.sh"
+  # The source helper accepts both immutable Gitless releases and checkouts.
+  grep -qF 'manifest_stamp_provision "$(_aicoding_managed_source_version "$SCRIPT_DIR")"' "$BLUEPRINT_ROOT/install.sh"
   rm -rf "$TMP"
 }
 

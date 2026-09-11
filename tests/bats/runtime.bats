@@ -109,7 +109,7 @@ EOF
   [ "$status" -eq 143 ]
   [[ "$output" == *"staging interrupted by TERM"* ]]
   [ ! -e "$AICODING_DATA_DIR/versions/demo/$version" ]
-  ! find "$AICODING_DATA_DIR/versions/demo" -maxdepth 1 -name '.staging.*' -print -quit | grep -q .
+  if find "$AICODING_DATA_DIR/versions/demo" -maxdepth 1 -name '.staging.*' -print -quit | grep -q .; then false; fi
 }
 
 @test "a running physical script keeps old resources while a fresh launcher uses new" {

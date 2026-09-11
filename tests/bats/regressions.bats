@@ -17,13 +17,28 @@ setup() {
   # Stub apt/curl/etc.
   export PATH="$TMPDIR/stubs:$PATH"
   mkdir -p "$TMPDIR/stubs"
-  for cmd in apt-get sudo curl npm npx bash-build-tmux claude opencode codex cursor-agent; do
+  for cmd in apt-get sudo curl npm npx bash-build-tmux opencode codex cursor-agent; do
     cat > "$TMPDIR/stubs/$cmd" <<'STUB'
 #!/bin/sh
 exit 0
 STUB
     chmod +x "$TMPDIR/stubs/$cmd"
   done
+  cat > "$TMPDIR/stubs/claude" <<'STUB'
+#!/bin/sh
+case "$*" in
+  '--version') echo '2.1.50 (Claude Code)' ;;
+  'mcp get logfire')
+    [ -f "$HOME/.fixture-logfire-added" ] || exit 1
+    echo 'URL: https://logfire-eu.pydantic.dev/mcp'
+    ;;
+  'mcp add --transport http -s user logfire https://logfire-eu.pydantic.dev/mcp')
+    : > "$HOME/.fixture-logfire-added"
+    ;;
+  'mcp get context7'|'mcp get playwright') exit 1 ;;
+esac
+STUB
+  chmod +x "$TMPDIR/stubs/claude"
   mkdir -p "$AICODING_BLUEPRINT_CLONE"
   rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$AICODING_BLUEPRINT_CLONE/"
   (cd "$AICODING_BLUEPRINT_CLONE" && git init -q && git add -A && \
@@ -60,9 +75,9 @@ teardown() {
   echo "# user-added line below the managed block" >> "$HOME/.bashrc"
 
   # Run aicoding-sync --yes twice (idempotency check).
-  run "$HOME/.local/bin/aicoding-sync" --yes
+  run "$HOME/.local/bin/aicoding-sync" --yes --blueprint "$AICODING_BLUEPRINT_CLONE"
   [ "$status" -eq 0 ]
-  run "$HOME/.local/bin/aicoding-sync" --yes
+  run "$HOME/.local/bin/aicoding-sync" --yes --blueprint "$AICODING_BLUEPRINT_CLONE"
   [ "$status" -eq 0 ]
 
   # File must still exist with the marker block intact.
@@ -113,7 +128,7 @@ teardown() {
   (cd "$AICODING_BLUEPRINT_CLONE" && git add -A && \
     git -c user.email=t@t -c user.name=t commit -q -m advance)
 
-  run "$HOME/.local/bin/aicoding-sync" --yes
+  run "$HOME/.local/bin/aicoding-sync" --yes --blueprint "$AICODING_BLUEPRINT_CLONE"
   [ "$status" -eq 0 ]
 
   # settings.json must still have substituted values — NO literal {{HOME}}.
@@ -152,7 +167,7 @@ teardown() {
   # Sanity: ~/.bashrc is present and marker block is intact pre-update.
   [ -f "$HOME/.bashrc" ]
 
-  run "$HOME/.local/bin/aicoding-sync" --yes
+  run "$HOME/.local/bin/aicoding-sync" --yes --blueprint "$AICODING_BLUEPRINT_CLONE"
   [ "$status" -eq 0 ]
 
   # Orphan removed, manifest entry gone.
@@ -176,7 +191,7 @@ teardown() {
   [ ! -e "$HOME/.bashrc.d/aicoding-env.sh" ]
 
   # aicoding-sync should classify as restore, deploy without trying to diff.
-  run "$HOME/.local/bin/aicoding-sync" --yes
+  run "$HOME/.local/bin/aicoding-sync" --yes --blueprint "$AICODING_BLUEPRINT_CLONE"
   [ "$status" -eq 0 ]
 
   # File is restored.
