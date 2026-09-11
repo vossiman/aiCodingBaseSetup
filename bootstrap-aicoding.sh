@@ -30,7 +30,7 @@ bootstrap_prerequisites() {
     echo 'bootstrap-aicoding: minimal prerequisites unavailable and cannot be installed safely' >&2
     return 1
   }
-  timeout 15 sudo -n true </dev/null >/dev/null 2>&1 || {
+  timeout 15 sudo -n apt-get --version </dev/null >/dev/null 2>&1 || {
     echo 'bootstrap-aicoding: minimal prerequisite install deferred: noninteractive privilege unavailable' >&2
     return 1
   }

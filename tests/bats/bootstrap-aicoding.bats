@@ -131,6 +131,35 @@ EOF
   [ ! -e "$BOOTSTRAP_CALLS" ]
 }
 
+@test "host prerequisite install works with sudo restricted to apt-get" {
+  local minimal="$TEST_ROOT/restricted-path" command definitions="$TEST_ROOT/prerequisite-functions"
+  mkdir -p "$minimal"
+  for command in bash curl tar timeout git gh flock setsid apt-get ln; do
+    ln -s "$(command -v "$command")" "$minimal/$command"
+  done
+  sed '/^bootstrap_prerequisites || exit/,$d' "$BLUEPRINT_ROOT/bootstrap-aicoding.sh" > "$definitions"
+  cat > "$minimal/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TEST_ROOT/restricted-sudo-calls"
+case "$*" in
+  '-n apt-get --version'|'-n apt-get update') exit 0 ;;
+  '-n apt-get install '*) ln -s /usr/bin/jq "$RESTRICTED_BIN/jq"; exit 0 ;;
+  '-n true') exit 77 ;;
+  *) exit 91 ;;
+esac
+EOF
+  chmod +x "$minimal/sudo"
+
+  run env PATH="$minimal" RESTRICTED_BIN="$minimal" DEFINITIONS="$definitions" \
+    "$minimal/bash" -c 'set --; source "$DEFINITIONS"; profile=host; bootstrap_prerequisites'
+
+  [ "$status" -eq 0 ]
+  grep -qx -- '-n apt-get --version' "$TEST_ROOT/restricted-sudo-calls"
+  grep -qx -- '-n apt-get update' "$TEST_ROOT/restricted-sudo-calls"
+  grep -q -- '^-n apt-get install ' "$TEST_ROOT/restricted-sudo-calls"
+  if grep -qx -- '-n true' "$TEST_ROOT/restricted-sudo-calls"; then false; fi
+}
+
 @test "container bootstrap requests a rebuild when its image lacks prerequisites" {
   local minimal="$TEST_ROOT/container-path" command
   mkdir -p "$minimal"
@@ -153,7 +182,7 @@ EOF
   cat > "$minimal/sudo" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
-  '-n true') exit 0 ;;
+  '-n apt-get --version') exit 0 ;;
   '-n apt-get update') [ "$FAIL_PHASE" != update ] ;;
   '-n apt-get install '*) exit 1 ;;
   *) exit 91 ;;
