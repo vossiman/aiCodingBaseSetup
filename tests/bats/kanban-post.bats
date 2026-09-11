@@ -492,3 +492,40 @@ EOF
   [ "$status" -eq 0 ]
   grep -q '"due_date": null' "$TMPDIR/requests"
 }
+
+@test "swimlane can be set explicitly on create" {
+  _start_api_server myrepo
+  _fake_checkout myrepo
+  run "$KP" "required ticket" --repo myrepo --swimlane required
+  [ "$status" -eq 0 ]
+  grep -q '"swimlane": "required"' "$TMPDIR/requests"
+}
+
+@test "swimlane-only patch sends no inferred status or priority" {
+  _start_api_server myrepo
+  run "$KP" --patch MYREPO-1 --swimlane waiting_for_feedback
+  [ "$status" -eq 0 ]
+  grep -q 'PATCH /api/tickets/MYREPO-1 {"swimlane": "waiting_for_feedback"}' "$TMPDIR/requests"
+}
+
+@test "omitting swimlane leaves new tickets to the server default" {
+  _start_api_server myrepo
+  _fake_checkout myrepo
+  run "$KP" "unclassified" --repo myrepo
+  [ "$status" -eq 0 ]
+  ! grep -q 'swimlane' "$TMPDIR/requests"
+}
+
+@test "invalid swimlane is refused before making a request" {
+  _start_api_server myrepo
+  run "$KP" --patch MYREPO-1 --swimlane guessed
+  [ "$status" -ne 0 ]
+  [ ! -s "$TMPDIR/requests" ]
+}
+
+@test "swimlane cannot be silently ignored on a comment" {
+  _start_api_server myrepo
+  run "$KP" --comment MYREPO-1 "answer" --swimlane required
+  [ "$status" -ne 0 ]
+  [ ! -s "$TMPDIR/requests" ]
+}
