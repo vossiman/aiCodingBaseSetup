@@ -101,6 +101,18 @@ _source_host_lib() {
   [ "$output" = "host" ]
 }
 
+@test "persistent host install reports required preparation failure without a provision stamp" {
+  export AICODING_PERSISTENT_ENROLLMENT=1
+  run bash "$BLUEPRINT_ROOT/install-host.sh" </dev/null
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"=== Incomplete ==="* ]]
+  [[ "$output" != *"=== Done! ==="* ]]
+  jq -e '.profile == "host" and (.provision_commit // null) == null' "$AICODING_MANIFEST"
+  jq -e '.components.provision.state == "blocked"
+    and .components.provision.reason == "partial_provision_failure"' \
+    "$HOME/.local/state/aicoding/update-results.json"
+}
+
 @test "install-host.sh: deploys host-shaped managed set (boot-sync + agent CLIs yes, tmux no)" {
   export AICODINGSETUP_SKIP_NETWORK=1
   bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
@@ -278,78 +290,64 @@ EOF
   [[ "$output" == *"GTP=0"* ]]
 }
 
-@test "boot-sync snippet: falls back to ~/.local/bin when aicoding-sync is not on PATH" {
+@test "boot-sync snippet: falls back to ~/.local/bin and only ensures the scheduler" {
   # A fresh machine's first login shell may predate ~/.local/bin appearing
   # on PATH (Debian/Mint add it only when the dir existed at login), which
   # would silently defer the first sync forever. PATH below deliberately
   # excludes both the fake $HOME/.local/bin and the devcontainer's real
   # aicoding-sync.
   unset AICODINGSETUP_SKIP_NETWORK
-  printf '#!/bin/bash\necho "RAN $*" > "$HOME/sync-ran"\n' > "$HOME/.local/bin/aicoding-sync"
-  chmod +x "$HOME/.local/bin/aicoding-sync"
-  run bash -c "PATH='$TMPDIR/stubs:/usr/bin:/bin'; source '$BLUEPRINT_ROOT/configs/bash/boot-sync.sh'; for i in \$(seq 50); do [ -f \"\$HOME/sync-ran\" ] && break; sleep 0.1; done; cat \"\$HOME/sync-ran\""
+  printf '#!/bin/bash\necho "RAN $*" > "$HOME/ensure-ran"\n' > "$HOME/.local/bin/aicoding-auto-update"
+  chmod +x "$HOME/.local/bin/aicoding-auto-update"
+  run bash -c "PATH='$TMPDIR/stubs:/usr/bin:/bin'; source '$BLUEPRINT_ROOT/configs/bash/boot-sync.sh'; cat \"\$HOME/ensure-ran\""
   [ "$status" -eq 0 ]
-  [[ "$output" == *"RAN --boot"* ]]
+  [[ "$output" == *"RAN --ensure"* ]]
 }
 
-@test "boot-sync snippet: concurrent shells launch only one sync" {
+@test "boot-sync snippet: network guard does not invoke scheduler enrollment" {
+  export AICODINGSETUP_SKIP_NETWORK=1
+  printf '#!/bin/bash\ntouch "$HOME/ensure-ran"\n' > "$HOME/.local/bin/aicoding-auto-update"
+  chmod +x "$HOME/.local/bin/aicoding-auto-update"
+  run bash -c 'source "$BLUEPRINT_ROOT/configs/bash/boot-sync.sh"'
+  [ "$status" -eq 0 ]
+  [ ! -e "$HOME/ensure-ran" ]
+}
+
+@test "boot-sync snippet: repeated shells delegate idempotence to updater ensure" {
   unset AICODINGSETUP_SKIP_NETWORK
-  cat > "$HOME/.local/bin/aicoding-sync" <<'EOF'
+  cat > "$HOME/.local/bin/aicoding-auto-update" <<'EOF'
 #!/bin/bash
-echo start >> "$HOME/sync-ran"
-sleep 0.2
-echo done >> "$HOME/sync-ran"
+echo "$*" >> "$HOME/ensure-ran"
 EOF
-  chmod +x "$HOME/.local/bin/aicoding-sync"
+  chmod +x "$HOME/.local/bin/aicoding-auto-update"
 
   run bash -c '
-    for _ in $(seq 20); do
+    for _ in $(seq 2); do
       PATH="$TMPDIR/stubs:/usr/bin:/bin" bash -c ". \"$BLUEPRINT_ROOT/configs/bash/boot-sync.sh\"" &
     done
     wait
-    for _ in $(seq 100); do
-      [ "$(grep -c "^done$" "$HOME/sync-ran" 2>/dev/null || true)" -eq 1 ] && break
-      sleep 0.05
-    done
-    cat "$HOME/sync-ran"
+    cat "$HOME/ensure-ran"
   '
   [ "$status" -eq 0 ]
-  [ "$(grep -c '^start$' <<<"$output")" -eq 1 ]
-  [ "$(grep -c '^done$' <<<"$output")" -eq 1 ]
-  [ ! -e "$HOME/.local/state/aicoding/updates/.boot-sync.lock" ]
-}
-
-@test "boot-sync snippet: recovers an abandoned stale lock" {
-  unset AICODINGSETUP_SKIP_NETWORK
-  printf '#!/bin/bash\necho done > "$HOME/sync-ran"\n' > "$HOME/.local/bin/aicoding-sync"
-  chmod +x "$HOME/.local/bin/aicoding-sync"
-  mkdir -p "$HOME/.local/state/aicoding/updates/.boot-sync.lock"
-  touch -d '2000-01-01' "$HOME/.local/state/aicoding/updates/.boot-sync.lock"
-
-  run bash -c '
-    PATH="$TMPDIR/stubs:/usr/bin:/bin" source "$BLUEPRINT_ROOT/configs/bash/boot-sync.sh"
-    for _ in $(seq 100); do
-      [ -f "$HOME/sync-ran" ] && break
-      sleep 0.05
-    done
-    cat "$HOME/sync-ran"
-  '
-  [ "$status" -eq 0 ]
-  [ "$output" = done ]
-  [ ! -e "$HOME/.local/state/aicoding/updates/.boot-sync.lock" ]
-  # The steal renames the stale lock to .boot-sync.lock.stale.<pid> before
-  # removing it — recovery must not leave that private copy behind either.
-  [ -z "$(find "$HOME/.local/state/aicoding/updates" -maxdepth 1 -name '.boot-sync.lock.stale.*' -print 2>/dev/null)" ]
+  [ "$(grep -c '^--ensure$' <<<"$output")" -eq 2 ]
 }
 
 @test "aicoding-install: dispatches to install-host.sh when profile=host" {
   mkdir -p "$HOME/.local/state/aicoding"
   echo '{"profile":"host"}' > "$HOME/.local/state/aicoding/manifest.json"
-  # Fake blueprint clone with sentinel installers; no network.
+  # Explicit local blueprint with sentinel installers; no network. Merely
+  # setting AICODING_BLUEPRINT_CLONE must not bypass qualified selection.
   CLONE="$TMPDIR/clone"; mkdir -p "$CLONE/lib"
   printf '#!/bin/bash\necho HOST-INSTALLER-RAN\n' > "$CLONE/install-host.sh"
   printf '#!/bin/bash\necho CONTAINER-INSTALLER-RAN\n' > "$CLONE/install.sh"
-  run env AICODING_BLUEPRINT_CLONE="$CLONE" bash "$BLUEPRINT_ROOT/bin/aicoding-install"
+  : > "$CLONE/lib/blueprint-deploy.sh"
+  printf 'refresh_blueprint() { return 0; }\n' > "$CLONE/lib/sync.sh"
+  printf '#!/bin/bash\nexec /usr/bin/git "$@"\n' > "$TMPDIR/stubs/git"
+  chmod +x "$TMPDIR/stubs/git"
+  (cd "$CLONE" && /usr/bin/git init -q && /usr/bin/git add -A && \
+    /usr/bin/git -c user.email=t@t -c user.name=t commit -q -m fixture)
+  run bash "$BLUEPRINT_ROOT/bin/aicoding-install" --blueprint "$CLONE"
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
   [[ "$output" == *"HOST-INSTALLER-RAN"* ]]
   [[ "$output" != *"CONTAINER-INSTALLER-RAN"* ]]
 }

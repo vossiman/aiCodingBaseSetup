@@ -1,48 +1,150 @@
 #!/usr/bin/env bash
-# aicoding-install — pull the latest released blueprint and re-run the full
-# installer. Complements aicoding-sync: sync reconciles what install already
-# provisioned; this re-runs provisioning itself (apt prereqs, tool bootstrap
-# incl. codex, templates, tmux plugins, playwright, secrets prompt) — and
-# --force-reinstall nukes drift by deleting the manifest first.
+# Install or re-run provisioning from an exact CI-qualified immutable source.
+# Explicit --blueprint remains the local development escape hatch.
 set -uo pipefail
-SCRIPT_REAL=$(readlink -f "$0"); SCRIPT_DIR=$(dirname "$(dirname "$SCRIPT_REAL")")
-: "${AICODING_BLUEPRINT_CLONE:=/tmp/aicoding}"
-. "$SCRIPT_DIR/lib/blueprint-source.sh"
-aicoding_parse_blueprint_args aicoding-install "$@" || exit $?
-for arg in "${AICODING_REMAINING_ARGS[@]}"; do
-  case "$arg" in
-    -h|--help)
-      echo "usage: aicoding-install [--blueprint PATH] [--force-reinstall]"
-      echo "  --blueprint PATH  install from this local Git checkout verbatim (never fetch or reset it)"
-      echo "  Dispatches on the manifest's profile: host machines re-run install-host.sh,"
-      echo "  everything else (default) re-runs install.sh."
-      exit 0
-      ;;
+SCRIPT_REAL=$(readlink -f "$0") || exit 1
+SCRIPT_DIR=$(dirname "$(dirname "$SCRIPT_REAL")")
+: "${AICODING_DATA_DIR:=$HOME/.local/share/aicoding}"
+: "${AICODING_STATE_DIR:=$HOME/.local/state/aicoding}"
+
+usage() {
+  cat <<'EOF'
+usage: aicoding-install [--blueprint PATH] [--force-reinstall]
+       aicoding-install --unattended --source PATH --version FULL_SHA
+                        --profile container|host|minimal-pi
+
+  --blueprint PATH  develop from this local Git checkout verbatim
+  --source PATH      enroll an already downloaded, CI-qualified source
+EOF
+}
+
+_aicoding_install_lock() {
+  mkdir -p "$AICODING_STATE_DIR" || return 1
+  if [ "${AICODING_SYNC_LOCK_PID:-}" = "$$" ] && [ -n "${AICODING_SYNC_LOCK_FD:-}" ]; then return 0; fi
+  if [ -n "${AICODING_SYNC_LOCK_FD:-}" ]; then exec {AICODING_SYNC_LOCK_FD}>&- 2>/dev/null || true; fi
+  exec {AICODING_SYNC_LOCK_FD}>"$AICODING_STATE_DIR/sync.lock" || return 1
+  flock "$AICODING_SYNC_LOCK_FD" || return 1
+  export AICODING_SYNC_LOCK_FD AICODING_SYNC_LOCK_PID=$$
+}
+
+_aicoding_install_profile() {
+  local selected=${AICODING_PROFILE:-} manifest="${AICODING_MANIFEST:-$AICODING_STATE_DIR/manifest.json}"
+  if [ -z "$selected" ] && [ -f "$AICODING_STATE_DIR/component-selection.json" ] \
+      && command -v jq >/dev/null 2>&1; then
+    selected=$(jq -r '.profile // empty' "$AICODING_STATE_DIR/component-selection.json" 2>/dev/null || true)
+  fi
+  if [ -z "$selected" ] && [ -f "$manifest" ] && command -v jq >/dev/null 2>&1; then
+    selected=$(jq -r '.profile // empty' "$manifest" 2>/dev/null || true)
+  fi
+  case "$selected" in host|minimal-pi|container) printf '%s\n' "$selected" ;; *) printf 'container\n' ;; esac
+}
+
+_aicoding_install_validate_source() {
+  local source=$1 version=$2 file
+  [[ "$version" =~ ^[0-9a-f]{40}$ ]] || return 2
+  [ -d "$source" ] || return 2
+  [ "$(cat "$source/.aicoding-version" 2>/dev/null)" = "$version" ] || return 2
+  [ "$(cat "$source/.aicoding-bootstrap-version" 2>/dev/null)" = 1 ] || return 2
+  for file in bin/aicoding-install bin/aicoding-auto-update bin/aicoding-sync bin/aicoding-status bin/aicoding-select lib/runtime.sh lib/auto-update.sh lib/ci-selector.sh; do
+    [ -f "$source/$file" ] && bash -n "$source/$file" || return 1
+  done
+}
+
+_aicoding_install_minimal_pi() {
+  local release=$1 component_file="$AICODING_STATE_DIR/component-selection.json"
+  local dvw_sha dvw_source
+  for command in bash git gh jq curl flock setsid timeout tar; do
+    command -v "$command" >/dev/null 2>&1 || {
+      echo "aicoding-install: minimal-pi requires $command" >&2
+      return 1
+    }
+  done
+  mkdir -p "$AICODING_STATE_DIR" || return 1
+  jq -n '{schema:1,profile:"minimal-pi",components:["aicoding","dvw"]}' > "$component_file.tmp.$$" || return 1
+  mv -f -- "$component_file.tmp.$$" "$component_file" || return 1
+
+  . "$release/lib/update-components.sh" || return 1
+  dvw_sha=$(aicoding_select_ci_sha dvw) || return 1
+  dvw_source="$AICODING_DATA_DIR/sources/dvw/$dvw_sha"
+  _aicoding_stage_git_source "${AICODING_DVW_REMOTE:-https://github.com/vossiman/dvw}" "$dvw_sha" "$dvw_source" || return 1
+  [ "$(cat "$dvw_source/.aicoding-version" 2>/dev/null)" = "$dvw_sha" ] || return 1
+  [ -x "$dvw_source/install-bastion.sh" ] || return 1
+  "$dvw_source/install-bastion.sh" --unattended --source "$dvw_source" --version "$dvw_sha" </dev/null || return 1
+  "$HOME/.local/bin/aicoding-auto-update" --ensure </dev/null
+}
+
+_aicoding_install_enroll() {
+  local source=$1 version=$2 profile=$3 release installer
+  case "$profile" in container|host|minimal-pi) ;; *) echo 'aicoding-install: invalid profile' >&2; return 2 ;; esac
+  _aicoding_install_validate_source "$source" "$version" || {
+    echo 'aicoding-install: source/version validation failed' >&2; return 1;
+  }
+  . "$SCRIPT_DIR/lib/ci-selector.sh" || return 1
+  aicoding_ci_qualified aicoding "$version" || {
+    echo 'aicoding-install: source is not CI-qualified on main' >&2; return 1;
+  }
+  . "$SCRIPT_DIR/lib/runtime.sh" || return 1
+  aicoding_stage_source aicoding "$source" "$version" || return 1
+  release="$AICODING_DATA_DIR/versions/aicoding/$version"
+  _aicoding_install_validate_source "$release" "$version" || return 1
+  aicoding_activate_version aicoding "$version" aicoding-sync bin/aicoding-sync aicoding-install bin/aicoding-install aicoding-status bin/aicoding-status aicoding-select bin/aicoding-select aicoding-auto-update bin/aicoding-auto-update || return 1
+
+  if [ "$profile" = minimal-pi ]; then
+    _aicoding_install_minimal_pi "$release"
+    return $?
+  fi
+  installer=install.sh
+  [ "$profile" = host ] && installer=install-host.sh
+  [ -f "$release/$installer" ] || return 1
+  export AICODINGSETUP_NONINTERACTIVE=1 AICODING_BLUEPRINT_CLONE="$release"
+  export AICODING_PERSISTENT_ENROLLMENT=1
+  if [ "$profile" = host ]; then export AICODING_HOST_BLUEPRINT_DIR="$release"; fi
+  exec bash "$release/$installer" --unattended
+}
+
+source_path= version= profile=
+declare -a original_args=("$@") remaining=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --source) [ "$#" -ge 2 ] || exit 2; source_path=$2; shift 2 ;;
+    --source=*) source_path=${1#--source=}; shift ;;
+    --version) [ "$#" -ge 2 ] || exit 2; version=$2; shift 2 ;;
+    --version=*) version=${1#--version=}; shift ;;
+    --profile) [ "$#" -ge 2 ] || exit 2; profile=$2; shift 2 ;;
+    --profile=*) profile=${1#--profile=}; shift ;;
+    --unattended) remaining+=("$1"); shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) remaining+=("$1"); shift ;;
   esac
 done
-# Bring the tracking clone current (fail-open: offline falls back to the
-# cached clone). refresh_blueprint lives in lib/sync.sh; prefer the clone's
-# copy, fall back to the install dir's.
-if [ -f "$AICODING_BLUEPRINT_CLONE/lib/sync.sh" ]; then
+
+_aicoding_install_lock || exit 1
+persisted_profile=$(_aicoding_install_profile)
+
+if [ -n "$source_path" ] || [ -n "$version" ] || [ -n "$profile" ]; then
+  [ -n "$source_path" ] && [ -n "$version" ] && [ -n "$profile" ] || {
+    echo 'aicoding-install: --source, --version and --profile are required together' >&2; exit 2;
+  }
+  _aicoding_install_enroll "$source_path" "$version" "$profile"
+  exit $?
+fi
+
+. "$SCRIPT_DIR/lib/blueprint-source.sh"
+AICODING_BLUEPRINT_LOCAL=0
+aicoding_parse_blueprint_args aicoding-install "${original_args[@]}" || exit $?
+if [ "$AICODING_BLUEPRINT_LOCAL" = 1 ]; then
   . "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"
-elif [ -f "$SCRIPT_DIR/lib/sync.sh" ]; then
-  . "$SCRIPT_DIR/lib/sync.sh"
-fi
-if command -v refresh_blueprint >/dev/null 2>&1; then
   refresh_blueprint || exit $?
+else
+  . "$SCRIPT_DIR/lib/sync.sh"
+  _sync_source_update_libraries "$SCRIPT_DIR"
+  selected=$(aicoding_select_ci_sha aicoding) || exit $?
+  selected_root=$(_sync_stage_selected_blueprint "$selected") || exit $?
+  exec "$selected_root/bin/aicoding-install" --unattended --source "$selected_root" --version "$selected" --profile "$persisted_profile" "${remaining[@]}"
 fi
-# Host-profile machines re-run the host installer; everything else keeps
-# the container installer. Read the profile straight from the manifest —
-# bin scripts don't source blueprint-deploy.sh.
-manifest="${AICODING_MANIFEST:-$HOME/.local/state/aicoding/manifest.json}"
-profile=container
-if command -v jq >/dev/null 2>&1 && [ -f "$manifest" ]; then
-  profile=$(jq -r '.profile // "container"' "$manifest" 2>/dev/null || echo container)
-fi
+
+profile=$persisted_profile
 installer=install.sh
 [ "$profile" = host ] && installer=install-host.sh
-
-if [ -f "$AICODING_BLUEPRINT_CLONE/$installer" ]; then
-  exec bash "$AICODING_BLUEPRINT_CLONE/$installer" "${AICODING_REMAINING_ARGS[@]}"
-fi
-exec bash "$SCRIPT_DIR/$installer" "${AICODING_REMAINING_ARGS[@]}"
+[ "$profile" != minimal-pi ] || { echo 'aicoding-install: minimal-pi requires a CI-qualified managed source' >&2; exit 1; }
+exec bash "$AICODING_BLUEPRINT_CLONE/$installer" "${AICODING_REMAINING_ARGS[@]}"

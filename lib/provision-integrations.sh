@@ -30,6 +30,10 @@ install_aicoding_sync_symlink() {
     return
   fi
   mkdir -p "$HOME/.local/bin"
+  if grep -qF '# Managed by aicoding immutable runtime.' "$dest" 2>/dev/null; then
+    ok "aicoding-sync durable launcher already installed"
+    return
+  fi
   ln -sf "$src" "$dest"
   chmod +x "$src"
   ok "aicoding-sync installed at $dest -> $src"
@@ -44,6 +48,10 @@ install_aicoding_install_symlink() {
     warn "bin/aicoding-install not found in blueprint — skipping symlink"
     return
   fi
+  if grep -qF '# Managed by aicoding immutable runtime.' "$dest" 2>/dev/null; then
+    ok "aicoding-install durable launcher already installed"
+    return
+  fi
   mkdir -p "$HOME/.local/bin"
   ln -sf "$src" "$dest"
   chmod +x "$src"
@@ -54,8 +62,36 @@ install_update_status_symlink() {
   header "aicoding-status CLI"
   local src="$SCRIPT_DIR/bin/aicoding-status" dest="$HOME/.local/bin/aicoding-status"
   [[ -f "$src" ]] || { warn "bin/aicoding-status not found — skipping"; return; }
+  if grep -qF '# Managed by aicoding immutable runtime.' "$dest" 2>/dev/null; then
+    ok "aicoding-status durable launcher already installed"
+    return
+  fi
   mkdir -p "$HOME/.local/bin"; chmod +x "$src"; ln -sf "$src" "$dest"
   ok "aicoding-status installed at $dest -> $src"
+}
+
+install_aicoding_auto_update_symlink() {
+  header "aicoding automatic updater"
+  local src="$SCRIPT_DIR/bin/aicoding-auto-update" dest="$HOME/.local/bin/aicoding-auto-update"
+  [[ -f "$src" ]] || { warn "bin/aicoding-auto-update not found — skipping"; return; }
+  if grep -qF '# Managed by aicoding immutable runtime.' "$dest" 2>/dev/null; then
+    ok "aicoding-auto-update durable launcher already installed"
+    return
+  fi
+  mkdir -p "$HOME/.local/bin"; chmod +x "$src"; ln -sf "$src" "$dest"
+  ok "aicoding-auto-update installed at $dest -> $src"
+}
+
+ensure_aicoding_auto_update() {
+  header "aicoding automatic update schedule"
+  local command="$HOME/.local/bin/aicoding-auto-update"
+  [ -x "$command" ] || { warn "aicoding-auto-update unavailable — scheduler not enrolled"; return 1; }
+  if [ "${AICODINGSETUP_SKIP_NETWORK:-0}" = 1 ]; then
+    info "Skipping scheduler start (AICODINGSETUP_SKIP_NETWORK)"
+    return 0
+  fi
+  "$command" --ensure </dev/null || { warn "could not ensure automatic updater"; return 1; }
+  ok "automatic updater ensured"
 }
 
 # --- agent-notify CLI symlink ---
@@ -355,7 +391,7 @@ check_playwright() {
   local bin missing rc=0
   bin="$(playwright_chromium_bin)" || {
     warn "The Chromium revision required by Playwright MCP is unavailable"
-    info "Run: npx -y @playwright/mcp@latest install-browser chromium"
+    info "Run: playwright-mcp install-browser --no-remove chromium"
     return 0
   }
   ok "Playwright MCP's Chromium revision is installed"
@@ -366,10 +402,10 @@ check_playwright() {
   missing="$(playwright_missing_libs "$bin")" || rc=$?
   if [[ $rc -ne 0 ]]; then
     warn "Playwright chromium present but unreadable — ldd failed (truncated download?)"
-    info "Run: npx -y @playwright/mcp@latest install-browser --force chromium"
+    info "Run: playwright-mcp install-browser --no-remove chromium"
   elif [[ -n "$missing" ]]; then
     warn "Playwright system libraries missing: $(tr '\n' ' ' <<<"$missing")"
-    info "Run: sudo npx -y --package=@playwright/mcp@latest -c 'playwright-core install-deps chromium'"
+    info "Rebuild the container or run the exact staged playwright-core install-deps command"
   else
     ok "Playwright system libraries present"
   fi

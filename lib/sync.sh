@@ -5,10 +5,11 @@
 # continue after a failure; the aggregate status remains nonzero.
 # Sourced (no shebang / set -e); matches the lib/*.sh style.
 
-: "${AICODING_BLUEPRINT_CLONE:=/tmp/aicoding}"
+: "${AICODING_BLUEPRINT_CLONE:=${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
 : "${AICODING_BLUEPRINT_REMOTE:=https://github.com/vossiman/aiCodingBaseSetup}"
 : "${AICODING_BLUEPRINT_LOCAL:=0}"
 : "${AICODING_UPDATE_TTL:=21600}"
+: "${AICODING_STATE_DIR:=$HOME/.local/state/aicoding}"
 : "${AICODING_MANIFEST:=$HOME/.local/state/aicoding/manifest.json}"
 # Container-local — must match bin/aicoding-status. ~/.aicodingsetup is a host
 # bind mount shared by every container; keeping this cache there let one
@@ -21,6 +22,7 @@ _sync_source_update_libraries() {
   [ -f "$root/lib/update-results.sh" ] && . "$root/lib/update-results.sh"
   [ -f "$root/lib/update-components.sh" ] && . "$root/lib/update-components.sh"
   [ -f "$root/lib/ci-selector.sh" ] && . "$root/lib/ci-selector.sh"
+  [ -f "$root/lib/runtime.sh" ] && . "$root/lib/runtime.sh"
 }
 
 _sync_blueprint_version() {
@@ -306,6 +308,10 @@ ensure_claude_runtime_scope() {
 # sudo, and then it simply succeeds.
 _sync_profile() {
   local p=${AICODING_PROFILE:-}
+  if [ -z "$p" ] && command -v jq >/dev/null 2>&1 \
+      && [ -f "$AICODING_STATE_DIR/component-selection.json" ]; then
+    p=$(jq -r '.profile // empty' "$AICODING_STATE_DIR/component-selection.json" 2>/dev/null) || p=
+  fi
   if [ -z "$p" ] && command -v manifest_get_profile >/dev/null 2>&1; then
     p=$(manifest_get_profile)
   fi
@@ -316,7 +322,7 @@ _sync_profile() {
   if [ -z "$p" ] && command -v jq >/dev/null 2>&1 && [ -f "$AICODING_MANIFEST" ]; then
     p=$(jq -r '.profile // "container"' "$AICODING_MANIFEST" 2>/dev/null) || p=container
   fi
-  case "$p" in host|container) ;; *) p=container ;; esac
+  case "$p" in host|container|minimal-pi) ;; *) p=container ;; esac
   printf '%s\n' "$p"
 }
 
@@ -417,6 +423,7 @@ refresh_blueprint() {
 _sync_validate_blueprint_release() {
   local root=$1 sha=$2 file
   [ "$(cat "$root/.aicoding-version" 2>/dev/null)" = "$sha" ] || return 1
+  [ "$(cat "$root/.aicoding-bootstrap-version" 2>/dev/null)" = 1 ] || return 1
   for file in bin/aicoding-sync lib/sync.sh lib/blueprint-deploy.sh lib/update-results.sh lib/update-components.sh; do
     [ -f "$root/$file" ] && bash -n "$root/$file" || return 1
   done
@@ -458,13 +465,17 @@ _sync_capture_generated_provenance() {
 }
 
 _sync_stage_selected_blueprint() {
-  local sha=$1 final
+  local sha=$1 final sync_root
+  if ! declare -F aicoding_stage_source >/dev/null 2>&1; then
+    sync_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd) || return 1
+    . "$sync_root/lib/runtime.sh" || return 1
+  fi
   final="$AICODING_DATA_DIR/versions/aicoding/$sha"
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 2
   if [ -d "$final" ]; then
     _sync_validate_blueprint_release "$final" "$sha" || return 1
   else
-    local stage="$AICODING_DATA_DIR/versions/aicoding/.staging.$sha.$$"
+    local stage="$AICODING_DATA_DIR/source-staging/aicoding.$sha.$$"
     mkdir -p "$(dirname "$stage")"; rm -rf "$stage"
     timeout "${AICODING_VENDOR_TIMEOUT:-600}" git clone --quiet --no-checkout "$AICODING_BLUEPRINT_REMOTE" "$stage" 2>/dev/null || { rm -rf "$stage"; return 1; }
     timeout "${AICODING_VENDOR_TIMEOUT:-600}" git -C "$stage" checkout --quiet --detach "$sha" 2>/dev/null || { rm -rf "$stage"; return 1; }
@@ -473,11 +484,10 @@ _sync_stage_selected_blueprint() {
     rm -rf "$stage/.git"
     printf '%s\n' "$sha" > "$stage/.aicoding-version"
     _sync_validate_blueprint_release "$stage" "$sha" || { rm -rf "$stage"; return 1; }
-    mv "$stage" "$final" || return 1
+    aicoding_stage_source aicoding "$stage" "$sha" || { rm -rf "$stage"; return 1; }
+    rm -rf "$stage" || return 1
   fi
-  mkdir -p "$AICODING_DATA_DIR/current"
-  local link="$AICODING_DATA_DIR/current/.aicoding.new.$$"
-  ln -s "../versions/aicoding/$sha" "$link" && mv -Tf "$link" "$AICODING_DATA_DIR/current/aicoding"
+  aicoding_activate_version aicoding "$sha" || return 1
   printf '%s\n' "$final"
 }
 
@@ -1068,7 +1078,7 @@ _sync_provision() {
   # and must not re-warn on every container start.
   AICODING_SYNC_MODE="${1:-}"
 
-  local blueprint_lib="" rc=0 target
+  local blueprint_lib="" rc=0 target SCRIPT_DIR
   declare -p _SYNC_DEFERRED_PROVISION_COMPONENTS >/dev/null 2>&1 \
     || declare -gA _SYNC_DEFERRED_PROVISION_COMPONENTS=()
   if [ -f "$AICODING_BLUEPRINT_CLONE/lib/provision.sh" ]; then
@@ -1078,6 +1088,7 @@ _sync_provision() {
   else
     return 0
   fi
+  SCRIPT_DIR="$(dirname "$blueprint_lib")"
   . "$blueprint_lib/provision.sh"
   command -v load_secrets_env >/dev/null 2>&1 && load_secrets_env || true
 
@@ -1144,7 +1155,6 @@ _sync_provision() {
   # from it); set it locally rather than relying on install.sh having run in
   # this process.
   if [ -f "$blueprint_lib/provision-integrations.sh" ]; then
-    local SCRIPT_DIR; SCRIPT_DIR="$(dirname "$blueprint_lib")"
     . "$blueprint_lib/provision-integrations.sh"
     install_dvw_probe_symlink || rc=1
     # Same self-heal for the other agent-facing CLIs install.sh symlinks:
@@ -1260,17 +1270,11 @@ _sync_devcontainer_pin() {
   return 0
 }
 
-# bin/aicoding-sync sources lib/sync.sh from the tracking clone BEFORE the
-# clone is refreshed, so the whole run executes the old sync.sh and any
-# provisioning step added since lands one boot late (seen with #125: the run
-# that fetched the dvw-probe step never ran it). Refresh first, and if the
-# clone actually moved, replace this process with the refreshed clone's own
-# bin/aicoding-sync, same arguments. The guard variable keeps the child from
-# doing it again; a --blueprint local source never fetches, so there is
-# nothing to re-exec from. Fail-open: if the re-exec target is missing, the
-# run just continues on the old code as before.
+# Replace this process only with the exact CI-qualified immutable release
+# selected for the pass. A local --blueprint source is used verbatim. There is
+# deliberately no legacy tracking-clone fetch/reset fallback.
 _sync_refresh_and_reexec() {
-  [[ "$AICODING_BLUEPRINT_LOCAL" == 1 ]] && return 0
+  if [[ "$AICODING_BLUEPRINT_LOCAL" == 1 ]]; then refresh_blueprint; return $?; fi
   if [[ "${AICODING_SYNC_REEXECED:-0}" == 1 ]]; then _SYNC_REFRESHED=1; return 0; fi
   if [ -n "${AICODING_SELECTED_AICODING_SHA:-}" ]; then
     local selected_root
@@ -1279,15 +1283,8 @@ _sync_refresh_and_reexec() {
     AICODING_BLUEPRINT_CLONE="$selected_root" AICODING_SYNC_REEXECED=1 _SYNC_REFRESHED=1 \
       exec bash "$selected_root/bin/aicoding-sync" "$@"
   fi
-  local before after
-  before=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD 2>/dev/null || echo none)
-  refresh_blueprint || return $?
   _SYNC_REFRESHED=1
-  after=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD 2>/dev/null || echo none)
-  [[ "$before" == "$after" ]] && return 0
-  [[ -f "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" ]] || return 0
-  echo "Blueprint clone moved ${before:0:7} -> ${after:0:7}; re-running from the refreshed clone"
-  AICODING_SYNC_REEXECED=1 exec bash "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" "$@"
+  return 0
 }
 
 aicoding_sync() {
@@ -1307,7 +1304,7 @@ aicoding_sync() {
   # An unattended pass advances only to an exact main SHA whose required CI
   # succeeded. Selection failure keeps the existing installation active.
   local overall_rc=0 selected="${AICODING_SELECTED_AICODING_SHA:-}"
-  if [ "$mode" = boot ] && [ "$AICODING_BLUEPRINT_LOCAL" != 1 ] \
+  if [ "$mode" != dry-run ] && [ "$AICODING_BLUEPRINT_LOCAL" != 1 ] \
       && [ "${AICODING_SYNC_REEXECED:-0}" != 1 ] \
       && [ "${AICODINGSETUP_SKIP_NETWORK:-}" != 1 ] \
       && command -v aicoding_select_ci_sha >/dev/null 2>&1; then
@@ -1327,8 +1324,11 @@ aicoding_sync() {
     _sync_refresh_and_reexec "$@" || overall_rc=1
   fi
 
+  local profile
+  profile=$(_sync_profile)
+
   # 1. Plumbing — always correct now, but write nothing under --dry-run.
-  [ "$mode" != dry-run ] && _sync_plumbing
+  [ "$mode" != dry-run ] && [ "$profile" != minimal-pi ] && _sync_plumbing
 
   # 2. Update installed binaries first so dependent config can use the actual
   #    component outcome from this pass.
@@ -1344,15 +1344,19 @@ aicoding_sync() {
   fi
   # 3. Reconcile config after tool outcomes. Unrelated compatible config still
   #    advances when one component is blocked.
-  _sync_reconcile "$mode" || overall_rc=1
+  if [ "$profile" != minimal-pi ]; then
+    _sync_reconcile "$mode" || overall_rc=1
+  fi
 
   # 4. Reconcile machine-state integrations, then stamp only when verified.
-  if [ "$mode" != dry-run ]; then
+  if [ "$mode" != dry-run ] && [ "$profile" != minimal-pi ]; then
     if _sync_provision "$mode"; then
       _sync_binaries_stamp
     else
       overall_rc=1
     fi
+  elif [ "$mode" != dry-run ] && [ "$overall_rc" -eq 0 ]; then
+    _sync_binaries_stamp
   fi
   if [ "$mode" = boot ] && command -v aicoding_result_record >/dev/null 2>&1 && [ -n "$selected" ]; then
     local active

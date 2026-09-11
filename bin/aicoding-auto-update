@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -uo pipefail
+SCRIPT_REAL=$(readlink -f "$0") || exit 1
+AICODING_RUNTIME_ROOT=$(dirname "$(dirname "$SCRIPT_REAL")")
+export AICODING_RUNTIME_ROOT
+export AICODING_AUTO_UPDATE_SELF="$SCRIPT_REAL"
+. "$AICODING_RUNTIME_ROOT/lib/auto-update.sh"
+
+# An installer may invoke --ensure while it owns the whole-run sync lock.
+# Detached scheduler processes must close that inherited descriptor before
+# they start a worker which will later acquire the same lock.
+case "${1:-}" in
+  --enroll|--worker)
+    if [[ "${AICODING_SYNC_LOCK_FD:-}" =~ ^[0-9]+$ ]]; then
+      eval "exec ${AICODING_SYNC_LOCK_FD}>&-"
+    fi
+    if [[ "${AICODING_AUTO_UPDATE_ENSURE_FD:-}" =~ ^[0-9]+$ ]]; then
+      eval "exec ${AICODING_AUTO_UPDATE_ENSURE_FD}>&-"
+    fi
+    unset AICODING_SYNC_LOCK_FD AICODING_SYNC_LOCK_PID
+    unset AICODING_AUTO_UPDATE_ENSURE_FD
+    ;;
+esac
+
+case "${1:-}" in
+  --once)   aicoding_auto_update_once ;;
+  --ensure) aicoding_auto_update_ensure ;;
+  --enroll) aicoding_auto_update_enroll ;;
+  --worker) aicoding_auto_update_worker ;;
+  -h|--help|'')
+    echo 'usage: aicoding-auto-update --once|--ensure'
+    ;;
+  *)
+    echo "aicoding-auto-update: unknown argument: $1" >&2
+    exit 2
+    ;;
+esac

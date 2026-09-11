@@ -22,6 +22,7 @@ setup() {
 #!/bin/sh
 echo "claude $*" >> "$TMP/ran.log"
 case "$*" in
+  --version) printf '2.1.0\n' ;;
   "mcp get logfire") printf '  URL: https://logfire-eu.pydantic.dev/mcp\n' ;;
 esac
 exit 0
@@ -416,8 +417,9 @@ EOF
   git clone -q "$BLUEPRINT_ROOT" "$repo"
   git -C "$repo" config user.email test@example.invalid
   git -C "$repo" config user.name test
+  printf '1\n' > "$repo/.aicoding-bootstrap-version"
   printf '#!/bin/sh\necho historical\n' > "$repo/$source_path"
-  git -C "$repo" add "$source_path"
+  git -C "$repo" add "$source_path" .aicoding-bootstrap-version
   git -C "$repo" commit -qm historical
   mkdir -p "$HOME/.claude/hooks"
   cp "$repo/$source_path" "$HOME/.claude/hooks/bw-deny-files.sh"
@@ -537,30 +539,31 @@ _path_without_real_local_bin() {
   printf '%s' "$PATH" | tr ':' '\n' | grep -v '/home/[^/]*/\.local/bin$' | paste -sd:
 }
 
-@test "on-start.sh falls back to its own bin/ when ~/.local/bin/aicoding-sync dangles" {
+@test "on-start.sh asks the durable updater to ensure scheduling without running sync" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  ln -sfn "$TMP/wiped-clone/bin/aicoding-sync" "$HOME/.local/bin/aicoding-sync"
-  [ ! -e "$HOME/.local/bin/aicoding-sync" ]   # dangling, as after a /tmp wipe
+  rm -f "$HOME/.local/bin/aicoding-auto-update"
+  cat > "$HOME/.local/bin/aicoding-auto-update" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" > "$HOME/ensure-ran"
+EOF
+  chmod +x "$HOME/.local/bin/aicoding-auto-update"
   run env PATH="$(_path_without_real_local_bin)" \
-      AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT" AICODING_UPDATE_TTL=0 \
       bash "$BLUEPRINT_ROOT/on-start.sh"
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q "aicoding-sync not on PATH"
-  echo "$output" | grep -q "=== "   # the sync actually ran
+  [ "$(cat "$HOME/ensure-ran")" = --ensure ]
 }
 
-@test "on-start.sh re-clones the blueprint when neither PATH nor a sibling bin/ has aicoding-sync" {
+@test "on-start.sh never clones source when persistent enrollment is missing" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  rm -f "$HOME/.local/bin/aicoding-sync"
-  # Self-contained (curl | bash) shape: the stashed copy has no bin/ next to it.
+  rm -f "$HOME/.local/bin/aicoding-auto-update"
   mkdir -p "$TMP/stash"; cp "$BLUEPRINT_ROOT/on-start.sh" "$TMP/stash/on-start.sh"
   run env PATH="$(_path_without_real_local_bin)" \
       AICODING_BLUEPRINT_CLONE="$TMP/fresh-clone" \
       AICODING_BLUEPRINT_REMOTE="$BLUEPRINT_ROOT" AICODING_UPDATE_TTL=0 \
       AICODINGSETUP_SKIP_NETWORK= bash "$TMP/stash/on-start.sh"
   [ "$status" -eq 0 ]
-  [ -x "$TMP/fresh-clone/bin/aicoding-sync" ]
-  echo "$output" | grep -q "re-cloning"
+  [ ! -e "$TMP/fresh-clone" ]
+  [[ "$output" == *"persistent automatic updater is not enrolled"* ]]
 }
 
 # ~/.local/share/uv is a host bind mount; a persisted .venv whose interpreter
@@ -869,6 +872,40 @@ _kvm_unused_gid() {
   [ "$output" = container ]
 }
 
+@test "minimal-pi sync updates selected components without config or machine plumbing" {
+  mkdir -p "$AICODING_STATE_DIR"
+  printf '{"schema":1,"profile":"minimal-pi","components":["aicoding","dvw"]}\n' \
+    > "$AICODING_STATE_DIR/component-selection.json"
+  local calls="$TMP/minimal-pi.calls"
+  _sync_source_update_libraries() { :; }
+  _sync_refresh_and_reexec() { :; }
+  _sync_plumbing() { echo plumbing >> "$calls"; }
+  _sync_reconcile() { echo reconcile >> "$calls"; }
+  _sync_provision() { echo provision >> "$calls"; }
+  _sync_binaries_fresh() { return 1; }
+  aicoding_update_installed_components() { echo components >> "$calls"; }
+  _sync_binaries_stamp() { echo stamp >> "$calls"; }
+
+  AICODINGSETUP_SKIP_NETWORK= run aicoding_sync --boot
+  [ "$status" -eq 0 ]
+  [ "$(cat "$calls")" = $'components\nstamp' ]
+}
+
+@test "normal manual sync selects an exact qualified source before other work" {
+  local calls="$TMP/manual-selected.calls" sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  _sync_source_update_libraries() { :; }
+  aicoding_select_ci_sha() { printf '%s\n' "$sha"; }
+  _sync_refresh_and_reexec() { printf '%s\n' "$AICODING_SELECTED_AICODING_SHA" > "$calls"; }
+  _sync_plumbing() { :; }
+  _sync_binaries_fresh() { return 0; }
+  _sync_reconcile() { :; }
+  _sync_provision() { :; }
+
+  AICODINGSETUP_SKIP_NETWORK= run aicoding_sync --yes
+  [ "$status" -eq 0 ]
+  [ "$(cat "$calls")" = "$sha" ]
+}
+
 # WARNING: the two host-install tests below run the FULL install-host.sh main
 # flow. They are offline-safe only under tests/bats/run.sh, which exports
 # AICODINGSETUP_SKIP_NETWORK=1 suite-wide; invoking bats on this file directly
@@ -889,7 +926,7 @@ _kvm_unused_gid() {
 
   AICODING_HOST_BLUEPRINT_DIR="$durable" \
     run env AICODING_BLUEPRINT_CLONE="$clone" \
-      bash "$clone/bin/aicoding-install"
+      bash "$clone/bin/aicoding-install" --blueprint "$clone"
   [ "$status" -eq 0 ]
   [ "$(cat "$durable/dirty-sentinel")" = dirty-local-content ]
   [ -x "$durable/install-host.sh" ]

@@ -20,13 +20,22 @@ setup() {
   #    version calls) when present on PATH.
   # NOT stubbed here: codex / agent / cursor-agent — dedicated ensure_codex /
   # ensure_cursor_agent tests set up their own present/absent scenarios for those.
-  for cmd in apt-get sudo curl npm npx bash-build-tmux claude opencode; do
+  for cmd in apt-get sudo curl npm npx bash-build-tmux opencode; do
     cat > "$TMPDIR/stubs/$cmd" <<'STUB'
 #!/bin/sh
 exit 0
 STUB
     chmod +x "$TMPDIR/stubs/$cmd"
   done
+  cat > "$TMPDIR/stubs/claude" <<'STUB'
+#!/bin/sh
+case "$*" in
+  --version) echo '2.1.0' ;;
+  "mcp get logfire") printf '  URL: https://logfire-eu.pydantic.dev/mcp\n' ;;
+esac
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/claude"
   # The real test host may have any tmux build. Keep installer tests offline
   # by presenting the exact pinned build through the test-owned marker.
   cat > "$TMPDIR/stubs/tmux" <<'STUB'
@@ -69,6 +78,18 @@ blueprint_copy() {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   run jq 'has("profile")' "$AICODING_MANIFEST"
   [ "$output" = "false" ]
+}
+
+@test "persistent install reports required preparation failure without a provision stamp" {
+  export AICODING_PERSISTENT_ENROLLMENT=1
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"=== Incomplete ==="* ]]
+  [[ "$output" != *"=== Done! ==="* ]]
+  jq -e '(.provision_commit // null) == null' "$AICODING_MANIFEST"
+  jq -e '.components.provision.state == "blocked"
+    and .components.provision.reason == "partial_provision_failure"' \
+    "$HOME/.local/state/aicoding/update-results.json"
 }
 
 @test "install.sh mode: adopt when managed files exist but no manifest" {
@@ -1428,7 +1449,7 @@ EOF
   export AICODING_UPDATE_STATE="$TMPDIR/state/updates"
   run env AICODING_BLUEPRINT_CLONE="$BP" \
     bash -c ". \"$BP/lib/sync.sh\"; aicoding_sync --yes"
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
   # The probes are still verbatim afterwards: sync did not re-substitute.
   grep -qF '{{BRAVE_API_KEY}}' "$HOME/.claude/CLAUDE.md"
   grep -qF '{{BRAVE_API_KEY}}' "$HOME/.claude/skills/cloudflare-browser/SKILL.md"

@@ -149,7 +149,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then check_prerequisites_host; fi
 . "$SCRIPT_DIR/lib/provision-integrations.sh"
 
 main() {
-  local force_reinstall=0
+  local force_reinstall=0 persistent_provision_ready=1 _AICODING_INITIAL_CONFIG_DEFERRED=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --force-reinstall) force_reinstall=1; shift ;;
@@ -177,12 +177,20 @@ main() {
   ensure_claude_code
   report_unmanaged
   install_mcp_packages
+  if [[ "${AICODING_PERSISTENT_ENROLLMENT:-0}" == 1 ]]; then
+    aicoding_prepare_installed_config_tools </dev/null \
+      || { warn "Tool update verification incomplete; dependent config will remain unchanged"; persistent_provision_ready=0; }
+    aicoding_prepare_exact_mcps --register-claude </dev/null \
+      || { warn "Exact MCP preparation incomplete; dependent config will remain unchanged"; persistent_provision_ready=0; }
+    export AICODING_REQUIRE_UPDATE_RECEIPT=1
+  fi
   install_claude_mcps
   ensure_claude_onboarding_state
   install_claude_plugins
   install_aicoding_sync_symlink
   install_aicoding_install_symlink
   install_update_status_symlink
+  install_aicoding_auto_update_symlink
   install_redact_transcript_symlink
   install_redact_sessions_symlinks
   remove_deprecated_shims
@@ -218,8 +226,23 @@ main() {
   ensure_codex_managed_hooks
   install_bubblewrap
   ensure_homelab_wiki
+  ensure_aicoding_auto_update
 
-  manifest_stamp_provision "$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
+  if [[ "$persistent_provision_ready" != 1 ]]; then
+    command -v aicoding_result_record >/dev/null 2>&1 \
+      && aicoding_result_record provision blocked "$(_aicoding_managed_source_version "$SCRIPT_DIR")" partial_provision_failure || true
+    header "Incomplete"
+    warn "Required provisioning is incomplete; a scheduled pass will retry"
+    return 1
+  elif [[ "${_AICODING_INITIAL_CONFIG_DEFERRED:-0}" == 1 ]]; then
+    command -v aicoding_result_record >/dev/null 2>&1 \
+      && aicoding_result_record provision blocked "$(_aicoding_managed_source_version "$SCRIPT_DIR")" config_deferred || true
+    header "Enrolled with deferrals"
+    info "Runtime enrollment succeeded; incompatible managed config was preserved for a later pass"
+    return 0
+  else
+    manifest_stamp_provision "$(_aicoding_managed_source_version "$SCRIPT_DIR")"
+  fi
 
   header "Done!"
   info "Mode: $mode  (profile: host)"

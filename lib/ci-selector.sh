@@ -12,7 +12,24 @@ _aicoding_ci_policy() {
 
 _aicoding_ci_api() {
   [ "${AICODINGSETUP_SKIP_NETWORK:-0}" != 1 ] || return 2
-  timeout 20 gh api "$1" </dev/null 2>/dev/null
+  local endpoint=$1 response
+  response=$(mktemp) || return 2
+  if command -v gh >/dev/null 2>&1; then
+    if timeout 20 gh api "$endpoint" </dev/null >"$response" 2>/dev/null; then
+      cat "$response"
+      rm -f -- "$response"
+      return 0
+    fi
+  fi
+  command -v curl >/dev/null 2>&1 || { rm -f -- "$response"; return 2; }
+  if ! timeout 20 curl -fsSL --max-time 20 \
+    -H 'Accept: application/vnd.github+json' \
+    "https://api.github.com/$endpoint" </dev/null >"$response" 2>/dev/null; then
+    rm -f -- "$response"
+    return 2
+  fi
+  cat "$response"
+  rm -f -- "$response"
 }
 
 _aicoding_ci_workflow() {

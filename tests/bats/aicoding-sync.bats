@@ -24,7 +24,10 @@ setup() {
   mkdir -p "$TMPDIR/stubs"
   cat > "$TMPDIR/stubs/claude" <<'EOF'
 #!/bin/sh
-case "$*" in "mcp get logfire") printf '  URL: https://logfire-eu.pydantic.dev/mcp\n';; esac
+case "$*" in
+  --version) printf '2.1.0\n' ;;
+  "mcp get logfire") printf '  URL: https://logfire-eu.pydantic.dev/mcp\n' ;;
+esac
 exit 0
 EOF
   chmod +x "$TMPDIR/stubs/claude"
@@ -43,7 +46,7 @@ EOF
 teardown() { cd /; case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
 
 @test "aicoding-sync: exits with error when no manifest" {
-  run "$BLUEPRINT_ROOT/bin/aicoding-sync"
+  run "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync"
   [ "$status" -ne 0 ]
   echo "$output" | grep -q "no manifest"
 }
@@ -51,8 +54,8 @@ teardown() { cd /; case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
 @test "aicoding-sync: reads existing manifest and prints blueprint commit" {
   mkdir -p "$HOME/.aicodingsetup"
   echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
-  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
-  [ "$status" -eq 0 ]
+  run "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" --dry-run
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
   echo "$output" | grep -q "old123"
 }
 
@@ -77,8 +80,8 @@ EOF
   chmod +x "$git_stubs/git"
 
   run env PATH="$git_stubs:$PATH" \
-      "$BLUEPRINT_ROOT/bin/aicoding-sync" --blueprint "$AICODING_BLUEPRINT_CLONE" --dry-run
-  [ "$status" -eq 0 ]
+      "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" --blueprint "$AICODING_BLUEPRINT_CLONE" --dry-run
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
   echo "$output" | grep -Fq "Blueprint source: local $AICODING_BLUEPRINT_CLONE"
   echo "$output" | grep -q "dirty"
   [ ! -e "$git_log" ]
@@ -86,14 +89,14 @@ EOF
 }
 
 @test "aicoding-sync --blueprint rejects a missing checkout" {
-  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --blueprint "$TMPDIR/absent" --dry-run
+  run "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" --blueprint "$TMPDIR/absent" --dry-run
   [ "$status" -eq 2 ]
   echo "$output" | grep -q "local blueprint is not a directory"
 }
 
 @test "aicoding-sync help documents the local blueprint option" {
-  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --help
-  [ "$status" -eq 0 ]
+  run "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" --help
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
   echo "$output" | grep -q -- "--blueprint PATH"
   echo "$output" | grep -q "never fetch or reset"
 }
@@ -115,8 +118,8 @@ EOF
   }
 }
 EOF
-  run bash -c "echo n | $BLUEPRINT_ROOT/bin/aicoding-sync"
-  [ "$status" -eq 0 ]
+  run bash -c "echo n | $AICODING_BLUEPRINT_CLONE/bin/aicoding-sync"
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
   grep -q "^user-line$" "$HOME/.tmux.conf"
 }
 
@@ -140,8 +143,8 @@ EOF
   # Seed a stale "behind" verdict, as aicoding-status would have cached it.
   mkdir -p "$AICODING_UPDATE_STATE"
   echo '{"tool":"aicoding","status":"behind"}' > "$AICODING_UPDATE_STATE/aicoding.json"
-  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --yes
-  [ "$status" -eq 0 ]
+  run "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" --yes
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
   # Commit advanced (old -> real HEAD), so the stale cache is dropped.
   [ ! -e "$AICODING_UPDATE_STATE/aicoding.json" ]
 }
@@ -151,7 +154,7 @@ EOF
   echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
   mkdir -p "$AICODING_UPDATE_STATE"
   echo '{"tool":"aicoding","status":"behind"}' > "$AICODING_UPDATE_STATE/aicoding.json"
-  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
+  run "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" --dry-run
   [ "$status" -eq 0 ]
   # Dry-run applies nothing, so the cache must survive.
   [ -e "$AICODING_UPDATE_STATE/aicoding.json" ]
@@ -174,8 +177,8 @@ EOF
   }
 }
 EOF
-  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --yes
-  [ "$status" -eq 0 ]
+  run "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" --yes
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
   local recorded full
   recorded=$(jq -r '.blueprint_commit' "$AICODING_MANIFEST")
   full=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD)
@@ -183,76 +186,27 @@ EOF
   [ "${#recorded}" -eq 40 ]
 }
 
-# Give the tracking clone an origin whose main is one commit ahead, with a
-# lib/sync.sh that prints a marker. The clone itself stays on the old commit
-# (whose sync.sh is the code under test), so refresh_blueprint's fetch +
-# reset is what moves it forward.
-_seed_origin_ahead() {
-  local work="$TMPDIR/origin-work"
-  (cd "$AICODING_BLUEPRINT_CLONE" && git checkout -q -B main)
-  git clone -q --bare "$AICODING_BLUEPRINT_CLONE" "$TMPDIR/origin.git"
-  (cd "$AICODING_BLUEPRINT_CLONE" && git remote add origin "$TMPDIR/origin.git")
-  git clone -q "$TMPDIR/origin.git" "$work"
-  sed -i 's/^aicoding_sync() {$/aicoding_sync() {\n  echo NEW_SYNC_STEP_RAN/' "$work/lib/sync.sh"
-  grep -q NEW_SYNC_STEP_RAN "$work/lib/sync.sh"
-  (cd "$work" && git -c user.email=test@local -c user.name=test commit -qam "new step" \
-     && git push -q origin HEAD:main)
-}
-
-@test "aicoding-sync re-execs from the refreshed clone so a new sync step runs in the same invocation" {
+@test "normal sync ignores an inherited legacy tracking clone" {
+  local legacy="$TMPDIR/legacy-tracking-clone"
+  rsync -a --exclude=.git "$AICODING_BLUEPRINT_CLONE/" "$legacy/"
+  printf '\nprintf "LEGACY_SOURCE_EXECUTED\\n"\n' >> "$legacy/lib/sync.sh"
   mkdir -p "$HOME/.aicodingsetup"
   echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
-  _seed_origin_ahead
-  old=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse --short HEAD)
-  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
-  echo "$output"
+
+  run env AICODING_BLUEPRINT_CLONE="$legacy" \
+    "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" --dry-run
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q "NEW_SYNC_STEP_RAN"
-  echo "$output" | grep -q "re-running from the refreshed clone"
-  new=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse --short HEAD)
-  [ "$old" != "$new" ]
-  echo "$output" | grep -q "Blueprint: old123 -> $new"
+  [[ "$output" != *LEGACY_SOURCE_EXECUTED* ]]
 }
 
-@test "aicoding-sync re-exec happens at most once per run" {
+@test "normal dry-run leaves the immutable physical release untouched" {
   mkdir -p "$HOME/.aicodingsetup"
   echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
-  _seed_origin_ahead
-  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
+  local before
+  before=$(git -C "$AICODING_BLUEPRINT_CLONE" status --porcelain)
+  run "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" --dry-run
   [ "$status" -eq 0 ]
-  [ "$(echo "$output" | grep -c "re-running from the refreshed clone")" -eq 1 ]
-  [ "$(echo "$output" | grep -c "NEW_SYNC_STEP_RAN")" -eq 1 ]
-}
-
-@test "aicoding-sync guard env var suppresses the re-exec" {
-  mkdir -p "$HOME/.aicodingsetup"
-  echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
-  _seed_origin_ahead
-  run env AICODING_SYNC_REEXECED=1 "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
-  [ "$status" -eq 0 ]
-  if echo "$output" | grep -q "re-running from the refreshed clone"; then false; fi
-  if echo "$output" | grep -q "NEW_SYNC_STEP_RAN"; then false; fi
-}
-
-@test "aicoding-sync re-exec preserves the original arguments" {
-  mkdir -p "$HOME/.aicodingsetup"
-  echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
-  _seed_origin_ahead
-  # --dry-run prints the bucket counts and never provisions; if the re-exec
-  # dropped the flag the run would go interactive and stall on the prompt.
-  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
-  [ "$status" -eq 0 ]
-  echo "$output" | grep -q "NEW_SYNC_STEP_RAN"
-  echo "$output" | grep -qE "^  [0-9]+ up_to_date"
-  [ ! -e "$AICODING_UPDATE_STATE/.binaries.stamp" ]
-}
-
-@test "aicoding-sync does not re-exec when the clone is already current" {
-  mkdir -p "$HOME/.aicodingsetup"
-  echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
-  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
-  [ "$status" -eq 0 ]
-  if echo "$output" | grep -q "re-running from the refreshed clone"; then false; fi
+  [ "$(git -C "$AICODING_BLUEPRINT_CLONE" status --porcelain)" = "$before" ]
 }
 
 @test "aicoding-sync serializes manual and boot runs before blueprint refresh" {
@@ -260,7 +214,7 @@ _seed_origin_ahead() {
   exec 8>"$HOME/.local/state/aicoding/sync.lock"
   flock -n 8
 
-  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --boot </dev/null
+  run "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" --boot </dev/null
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "already running"
   [ ! -e "$AICODING_STATE_DIR/update-results.json" ]

@@ -120,6 +120,21 @@ aicoding_prepare_exact_mcps() {
   return "$rc"
 }
 
+# Establish real update receipts for installed harnesses whose managed config
+# is capability-dependent. Cursor has no exact staged updater yet, so its
+# files remain conservatively deferred by aicoding_config_is_compatible.
+aicoding_prepare_installed_config_tools() {
+  _provision_ensure_update_components || return 1
+  local component rc=0
+  while IFS= read -r component; do
+    case "$component" in claude|codex|opencode|pi)
+      aicoding_update_component "$component" || rc=1
+      ;;
+    esac
+  done < <(aicoding_installed_components)
+  return "$rc"
+}
+
 # Provisioning mutates tool-owned user state, so scheduled calls re-check the
 # tool receipt, local capability, and any shared-root inventory even when no
 # managed config file happened to be actionable in this pass.

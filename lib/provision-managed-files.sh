@@ -2,6 +2,27 @@
 # conservative reconciliation of blueprint-managed files. Relies on
 # blueprint-deploy.sh plus install.sh globals/loggers; sourced only.
 
+_aicoding_initial_config_ready() {
+  local dest=$1 reason
+  [ "${AICODING_REQUIRE_UPDATE_RECEIPT:-0}" = 1 ] || return 0
+  if declare -F aicoding_config_is_compatible >/dev/null 2>&1 \
+      && reason=$(AICODING_REQUIRE_SHARED_COMPATIBILITY=1 \
+        aicoding_config_is_compatible "$dest"); then
+    return 0
+  fi
+  [ -n "$reason" ] || reason=runtime_compatibility_unavailable
+  _AICODING_INITIAL_CONFIG_DEFERRED=1
+  warn "preserving $dest because its runtime is not ready ($reason)"
+  return 1
+}
+
+_aicoding_managed_source_version() {
+  local root=$1 marker
+  marker=$(cat "$root/.aicoding-version" 2>/dev/null || true)
+  if [[ "$marker" =~ ^[0-9a-f]{40}$ ]]; then printf '%s\n' "$marker"; return 0; fi
+  git -C "$root" rev-parse HEAD 2>/dev/null || printf 'unknown\n'
+}
+
 # deploy_all_managed_files — wraps every managed-file deployment in a single
 # manifest staging session. Skill files are enumerated from MANAGED_SKILLS.
 deploy_all_managed_files() {
@@ -10,6 +31,7 @@ deploy_all_managed_files() {
   local entry dest mode source
   while IFS='|' read -r dest mode source; do
     [[ -z "$dest" ]] && continue
+    _aicoding_initial_config_ready "$dest" || continue
     if [[ -f "$SCRIPT_DIR/$source" ]]; then
       # _rendered, not _substituted: the inventory mixes configs with
       # markdown every agent reads (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md,
@@ -23,6 +45,7 @@ deploy_all_managed_files() {
 
   while IFS='|' read -r dest mode source; do
     [[ -z "$dest" ]] && continue
+    _aicoding_initial_config_ready "$dest" || continue
     if [[ -f "$SCRIPT_DIR/$source" ]]; then
       _ensure_merge_dest "$dest"
       deploy_merge_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
@@ -72,7 +95,7 @@ deploy_all_managed_files() {
 
   # Record blueprint origin/commit metadata at the top of the manifest.
   local commit origin
-  commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
+  commit=$(_aicoding_managed_source_version "$SCRIPT_DIR")
   origin=$(blueprint_origin "$SCRIPT_DIR")
   manifest_stage_set_blueprint "$commit" "$origin"
 
@@ -204,6 +227,7 @@ adopt_existing_files() {
 
   while IFS='|' read -r dest mode source; do
     [[ -z "$dest" ]] && continue
+    _aicoding_initial_config_ready "$dest" || continue
     if [[ -e "$dest" ]]; then
       local h
       h=$(compute_managed_hash "$dest")
@@ -221,6 +245,7 @@ adopt_existing_files() {
 
   while IFS='|' read -r dest mode source; do
     [[ -z "$dest" ]] && continue
+    _aicoding_initial_config_ready "$dest" || continue
     if [[ -e "$dest" ]]; then
       manifest_set_file "$dest" \
         "$(jq -n --arg s "$source" '{mode:"merge",source:$s}')"
@@ -257,7 +282,7 @@ adopt_existing_files() {
   fi
 
   local commit origin
-  commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
+  commit=$(_aicoding_managed_source_version "$SCRIPT_DIR")
   origin=$(blueprint_origin "$SCRIPT_DIR")
   manifest_stage_set_blueprint "$commit" "$origin"
 
@@ -297,6 +322,17 @@ reconcile_existing_install() {
     fi
   done
 
+  # A persistent enrollment may be reconciling an existing installation.
+  # Apply the same destination capability and shared-consumer gate used by a
+  # fresh deployment before any actionable bucket reaches the write engine.
+  for _d in "${!BUCKETS[@]}"; do
+    case "${BUCKETS[$_d]}" in
+      restore|new_file|will_update|will_update_owned|drifted_but_aligned|merge)
+        _aicoding_initial_config_ready "$_d" || BUCKETS[$_d]=blocked
+        ;;
+    esac
+  done
+
   manifest_stage_begin
   apply_managed_buckets "restore new_file will_update will_update_owned drifted_but_aligned merge"
   # Stamp the blueprint commit/origin we reconciled to, so the manifest's
@@ -304,7 +340,7 @@ reconcile_existing_install() {
   # leaves blueprint_commit stale (first-deploy/adopt set it, reconcile didn't),
   # which makes anything reading it — e.g. the update notifier — report wrongly.
   local rc_commit rc_origin
-  rc_commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
+  rc_commit=$(_aicoding_managed_source_version "$SCRIPT_DIR")
   rc_origin=$(blueprint_origin "$SCRIPT_DIR")
   manifest_stage_set_blueprint "$rc_commit" "$rc_origin"
   manifest_stage_commit

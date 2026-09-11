@@ -4,6 +4,12 @@
 : "${AICODING_DATA_DIR:=$HOME/.local/share/aicoding}"
 : "${AICODING_VENDOR_TIMEOUT:=600}"
 
+if ! declare -F aicoding_activate_version >/dev/null 2>&1; then
+  _aicoding_runtime_root=${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+  . "$_aicoding_runtime_root/lib/runtime.sh"
+  unset _aicoding_runtime_root
+fi
+
 _aicoding_command_is_linux() {
   local path
   path=$(command -v "$1" 2>/dev/null) || return 1
@@ -381,76 +387,7 @@ _aicoding_reconcile_claude_mcp_registration() {
 }
 
 _aicoding_activate_vendor_release() {
-  local component=$1 version=$2; shift 2
-  [ "$#" -ge 2 ] && [ $(( $# % 2 )) -eq 0 ] || return 2
-  local current_root="$AICODING_DATA_DIR/current" previous_root="$AICODING_DATA_DIR/previous"
-  local release="$AICODING_DATA_DIR/versions/$component/$version"
-  mkdir -p "$current_root" "$previous_root" "$HOME/.local/bin" || return 1
-  [ ! -e "$current_root/$component" ] || [ -L "$current_root/$component" ] || return 1
-
-  local transaction="$HOME/.local/bin/.aicoding-activate-${component}.$$"
-  rm -rf "$transaction"; mkdir -m 0700 "$transaction" || return 1
-  local -a launchers=() existed=() backups=()
-  local launcher relative_bin dest backup i=0
-  while [ "$#" -gt 0 ]; do
-    launcher=$1; relative_bin=$2; shift 2
-    [ -x "$release/$relative_bin" ] || { rm -rf "$transaction"; return 1; }
-    launchers+=("$launcher"); existed+=(0); backups+=("")
-    dest="$HOME/.local/bin/$launcher"; backup="$dest.pre-aicoding"
-    cat >"$transaction/new.$i" <<EOF
-#!/usr/bin/env bash
-# Managed by aicoding staged updater.
-release=\$(readlink -f "$AICODING_DATA_DIR/current/$component") || exit 1
-exec "\$release/$relative_bin" "\$@"
-EOF
-    chmod 0755 "$transaction/new.$i" || { rm -rf "$transaction"; return 1; }
-    if [ -e "$dest" ] || [ -L "$dest" ]; then
-      existed[$i]=1
-      cp -a --no-dereference "$dest" "$transaction/old.$i" \
-        || { rm -rf "$transaction"; return 1; }
-      if ! grep -qF 'Managed by aicoding staged updater.' "$dest" 2>/dev/null; then
-        backups[$i]="$backup"
-        if [ -e "$backup" ] || [ -L "$backup" ]; then rm -rf "$transaction"; return 1; fi
-        cp -a --no-dereference "$dest" "$backup" \
-          || { rm -rf "$transaction"; return 1; }
-      fi
-    fi
-    i=$((i + 1))
-  done
-
-  local tmp_link="$current_root/.${component}.new.$$" old="" failure=0
-  [ -L "$current_root/$component" ] && old=$(readlink "$current_root/$component")
-  ln -s "../versions/$component/$version" "$tmp_link" || failure=1
-  if [ "$failure" -eq 0 ]; then
-    mv -Tf "$tmp_link" "$current_root/$component" || failure=$?
-  fi
-  if [ "$failure" -eq 0 ]; then
-    for ((i=0; i<${#launchers[@]}; i++)); do
-      dest="$HOME/.local/bin/${launchers[$i]}"
-      mv -Tf "$transaction/new.$i" "$dest" || { failure=$?; break; }
-    done
-  fi
-  if [ "$failure" -eq 0 ] && [ -n "$old" ]; then
-    local previous_tmp="$previous_root/.${component}.new.$$"
-    ln -s "$old" "$previous_tmp" && mv -Tf "$previous_tmp" "$previous_root/$component" \
-      || failure=$?
-  fi
-
-  if [ "$failure" -ne 0 ]; then
-    rm -f "$tmp_link"
-    for ((i=0; i<${#launchers[@]}; i++)); do
-      dest="$HOME/.local/bin/${launchers[$i]}"
-      rm -f "$dest"
-      [ "${existed[$i]}" -eq 0 ] \
-        || cp -a --no-dereference "$transaction/old.$i" "$dest" 2>/dev/null || true
-      [ -z "${backups[$i]}" ] || rm -f "${backups[$i]}"
-    done
-    rm -f "$current_root/$component"
-    [ -z "$old" ] || ln -s "$old" "$current_root/$component" || true
-    rm -rf "$transaction"
-    return "$failure"
-  fi
-  rm -rf "$transaction"
+  aicoding_activate_version "$@"
 }
 
 # Materialize an exact repository commit into an immutable release directory.

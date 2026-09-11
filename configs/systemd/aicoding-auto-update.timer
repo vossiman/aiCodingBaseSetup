@@ -1,0 +1,12 @@
+[Unit]
+Description=Check for CI-qualified aicoding updates every six hours
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=6h
+Persistent=true
+Unit=aicoding-auto-update.service
+
+[Install]
+WantedBy=timers.target
+

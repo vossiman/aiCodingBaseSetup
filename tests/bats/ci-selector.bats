@@ -36,6 +36,8 @@ except FileNotFoundError: sys.exit(22)
 print(data)
 STUB
   chmod +x "$TMP/bin/gh"
+  printf '#!/usr/bin/env bash\nexit 22\n' > "$TMP/bin/curl"
+  chmod +x "$TMP/bin/curl"
   printf '%s\n' '{"id":330421083,"name":"tests","path":".github/workflows/tests.yml","state":"active"}' > "$CI_FIXTURE/workflow"
   printf '%s\n' '{"id":440001234,"name":"ci","path":".github/workflows/ci.yml","state":"active"}' > "$CI_FIXTURE/workflow-dvw"
   printf '%s\n' '{"id":344911642,"name":"ci","path":".github/workflows/ci.yml","state":"active"}' > "$CI_FIXTURE/workflow-bw"
@@ -172,4 +174,26 @@ select_sha() { bash "$BLUEPRINT_ROOT/bin/aicoding-select" aicoding; }
     [ "$status" -eq 0 ]
     [ "$output" = "$NEW" ]
   done
+}
+
+@test "public read-only API fallback applies the same policy when gh has no stored auth" {
+  mv "$TMP/bin/gh" "$TMP/bin/gh-fixture"
+  cat > "$TMP/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  cat > "$TMP/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in https://api.github.com/*) endpoint=${arg#https://api.github.com/} ;; esac
+done
+[ -n "${endpoint:-}" ] || exit 92
+exec "$TMP/bin/gh-fixture" api "$endpoint"
+EOF
+  chmod +x "$TMP/bin/gh" "$TMP/bin/curl"
+  export TMP
+
+  run select_sha
+  [ "$status" -eq 0 ]
+  [ "$output" = "$NEW" ]
 }
