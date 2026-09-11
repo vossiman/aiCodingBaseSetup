@@ -89,10 +89,19 @@ _aicoding_install_enroll() {
     echo 'aicoding-install: source is not CI-qualified on main' >&2; return 1;
   }
   . "$SCRIPT_DIR/lib/runtime.sh" || return 1
-  aicoding_stage_source aicoding "$source" "$version" || return 1
+  aicoding_stage_source aicoding "$source" "$version" || {
+    echo 'aicoding-install: selected source staging failed' >&2
+    return 1
+  }
   release="$AICODING_DATA_DIR/versions/aicoding/$version"
-  _aicoding_install_validate_source "$release" "$version" || return 1
-  aicoding_activate_version aicoding "$version" aicoding-sync bin/aicoding-sync aicoding-install bin/aicoding-install aicoding-status bin/aicoding-status aicoding-select bin/aicoding-select aicoding-auto-update bin/aicoding-auto-update || return 1
+  _aicoding_install_validate_source "$release" "$version" || {
+    echo 'aicoding-install: staged source validation failed' >&2
+    return 1
+  }
+  aicoding_activate_version aicoding "$version" aicoding-sync bin/aicoding-sync aicoding-install bin/aicoding-install aicoding-status bin/aicoding-status aicoding-select bin/aicoding-select aicoding-auto-update bin/aicoding-auto-update || {
+    echo 'aicoding-install: runtime activation failed' >&2
+    return 1
+  }
 
   if [ "$profile" = minimal-pi ]; then
     _aicoding_install_minimal_pi "$release"

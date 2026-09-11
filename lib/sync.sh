@@ -1264,7 +1264,7 @@ _sync_provision_artifact_matches() {
   # select the same physical source checked by this provision pass.
   [ "$name" = aicoding-status ] || return 1
   [ -f "$dest" ] && [ -x "$dest" ] || return 1
-  current="$AICODING_DATA_DIR/current/aicoding"
+  current="${AICODING_DATA_DIR:-$HOME/.local/share/aicoding}/current/aicoding"
   [ -L "$current" ] || return 1
   active=$(readlink -f -- "$current" 2>/dev/null) || return 1
   [ "$active/bin/aicoding-status" = "$(readlink -f -- "$source" 2>/dev/null)" ] || return 1

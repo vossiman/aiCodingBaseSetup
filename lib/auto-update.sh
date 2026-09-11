@@ -195,6 +195,10 @@ aicoding_auto_update_worker() {
   local state lock_fd pid_file next_file attempt_file success_file log now due delay backoff rc sleep_pid=
   state=$(_aicoding_auto_state_dir) || return 1
   mkdir -p "$state" || return 1
+  # The fallback is long-lived. Move off the caller's workspace before taking
+  # ownership so rebuilds and workspace removal are never pinned by its cwd.
+  cd "$state" || return 1
+  state=$PWD
   exec {lock_fd}>"$state/worker.lock" || return 1
   flock -n "$lock_fd" || { exec {lock_fd}>&-; return 0; }
   pid_file="$state/worker.pid"

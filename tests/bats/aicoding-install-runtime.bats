@@ -2,6 +2,7 @@
 
 setup() {
   : "${BLUEPRINT_ROOT:?run via tests/bats/run.sh}"
+  export TEST_ROOT
   TEST_ROOT=$(mktemp -d)
   export HOME="$TEST_ROOT/home"
   export AICODING_DATA_DIR="$TEST_ROOT/data"
@@ -98,6 +99,45 @@ EOF
   printf '%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > "$SOURCE/.aicoding-version"
   run run_enroll
   [ "$status" -ne 0 ]
+  [ ! -e "$AICODING_DATA_DIR/current/aicoding" ]
+}
+
+@test "enrollment reports selected-source staging failure" {
+  mkdir -p "$AICODING_DATA_DIR/versions/aicoding/$VERSION"
+  printf 'corrupt\n' > "$AICODING_DATA_DIR/versions/aicoding/$VERSION/.aicoding-version"
+
+  run run_enroll
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'aicoding-install: selected source staging failed'* ]]
+  [ ! -e "$AICODING_DATA_DIR/current/aicoding" ]
+}
+
+@test "enrollment reports staged-source validation failure" {
+  cat > "$TEST_ROOT/bin/bash" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = -n ]; then case "${2:-}" in
+  "$AICODING_DATA_DIR"/versions/aicoding/*) exit 42 ;;
+esac; fi
+exec /bin/bash "$@"
+EOF
+  chmod +x "$TEST_ROOT/bin/bash"
+
+  run run_enroll
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'aicoding-install: staged source validation failed'* ]]
+  [ -d "$AICODING_DATA_DIR/versions/aicoding/$VERSION" ]
+  [ ! -e "$AICODING_DATA_DIR/current/aicoding" ]
+}
+
+@test "enrollment reports runtime activation failure" {
+  ln -s "$TEST_ROOT/missing-launcher" "$HOME/.local/bin/aicoding-sync"
+
+  run run_enroll
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'aicoding-install: runtime activation failed'* ]]
   [ ! -e "$AICODING_DATA_DIR/current/aicoding" ]
 }
 

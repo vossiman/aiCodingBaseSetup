@@ -53,6 +53,20 @@ EOF
 }
 teardown() { cd /; rm -rf "$TMP"; }
 
+@test "provision artifact validation defaults the data directory under nounset" {
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/source"
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/dest"
+  chmod +x "$TMP/source" "$TMP/dest"
+
+  run env -u AICODING_DATA_DIR HOME="$HOME" bash -uc '
+    . "$1/lib/sync.sh"
+    _sync_provision_artifact_matches aicoding-status "$2" "$3"
+  ' _ "$BLUEPRINT_ROOT" "$TMP/source" "$TMP/dest"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" != *'unbound variable'* ]]
+}
+
 @test "sync --boot is non-interactive and honors the suite network guard" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   AICODING_UPDATE_TTL=0 aicoding_sync --boot

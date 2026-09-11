@@ -94,6 +94,24 @@ EOF
   [ "$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")" = "$first_pid" ]
 }
 
+@test "detached fallback worker does not retain the caller workspace cwd" {
+  false_systemd_shim
+  local workspace="$TEST_ROOT/workspace" pid actual expected
+  mkdir -p "$workspace"
+
+  (cd "$workspace" && "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null)
+  for _ in $(seq 60); do
+    [ -s "$AICODING_STATE_DIR/auto-update/worker.pid" ] && break
+    sleep 0.05
+  done
+  pid=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")
+  kill -0 "$pid"
+  actual=$(readlink -f "/proc/$pid/cwd")
+  expected=$(readlink -f "$AICODING_STATE_DIR/auto-update")
+
+  [ "$actual" = "$expected" ]
+}
+
 @test "two simultaneous ensure calls still leave one fallback worker" {
   false_systemd_shim
   "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null & local one=$!

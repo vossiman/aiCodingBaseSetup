@@ -20,9 +20,10 @@ Staging happens outside the active directory. Activation prepares recovery
 material and stable wrappers, then atomically publishes the `current` pointer.
 Wrappers resolve that pointer once before executing a physical path. A running
 process therefore keeps the release it started with while the next invocation
-uses the new one. A failed validation or activation keeps the old command
-usable; an incomplete rollback retains its recovery directory and reports the
-path.
+uses the new one. Validation failures before activation leave the active
+command unchanged. If an activation mutation fails, the runtime attempts to
+restore the prior state; an incomplete rollback retains its recovery directory
+and reports the path.
 
 Old release, source, and browser trees intentionally remain available because
 a running process may still hold a physical path after a pointer advances.
@@ -52,9 +53,18 @@ They never certify another container that happens to mount the same config.
 ## Shared consumer evidence
 
 Some config roots are bind-mounted into several containers. A writer lock
-prevents simultaneous writes, but it cannot make new syntax compatible with an
-older or stopped consumer. Version-dependent changes to a confirmed shared
-root therefore require a separate authoritative inventory.
+prevents simultaneous writes, but it cannot prove that an older or stopped
+consumer can use a managed change. Every gated mutation to a confirmed shared
+root therefore requires a separate authoritative inventory, including checks
+whose component-specific minimum version is empty.
+
+This gate covers Claude settings, Codex config, OpenCode config, all managed
+Cursor config, and exact Context7/Playwright MCP configuration and Claude
+registration. When the Claude settings gate is closed, the same pass also
+defers Claude MCP and plugin provisioning. When the Codex config gate is
+closed, it defers Codex plugin and skill provisioning. Publishing complete,
+fresh inventory is therefore a rollout prerequisite for all of these shared
+steps, not only for changes that introduce a new syntax version.
 
 The default inventory is:
 
@@ -121,16 +131,16 @@ single enrolling container:
 
 Enrollment does not create this proof and does not mark an inventory complete.
 That conservative behavior prevents one new container from declaring older or
-stopped siblings compatible. It also means version-dependent shared changes
-remain deferred until rollout supplies the authoritative file. Safe local and
-version-independent updates continue separately.
+stopped siblings compatible. It also means the shared steps listed above remain
+deferred until rollout supplies the authoritative file. Ungated safe files and
+updates to roots proven local continue separately.
 
 The two evidence sources answer different questions and both may be required:
 
 - `update-results.json` proves what this local consumer successfully installed
   or attempted during a pass.
 - `consumer-versions.json` proves that every known consumer of one exact shared
-  root can read a proposed version-dependent setting.
+  root can use a proposed gated mutation.
 
 A local success receipt cannot replace shared inventory, and shared inventory
 cannot turn a failed local update into success.
