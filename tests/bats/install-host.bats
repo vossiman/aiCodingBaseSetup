@@ -6,6 +6,7 @@ setup() {
   export HOME="$TMPDIR"
   export AICODING_MANIFEST="$TMPDIR/.local/state/aicoding/manifest.json"
   export AICODINGSETUP_NONINTERACTIVE=1
+  export AICODING_BLUEPRINT_LOCAL=1
   # install-host.sh's nvs-strip prelude (copied from install.sh) unconditionally
   # `exec`s into `bash "$0"` unless this is already set. Under bats, sourcing
   # via `_source_host_lib` runs in a subshell whose $0 is bats' own test
@@ -16,7 +17,7 @@ setup() {
   export PATH="$TMPDIR/stubs:$PATH"
   mkdir -p "$TMPDIR/stubs" "$TMPDIR/.local/bin"
   # Prereq stubs present by default; individual tests remove them.
-  for t in git curl node npm bwrap claude; do
+  for t in curl node npm bwrap claude; do
     printf '#!/bin/bash\nexit 0\n' > "$TMPDIR/stubs/$t"; chmod +x "$TMPDIR/stubs/$t"
   done
   cat > "$TMPDIR/stubs/claude" <<'STUB'
@@ -213,6 +214,20 @@ EOF
   # belongs to an interactive `aicoding-sync`.
   grep -q 'my-personal-model' "$HOME/.codex/config.toml"
   if grep -q 'mcp_servers' "$HOME/.codex/config.toml"; then false; fi
+}
+
+@test "install-host.sh: force reinstall preserves an untracked personal Codex config" {
+  export AICODINGSETUP_SKIP_NETWORK=1
+  mkdir -p "$HOME/.codex"
+  printf 'model = "gpt-6-astra"\nmodel_reasoning_effort = "xhigh"\n' \
+    > "$HOME/.codex/config.toml"
+
+  run bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh --force-reinstall"
+  [ "$status" -eq 0 ]
+  grep -Fxq 'model = "gpt-6-astra"' "$HOME/.codex/config.toml"
+  grep -Fxq 'model_reasoning_effort = "xhigh"' "$HOME/.codex/config.toml"
+  if grep -q '^\[mcp_servers' "$HOME/.codex/config.toml"; then false; fi
+  jq -e '.files | has("'"$HOME"'/.codex/config.toml") | not' "$AICODING_MANIFEST"
 }
 
 @test "install-host.sh: absent MEMORY_ROUTER_TOKEN deploys no memory-router, keeps a manual one" {

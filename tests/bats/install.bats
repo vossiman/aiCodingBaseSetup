@@ -5,6 +5,7 @@ setup() {
   TMPDIR=$(mktemp -d)
   export HOME="$TMPDIR"
   export AICODING_MANIFEST="$TMPDIR/.aicodingsetup/manifest.json"
+  export AICODING_BLUEPRINT_LOCAL=1
   export AICODINGSETUP_NONINTERACTIVE=1
   export CODEX_MANAGED_DIR="$TMPDIR/etc-codex"
   export AICODING_TMUX_COMMIT_FILE="$TMPDIR/tmux-commit"
@@ -72,6 +73,8 @@ blueprint_copy() {
   rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$BP/"
   (cd "$BP" && git init -q && git add -A && \
     git -c user.email=t@t -c user.name=t commit -q -m test-copy)
+  git -C "$BP" remote add origin "$BLUEPRINT_ROOT"
+  git -C "$BP" update-ref refs/remotes/origin/main HEAD
 }
 
 @test "install.sh mode: first-deploy when no manifest and no managed files" {
@@ -510,6 +513,29 @@ STUB
   blueprint_hash=$(sha256sum "$BLUEPRINT_ROOT/configs/tmux/tmux.conf" | awk '{print $1}')
   deployed_hash=$(jq -r '.files["'"$HOME"'/.tmux.conf"].deployed_hash' "$AICODING_MANIFEST")
   [ "$blueprint_hash" = "$deployed_hash" ]
+}
+
+@test "install.sh --force-reinstall preserves receipt-backed Codex preferences" {
+  blueprint_copy
+  bash "$BP/install.sh" </dev/null
+  sed -i 's/^model = .*/model = "gpt-6-astra"/' "$HOME/.codex/config.toml"
+  sed -i '/^model = /a model_reasoning_effort = "xhigh"' "$HOME/.codex/config.toml"
+  cat >> "$HOME/.codex/config.toml" <<'EOF'
+
+[projects."/workspace/personal"]
+trust_level = "trusted"
+EOF
+
+  run bash "$BP/install.sh" --force-reinstall </dev/null
+  [ "$status" -eq 0 ]
+  grep -Fxq 'model = "gpt-6-astra"' "$HOME/.codex/config.toml"
+  grep -Fxq 'model_reasoning_effort = "xhigh"' "$HOME/.codex/config.toml"
+  grep -Fq '[projects."/workspace/personal"]' "$HOME/.codex/config.toml"
+  grep -Fxq 'trust_level = "trusted"' "$HOME/.codex/config.toml"
+  jq -e '.schema_version == 2' "$AICODING_MANIFEST"
+  jq -e '.files["'"$HOME"'/.codex/config.toml"] == {"mode":"toml_merge","source":"configs/codex/config.toml"}' \
+    "$AICODING_MANIFEST"
+  if ls "$HOME"/.codex/config.toml.bak.* 2>/dev/null; then false; fi
 }
 
 @test "install.sh adopt: strips standalone Go-PATH export from ~/.bashrc" {
@@ -1125,14 +1151,11 @@ EOF
   # Secret substituted (no {{...}} placeholder survives).
   grep -qF 'FIRECRAWL_API_KEY = "fake-firecrawl-123"' "$HOME/.codex/config.toml"
   if grep -qF '{{FIRECRAWL_API_KEY}}' "$HOME/.codex/config.toml"; then false; fi
-  # Manifest records overwrite mode + deployed_hash.
-  local mode
-  mode=$(jq -r '.files["'"$HOME"'/.codex/config.toml"].mode' "$AICODING_MANIFEST")
-  [ "$mode" = "overwrite" ]
-  local hash
-  hash=$(jq -r '.files["'"$HOME"'/.codex/config.toml"].deployed_hash' "$AICODING_MANIFEST")
-  [ -n "$hash" ]
-  [ "$hash" != "null" ]
+  # Manifest records the smart-mode source identity; fingerprints and
+  # provenance live only in the private shared receipt.
+  jq -e '.schema_version == 2' "$AICODING_MANIFEST"
+  jq -e '.files["'"$HOME"'/.codex/config.toml"] == {"mode":"toml_merge","source":"configs/codex/config.toml"}' \
+    "$AICODING_MANIFEST"
 }
 
 @test "container profile keeps codex automode" {
@@ -1342,13 +1365,13 @@ EOF
   local restored_hash
   restored_hash=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
   [ "$restored_hash" = "$first_hash" ]
-  # Plan 1's summary line shows restored count >= 1.
-  echo "$output" | grep -qE 'restored [1-9][0-9]* '
+  # The setting-aware restore is counted as a smart update.
+  echo "$output" | grep -qE 'updated [1-9][0-9]* '
   # Mode line announces reconcile.
   echo "$output" | grep -q "Mode: reconcile"
 }
 
-@test "reconcile: leaves edited ~/.codex/config.toml byte-unchanged" {
+@test "reconcile: preserves edited Codex bytes during a state-only blueprint change" {
   mkdir -p "$HOME/.aicodingsetup"
   cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
 FIRECRAWL_API_KEY=fake-firecrawl-123
@@ -1364,8 +1387,8 @@ EOF
   local edited_hash
   edited_hash=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
 
-  # Also change the blueprint source so the bucket is drifted_and_updating
-  # (not drifted_but_aligned), which is the conservatism case we care about.
+  # A comment-only blueprint edit changes provenance without changing the
+  # semantic candidate, exercising the smart state-only path.
   echo "# blueprint also changed" >> "$BP/configs/codex/config.toml"
 
   run bash "$BP/install.sh" </dev/null
@@ -1374,10 +1397,23 @@ EOF
   local after_hash
   after_hash=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
   [ "$after_hash" = "$edited_hash" ]
-  # Summary shows drifted >= 1.
-  echo "$output" | grep -qE 'drifted [1-9][0-9]* '
-  # NOTE line surfaces.
-  echo "$output" | grep -qE '^NOTE: [0-9]+ drifted file'
+  # State-only smart work is applied and counted without reporting drift.
+  echo "$output" | grep -qE 'updated [1-9][0-9]* '
+  echo "$output" | grep -qE 'drifted 0 '
+}
+
+@test "reconcile: reports a Codex engine error without claiming an update or stopping install" {
+  blueprint_copy
+  bash "$BP/install.sh" </dev/null
+  printf 'private-value = "do-not-print"\nbroken = [\n' > "$HOME/.codex/config.toml"
+
+  run bash "$BP/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'invalid_destination_toml'
+  [[ "$output" != *"do-not-print"* ]]
+  echo "$output" | grep -qE 'updated 0 .*to_review [1-9][0-9]*$'
+  [[ "$output" != *"reconciled Codex settings"* ]]
+  grep -Fxq 'private-value = "do-not-print"' "$HOME/.codex/config.toml"
 }
 
 @test "install.sh first-deploy: installs slash commands and tracks them in the manifest" {

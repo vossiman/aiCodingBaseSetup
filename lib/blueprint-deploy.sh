@@ -12,6 +12,13 @@
 # CLI's cache whenever it advances the recorded blueprint commit.
 : "${AICODING_UPDATE_STATE:=$HOME/.local/state/aicoding/updates}"
 
+# Resolve the smart-merge adapter relative to this sourced library. Sync and
+# host installation can execute from different blueprint locations.
+_aicoding_deploy_lib_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=codex-merge.sh
+. "$_aicoding_deploy_lib_dir/codex-merge.sh"
+unset _aicoding_deploy_lib_dir
+
 # compute_hash <path> — echo the sha256 hex of file content; empty if missing.
 compute_hash() {
   [ -e "$1" ] || { echo ""; return 0; }
@@ -652,7 +659,6 @@ $HOME/.local/bin/memory-hint|overwrite|configs/memory/memory-hint
 $HOME/.local/bin/aicoding-worktree|overwrite_raw|bin/aicoding-worktree
 $HOME/.local/bin/cloudflare-render|overwrite|configs/cloudflare/cloudflare-render
 $HOME/.local/bin/secrets-check|overwrite|configs/secrets/secrets-check
-$HOME/.codex/config.toml|overwrite|configs/codex/config.toml
 $HOME/.codex/AGENTS.md|overwrite|configs/codex/AGENTS.md
 $HOME/.cursor/skills/aicoding-estate/SKILL.md|overwrite|configs/cursor/skills/aicoding-estate/SKILL.md
 $HOME/.cursor/hooks.json|overwrite|configs/cursor/hooks.json
@@ -678,6 +684,13 @@ $HOME/.config/opencode/opencode.json|merge|configs/opencode/opencode.json
 $HOME/.cursor/mcp.json|merge|configs/cursor/mcp.json
 $HOME/.cursor/cli-config.json|merge|configs/cursor/cli-config.json
 EOF
+}
+
+# managed_inventory_smart — setting-aware formats whose engine owns planning,
+# application, previews, and receipts. These paths must never enter overwrite,
+# backup, generic JSON merge, removal, or raw-diff handling.
+managed_inventory_smart() {
+  printf '%s\n' "$HOME/.codex/config.toml|toml_merge|configs/codex/config.toml"
 }
 
 # Fixed marker strings for the managed ~/.bashrc block.
@@ -888,7 +901,7 @@ deploy_merge_file_substituted() {
 # schema_version is higher than this library understands. Call after
 # verifying the manifest file exists.
 manifest_check_schema() {
-  local current=1
+  local current=2
   local manifest_schema
   manifest_schema=$(jq -r '.schema_version // 1' "$AICODING_MANIFEST" 2>/dev/null || echo 1)
   if [[ "$manifest_schema" =~ ^[0-9]+$ ]] && (( manifest_schema > current )); then
@@ -979,7 +992,19 @@ classify_marker_block() {
 #
 # Used by bin/aicoding-sync and by install.sh's reconcile mode.
 classify_managed_files() {
-  local dest mode source
+  local smart_context=${1:-installer}
+  local dest mode source plan
+  # Each classification is a complete snapshot. Clearing caller-owned maps is
+  # especially important for smart_retired: after its manifest entry is
+  # removed, a second classification in the same shell must not announce it
+  # again from stale array state.
+  BUCKETS=()
+  FILE_MODE=()
+  FILE_SOURCE=()
+  declare -gA SMART_PLAN SMART_APPLY_RESULT SMART_DECISIONS
+  SMART_PLAN=()
+  SMART_APPLY_RESULT=()
+  SMART_DECISIONS=()
   # Overwrite-mode files from the blueprint inventory.
   while IFS='|' read -r dest mode source; do
     [[ -z "$dest" ]] && continue
@@ -995,6 +1020,25 @@ classify_managed_files() {
     FILE_SOURCE[$dest]=$source
     BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" "$mode")
   done < <(managed_inventory_merge)
+
+  # Setting-aware files retain the complete plan JSON because conflicts can
+  # coexist with safe config updates and receipt-only changes.
+  while IFS='|' read -r dest mode source; do
+    [[ -z "$dest" ]] && continue
+    FILE_MODE[$dest]=$mode
+    FILE_SOURCE[$dest]=$source
+    codex_smart_plan "$dest" "$AICODING_BLUEPRINT_CLONE/$source" "$smart_context"
+    plan=$CODEX_SMART_RESULT
+    SMART_PLAN[$dest]=$plan
+    BUCKETS[$dest]=$(codex_smart_bucket "$plan")
+    if [[ "${BUCKETS[$dest]}" == up_to_date ]] \
+       && [[ $(manifest_get_file "$dest") == null ]] \
+       && [[ $(printf '%s' "$plan" | jq -r '.unmanaged') == false ]]; then
+      # A valid shared receipt establishes management even when this
+      # container-local manifest has not recorded the path yet.
+      BUCKETS[$dest]=smart_update
+    fi
+  done < <(managed_inventory_smart)
 
   # marker_block (~/.bashrc).
   local bashrc_dest
@@ -1037,7 +1081,21 @@ classify_managed_files() {
   manifest_files=$(jq -r '.files | keys[]' "$AICODING_MANIFEST")
   while IFS= read -r dest; do
     [[ -z "$dest" ]] && continue
-    [[ -z "${FILE_MODE[$dest]:-}" ]] && BUCKETS[$dest]=to_remove
+    if [[ -z "${FILE_MODE[$dest]:-}" ]]; then
+      # Codex config is personal content even after its blueprint source is
+      # retired. Remove only local manifest tracking (legacy overwrite entries
+      # included); keep the config and shared receipt.
+      if [[ "$dest" == "$HOME/.codex/config.toml" ]]; then
+        mode=$(manifest_get_file "$dest" | jq -r '.mode // empty' 2>/dev/null)
+        if [[ "$mode" == toml_merge || "$mode" == overwrite ]]; then
+          FILE_MODE[$dest]=toml_merge
+          FILE_SOURCE[$dest]=$(manifest_get_file "$dest" | jq -r '.source // "configs/codex/config.toml"')
+          BUCKETS[$dest]=smart_retired
+          continue
+        fi
+      fi
+      BUCKETS[$dest]=to_remove
+    fi
   done <<<"$manifest_files"
   # Ensure a clean exit code under `set -e` — the while loop above ends with
   # whatever the last short-circuit `&&` returned (often 1 when nothing was
@@ -1065,9 +1123,14 @@ classify_managed_files() {
 #   will_update_owned     — like drifted_and_updating, but for owned overwrite
 #                           plumbing that must self-heal even in reconcile.
 #   to_remove             — delete file and drop from manifest.
+#   smart_update          — apply a safe Codex config/receipt update.
+#   smart_conflict        — apply safe updates; unresolved paths stay local.
+#   smart_error           — preserve smart state and continue other files.
+#   smart_retired         — remove only local smart-manifest tracking.
 apply_managed_buckets() {
   local allowed=" $1 "  # space-pad for substring match
-  local dest src bucket mode rc=0
+  local smart_context=${2:-installer}
+  local dest src bucket mode plan expected decisions rc=0
   declare -gA APPLY_FAILURES=()
   for dest in "${!BUCKETS[@]}"; do
     bucket=${BUCKETS[$dest]}
@@ -1077,6 +1140,30 @@ apply_managed_buckets() {
     esac
     mode=${FILE_MODE[$dest]:-overwrite}
     src="$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]:-}"
+
+    # Mode is the hard dispatch boundary: no smart path can fall through to a
+    # generic overwrite, backup, deletion, or raw diff regardless of bucket.
+    if [[ "$mode" == toml_merge ]]; then
+      case "$bucket" in
+        smart_retired)
+          manifest_remove_file "$dest"
+          ;;
+        smart_error)
+          :
+          ;;
+        *)
+          plan=${SMART_PLAN[$dest]:-}
+          expected=""
+          [[ "$smart_context" == interactive ]] \
+            && expected=$(printf '%s' "$plan" | jq -r '.token // empty')
+          decisions=${SMART_DECISIONS[$dest]:-[]}
+          codex_smart_apply "$dest" "$src" "${FILE_SOURCE[$dest]}" \
+            "$smart_context" "$expected" "$decisions"
+          SMART_APPLY_RESULT[$dest]=$CODEX_SMART_RESULT
+          ;;
+      esac
+      continue
+    fi
     case "$bucket" in
       restore|new_file|will_update)
         _apply_deploy "$mode" "$dest" "$src" || { APPLY_FAILURES[$dest]=1; rc=1; }
@@ -1141,6 +1228,11 @@ _apply_deploy() {
     merge)
       _ensure_merge_dest "$dest" || return $?
       deploy_merge_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
+      ;;
+    toml_merge)
+      # Smart files are applied above with their preview context and plan
+      # token. Reaching this branch would be a caller bug; never overwrite.
+      return 1
       ;;
     marker_block)
       deploy_marker_block "$dest" \

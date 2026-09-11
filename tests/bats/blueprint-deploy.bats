@@ -913,11 +913,74 @@ EOF
   echo "$output" | grep -qE "^      backup: $HOME/.tmux.conf.bak\.[0-9]+-[0-9]+$"
 }
 
-@test "managed_inventory_overwrite: includes codex config.toml" {
+@test "managed_inventory_smart: owns codex config.toml in toml_merge mode" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run managed_inventory_overwrite
+  run managed_inventory_smart
   [ "$status" -eq 0 ]
-  echo "$output" | grep -qF "$HOME/.codex/config.toml|overwrite|configs/codex/config.toml"
+  echo "$output" | grep -qxF "$HOME/.codex/config.toml|toml_merge|configs/codex/config.toml"
+  run managed_inventory_overwrite
+  [[ "$output" != *"/.codex/config.toml|"* ]]
+}
+
+@test "codex_smart_bucket: error and conflict precedence retain mixed plans" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  local base
+  base='{"config_changed":true,"state_changed":true,"conflicts":[{"path":["x"]}],"error":{"code":"invalid_destination_toml"},"unmanaged":false,"token":null,"changes":[{"path":["safe"],"operation":"add"}],"adoption_notices":[]}'
+  [ "$(codex_smart_bucket "$base")" = smart_error ]
+  [ "$(codex_smart_bucket "$(printf '%s' "$base" | jq '.error = null')")" = smart_conflict ]
+  [ "$(codex_smart_bucket "$(printf '%s' "$base" | jq '.error = null | .conflicts = [] | .adoption_notices = [{path:["profile"]}]')")" = smart_conflict ]
+  [ "$(codex_smart_bucket "$(printf '%s' "$base" | jq '.error = null | .conflicts = [] | .adoption_notices = []')")" = smart_update ]
+}
+
+@test "smart manifest recording bumps schema only when toml_merge is recorded" {
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+
+  manifest_stage_begin
+  manifest_set_file "$TMPDIR/generic" '{"mode":"overwrite","source":"generic","deployed_hash":"abc"}'
+  manifest_stage_commit
+  jq -e '.schema_version == 1' "$AICODING_MANIFEST"
+
+  manifest_stage_begin
+  codex_smart_record_manifest "$HOME/.codex/config.toml" configs/codex/config.toml
+  manifest_stage_commit
+  jq -e '.schema_version == 2' "$AICODING_MANIFEST"
+  jq -e '.files["'"$HOME"'/.codex/config.toml"] == {"mode":"toml_merge","source":"configs/codex/config.toml"}' \
+    "$AICODING_MANIFEST"
+  run manifest_check_schema
+  [ "$status" -eq 0 ]
+}
+
+@test "smart retirement preserves Codex config and receipt for current and legacy entries" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/empty-blueprint"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE" "$HOME/.codex/.aicoding-sync"
+  printf 'model = "personal"\n' > "$HOME/.codex/config.toml"
+  printf '{"private":"state"}\n' > "$HOME/.codex/.aicoding-sync/config-state.json"
+  local config_before receipt_before mode
+  config_before=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
+  receipt_before=$(sha256sum "$HOME/.codex/.aicoding-sync/config-state.json" | awk '{print $1}')
+
+  # Simulate a future blueprint removing the smart target entirely.
+  managed_inventory_overwrite() { :; }
+  managed_inventory_merge() { :; }
+  managed_inventory_smart() { :; }
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE
+  for mode in toml_merge overwrite; do
+    printf '{"schema_version":1,"files":{"%s":{"mode":"%s","source":"configs/codex/config.toml"}}}\n' \
+      "$HOME/.codex/config.toml" "$mode" > "$AICODING_MANIFEST"
+    classify_managed_files
+    [ "${BUCKETS[$HOME/.codex/config.toml]}" = smart_retired ]
+    manifest_stage_begin
+    apply_managed_buckets smart_retired
+    manifest_stage_commit
+    jq -e '.files | has("'"$HOME"'/.codex/config.toml") | not' "$AICODING_MANIFEST"
+    [ "$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')" = "$config_before" ]
+    [ "$(sha256sum "$HOME/.codex/.aicoding-sync/config-state.json" | awk '{print $1}')" = "$receipt_before" ]
+  done
+
+  classify_managed_files
+  [ -z "${BUCKETS[$HOME/.codex/config.toml]+present}" ]
 }
 
 @test "managed_inventory_overwrite: includes global claude CLAUDE.md" {
@@ -1148,16 +1211,18 @@ EOF
   [ "$output" = "host" ]
 }
 
-@test "inventories: container profile output is unchanged (no boot-sync, has tmux/codex/cursor)" {
+@test "inventories: container profile has tmux/cursor and routes Codex separately" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run managed_inventory_overwrite
   [[ "$output" == *"/.tmux.conf|"* ]]
   [[ "$output" == *"aicoding-ssh-auth-sock.sh|"* ]]
-  [[ "$output" == *"/.codex/config.toml|"* ]]
+  [[ "$output" != *"/.codex/config.toml|"* ]]
   [[ "$output" != *"aicoding-boot-sync.sh"* ]]
   run managed_inventory_merge
   [[ "$output" == *"opencode.json|"* ]]
   [[ "$output" == *"/.cursor/mcp.json|"* ]]
+  run managed_inventory_smart
+  [[ "$output" == *"/.codex/config.toml|toml_merge|"* ]]
 }
 
 @test "inventories: host profile drops container-only wiring, keeps agent CLI configs" {
@@ -1169,8 +1234,9 @@ EOF
   [[ "$output" != *"aicoding-ssh-auth-sock.sh|"* ]]
   [[ "$output" == *"$HOME/.bashrc.d/aicoding-boot-sync.sh|overwrite|configs/bash/boot-sync.sh"* ]]
   [[ "$output" == *"/.claude/CLAUDE.md|"* ]]
-  # Agent CLI configs are managed on hosts too (user decision 2026-08-19).
-  [[ "$output" == *"/.codex/config.toml|"* ]]
+  # Agent CLI configs are managed on hosts too (user decision 2026-08-19),
+  # but Codex config is setting-aware rather than an overwrite target.
+  [[ "$output" != *"/.codex/config.toml|"* ]]
   [[ "$output" == *"/.codex/AGENTS.md|"* ]]
   [[ "$output" == *"/.cursor/skills/aicoding-estate/SKILL.md|overwrite|configs/cursor/skills/aicoding-estate/SKILL.md"* ]]
   run managed_inventory_merge
@@ -1178,6 +1244,8 @@ EOF
   [[ "$output" == *"opencode.json|"* ]]
   [[ "$output" == *"/.cursor/mcp.json|"* ]]
   [[ "$output" == *"/.cursor/cli-config.json|"* ]]
+  run managed_inventory_smart
+  [[ "$output" == *"/.codex/config.toml|toml_merge|"* ]]
   unset AICODING_PROFILE
 }
 

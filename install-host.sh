@@ -31,6 +31,8 @@ if [[ "${_AICODINGSETUP_NVS_STRIPPED:-}" != 1 ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+: "${AICODING_BLUEPRINT_CLONE:=$SCRIPT_DIR}"
+export AICODING_BLUEPRINT_CLONE
 
 # Host day-2 commands must not point into the throwaway tracking clone used by
 # aicoding-install/aicoding-sync. Refresh a complete, durable runtime first,

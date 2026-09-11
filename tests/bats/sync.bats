@@ -3,6 +3,11 @@ setup() {
   : "${BLUEPRINT_ROOT:?run via run.sh}"
   export TMP; TMP=$(mktemp -d); export HOME="$TMP"
   export AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT"
+  # Tests deliberately execute the checked-out blueprint, including the
+  # task's uncommitted implementation while driving TDD. Treat it as the
+  # explicit local-blueprint workflow; production tracking clones remain
+  # subject to the engine's clean-origin provenance checks.
+  export AICODING_BLUEPRINT_LOCAL=1
   export AICODING_MANIFEST="$TMP/.aicodingsetup/manifest.json"
   export AICODING_UPDATE_STATE="$TMP/state/updates"
   export CODEX_MANAGED_DIR="$TMP/etc-codex"
@@ -52,6 +57,17 @@ EOF
   cd "$TMP"
 }
 teardown() { cd /; rm -rf "$TMP"; }
+
+_smart_blueprint_copy() {
+  BP="$TMP/smart-blueprint"
+  rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$BP/"
+  git -C "$BP" init -q
+  git -C "$BP" add -A
+  git -C "$BP" -c user.email=t@t -c user.name=t commit -q -m baseline
+  git -C "$BP" remote add origin "$BLUEPRINT_ROOT"
+  git -C "$BP" update-ref refs/remotes/origin/main HEAD
+  export AICODING_BLUEPRINT_CLONE="$BP"
+}
 
 @test "provision artifact validation defaults the data directory under nounset" {
   printf '#!/bin/sh\nexit 0\n' > "$TMP/source"
@@ -694,19 +710,182 @@ EOF
     "$AICODING_STATE_DIR/update-results.json"
 }
 
-@test "sync --yes backs up an existing unmanaged file before managing it" {
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+@test "sync --yes adopts an existing unmanaged Codex config without replacing it" {
+  _smart_blueprint_copy
+  mkdir -p "$(dirname "$AICODING_MANIFEST")" "$HOME/.codex"
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  cat > "$HOME/.codex/config.toml" <<'EOF'
+model = "my-personal-model"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+local_only = "keep"
+EOF
+
+  run bash -c '. "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync --yes'
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'profile adoption notice.*approval_policy'
+  echo "$output" | grep -q 'profile adoption notice.*sandbox_mode'
+  grep -Fxq 'model = "my-personal-model"' "$HOME/.codex/config.toml"
+  grep -Fxq 'approval_policy = "on-request"' "$HOME/.codex/config.toml"
+  grep -Fxq 'sandbox_mode = "workspace-write"' "$HOME/.codex/config.toml"
+  grep -Fxq 'local_only = "keep"' "$HOME/.codex/config.toml"
+  grep -q '^\[features\]' "$HOME/.codex/config.toml"
+  if ls "$HOME"/.codex/config.toml.bak.* 2>/dev/null; then false; fi
+  jq -e '.schema_version == 2' "$AICODING_MANIFEST"
+  jq -e '.files["'"$HOME"'/.codex/config.toml"] == {"mode":"toml_merge","source":"configs/codex/config.toml"}' \
+    "$AICODING_MANIFEST"
+
+  run bash -c '. "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync --dry-run'
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"profile adoption notice"* ]]
+  echo "$output" | grep -q '0 smart_conflict'
+}
+
+@test "sync --yes preserves Astra effort and exact trust values while applying an unrelated Codex default" {
+  _smart_blueprint_copy
+  bash "$BP/install.sh" </dev/null
+
+  sed -i 's/^model = .*/model = "gpt-6-astra"/' "$HOME/.codex/config.toml"
+  sed -i '/^model = /a model_reasoning_effort = "xhigh"' "$HOME/.codex/config.toml"
+  cat >> "$HOME/.codex/config.toml" <<'EOF'
+
+[projects."/workspace/trusted"]
+trust_level = "trusted"
+
+[projects."/workspace/untrusted"]
+trust_level = "untrusted"
+EOF
+  sed -i '/^sandbox_mode =/a smart_sync_probe = "from-blueprint"' \
+    "$BP/configs/codex/config.toml"
+
+  run bash -c '. "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync --yes'
+  [ "$status" -eq 0 ]
+  grep -Fxq 'model = "gpt-6-astra"' "$HOME/.codex/config.toml"
+  grep -Fxq 'model_reasoning_effort = "xhigh"' "$HOME/.codex/config.toml"
+  grep -Fq '[projects."/workspace/trusted"]' "$HOME/.codex/config.toml"
+  grep -Fxq 'trust_level = "trusted"' "$HOME/.codex/config.toml"
+  grep -Fq '[projects."/workspace/untrusted"]' "$HOME/.codex/config.toml"
+  grep -Fxq 'trust_level = "untrusted"' "$HOME/.codex/config.toml"
+  grep -Fxq 'smart_sync_probe = "from-blueprint"' "$HOME/.codex/config.toml"
+  if ls "$HOME"/.codex/config.toml.bak.* 2>/dev/null; then false; fi
+
+  run bash -c '. "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync --yes'
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'Nothing to do.'
+}
+
+@test "interactive conflict-only Codex plan keeps local on EOF and remains pending" {
+  _smart_blueprint_copy
+  bash "$BP/install.sh" </dev/null
+  sed -i 's/^alternate_screen = .*/alternate_screen = "local-choice"/' \
+    "$HOME/.codex/config.toml"
+  sed -i 's/^alternate_screen = .*/alternate_screen = "blueprint-choice"/' \
+    "$BP/configs/codex/config.toml"
+  git -C "$BP" add configs/codex/config.toml
+  git -C "$BP" -c user.email=t@t -c user.name=t commit -q -m conflict
+  git -C "$BP" update-ref refs/remotes/origin/main HEAD
+
+  run bash -c 'printf "y\n" | { . "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync; }'
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'tui.alternate_screen'
+  grep -Fxq 'alternate_screen = "local-choice"' "$HOME/.codex/config.toml"
+
+  run bash -c '. "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync --dry-run'
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'smart_conflict'
+  echo "$output" | grep -q 'tui.alternate_screen'
+}
+
+@test "interactive Codex conflict choice is read from the user and token-bound" {
+  _smart_blueprint_copy
+  bash "$BP/install.sh" </dev/null
+  sed -i 's/^alternate_screen = .*/alternate_screen = "local-choice"/' \
+    "$HOME/.codex/config.toml"
+  sed -i 's/^alternate_screen = .*/alternate_screen = "blueprint-choice"/' \
+    "$BP/configs/codex/config.toml"
+  git -C "$BP" add configs/codex/config.toml
+  git -C "$BP" -c user.email=t@t -c user.name=t commit -q -m conflict
+  git -C "$BP" update-ref refs/remotes/origin/main HEAD
+
+  run bash -c 'printf "y\nb\n" | { . "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync; }'
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'Codex conflict at .*tui.alternate_screen'
+  grep -Fxq 'alternate_screen = "blueprint-choice"' "$HOME/.codex/config.toml"
+
+  run bash -c '. "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync --dry-run'
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q '0 smart_conflict'
+}
+
+@test "unattended Codex conflict applies coexisting safe updates and stays pending" {
+  _smart_blueprint_copy
+  bash "$BP/install.sh" </dev/null
+  sed -i 's/^alternate_screen = .*/alternate_screen = "local-choice"/' \
+    "$HOME/.codex/config.toml"
+  sed -i 's/^alternate_screen = .*/alternate_screen = "blueprint-choice"/' \
+    "$BP/configs/codex/config.toml"
+  sed -i '/^sandbox_mode =/a smart_sync_probe = "safe-update"' \
+    "$BP/configs/codex/config.toml"
+  git -C "$BP" add configs/codex/config.toml
+  git -C "$BP" -c user.email=t@t -c user.name=t commit -q -m mixed-plan
+  git -C "$BP" update-ref refs/remotes/origin/main HEAD
+
+  run bash -c '. "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync --yes'
+  [ "$status" -eq 0 ]
+  grep -Fxq 'smart_sync_probe = "safe-update"' "$HOME/.codex/config.toml"
+  grep -Fxq 'alternate_screen = "local-choice"' "$HOME/.codex/config.toml"
+  echo "$output" | grep -q 'applied safe Codex updates; conflicting settings kept local'
+
+  run bash -c '. "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync --dry-run'
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q '1 smart_conflict'
+  echo "$output" | grep -q 'tui.alternate_screen'
+}
+
+@test "Codex state-only update and receipt-backed local manifest adoption preserve config bytes" {
+  _smart_blueprint_copy
+  bash "$BP/install.sh" </dev/null
+  local before after
+  before=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
+
+  echo state-only-provenance > "$BP/state-only-probe"
+  git -C "$BP" add state-only-probe
+  git -C "$BP" -c user.email=t@t -c user.name=t commit -q -m state-only
+  git -C "$BP" update-ref refs/remotes/origin/main HEAD
+  run bash -c '. "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync --yes'
+  [ "$status" -eq 0 ]
+  after=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
+  [ "$before" = "$after" ]
+  echo "$output" | grep -q 'updated Codex merge state (config bytes preserved)'
+
   jq 'del(.files["'"$HOME"'/.codex/config.toml"])' "$AICODING_MANIFEST" \
     > "$AICODING_MANIFEST.t" && mv "$AICODING_MANIFEST.t" "$AICODING_MANIFEST"
-  printf 'model = "my-personal-model"\n' > "$HOME/.codex/config.toml"
-
-  run bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_sync --yes'
+  run bash -c '. "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync --boot'
   [ "$status" -eq 0 ]
-  # Blueprint version deployed, personal content preserved in the backup.
-  if grep -q 'my-personal-model' "$HOME/.codex/config.toml"; then false; fi
-  bak=$(ls "$HOME"/.codex/config.toml.bak.* 2>/dev/null | head -1)
-  [ -n "$bak" ]
-  grep -q 'my-personal-model' "$bak"
+  after=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
+  [ "$before" = "$after" ]
+  jq -e '.files["'"$HOME"'/.codex/config.toml"] == {"mode":"toml_merge","source":"configs/codex/config.toml"}' \
+    "$AICODING_MANIFEST"
+}
+
+@test "Codex merge error is value-safe and does not stop later sync maintenance" {
+  _smart_blueprint_copy
+  bash "$BP/install.sh" </dev/null
+  printf 'credential-super-secret = "never-print-me"\nbroken = [\n' \
+    > "$HOME/.codex/config.toml"
+  : > "$TMP/ran.log"
+  mkdir "$TMP/smart-tmp"
+  export TMPDIR="$TMP/smart-tmp"
+
+  run bash -c '. "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync --yes'
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q 'invalid_destination_toml'
+  if echo "$output" | grep -q 'never-print-me'; then false; fi
+  if echo "$output" | grep -q "merged: $HOME/.codex/config.toml"; then false; fi
+  grep -Fxq 'credential-super-secret = "never-print-me"' "$HOME/.codex/config.toml"
+  grep -q 'claude mcp add' "$TMP/ran.log"
+  if ls "$HOME"/.codex/config.toml.bak.* 2>/dev/null; then false; fi
+  [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'aicoding-codex-*' -print)" ]
 }
 
 @test "aicoding-install: pulls the blueprint and re-runs the installer (reconcile)" {
@@ -1174,6 +1353,8 @@ _kvm_unused_gid() {
   git -C "$clone" init -q -b main
   git -C "$clone" add -A
   git -C "$clone" -c user.email=t@t -c user.name=t commit -q -m tracking-snapshot
+  git -C "$clone" remote add origin "$BLUEPRINT_ROOT"
+  git -C "$clone" update-ref refs/remotes/origin/main HEAD
   echo dirty-local-content > "$clone/dirty-sentinel"
   echo '{"schema_version":1,"profile":"host","files":{}}' > "$AICODING_MANIFEST"
 
