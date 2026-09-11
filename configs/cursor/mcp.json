@@ -9,12 +9,11 @@
       "env": { "BRAVE_API_KEY": "{{BRAVE_API_KEY}}" }
     },
     "context7": {
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp"]
+      "command": "context7-mcp"
     },
     "playwright": {
-      "command": "npx",
-      "args": ["@playwright/mcp@latest", "--browser", "chromium"]
+      "command": "playwright-mcp",
+      "args": ["--browser", "chromium"]
     },
     "memory-router": {
       "url": "http://10.0.0.249:8091/mcp",

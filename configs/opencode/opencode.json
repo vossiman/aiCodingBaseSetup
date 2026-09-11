@@ -25,17 +25,14 @@
     "context7": {
       "type": "local",
       "command": [
-        "npx",
-        "-y",
-        "@upstash/context7-mcp"
+        "context7-mcp"
       ],
       "enabled": true
     },
     "playwright": {
       "type": "local",
       "command": [
-        "npx",
-        "@playwright/mcp@latest",
+        "playwright-mcp",
         "--browser",
         "chromium"
       ],
