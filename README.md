@@ -276,7 +276,7 @@ development path and never fetches or resets its checkout.
 
 ```bash
 aicoding-sync --dry-run    # show what would change vs your environment
-aicoding-sync              # interactive — single y/N confirm, inline diff for drift
+aicoding-sync              # interactive: overall y/N confirm, then Codex setting choices if needed
 aicoding-sync --yes        # scripted; auto-confirms generic drift, preserves Codex conflicts
 aicoding-sync --blueprint /path/to/aiCodingBaseSetup --dry-run  # test a local checkout verbatim
 ```

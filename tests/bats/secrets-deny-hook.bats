@@ -22,6 +22,7 @@ setup() {
   printf '{"version":1}\n'           > "$HOME/.codex/.aicoding-sync/config-state.json"
   printf 'receipt metadata\n'         > "$HOME/.codex/.aicoding-sync/manifest.json"
   printf 'lock metadata\n'            > "$HOME/.codex/.aicoding-sync/nested/config"
+  ln -s "$HOME/.codex/.aicoding-sync" "$HOME/work/codex-state"
   printf 'hello\n'                    > "$HOME/work/README.md"
 }
 
@@ -116,6 +117,28 @@ allowed() { [ "$status" -eq 0 ] && [ -z "$output" ]; }
   bash_hook "cd $HOME/.codex/.aicoding-sync && cat manifest.json"
   denied
   bash_hook "cd $HOME/.codex/.aicoding-sync/nested && cat config"
+  denied
+}
+
+@test "Codex sync state denies normalized and resolved native paths" {
+  file_hook Read "$HOME/.codex/./.aicoding-sync/config-state.json"
+  denied
+  file_hook Read "$HOME/work/codex-state/manifest.json"
+  denied
+  hook "$(jq -nc --arg p "$HOME/.codex/./.aicoding-sync" \
+    '{tool_name:"Glob",tool_input:{pattern:"**/*",path:$p}}')"
+  denied
+  hook "$(jq -nc --arg p "$HOME/work/codex-state" \
+    '{tool_name:"Glob",tool_input:{pattern:"**/*",path:$p}}')"
+  denied
+}
+
+@test "Codex sync state denies normalized and resolved shell paths" {
+  bash_hook "cat $HOME/.codex/./.aicoding-sync/manifest.json"
+  denied
+  bash_hook "cat $HOME/.codex/./.aicoding-sync/*"
+  denied
+  bash_hook "cat $HOME/work/codex-state/config-state.json"
   denied
 }
 

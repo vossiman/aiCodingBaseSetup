@@ -236,11 +236,65 @@ diff/status receipt is recorded immediately before the task commit.
 Ubuntu runner already supplies a supported Python runtime and the full Bats
 job invokes real engine paths.
 
+## Review fix round 1
+
+Review identified that the state guard matched expanded but otherwise raw
+paths. An absolute dot-segment spelling such as
+`$HOME/.codex/./.aicoding-sync/config-state.json`, or a symlink resolving to
+the state directory, therefore missed the literal state patterns. The same
+mechanism affected native Read/Glob inputs and absolute shell tokens.
+
+The regression was established before the production fix using only dummy
+state fixtures:
+
+```text
+$ bash tests/bats/run.sh secrets-deny-hook --print-output-on-failure \
+    --filter 'Codex sync state denies normalized and resolved'
+1..2
+not ok 1 Codex sync state denies normalized and resolved native paths in 36ms
+not ok 2 Codex sync state denies normalized and resolved shell paths in 72ms
+```
+
+`is_codex_sync_state_path` now compares the raw expanded path, its lexical
+absolute normalization, and its filesystem-resolved absolute form. Both
+`is_denied_path` and `in_sensitive_dir` apply that state-specific check before
+allow-name handling. Raw candidates remain present so an unexpanded glob is
+still caught. Resolution inspects path metadata only and never reads receipt
+contents. The new native and shell regressions cover dot segments, symlink
+aliases, allow-name files, and shell globs.
+
+Focused GREEN and the requested complete guard suite:
+
+```text
+$ bash tests/bats/run.sh secrets-deny-hook --print-output-on-failure \
+    --filter 'Codex sync state denies normalized and resolved'
+1..2
+ok 1 Codex sync state denies normalized and resolved native paths in 135ms
+ok 2 Codex sync state denies normalized and resolved shell paths in 244ms
+
+$ bash tests/bats/run.sh secrets-deny-hook --print-output-on-failure
+1..127
+127 passed, 0 failed
+```
+
+The README command synopsis now describes an overall interactive confirmation
+followed by Codex setting choices when needed. It no longer promises that the
+overall confirmation is the only prompt.
+
+The review's minor observation that the negative Python fixtures do not also
+model a no-op executable exiting successfully with an empty marker is deferred
+for final triage. The production probe requires the marker and no concrete
+runtime defect was found. Per controller direction, the known
+AICODINGBASESETUP-48 full-suite gate was not retried in this fix round.
+
 ## Self-review and remaining limits
 
 - No Task 3 implementation blocker was found. Guard precedence, host policy,
   no-op-runtime rejection, value-safe error mapping, and fixture provenance
   were checked directly.
+- Review fix round 1 keeps normalization scoped to the new Codex state
+  protection. It preserves raw/glob matching and performs the state check
+  before every sensitive-directory basename exception.
 - The current model seed remains `gpt-5.6-sol`. This task does not change a
   fleet default to Astra. Existing model and effort values remain user-owned.
 - Every old sibling writer sharing `~/.codex` must be upgraded before the
