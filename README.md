@@ -247,19 +247,24 @@ Normally neither. `aicoding-auto-update` checks every six hours and catches up
 after restart; the tmux badges from `aicoding-status` show anything that still
 needs an explicit install or rebuild:
 
-| Badge | What moved on blueprint `main` | You run |
-|-------|--------------------------------|---------|
-| ⬆`sync` | anything sync can deliver: managed configs, MCP/plugin definitions, agent-CLI updates, sync's own code | `aicoding-sync` — or wait for the scheduled pass |
-| ⬆`install` | provisioning itself: `install.sh`, `lib/provision*`, `image/` | `aicoding-install` |
+| Badge | What moved on blueprint `main` | What happens next |
+|-------|--------------------------------|-------------------|
+| ⬆`sync` | anything sync can deliver: managed configs, MCP/plugin definitions, agent-CLI updates, sync's own code | managed installs wait for the background updater to qualify CI and apply it; legacy installs can run `aicoding-sync` |
+| ⬆`install` | provisioning itself: `install.sh`, `lib/provision*`, `image/` | managed installs report automatic provisioning pending; legacy installs can run `aicoding-install` |
+| ⬆`provision!` | automatic provisioning for the active release is blocked or failed | inspect `~/.local/state/aicoding/update-results.json` |
 | ⬆`rebuild` | the base image | rebuild the container from your laptop |
 
-Rule of thumb: **agent harness, plugins, MCPs, and the agent CLIs
-themselves are sync territory** (the CLIs self-update via
-`claude update` / `opencode upgrade` / `agent update` / codex's
-version-gated reinstall). **System tools are install territory** —
-apt prereqs, node, go, uv, tmux (built from source at a pinned
-commit), Playwright deps, and first-time bootstrap of a missing CLI.
-Sync deliberately doesn't touch those.
+Rule of thumb: **supported agent harnesses, plugins, MCPs, and agent CLIs are
+sync territory.** The updater selects exact versions, stages and validates
+them away from the active installation, then atomically changes a stable
+launcher. Cursor Agent is the current exception: its inspected distribution
+does not expose a safe version-specific staging interface, so automatic passes
+record it as blocked and leave the existing command untouched. **System tools
+and image capabilities have a narrower policy.** A supported component update
+may install a required host prerequisite noninteractively. Inside a container,
+a missing image capability is recorded as a deferral and waits for a manual
+image rebuild. General OS, package, and image maintenance remains explicit
+install or rebuild work.
 
 Normal commands select the newest commit on `main` whose exact required CI run
 succeeded, stage it under `~/.local/share/aicoding/versions/aicoding/<sha>`,
@@ -282,7 +287,7 @@ aicoding-sync --blueprint /path/to/aiCodingBaseSetup --dry-run  # test a local c
 
 The manifest at `~/.local/state/aicoding/manifest.json` records the blueprint commit and a per-file hash for every overwrite-mode file, plus a block-hash for the marker-guarded section of `~/.bashrc`.
 
-It is deliberately **container-local**, not under `~/.aicodingsetup`: that directory is a host bind mount shared by every devpod container, whereas the manifest describes container-local paths (`~/.bashrc`, `~/.tmux.conf`, …). While it was shared, whichever container synced last stamped the global `blueprint_commit`, so every other container computed `installed == latest` and its `aicoding-status` CTA went quiet while it was still running stale files. The update-status cache (`~/.local/state/aicoding/updates/`) is container-local for the same reason, and stores **only the remote `latest` SHA** — `aicoding-status` reads the installed commit fresh from the manifest at print time, so a manifest write can never leave a stale "behind" verdict pinned behind the cache TTL. A manifest left on the shared mount by an older install is adopted once, on first read; the shared copy is left in place so sibling containers can adopt it too.
+It is deliberately **container-local**, not under `~/.aicodingsetup`: that directory is a host bind mount shared by every devpod container, whereas the manifest describes container-local paths (`~/.bashrc`, `~/.tmux.conf`, …). While it was shared, whichever container synced last stamped the global `blueprint_commit`, so every other container computed installed == latest and went quiet while it was still running stale files. The update-status cache (`~/.local/state/aicoding/updates/`) is container-local for the same reason, and stores **only the remote `latest` SHA**. On managed installations, `aicoding-status` reads the installed SHA from the physical immutable release selected by `current/aicoding`; the manifest remains the migration fallback for older installs. Provision badges use the active release plus local result receipts, so they do not depend on a `/tmp/aicoding` Git clone surviving. A manifest left on the shared mount by an older install is adopted once, on first read; the shared copy is left in place so sibling containers can adopt it too.
 
 ### `aicoding-install` — select a qualified release and re-run the installer
 
@@ -320,8 +325,9 @@ git clone https://github.com/vossiman/aiCodingBaseSetup && cd aiCodingBaseSetup
 `aicoding-auto-update --ensure` enrolls a six-hour persistent systemd user
 timer when a real user manager and linger are available. Otherwise one locked,
 detached worker retries with bounded backoff. Repeated ensures are idempotent,
-and shell/container startup only dispatches enrollment; it performs no
-foreground network work. State and bounded logs live in
+and shell startup only dispatches enrollment without foreground network work.
+Container startup also retains uv maintenance and the detached transcript sweep
+through the active runtime startup hook. State and bounded logs live in
 `~/.local/state/aicoding/auto-update/`.
 
 Each scheduled pass runs `aicoding-sync --boot` with closed stdin from that
@@ -329,18 +335,19 @@ state directory. Different CLIs have different update paths:
 
 | CLI | Update path | Scheduled? |
 |-----|-------------|---------------------|
-| Claude Code | `claude update` | ✅ |
-| opencode | `opencode upgrade` | ✅ |
-| Cursor Agent | `agent update` (or `cursor-agent update` on older releases) | ✅ |
-| OpenAI Codex | Version-gated reinstall through the official installer | ✅ |
+| Claude Code | exact requested version through the official installer in isolated staging, then validated immutable activation | ✅ |
+| opencode | exact npm version in an isolated prefix, validated before immutable activation | ✅ |
+| Cursor Agent | no safe exact-version staging interface is currently available; retain the installed version and record `blocked/versioned_staging_unavailable` | ❌ blocked |
+| OpenAI Codex | exact npm version plus matching `codex-code-mode-host`, validated before immutable activation | ✅ |
 
-Each updater's output is prefaced with a `--- <tool> ---` header so error
-text is attributable — Cursor's binary is named `agent`, so without one
-its errors read as someone else's (its expired-session
-`Error: Update failed: [unauthenticated] Error` was once chased as a
-codex failure). Failures on any of the updates are non-fatal (the step
-is `|| true`; codex prints self-labeled `ERROR:` lines) so a transient
-network blip doesn't block container start.
+Firecrawl, Brave, Context7 and Playwright MCP servers use the same exact npm
+staging model, retaining each complete dependency tree. Playwright also binds
+its browser cache to the package version. Every stable wrapper resolves its
+`current/<component>` link once and executes a physical version directory, so
+an already-running process keeps its original code and resources. Releases and
+the prior `previous/<component>` pointer are retained for recovery. See
+[Automatic updates and shared compatibility](docs/automatic-updates.md) for
+the on-disk layout, receipts, and shared-consumer rollout gate.
 
 ### Install modes
 
@@ -399,16 +406,22 @@ AICODINGSETUP_AUTO_INSTALL=1 AICODINGSETUP_NONINTERACTIVE=1 ./install.sh
 Canonical template lives next to this README at [`devcontainer.json`](./devcontainer.json). Copy it into your project's `.devcontainer/` directory:
 
 ```bash
+(
+set -e
+blueprint_sha=$(aicoding-select aicoding)
 mkdir -p .devcontainer
-curl -fsSL https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/main/devcontainer.json \
+curl -fsSL "https://raw.githubusercontent.com/vossiman/aiCodingBaseSetup/$blueprint_sha/devcontainer.json" \
   -o .devcontainer/devcontainer.json
+)
 ```
 
 `postCreateCommand` reconstructs the reviewed `bootstrap-aicoding.sh` embedded
 in the JSON. That verifier uses the public GitHub API to select an exact
 CI-qualified `main` commit, checks its persistent-enrollment capability, and
-only then runs downloaded code. `postStartCommand` invokes the installed
-`aicoding-auto-update --ensure`; it never curls or executes raw `main` code.
+only then runs downloaded code. `postStartCommand` resolves the physical active
+runtime and invokes its `on-start.sh`, preserving uv maintenance and the
+detached transcript sweep alongside scheduler enrollment. Missing enrollment
+warns without failing startup; the hook never fetches executable raw `main` code.
 
 `containerEnv` overrides three `BASH_FUNC_*%%` env vars that universal:6 leaks with truncated multi-line bodies — without it bash errors on every spawn (see [vscode#3928](https://github.com/Microsoft/vscode/issues/3928), [vscode-remote-release#9457](https://github.com/microsoft/vscode-remote-release/issues/9457)). `install.sh` and `on-start.sh` further re-exec themselves under `env -u` to belt-and-braces the same problem.
 
@@ -475,7 +488,7 @@ The same persist-once-share-everywhere property applies to all four CLIs once th
 aiCodingBaseSetup/
 ├── install.sh                     # Linux/WSL installer (three-mode dispatch)
 ├── bootstrap-aicoding.sh          # self-contained verified first enrollment
-├── on-start.sh                    # compatibility startup hook → scheduler ensure
+├── on-start.sh                    # container startup maintenance + scheduler ensure
 ├── contrib/windows/               # quarantined Windows stub (unsupported)
 ├── bin/
 │   ├── aicoding-auto-update       # one-shot, scheduler enrollment, fallback worker
