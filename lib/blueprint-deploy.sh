@@ -275,7 +275,8 @@ aicoding_shared_locks_acquire() {
       "$HOME/.claude"/*) logical="$HOME/.claude" ;;
       "$HOME/.codex"/*) logical="$HOME/.codex" ;;
       "$HOME/.cursor"/*) logical="$HOME/.cursor" ;;
-      "$HOME/.config/opencode"/*|"$HOME/.local/share/opencode"/*) logical="$HOME/.local/share/opencode" ;;
+      "$HOME/.config/opencode"/*) logical="$HOME/.config/opencode" ;;
+      "$HOME/.local/share/opencode"/*) logical="$HOME/.local/share/opencode" ;;
       *) continue ;;
     esac
     mkdir -p "$logical" || return 1
@@ -301,7 +302,8 @@ aicoding_shared_locks_acquire_managed_roots() {
     "$HOME/.claude/.aicoding-managed" \
     "$HOME/.codex/.aicoding-managed" \
     "$HOME/.cursor/.aicoding-managed" \
-    "$HOME/.config/opencode/.aicoding-managed"
+    "$HOME/.config/opencode/.aicoding-managed" \
+    "$HOME/.local/share/opencode/.aicoding-managed"
 }
 
 # enumerate_skill_files <skills_root> — one file path per line, relative to

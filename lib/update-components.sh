@@ -195,6 +195,8 @@ aicoding_config_shared_root() {
     "$HOME/.claude"|"$HOME/.claude/"*) candidate="$HOME/.claude" ;;
     "$HOME/.codex"|"$HOME/.codex/"*) candidate="$HOME/.codex" ;;
     "$HOME/.cursor"|"$HOME/.cursor/"*) candidate="$HOME/.cursor" ;;
+    "$HOME/.config/opencode"|"$HOME/.config/opencode/"*)
+      candidate="$HOME/.config/opencode" ;;
     "$HOME/.local/share/opencode"|"$HOME/.local/share/opencode/"*)
       candidate="$HOME/.local/share/opencode" ;;
     *) return 1 ;;

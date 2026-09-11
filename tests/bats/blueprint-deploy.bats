@@ -943,6 +943,29 @@ EOF
   [ "$status" -ne 0 ]
 }
 
+@test "OpenCode config writers with separate runtime data contend on the config root" {
+  mkdir -p "$HOME/.config/opencode" "$TMPDIR/other-home/.config"
+  ln -s "$HOME/.config/opencode" "$TMPDIR/other-home/.config/opencode"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  aicoding_shared_locks_acquire "$HOME/.config/opencode/opencode.json"
+  [ -f "$HOME/.config/opencode/.aicoding-update.lock" ]
+  run bash -c 'export HOME="$2"; . "$1/lib/blueprint-deploy.sh"; aicoding_shared_locks_acquire "$HOME/.config/opencode/opencode.json"' \
+    _ "$BLUEPRINT_ROOT" "$TMPDIR/other-home"
+  [ "$status" -ne 0 ]
+}
+
+@test "managed root locks cover both OpenCode config and runtime data" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  aicoding_shared_locks_acquire_managed_roots
+  local root
+  for root in "$HOME/.config/opencode" "$HOME/.local/share/opencode"; do
+    [ -f "$root/.aicoding-update.lock" ]
+    run bash -c '. "$1/lib/blueprint-deploy.sh"; aicoding_shared_locks_acquire "$2/resource"' \
+      _ "$BLUEPRINT_ROOT" "$root"
+    [ "$status" -ne 0 ]
+  done
+}
+
 @test "owned hook restoration requires historical generated provenance" {
   export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
   git init -q -b main "$AICODING_BLUEPRINT_CLONE"

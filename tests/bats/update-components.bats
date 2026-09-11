@@ -322,14 +322,50 @@ EOF
   [ "$status" -ne 0 ]
 }
 
+@test "explicit shared OpenCode config requires its own consumer inventory" {
+  _tool opencode 'opencode 1.2.3'
+  mkdir -p "$HOME/.config/opencode"
+  export AICODING_REQUIRE_SHARED_COMPATIBILITY=1
+  export AICODING_SHARED_CONFIG_ROOTS="$HOME/.config/opencode"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMP/consumers.json"
+  run aicoding_config_shared_root "$HOME/.config/opencode/opencode.json"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$HOME/.config/opencode" ]
+  run aicoding_config_is_compatible "$HOME/.config/opencode/opencode.json"
+  [ "$status" -ne 0 ]
+  [ "$output" = opencode_shared_consumers_incompatible ]
+  jq -n --arg root "$HOME/.config/opencode" --argjson expires "$(( $(date +%s) + 3600 ))" \
+    '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
+      consumers:[{id:"other",components:{opencode:{version:"1.2.3",config_compatible:true}}}]}]}' \
+    > "$AICODING_SHARED_CONSUMERS_FILE"
+  run aicoding_config_is_compatible "$HOME/.config/opencode/opencode.json"
+  [ "$status" -eq 0 ]
+}
+
+@test "mounted OpenCode config requires inventory independently of runtime data" {
+  _tool opencode 'opencode 1.2.3'
+  mkdir -p "$HOME/.config/opencode" "$HOME/.local/share/opencode"
+  unset AICODING_SHARED_CONFIG_ROOTS
+  export AICODING_REQUIRE_SHARED_COMPATIBILITY=1
+  export AICODING_SHARED_CONSUMERS_FILE="$TMP/missing-consumers.json"
+  findmnt() { printf '%s\n' "$HOME/.config/opencode"; }
+  run aicoding_config_shared_root "$HOME/.config/opencode/opencode.json"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$HOME/.config/opencode" ]
+  run aicoding_config_is_compatible "$HOME/.config/opencode/opencode.json"
+  [ "$status" -ne 0 ]
+  [ "$output" = opencode_shared_consumers_incompatible ]
+}
+
 @test "shared OpenCode runtime data does not classify local config as shared" {
   _tool opencode 'opencode 1.2.3'
   mkdir -p "$HOME/.config/opencode" "$HOME/.local/share/opencode"
   export AICODING_REQUIRE_SHARED_COMPATIBILITY=1
   export AICODING_SHARED_CONFIG_ROOTS="$(readlink -f "$HOME/.local/share/opencode")"
   export AICODING_SHARED_CONSUMERS_FILE="$TMP/missing-consumers.json"
+  findmnt() { printf '/\n'; }
   run aicoding_config_shared_root "$HOME/.config/opencode/opencode.json"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   run aicoding_config_is_compatible "$HOME/.config/opencode/opencode.json"
   [ "$status" -eq 0 ]
 }
