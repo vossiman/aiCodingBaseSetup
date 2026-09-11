@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""Credential-safe Bugsink reader and smoke-test sender.
+
+The owner authorizes this helper to hold BUGSINK_AUTH_TOKEN in-process,
+just like dokploy-api. Production requests are pinned to the estate host;
+loopback tests require a fake token and never read the shared store.
+Responses are scrubbed; redirects and foreign DSNs are refused.
+"""
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import urllib.error
+import urllib.parse as urlparse
+import urllib.request
+import uuid
+
+BASE = 'https://bugsink.dataprospectors.at'
+LOOPBACK = {'127.0.0.1', 'localhost', '::1'}
+SECRET_FIELD = re.compile(r'password|passwd|secret|token|credential|dsn|api.?key|private.?key|authorization', re.I)
+SECRET_ASSIGNMENT = re.compile(
+    r'''(?ix)(["']?[\w-]*(?:password|passwd|token|secret|api.?key|dsn|authorization|credential)[\w-]*["']?\s*[:=]\s*)'''
+    r'''(?:"[^"]*"|'[^']*'|[^\s,;]+)'''
+)
+
+
+class NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError('redirect refused')
+
+
+class Client:
+    def __init__(self):
+        override = os.environ.get('BUGSINK_TEST_URL')
+        self.base = (override or BASE).rstrip('/')
+        parts = urlparse.urlsplit(self.base)
+        if override:
+            if parts.scheme not in ('http', 'https') or parts.hostname not in LOOPBACK or parts.username or parts.password or parts.path or parts.query or parts.fragment:
+                raise ValueError('test URL must be a loopback origin')
+            self.token = os.environ.get('BUGSINK_TEST_TOKEN', '')
+            if not self.token:
+                raise ValueError('test URL requires BUGSINK_TEST_TOKEN; shared store is not read')
+        else:
+            self.token = self._store_token()
+        self.opener = urllib.request.build_opener(NoRedirects)
+        self.api = self.base + '/api/canonical/0/'
+
+    @staticmethod
+    def _store_token():
+        # Only this helper handles the value; it is never printed or written.
+        path = Path.home() / '.aicodingsetup' / '.secrets.env'
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if line.startswith('export '):
+                line = line[7:].lstrip()
+            key, sep, value = line.partition('=')
+            if sep and key.strip() == 'BUGSINK_AUTH_TOKEN':
+                value = value.strip().strip('\"').strip("'")
+                if value:
+                    return value
+        raise ValueError('BUGSINK_AUTH_TOKEN is not set; check with secrets-check')
+
+    def request(self, url, *, event=None, ingestion_key=None):
+        headers = {'Accept': 'application/json'}
+        data = None
+        if event is None:
+            headers['Authorization'] = 'Bearer ' + self.token
+        else:
+            headers['Content-Type'] = 'application/json'
+            headers['X-Sentry-Auth'] = 'Sentry sentry_version=7, sentry_client=bugsink-api/1, sentry_key=' + ingestion_key
+            data = json.dumps(event).encode()
+        request = urllib.request.Request(url, data=data, headers=headers)
+        with self.opener.open(request, timeout=20) as response:
+            body = response.read(5_000_001)
+            if len(body) > 5_000_000:
+                raise ValueError('response too large')
+            return json.loads(body) if body else None
+
+    def get(self, resource, ident):
+        if not re.fullmatch(r'[A-Za-z0-9_-]+', str(ident)):
+            raise ValueError('invalid identifier')
+        return self.request(self.api + resource + '/' + str(ident) + '/')
+
+    def listing(self, resource, **params):
+        url = self.api + resource + '/'
+        if params:
+            url += '?' + urlparse.urlencode(params)
+        expected = urlparse.urlsplit(url)
+        visited = set()
+        result = []
+        while url:
+            parts = urlparse.urlsplit(url)
+            if (parts.scheme, parts.netloc, parts.path) != (expected.scheme, expected.netloc, expected.path) or parts.fragment or url in visited:
+                raise ValueError('pagination destination or loop refused')
+            visited.add(url)
+            page = self.request(url)
+            if not isinstance(page, dict) or not isinstance(page.get('results'), list) or 'next' not in page:
+                raise ValueError('invalid paginated response')
+            result.extend(page['results'])
+            next_url = page['next']
+            if next_url is not None and not isinstance(next_url, str):
+                raise ValueError('invalid pagination URL')
+            url = urlparse.urljoin(url, next_url) if next_url else None
+        return result
+
+    def scrub(self, value):
+        if isinstance(value, dict):
+            return {self.scrub(k): '<redacted>' if SECRET_FIELD.search(k) else self.scrub(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self.scrub(v) for v in value]
+        if isinstance(value, str):
+            value = value.replace(self.token, '<redacted>')
+            value = re.sub(r'(?i)(https?://)[^\s/@]+@', r'\1<redacted>@', value)
+            value = re.sub(r'(?i)\b(bearer|basic)\s+[^\s,;]+', r'\1 <redacted>', value)
+            value = SECRET_ASSIGNMENT.sub(r'\1<redacted>', value)
+            value = re.sub(r'(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{120,}={0,2}', '<redacted>', value)
+        return value
+
+    def smoke(self, project):
+        info = self.get('projects', project)
+        dsn = urlparse.urlsplit(info['dsn'])
+        target = urlparse.urlsplit(self.base)
+        # API responses cannot redirect either credential to another destination.
+        if (dsn.scheme, dsn.hostname, dsn.port) != (target.scheme, target.hostname, target.port) or dsn.password or dsn.query or dsn.fragment or not dsn.username or not re.fullmatch(r'[A-Za-z0-9_-]+', dsn.username) or dsn.path != '/' + str(project):
+            raise ValueError('DSN origin, project or key is invalid')
+        event_id = uuid.uuid4().hex
+        label = 'notify-hub smoke test ' + event_id[:12]
+        event = {
+            'event_id': event_id, 'timestamp': datetime.now(timezone.utc).isoformat(),
+            'platform': 'python', 'level': 'error', 'logger': 'notify-hub.smoke',
+            'environment': 'smoke-test', 'fingerprint': ['notify-hub-smoke', event_id],
+            'exception': {'values': [{'type': 'NotifyHubSmokeTest', 'value': label}]},
+            'tags': {'purpose': 'notification-smoke-test'},
+        }
+        self.request(self.base + '/api/' + str(project) + '/store/', event=event, ingestion_key=dsn.username)
+        return {'status': 'submitted', 'project': project, 'event_id': event_id, 'label': label}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest='command', required=True)
+    commands.add_parser('projects', help='list all projects (DSNs redacted)')
+    commands.add_parser('project', help='read a project').add_argument('id', type=int)
+    commands.add_parser('issues', help='list issues in one project, or every project').add_argument('--project', type=int)
+    commands.add_parser('issue', help='read issue details by UUID or friendly ID').add_argument('id')
+    commands.add_parser('smoke', help='submit one uniquely grouped test error').add_argument('--project', type=int, required=True)
+    args = parser.parse_args()
+    try:
+        client = Client()
+        if args.command == 'projects':
+            result = client.listing('projects')
+        elif args.command == 'project':
+            result = client.get('projects', args.id)
+        elif args.command == 'issue':
+            result = client.get('issues', args.id)
+        elif args.command == 'issues':
+            projects = [args.project] if args.project is not None else [p['id'] for p in client.listing('projects')]
+            result = [i for project in projects for i in client.listing('issues', project=project, sort='digest_order', order='desc')]
+        else:
+            result = client.smoke(args.project)
+        print(json.dumps(client.scrub(result), indent=2))
+        return 0
+    except urllib.error.HTTPError as exc:
+        print(f'bugsink-api: HTTP {exc.code}; response body withheld', file=sys.stderr)
+    except Exception as exc:
+        # Exception messages can contain credentials/response bodies. Never echo them.
+        print(f'bugsink-api: {type(exc).__name__}; check token configuration, destination and API availability', file=sys.stderr)
+    return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

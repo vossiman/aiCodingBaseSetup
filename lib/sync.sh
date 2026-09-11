@@ -929,6 +929,7 @@ _sync_provision() {
     install_kanban_post_symlink || true
     install_measure_remote_symlink || true
     install_dokploy_api_symlink || true
+    install_bugsink_api_symlink || true
     install_kuma_admin_symlink || true
     install_redact_transcript_symlink || true
     install_redact_sessions_symlinks || true
