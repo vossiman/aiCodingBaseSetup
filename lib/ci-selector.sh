@@ -43,9 +43,14 @@ _aicoding_ci_run_qualified() {
     and (.workflow_runs | type == "array")
     and .total_count == (.workflow_runs | length)
     and all(.workflow_runs[];
-      (.id | type == "number") and (.run_number | type == "number")
+      type == "object"
+      and (.id | type == "number") and (.run_number | type == "number")
       and (.run_attempt | type == "number") and (.workflow_id | type == "number")
-      and (.head_sha | type == "string") and (.status | type == "string"))
+      and (.head_sha | type == "string") and (.head_branch | type == "string")
+      and (.event | type == "string") and (.status | type == "string")
+      and has("conclusion")
+      and ((.conclusion | type) == "string" or (.conclusion | type) == "null")
+      and (.status != "completed" or (.conclusion | type) == "string"))
   ' <<< "$runs" >/dev/null 2>&1 || {
     echo 'CI selection: malformed or incomplete checks response' >&2; return 2;
   }
