@@ -87,6 +87,15 @@ on create or patch. Existing tickets and unspecified new tickets start in
 - `needs_decision`: unclassified or insufficient evidence; the default until
   someone actively decides. A swimlane-only patch leaves status unchanged.
 
+**Write descriptions and comments in Markdown.** The board renders headings,
+lists, links, fenced code blocks, tables, and task lists. Structure longer
+descriptions with short headings and bullets for the problem, relevant context,
+and next steps or acceptance criteria. Start comments with the outcome or
+update, then add supporting details as needed. Keep short updates brief;
+formatting should help someone reading on a phone, not add ceremony. Use
+backticks for paths, commands, and identifiers; do not rely on raw HTML.
+Posted comments are append-only: add a new comment for a correction or update.
+
 **Every ticket has an issue key (`DEVMACHINE-12`)**, the repo name
 uppercased plus a number counted per repo. `TICKET` above is that key
 (case-insensitive) or the ticket's uuid. **Quote the key, not the uuid,** in
