@@ -207,9 +207,9 @@ teardown() { cd /; rm -rf "$TMP"; }
 
 @test "sync --boot restores missing dokploy-api and kuma-admin symlinks" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  rm -f "$HOME/.local/bin/dokploy-api" "$HOME/.local/bin/kuma-admin"
+  rm -f "$HOME/.local/bin/dokploy-api" "$HOME/.local/bin/kuma-admin" "$HOME/.local/bin/bugsink-api"
   AICODING_UPDATE_TTL=0 aicoding_sync --boot
-  for h in dokploy-api kuma-admin; do
+  for h in dokploy-api kuma-admin bugsink-api; do
     [ -L "$HOME/.local/bin/$h" ]
     readlink "$HOME/.local/bin/$h" | grep -q "bin/$h"
   done

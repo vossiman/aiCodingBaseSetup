@@ -277,3 +277,36 @@ any coding agent. Choose Codex for a different-vendor review unless the user
 chose otherwise. Default to GPT-5.6 Sol (`gpt-5.6-sol`) for Codex or Opus 5
 (`claude-opus-5`) for Claude. Fable and Astra require an explicit user override;
 task complexity or machine defaults do not authorize an upgrade.
+
+## Bugsink API access
+
+
+- The estate instance is `https://bugsink.dataprospectors.at`. Its API
+  credential in the shared secret store is **`BUGSINK_AUTH_TOKEN`**. Check
+  availability with `secrets-check BUGSINK_AUTH_TOKEN`; do not guess other
+  token names and conclude that access is missing.
+- `HUB_BUGSINK_TOKEN` is notify-hub's deployment setting, not the name of
+  the shared agent credential. `HUB_BUGSINK_URL` is the server URL, not a
+  project DSN.
+- The canonical API uses bearer authentication. Retrieve a project's
+  details, including its `dsn`, with
+  `GET /api/canonical/0/projects/{id}/`; discover projects with
+  `GET /api/canonical/0/projects/`. Use the returned DSN to submit a uniquely
+  labeled smoke-test error through Sentry-compatible ingestion. The user
+  does not need to copy a DSN when authenticated API access is available.
+- Use **`bugsink-api`**, which reads the credential internally and redacts
+  credentials and DSNs from its output. Never expand the token in shell
+  commands or read the secret store yourself. Commands:
+
+  ```bash
+  bugsink-api projects
+  bugsink-api project 1
+  bugsink-api issues                    # every project, all pages
+  bugsink-api issues --project 1
+  bugsink-api issue ISSUE_UUID_OR_FRIENDLY_ID
+  bugsink-api smoke --project 1         # creates one uniquely grouped error
+  ```
+
+  The helper refuses redirects and pins production requests to the estate
+  instance. A smoke-test submission confirms ingestion acceptance, not
+  Telegram delivery; let the user confirm receipt when that is their request.
