@@ -29,6 +29,8 @@ esac
 exit 0
 STUB
   chmod +x "$TMPDIR/stubs/claude"
+  printf '#!/bin/bash\nexec /usr/bin/python3 "$@"\n' > "$TMPDIR/stubs/python3"
+  chmod +x "$TMPDIR/stubs/python3"
   # dirname and jq are real passthroughs, not no-op stubs. install-host.sh's
   # SCRIPT_DIR resolution (`dirname "${BASH_SOURCE[0]}"`) needs dirname's
   # actual output at source-time, and the deploy engine's manifest read/write
@@ -68,6 +70,17 @@ _source_host_lib() {
   [ "$status" -eq 1 ]
   [[ "$output" == *"sudo apt install"*"jq"* ]]
   [[ "$output" == *"npm"* ]]
+}
+
+@test "check_prerequisites_host: Python older than 3.8 aborts with a manual install hint" {
+  printf '#!/bin/bash\nexit 1\n' > "$TMPDIR/stubs/python3"
+  chmod +x "$TMPDIR/stubs/python3"
+
+  run _source_host_lib check_prerequisites_host
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Python 3.8 or newer"* ]]
+  [[ "$output" == *"sudo apt install"*"python3"* ]]
+  [[ "$output" != *"Auto-installing"* ]]
 }
 
 @test "ensure_homelab_wiki: no-op when clone exists, no git call" {

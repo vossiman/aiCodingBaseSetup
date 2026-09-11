@@ -1,8 +1,8 @@
 # Preserve local settings during blueprint sync
 
-Status: revised after Claude Opus review and the user's authorization to
-resolve important findings. This is the implementation contract; production
-code and live settings have not changed.
+Status: implemented on the feature branch after task-scoped review fixes;
+final whole-branch review remains pending. Only blueprint source and fixture
+tests changed. No live settings were read, changed, or deployed.
 
 ## Decision: keep three-way comparison, drop file snapshots
 
@@ -293,12 +293,9 @@ Run fixture-only tests through bash tests/bats/run.sh:
 8. Test comments, quoted dotted keys, type-aware fingerprints, formatting
    no-ops, and conflict-only/state-only classification and receipts.
 
-The earlier baseline check was bash tests/bats/run.sh sync blueprint-deploy
---filter 'sync --yes|codex config.toml ignores|codex config.toml still detects'.
-All five selected tests passed; they demonstrate existing overwrite behavior,
-not a fix. The implementation still requires its regression tests.
-
-Update template comments and README for default-only model selection, silent
-preferences, true conflicts, adoption, and mixed-writer rollout. Run the full
-suite before push; deliver via a blueprint PR. Revising this design performs
-no merge, fleet rollout, or live settings change.
+The implementation includes fixture-only engine, integration, guard, minimum
+Python, help-text, and failure-path regressions. Template comments and README
+document default-only model/effort behavior, silent preferences, true
+conflicts, adoption, return to tracking, and mixed-writer rollout. The full
+default-parallel suite is the final implementation gate before review and PR.
+Updating this design performs no merge, fleet rollout, or live settings change.

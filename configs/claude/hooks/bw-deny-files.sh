@@ -45,6 +45,8 @@ DENY_BASENAMES=(
 SENSITIVE_DIRS=(
   '*/.aicodingsetup'
   '*/.aicodingsetup/*'
+  '*/.codex/.aicoding-sync'
+  '*/.codex/.aicoding-sync/*'
   '*/.ssh'
   '*/.ssh/*'
   # gh stores its token in ~/.config/gh/hosts.yml in plaintext. That file is
@@ -67,6 +69,10 @@ SENSITIVE_DIRS=(
 # credentials, and aicoding-sync reports config drift itself.
 DENY_PATHS=(
   '*/.codex/config.toml'
+  # The sync receipt, lock, and temporary state remain protected even when a
+  # basename also appears in DIR_ALLOW. This check precedes that allowlist.
+  '*/.codex/.aicoding-sync'
+  '*/.codex/.aicoding-sync/*'
   '*/.config/opencode/opencode.json'
   '*/.cursor/mcp.json'
   '*/.claude.json'

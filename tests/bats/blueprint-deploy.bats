@@ -447,6 +447,9 @@ exec /usr/bin/awk "$@"
 STUB
   cat > "$stubs/python3" <<'STUB'
 #!/bin/bash
+if [[ "${1:-}" == -c ]]; then
+  exec /usr/bin/python3 "$@"
+fi
 source_path=
 while (( $# > 0 )); do
   if [[ "$1" == --source ]]; then
@@ -470,6 +473,21 @@ STUB
   [ "$(cat "$AICODING_TEST_ENGINE_MODE")" = 600 ]
   [ "$(codex_smart_error_code "$CODEX_SMART_RESULT")" = "" ]
   [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'aicoding-codex-*' -print)" ]
+}
+
+@test "Codex smart planning reports runtime_unavailable for Python older than 3.8" {
+  local stubs="$TMPDIR/old-python"
+  mkdir -p "$stubs"
+  printf '#!/bin/sh\nexit 1\n' > "$stubs/python3"
+  chmod +x "$stubs/python3"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+
+  PATH="$stubs:$PATH" codex_smart_plan \
+    "$HOME/.codex/config.toml" "$BLUEPRINT_ROOT/configs/codex/config.toml" yes
+
+  [ "$(codex_smart_error_code "$CODEX_SMART_RESULT")" = runtime_unavailable ]
+  [ ! -e "$HOME/.codex/config.toml" ]
+  [ ! -e "$HOME/.codex/.aicoding-sync" ]
 }
 
 @test "Codex smart render failures stop before apply and clean private temporaries" {

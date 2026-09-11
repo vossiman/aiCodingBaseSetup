@@ -50,6 +50,8 @@ STUB
   rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$AICODING_BLUEPRINT_CLONE/"
   (cd "$AICODING_BLUEPRINT_CLONE" && git init -q && git add -A && \
     git -c user.email=t@t -c user.name=t commit -q -m initial)
+  git -C "$AICODING_BLUEPRINT_CLONE" remote add origin "$BLUEPRINT_ROOT"
+  git -C "$AICODING_BLUEPRINT_CLONE" update-ref refs/remotes/origin/main HEAD
   # cwd must leave the real checkout: _sync_devcontainer_pin targets the
   # cwd's repo, and tests must never write into $BLUEPRINT_ROOT.
   cd "$TMPDIR"

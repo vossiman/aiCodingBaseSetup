@@ -13,11 +13,12 @@ setup() {
   # Build a stand-in "blueprint" by copying the real one (skipping .git).
   mkdir -p "$AICODING_BLUEPRINT_CLONE"
   rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$AICODING_BLUEPRINT_CLONE/"
-  # Initialize a git repo there so commit lookup works. No `origin` remote is
-  # added, so refresh_blueprint's fetch fails and it falls back to the cached
-  # clone WITHOUT hard-resetting — exactly the behaviour these tests rely on.
+  # Initialize a real Git provenance fixture. The offline runner skips fetch,
+  # so tests still use this cached checkout without reset.
   (cd "$AICODING_BLUEPRINT_CLONE" && git init -q && git add -A && \
      git -c user.email=test@local -c user.name=test commit -q -m init)
+  git -C "$AICODING_BLUEPRINT_CLONE" remote add origin "$BLUEPRINT_ROOT"
+  git -C "$AICODING_BLUEPRINT_CLONE" update-ref refs/remotes/origin/main HEAD
   # aicoding_sync now runs the throttled binary refresh for non-dry-run modes
   # (--yes here). Stub the real CLIs so they no-op instead of hitting the
   # network; assertions check file/manifest state, not this output.
@@ -79,6 +80,12 @@ EOF
   done
 }
 
+commit_blueprint_fixture() {
+  git -C "$AICODING_BLUEPRINT_CLONE" add -A
+  git -C "$AICODING_BLUEPRINT_CLONE" \
+    -c user.email=test@local -c user.name=test commit -q -m fixture-change
+}
+
 @test "aicoding-sync: exits with error when no manifest" {
   run "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync"
   [ "$status" -ne 0 ]
@@ -133,12 +140,14 @@ EOF
   [ "$status" -eq 0 ] || { echo "$output"; false; }
   echo "$output" | grep -q -- "--blueprint PATH"
   echo "$output" | grep -q "never fetch or reset"
+  echo "$output" | grep -q "return to origin/main tracking"
 }
 
 @test "aicoding-sync: 'n' answer preserves the existing managed config" {
   mkdir -p "$HOME/.aicodingsetup"
   echo "user-line" > "$HOME/.tmux.conf"
   echo "blueprint-line" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
+  commit_blueprint_fixture
   cat > "$AICODING_MANIFEST" <<EOF
 {
   "schema_version": 1,
@@ -162,6 +171,7 @@ EOF
   mkdir -p "$HOME/.aicodingsetup"
   echo "old-blueprint" > "$HOME/.tmux.conf"
   echo "new-blueprint" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
+  commit_blueprint_fixture
   cat > "$AICODING_MANIFEST" <<EOF
 {
   "schema_version": 1,
@@ -200,6 +210,7 @@ EOF
   mkdir -p "$HOME/.aicodingsetup"
   echo "old-blueprint" > "$HOME/.tmux.conf"
   echo "new-blueprint" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
+  commit_blueprint_fixture
   cat > "$AICODING_MANIFEST" <<EOF
 {
   "schema_version": 1,

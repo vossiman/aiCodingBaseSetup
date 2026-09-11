@@ -12,12 +12,16 @@ setup() {
   unset BW_DENY_PATTERNS_FILE
 
   mkdir -p "$HOME/.aicodingsetup" "$HOME/.ssh" "$HOME/work"
+  mkdir -p "$HOME/.codex/.aicoding-sync/nested"
   printf 'GH_TOKEN=ghp_supersecret\n' > "$HOME/.aicodingsetup/.secrets.env"
   printf '{"profile":"container"}\n'  > "$HOME/.aicodingsetup/manifest.json"
   printf 'PRIVATE KEY\n'              > "$HOME/.aicodingsetup/memory-lanes-ship"
   printf 'PRIVATE KEY\n'              > "$HOME/.ssh/id_ed25519"
   printf 'ssh-ed25519 AAAA\n'         > "$HOME/.ssh/id_ed25519.pub"
   printf 'host github.com\n'          > "$HOME/.ssh/config"
+  printf '{"version":1}\n'           > "$HOME/.codex/.aicoding-sync/config-state.json"
+  printf 'receipt metadata\n'         > "$HOME/.codex/.aicoding-sync/manifest.json"
+  printf 'lock metadata\n'            > "$HOME/.codex/.aicoding-sync/nested/config"
   printf 'hello\n'                    > "$HOME/work/README.md"
 }
 
@@ -88,6 +92,30 @@ allowed() { [ "$status" -eq 0 ] && [ -z "$output" ]; }
 @test "Grep tool: targeting the secrets file directly is denied" {
   hook "$(jq -nc --arg p "$HOME/.aicodingsetup/.secrets.env" \
     '{tool_name:"Grep",tool_input:{pattern:"TOKEN",path:$p}}')"
+  denied
+}
+
+@test "Codex sync state denies file reads including allow-name basenames" {
+  file_hook Read "$HOME/.codex/.aicoding-sync/config-state.json"
+  denied
+  file_hook Read "$HOME/.codex/.aicoding-sync/manifest.json"
+  denied
+  file_hook Read "$HOME/.codex/.aicoding-sync/nested/config"
+  denied
+}
+
+@test "Codex sync state denies native glob searches rooted at the state directory" {
+  hook "$(jq -nc --arg p "$HOME/.codex/.aicoding-sync" \
+    '{tool_name:"Glob",tool_input:{pattern:"**/*",path:$p}}')"
+  denied
+}
+
+@test "Codex sync state denies shell globs and relative reads after cd" {
+  bash_hook "cat $HOME/.codex/.aicoding-sync/*"
+  denied
+  bash_hook "cd $HOME/.codex/.aicoding-sync && cat manifest.json"
+  denied
+  bash_hook "cd $HOME/.codex/.aicoding-sync/nested && cat config"
   denied
 }
 

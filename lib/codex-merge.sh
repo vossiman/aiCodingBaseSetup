@@ -32,6 +32,14 @@ _codex_smart_valid_result() {
   ' >/dev/null 2>&1
 }
 
+_codex_smart_python_available() {
+  local marker
+  command -v python3 >/dev/null 2>&1 || return 1
+  marker="$(python3 -c 'import sys; print("aicoding-python-supported" if sys.version_info >= (3, 8) else "")' 2>/dev/null)" \
+    || return 1
+  [[ "$marker" == "aicoding-python-supported" ]]
+}
+
 # _codex_smart_invoke <plan|apply> <dest> <template> <context>
 #                     [expected-token] [decisions-json]
 # Sets CODEX_SMART_RESULT to engine JSON and always returns zero so set -e
@@ -44,7 +52,7 @@ _codex_smart_invoke() {
   local -a command
 
   CODEX_SMART_RESULT=""
-  if ! command -v python3 >/dev/null 2>&1 || \
+  if ! _codex_smart_python_available || \
      [[ ! -f "$_AICODING_CODEX_MERGE_LIB_DIR/codex-merge.py" ]]; then
     CODEX_SMART_RESULT=$(_codex_smart_error_json runtime_unavailable)
     return 0

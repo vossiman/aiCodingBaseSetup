@@ -446,6 +446,46 @@ STUB
   [ "$status" -ne 0 ]
 }
 
+@test "auto_install_prereqs installs python3 when the available runtime is too old" {
+  printf '#!/bin/bash\nexit 1\n' > "$TMPDIR/stubs/python3"
+  chmod +x "$TMPDIR/stubs/python3"
+
+  run env _AICODINGSETUP_NVS_STRIPPED=1 PATH="$TMPDIR/stubs:$PATH" \
+    bash -c '
+      source "$1"
+      ensure_login_shells_clean(){ :; }
+      ensure_dind_log_rotation(){ :; }
+      ensure_tmux(){ :; }
+      ensure_node(){ :; }
+      ensure_claude_code(){ :; }
+      ensure_opencode(){ :; }
+      ensure_codex(){ :; }
+      ensure_cursor_agent(){ :; }
+      ensure_go(){ :; }
+      ensure_uv(){ :; }
+      ensure_locales(){ :; }
+      ensure_playwright_browsers(){ :; }
+      apt_install(){ printf "APT:%s\\n" "$*"; }
+      auto_install_prereqs
+    ' _ "$BLUEPRINT_ROOT/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"APT:python3"* ]]
+}
+
+@test "check_prerequisites rejects Python older than 3.8 without an overwrite fallback" {
+  printf '#!/bin/bash\nexit 1\n' > "$TMPDIR/stubs/python3"
+  chmod +x "$TMPDIR/stubs/python3"
+
+  run env _AICODINGSETUP_NVS_STRIPPED=1 AICODINGSETUP_SKIP_NETWORK=1 \
+    PATH="$TMPDIR/stubs:$PATH" bash -c '
+      source "$1"
+      check_prerequisites
+    ' _ "$BLUEPRINT_ROOT/install.sh"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Python 3.8 or newer"* ]]
+  [[ "$output" == *"Please install"* ]]
+}
+
 @test "install.sh mode: adopt when managed files exist but no manifest" {
   mkdir -p "$HOME"
   echo "user-customised tmux config" > "$HOME/.tmux.conf"
