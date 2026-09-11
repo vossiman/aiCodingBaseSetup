@@ -90,6 +90,8 @@ teardown() { cd /; rm -rf "$TMP"; }
   }}' > "$HOME/.claude/settings.json"
   export SCRIPT_DIR="$BLUEPRINT_ROOT"
   _sync_source_update_libraries "$BLUEPRINT_ROOT"
+  # Exercise missing exact packages after the independent tool prerequisite.
+  aicoding_result_record claude current 2.1.0 installed 2.1.0
   AICODINGSETUP_SKIP_NETWORK= run _sync_provision yes
   [ "$status" -eq 0 ]
   [ ! -s "$TMP/npx-calls" ]
@@ -332,6 +334,10 @@ EOF
 
 @test "sync --yes reconciles MCPs and plugins (provision step)" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  # The offline fixture has a working Claude stub; record its verified version
+  # so this test exercises provisioning beyond the tool-update gate.
+  _sync_source_update_libraries "$BLUEPRINT_ROOT"
+  aicoding_result_record claude current 2.1.0 installed 2.1.0
   : > "$TMP/ran.log"
   run bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_sync --yes'
   [ "$status" -eq 0 ]
@@ -342,6 +348,10 @@ EOF
 
 @test "sync --boot runs provision when the throttle is stale" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  # The offline fixture has a working Claude stub; record its verified version
+  # so this test exercises provisioning beyond the tool-update gate.
+  _sync_source_update_libraries "$BLUEPRINT_ROOT"
+  aicoding_result_record claude current 2.1.0 installed 2.1.0
   : > "$TMP/ran.log"
   AICODING_UPDATE_TTL=0 aicoding_sync --boot
   grep -q "claude mcp get logfire" "$TMP/ran.log"
