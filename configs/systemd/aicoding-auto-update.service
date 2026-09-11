@@ -8,4 +8,3 @@ Type=oneshot
 WorkingDirectory=%h/.local/state/aicoding/auto-update
 ExecStart=%h/.local/bin/aicoding-auto-update --once
 StandardInput=null
-

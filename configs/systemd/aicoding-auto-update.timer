@@ -9,4 +9,3 @@ Unit=aicoding-auto-update.service
 
 [Install]
 WantedBy=timers.target
-
