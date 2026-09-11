@@ -166,6 +166,15 @@ install_dokploy_api_symlink() {
   ok "dokploy-api installed at ~/.local/bin/dokploy-api -> $src"
 }
 
+install_bugsink_api_symlink() {
+  header "bugsink API client"
+  local src="$SCRIPT_DIR/bin/bugsink-api"
+  [[ -f "$src" ]] || { warn "bin/bugsink-api not found — skipping"; return; }
+  mkdir -p "$HOME/.local/bin"; chmod +x "$src"
+  ln -sf "$src" "$HOME/.local/bin/bugsink-api"
+  ok "bugsink-api installed at ~/.local/bin/bugsink-api -> $src"
+}
+
 install_kuma_admin_symlink() {
   header "uptime kuma client"
   local src="$SCRIPT_DIR/bin/kuma-admin"
