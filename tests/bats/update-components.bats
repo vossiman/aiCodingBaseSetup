@@ -401,10 +401,16 @@ while [ $# -gt 0 ]; do
 done
 printf '%s\n' "$package" >> "$TMP/npm-mcp-installs"
 mkdir -p "$prefix"
+if [ -f "$prefix/package.json" ]; then
+  root_name=$(jq -r .name "$prefix/package.json")
+else
+  root_name=${prefix##*/}
+  printf '{"name":"%s","private":true}\n' "$root_name" > "$prefix/package.json"
+fi
 if [ "$package" = context7 ]; then
   dir="$prefix/node_modules/@upstash/context7-mcp"
   mkdir -p "$dir/dist"
-  printf '{"lockfileVersion":3,"packages":{"node_modules/@upstash/context7-mcp":{"version":"4.1.0","integrity":"sha512-fixture"}}}\n' > "$prefix/package-lock.json"
+  printf '{"name":"%s","lockfileVersion":3,"packages":{"":{"name":"%s"},"node_modules/@upstash/context7-mcp":{"version":"4.1.0","integrity":"sha512-fixture"}}}\n' "$root_name" "$root_name" > "$prefix/package-lock.json"
   printf '{"name":"@upstash/context7-mcp","version":"4.1.0","bin":{"context7-mcp":"dist/index.js"}}\n' > "$dir/package.json"
   if [ "${MCP_LIFECYCLE:-}" = top ]; then
     jq '.scripts.postinstall="node build.js"' "$dir/package.json" > "$dir/package.tmp"
@@ -413,6 +419,11 @@ if [ "$package" = context7 ]; then
     mkdir -p "$prefix/node_modules/lifecycle-dep"
     printf '{"name":"lifecycle-dep","version":"1.0.0","scripts":{"install":"node install.js"}}\n' \
       > "$prefix/node_modules/lifecycle-dep/package.json"
+  fi
+  if [ -n "${MCP_DEP_PAYLOAD:-}" ]; then
+    mkdir -p "$prefix/node_modules/stable-dep"
+    printf '{"name":"stable-dep","version":"1.0.0"}\n' > "$prefix/node_modules/stable-dep/package.json"
+    printf '%s\n' "$MCP_DEP_PAYLOAD" > "$prefix/node_modules/stable-dep/index.js"
   fi
   printf '#!/bin/sh\nexit 0\n' > "$dir/dist/index.js"
   chmod +x "$dir/dist/index.js"
@@ -437,6 +448,30 @@ EOF
   chmod +x "$TMP/stubs/npm"
 }
 
+@test "unchanged exact MCP release survives npm prefix-derived lock names across passes" {
+  _stub_exact_mcp_npm
+  run aicoding_update_component mcp-context7
+  [ "$status" -eq 0 ]
+  jq -e '.name == "aicoding-mcp-context7" and .packages[""].name == "aicoding-mcp-context7"' \
+    "$AICODING_DATA_DIR/versions/mcp-context7/4.1.0/package-lock.json"
+
+  run aicoding_update_component mcp-context7
+  [ "$status" -eq 0 ]
+  jq -e '.components["mcp-context7"].state == "updated"' "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "verified retained lock wins when the same top-level version resolves new dependency bytes" {
+  export MCP_DEP_PAYLOAD=first
+  _stub_exact_mcp_npm
+  run aicoding_update_component mcp-context7
+  [ "$status" -eq 0 ]
+
+  export MCP_DEP_PAYLOAD=second
+  run aicoding_update_component mcp-context7
+  [ "$status" -eq 0 ]
+  [ "$(cat "$AICODING_DATA_DIR/versions/mcp-context7/4.1.0/node_modules/stable-dep/index.js")" = first ]
+}
+
 @test "exact MCP staging rejects ignored install lifecycle scripts in package dependencies" {
   export MCP_LIFECYCLE=dependency
   _stub_exact_mcp_npm
@@ -450,10 +485,10 @@ EOF
 
 @test "corrupt retained MCP release is rejected against the fresh exact stage" {
   _stub_exact_mcp_npm
-  mkdir -p "$AICODING_DATA_DIR/versions/mcp-context7/old" "$AICODING_DATA_DIR/current"
-  ln -s ../versions/mcp-context7/old "$AICODING_DATA_DIR/current/mcp-context7"
-  "$TMP/stubs/npm" install --prefix \
-    "$AICODING_DATA_DIR/versions/mcp-context7/4.1.0" @upstash/context7-mcp@4.1.0
+  run aicoding_update_component mcp-context7
+  [ "$status" -eq 0 ]
+  mkdir -p "$AICODING_DATA_DIR/versions/mcp-context7/old"
+  ln -sfn ../versions/mcp-context7/old "$AICODING_DATA_DIR/current/mcp-context7"
   printf '#!/bin/sh\necho corrupted\n' \
     > "$AICODING_DATA_DIR/versions/mcp-context7/4.1.0/node_modules/@upstash/context7-mcp/dist/index.js"
 

@@ -628,6 +628,46 @@ _aicoding_npm_lock_valid() {
   ' "$lock" >/dev/null 2>&1
 }
 
+_aicoding_release_tree_digest() {
+  local root=$1 inventory path relative mode kind value digest
+  inventory=$(mktemp "${TMPDIR:-/tmp}/aicoding-release-integrity.XXXXXX") || return 1
+  while IFS= read -r -d '' path; do
+    relative=${path#"$root/"}
+    [ "$relative" != .aicoding-release-integrity ] || continue
+    mode=$(stat -c '%a' -- "$path" 2>/dev/null) || { rm -f "$inventory"; return 1; }
+    if [ -L "$path" ]; then
+      kind=link; value=$(readlink -- "$path") || { rm -f "$inventory"; return 1; }
+    elif [ -f "$path" ]; then
+      kind=file; value=$(sha256sum -- "$path" | awk '{print $1}') \
+        || { rm -f "$inventory"; return 1; }
+    elif [ -d "$path" ]; then
+      kind=directory; value=
+    else
+      rm -f "$inventory"
+      return 1
+    fi
+    printf '%s\0%s\0%s\0%s\0' "$relative" "$kind" "$mode" "$value" >>"$inventory" \
+      || { rm -f "$inventory"; return 1; }
+  done < <(find "$root" -mindepth 1 -print0 2>/dev/null | sort -z)
+  digest=$(sha256sum "$inventory" | awk '{print $1}') || { rm -f "$inventory"; return 1; }
+  rm -f "$inventory" || return 1
+  printf '%s\n' "$digest"
+}
+
+_aicoding_release_integrity_write() {
+  local root=$1 digest
+  digest=$(_aicoding_release_tree_digest "$root") || return 1
+  printf '%s\n' "$digest" >"$root/.aicoding-release-integrity"
+}
+
+_aicoding_release_integrity_valid() {
+  local root=$1 recorded actual
+  recorded=$(cat "$root/.aicoding-release-integrity" 2>/dev/null) || return 1
+  [[ "$recorded" =~ ^[0-9a-f]{64}$ ]] || return 1
+  actual=$(_aicoding_release_tree_digest "$root") || return 1
+  [ "$actual" = "$recorded" ]
+}
+
 # npm was deliberately invoked with --ignore-scripts. Reject any resolved
 # package whose install lifecycle would therefore be skipped.
 _aicoding_npm_tree_ignores_scripts_safely() {
@@ -656,8 +696,9 @@ _aicoding_npm_entry_release_valid() {
     && { [ "$component" != mcp-playwright ] || [ -x "$root/bin/playwright-mcp" ]; }
 }
 
-# MCP entrypoints commonly start a server for --version. Read retained package
-# metadata and the version-bound browser marker instead of executing them.
+# Context7 and Playwright have safe version probes, while Firecrawl and Brave
+# do not expose reliable version commands. Read retained package metadata for
+# all exact MCP packages so validation follows one non-executing policy.
 _aicoding_active_npm_entry_valid() {
   local component=$1 command_name=$2 package=$3 current version receipt browser missing rc=0
   current=$(readlink -f "$AICODING_DATA_DIR/current/$component" 2>/dev/null) || return 1
@@ -667,6 +708,7 @@ _aicoding_active_npm_entry_valid() {
     "$AICODING_RESULTS_FILE" 2>/dev/null) || return 1
   [ "$receipt" = "$version" ] || return 1
   _aicoding_npm_entry_release_valid "$current" "$component" "$command_name" "$package" "$version" || return 1
+  _aicoding_release_integrity_valid "$current" || return 1
   [ -x "$HOME/.local/bin/$command_name" ] || return 1
   if [ "$component" = mcp-playwright ]; then
     browser=$(_aicoding_playwright_browser_bin "$version") || return 1
@@ -715,6 +757,11 @@ aicoding_update_npm_entry_component() {
   fi
   if ! mkdir -p "$(dirname "$stage")" "$stage"; then
     aicoding_result_record "$component" failed "$target" stage_prepare_failed
+    return 1
+  fi
+  if ! printf '{"name":"aicoding-%s","private":true}\n' "$component" >"$stage/package.json"; then
+    rm -rf "$stage"
+    aicoding_result_record "$component" failed "$target" stage_metadata_write_failed
     return 1
   fi
   if ! HOME="$stage/home" XDG_CONFIG_HOME="$stage/home/.config" \
@@ -768,9 +815,18 @@ aicoding_update_npm_entry_component() {
       || { rm -rf "$stage"; aicoding_result_record "$component" failed "$target" wrapper_chmod_failed; return 1; }
     relative_bin=bin/playwright-mcp
   fi
+  if ! _aicoding_release_integrity_write "$stage"; then
+    rm -rf "$stage"
+    aicoding_result_record "$component" failed "$target" stage_integrity_write_failed
+    return 1
+  fi
   if [ -d "$final" ]; then
-    if ! diff -qr --no-dereference "$stage" "$final" >/dev/null 2>&1 \
-        || ! _aicoding_npm_entry_release_valid "$final" "$component" "$command_name" "$package" "$target"; then
+    # Keep the first validated lock for this exact top-level version. A later
+    # npm resolution may select different transitive bytes without any change
+    # to the requested version; it must not replace or discredit the retained
+    # immutable tree. Its own integrity receipt detects actual local changes.
+    if ! _aicoding_npm_entry_release_valid "$final" "$component" "$command_name" "$package" "$target" \
+        || ! _aicoding_release_integrity_valid "$final"; then
       rm -rf "$stage"
       aicoding_result_record "$component" failed "$target" existing_release_invalid
       return 1
@@ -784,6 +840,7 @@ aicoding_update_npm_entry_component() {
       return 1
     fi
     _aicoding_npm_entry_release_valid "$final" "$component" "$command_name" "$package" "$target" \
+      && _aicoding_release_integrity_valid "$final" \
       || { aicoding_result_record "$component" failed "$target" committed_release_invalid; return 1; }
   fi
   [ "$component" != mcp-playwright ] \
