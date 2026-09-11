@@ -10,10 +10,11 @@
 
 **Spec:** docs/superpowers/specs/2026-09-11-sync-smart-diff-design.md
 
-**Implementation status:** Tasks 1 and 2 are implemented and independently
-reviewed (through `e7f1f5b`). Task 3 and the final whole-branch gate remain in
-progress. The checklist below records the original task requirements; detailed
-verification accompanies the implementation commits and final PR.
+**Execution checkpoint (`6ec351f`):** All three implementation tasks and their
+review fixes are complete. At this checkpoint, whole-branch review and an
+independent green full-suite gate are still pending; known test-harness races
+are recorded in `out/sync-smart-diff-validation.md`. The checklist below
+records the original task requirements.
 
 ## Global constraints
 
