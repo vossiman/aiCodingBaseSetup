@@ -538,6 +538,24 @@ EOF
   if ls "$HOME"/.codex/config.toml.bak.* 2>/dev/null; then false; fi
 }
 
+@test "install.sh conflict-only force reconcile does not claim safe Codex updates" {
+  blueprint_copy
+  bash "$BP/install.sh" </dev/null
+  sed -i 's/^alternate_screen = .*/alternate_screen = "local-choice"/' \
+    "$HOME/.codex/config.toml"
+  sed -i 's/^alternate_screen = .*/alternate_screen = "blueprint-choice"/' \
+    "$BP/configs/codex/config.toml"
+  git -C "$BP" add configs/codex/config.toml
+  git -C "$BP" -c user.email=t@t -c user.name=t commit -q -m conflict
+  git -C "$BP" update-ref refs/remotes/origin/main HEAD
+
+  run bash "$BP/install.sh" --force-reinstall </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Applied safe Codex updates"* ]]
+  echo "$output" | grep -q 'Codex merge state.*conflicting settings kept local'
+  grep -Fxq 'alternate_screen = "local-choice"' "$HOME/.codex/config.toml"
+}
+
 @test "install.sh adopt: strips standalone Go-PATH export from ~/.bashrc" {
   mkdir -p "$HOME"
   cat > "$HOME/.bashrc" <<'EOF'

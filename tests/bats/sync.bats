@@ -788,12 +788,42 @@ EOF
   run bash -c 'printf "y\n" | { . "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync; }'
   [ "$status" -eq 0 ]
   echo "$output" | grep -q 'tui.alternate_screen'
+  [[ "$output" != *"applied safe Codex updates"* ]]
+  echo "$output" | grep -q \
+    'updated Codex merge state; conflicting settings kept local'
   grep -Fxq 'alternate_screen = "local-choice"' "$HOME/.codex/config.toml"
 
   run bash -c '. "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync --dry-run'
   [ "$status" -eq 0 ]
   echo "$output" | grep -q 'smart_conflict'
   echo "$output" | grep -q 'tui.alternate_screen'
+}
+
+@test "sync reports smart retirement once while preserving config and receipt" {
+  _smart_blueprint_copy
+  bash "$BP/install.sh" </dev/null
+  local config_before receipt_before receipt
+  receipt="$HOME/.codex/.aicoding-sync/config-state.json"
+  config_before=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
+  receipt_before=$(sha256sum "$receipt" | awk '{print $1}')
+
+  # Simulate a later blueprint retiring the smart target. Appending an
+  # override keeps this fixture change independent of the function body.
+  printf '\nmanaged_inventory_smart() { :; }\n' >> "$BP/lib/blueprint-deploy.sh"
+  git -C "$BP" add lib/blueprint-deploy.sh
+  git -C "$BP" -c user.email=t@t -c user.name=t commit -q -m retire-codex
+  git -C "$BP" update-ref refs/remotes/origin/main HEAD
+
+  run bash -c '. "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync --yes'
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "retired Codex management (config preserved): $HOME/.codex/config.toml"
+  [ "$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')" = "$config_before" ]
+  [ "$(sha256sum "$receipt" | awk '{print $1}')" = "$receipt_before" ]
+  jq -e '.files | has("'"$HOME"'/.codex/config.toml") | not' "$AICODING_MANIFEST"
+
+  run bash -c '. "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync --yes'
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"retired Codex management"* ]]
 }
 
 @test "interactive Codex conflict choice is read from the user and token-bound" {

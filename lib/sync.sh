@@ -873,19 +873,27 @@ _sync_reconcile() {
       continue
     fi
     [[ -n "${SMART_APPLY_RESULT[$d]:-}" ]] || continue
-    local smart_result smart_code
+    local smart_result smart_code smart_config_changed smart_state_changed
     smart_result=${SMART_APPLY_RESULT[$d]}
     smart_code=$(codex_smart_error_code "$smart_result")
+    smart_config_changed=$(printf '%s' "$smart_result" | jq -r '.config_changed')
+    smart_state_changed=$(printf '%s' "$smart_result" | jq -r '.state_changed')
     if [[ -n "$smart_code" ]]; then
       printf '  ERROR: Codex config merge failed for %s (%s)\n' "$d" "$smart_code" >&2
     elif (( $(printf '%s' "$smart_result" | jq '.conflicts | length') > 0 )); then
-      echo "      applied safe Codex updates; conflicting settings kept local: $d"
-    elif [[ $(printf '%s' "$smart_result" | jq -r '.config_changed') == true ]]; then
+      if [[ "$smart_config_changed" == true ]]; then
+        echo "      applied safe Codex updates; conflicting settings kept local: $d"
+      elif [[ "$smart_state_changed" == true ]]; then
+        echo "      updated Codex merge state; conflicting settings kept local: $d"
+      else
+        echo "      conflicting Codex settings kept local; no updates applied: $d"
+      fi
+    elif [[ "$smart_config_changed" == true ]]; then
       echo "      merged Codex settings: $d"
-    elif [[ $(printf '%s' "$smart_result" | jq -r '.state_changed') == true ]]; then
+    elif [[ "$smart_state_changed" == true ]]; then
       echo "      updated Codex merge state (config bytes preserved): $d"
     fi
-  done < <(printf '%s\n' "${!SMART_PLAN[@]}" | sort)
+  done < <(printf '%s\n' "${!BUCKETS[@]}" | sort)
 
   local origin
   origin=$(blueprint_origin "$AICODING_BLUEPRINT_CLONE")

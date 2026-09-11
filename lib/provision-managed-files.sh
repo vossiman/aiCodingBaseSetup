@@ -61,6 +61,7 @@ _aicoding_managed_source_version() {
 # set -e installers continue unrelated provisioning on a file-level failure.
 _provision_smart_managed_files() {
   local context=${1:-installer} dest mode source bucket code plan result
+  local config_changed state_changed
   _AICODING_PROVISION_SMART_ERRORS=0
   _AICODING_PROVISION_SMART_CONFLICTS=0
   while IFS='|' read -r dest mode source; do
@@ -92,8 +93,16 @@ _provision_smart_managed_files() {
         elif [[ $(printf '%s' "$result" | jq -r '.unmanaged') == true ]]; then
           info "Leaving unmanaged Codex config untouched: $dest"
         elif (( $(printf '%s' "$result" | jq '.conflicts | length') > 0 )); then
-          warn "Applied safe Codex updates but kept conflicting settings local: $dest"
           _AICODING_INITIAL_CONFIG_DEFERRED=1
+          config_changed=$(printf '%s' "$result" | jq -r '.config_changed')
+          state_changed=$(printf '%s' "$result" | jq -r '.state_changed')
+          if [[ "$config_changed" == true ]]; then
+            warn "Applied safe Codex updates but kept conflicting settings local: $dest"
+          elif [[ "$state_changed" == true ]]; then
+            warn "Updated Codex merge state; conflicting settings kept local: $dest"
+          else
+            warn "Conflicting Codex settings kept local; no updates applied: $dest"
+          fi
           _AICODING_PROVISION_SMART_CONFLICTS=$((_AICODING_PROVISION_SMART_CONFLICTS + 1))
         else
           ok "reconciled Codex settings at $dest"

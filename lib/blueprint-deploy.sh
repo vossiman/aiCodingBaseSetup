@@ -787,6 +787,13 @@ _render_managed_source() {
 # _substitute_home_only above.
 _substitute_file_to() {
   local src=$1 out=$2
+  # This path renders credentials. Keep the output private before the first
+  # byte is written; redirecting to an existing file preserves this mode.
+  if [[ -e "$out" ]]; then
+    chmod 0600 "$out" || return 1
+  else
+    (umask 077; : > "$out") || return 1
+  fi
   # The four placeholders are mutually independent; one sed pipeline handles
   # all of them with each value safely quoted (we escape `&`, `/`, and `\`
   # because they're sed-replacement metacharacters).
@@ -805,14 +812,16 @@ _substitute_file_to() {
     codex_sandbox_v="danger-full-access"
   fi
   _esc() { printf '%s' "$1" | sed -e 's/[\/&\\]/\\&/g'; }
-  sed \
+  if ! sed \
     -e "s/{{HOME}}/$(_esc "$home_v")/g" \
     -e "s/{{FIRECRAWL_API_KEY}}/$(_esc "$fc_v")/g" \
     -e "s/{{BRAVE_API_KEY}}/$(_esc "$br_v")/g" \
     -e "s/{{MEMORY_ROUTER_TOKEN}}/$(_esc "$mr_v")/g" \
     -e "s/{{CODEX_APPROVAL_POLICY}}/$codex_approval_v/g" \
     -e "s/{{CODEX_SANDBOX_MODE}}/$codex_sandbox_v/g" \
-    "$src" > "$out"
+    "$src" > "$out"; then
+    return 1
+  fi
   _strip_absent_secret_servers "$src" "$out"
 }
 
@@ -828,27 +837,45 @@ _substitute_file_to() {
 _strip_absent_secret_servers() {
   local src=$1 out=$2
   [[ -z "${MEMORY_ROUTER_TOKEN:-}" ]] || return 0
-  local stripped
+  local filter tmp
   case "$src" in
     */configs/cursor/mcp.json)
-      stripped=$(jq 'del(.mcpServers."memory-router")' "$out") \
-        && printf '%s\n' "$stripped" > "$out"
+      filter=cursor
       ;;
     */configs/opencode/opencode.json)
-      stripped=$(jq 'del(.mcp."memory-router")' "$out") \
-        && printf '%s\n' "$stripped" > "$out"
+      filter=opencode
       ;;
     */configs/codex/config.toml)
+      filter=codex
+      ;;
+    *) return 0 ;;
+  esac
+
+  # Write filters to a separate private file so a failed tool cannot
+  # truncate the already-rendered source. mktemp creates mode 0600 even
+  # under the ordinary 0022 umask.
+  tmp=$(mktemp "${out}.strip.XXXXXX") || return 1
+  chmod 0600 "$tmp" || { rm -f -- "$tmp"; return 1; }
+  case "$filter" in
+    cursor)
+      jq 'del(.mcpServers."memory-router")' "$out" > "$tmp" \
+        || { rm -f -- "$tmp"; return 1; }
+      ;;
+    opencode)
+      jq 'del(.mcp."memory-router")' "$out" > "$tmp" \
+        || { rm -f -- "$tmp"; return 1; }
+      ;;
+    codex)
       # Drop the [mcp_servers.memory-router] section (header through the
       # line before the next [section] or EOF). The explanatory comment
       # above it stays — harmless, and cheaper than tracking prose.
-      local tmp="$out.strip"
       awk '
         /^\[/ { skip = ($0 == "[mcp_servers.memory-router]") }
         !skip { print }
-      ' "$out" > "$tmp" && mv "$tmp" "$out"
+      ' "$out" > "$tmp" || { rm -f -- "$tmp"; return 1; }
       ;;
   esac
+  mv -- "$tmp" "$out" || { rm -f -- "$tmp"; return 1; }
   return 0
 }
 

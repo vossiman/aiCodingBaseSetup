@@ -422,6 +422,95 @@ EOF
   grep -q '^model' "$TMPDIR/out.toml"
 }
 
+@test "Codex smart render and strip files stay private through the engine boundary" {
+  local clone="$TMPDIR/private-clone" dest="$TMPDIR/private-home/.codex/config.toml"
+  local stubs="$TMPDIR/private-stubs" old_path=$PATH
+  mkdir -p "$clone/configs/codex" "$stubs" "$(dirname "$dest")"
+  cat > "$clone/configs/codex/config.toml" <<'EOF'
+private_token = "{{FIRECRAWL_API_KEY}}"
+
+[mcp_servers.memory-router]
+http_headers = { Authorization = "Bearer {{MEMORY_ROUTER_TOKEN}}" }
+EOF
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  export AICODING_BLUEPRINT_CLONE="$clone" AICODING_BLUEPRINT_LOCAL=1
+  export FIRECRAWL_API_KEY=fake-render-secret
+  unset MEMORY_ROUTER_TOKEN
+  export AICODING_TEST_STRIP_MODE="$TMPDIR/strip-mode"
+  export AICODING_TEST_ENGINE_MODE="$TMPDIR/engine-mode"
+
+  cat > "$stubs/awk" <<'STUB'
+#!/bin/bash
+target=$(/usr/bin/readlink "/proc/$$/fd/1")
+/usr/bin/stat -c '%a' "$target" > "$AICODING_TEST_STRIP_MODE"
+exec /usr/bin/awk "$@"
+STUB
+  cat > "$stubs/python3" <<'STUB'
+#!/bin/bash
+source_path=
+while (( $# > 0 )); do
+  if [[ "$1" == --source ]]; then
+    shift
+    source_path=$1
+  fi
+  shift
+done
+/usr/bin/stat -c '%a' "$source_path" > "$AICODING_TEST_ENGINE_MODE"
+printf '%s\n' '{"config_changed":false,"state_changed":false,"conflicts":[],"error":null,"unmanaged":false,"token":"plan-v1:test","changes":[],"adoption_notices":[]}'
+STUB
+  chmod +x "$stubs/awk" "$stubs/python3"
+
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  umask 0022
+  export PATH="$stubs:$PATH"
+  codex_smart_plan "$dest" "$clone/configs/codex/config.toml" yes
+  export PATH=$old_path
+
+  [ "$(cat "$AICODING_TEST_STRIP_MODE")" = 600 ]
+  [ "$(cat "$AICODING_TEST_ENGINE_MODE")" = 600 ]
+  [ "$(codex_smart_error_code "$CODEX_SMART_RESULT")" = "" ]
+  [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'aicoding-codex-*' -print)" ]
+}
+
+@test "Codex smart render failures stop before apply and clean private temporaries" {
+  local tool case_dir clone dest state stubs old_path=$PATH before_pending
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  unset MEMORY_ROUTER_TOKEN
+  for tool in sed awk mv; do
+    case_dir="$TMPDIR/fail-$tool"
+    clone="$case_dir/clone"
+    dest="$case_dir/home/.codex/config.toml"
+    state="$case_dir/home/.codex/.aicoding-sync/config-state.json"
+    stubs="$case_dir/stubs"
+    mkdir -p "$clone/configs/codex" "$stubs" "$(dirname "$dest")"
+    cat > "$clone/configs/codex/config.toml" <<'EOF'
+private_token = "{{FIRECRAWL_API_KEY}}"
+
+[mcp_servers.memory-router]
+http_headers = { Authorization = "Bearer {{MEMORY_ROUTER_TOKEN}}" }
+EOF
+    export AICODING_MANIFEST="$case_dir/manifest.json"
+    echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+    export AICODING_BLUEPRINT_CLONE="$clone" AICODING_BLUEPRINT_LOCAL=1
+    export FIRECRAWL_API_KEY=fake-render-secret
+    printf '#!/bin/sh\nexit 9\n' > "$stubs/$tool"
+    chmod +x "$stubs/$tool"
+
+    manifest_stage_begin
+    before_pending=$_aicoding_pending_manifest
+    export PATH="$stubs:$old_path"
+    codex_smart_apply "$dest" "$clone/configs/codex/config.toml" \
+      configs/codex/config.toml yes
+    export PATH=$old_path
+
+    [ "$(codex_smart_error_code "$CODEX_SMART_RESULT")" = source_render_failed ]
+    [ "$_aicoding_pending_manifest" = "$before_pending" ]
+    [ ! -e "$dest" ]
+    [ ! -e "$state" ]
+    [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'aicoding-codex-*' -print)" ]
+  done
+}
+
 @test "merge with token absent preserves an existing manual memory-router entry" {
   unset MEMORY_ROUTER_TOKEN
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
