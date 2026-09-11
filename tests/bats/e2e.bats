@@ -14,13 +14,28 @@ setup() {
   # Stub apt/curl/etc.
   export PATH="$TMPDIR/stubs:$PATH"
   mkdir -p "$TMPDIR/stubs"
-  for cmd in apt-get sudo curl npm npx bash-build-tmux claude opencode codex cursor-agent; do
+  for cmd in apt-get sudo curl npm npx bash-build-tmux opencode codex cursor-agent; do
     cat > "$TMPDIR/stubs/$cmd" <<'STUB'
 #!/bin/sh
 exit 0
 STUB
     chmod +x "$TMPDIR/stubs/$cmd"
   done
+  cat > "$TMPDIR/stubs/claude" <<'STUB'
+#!/bin/sh
+case "$*" in
+  '--version') echo '2.1.50 (Claude Code)' ;;
+  'mcp get logfire')
+    [ -f "$HOME/.fixture-logfire-added" ] || exit 1
+    echo 'URL: https://logfire-eu.pydantic.dev/mcp'
+    ;;
+  'mcp add --transport http -s user logfire https://logfire-eu.pydantic.dev/mcp')
+    : > "$HOME/.fixture-logfire-added"
+    ;;
+  'mcp get context7'|'mcp get playwright') exit 1 ;;
+esac
+STUB
+  chmod +x "$TMPDIR/stubs/claude"
   # Build a writable blueprint clone.
   mkdir -p "$AICODING_BLUEPRINT_CLONE"
   rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$AICODING_BLUEPRINT_CLONE/"
@@ -51,8 +66,9 @@ teardown() {
   (cd "$AICODING_BLUEPRINT_CLONE" && git add -A && \
     git -c user.email=t@t -c user.name=t commit -q -m advance)
 
-  # Run aicoding-sync --yes.
-  run "$HOME/.local/bin/aicoding-sync" --yes
+  # An explicit --blueprint is the supported local-development source. The
+  # scheduler never uses this path; this fixture intentionally exercises it.
+  run "$HOME/.local/bin/aicoding-sync" --yes --blueprint "$AICODING_BLUEPRINT_CLONE"
   [ "$status" -eq 0 ]
 
   # User's edit is in a .bak.* file; blueprint content is now live.
