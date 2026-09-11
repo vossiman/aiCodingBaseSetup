@@ -93,8 +93,8 @@ appears in a command you write. It redacts the credential from everything it
 prints, refuses redirects, and refuses plaintext destinations.
 
 ```bash
-kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P] [--due DATE]
-kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority P] [--due DATE|none]
+kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P] [--swimlane KEY] [--due DATE]
+kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority P] [--swimlane KEY] [--due DATE|none]
 kanban-post --done TICKET
 kanban-post --comment TICKET "text"
 kanban-post --link TICKET --depends-on OTHER | --blocks OTHER | --relates OTHER
@@ -109,6 +109,20 @@ a plain see-also with no direction. Link follow-ups to the work they wait
 on instead of saying so in the body. `--unlink TICKET OTHER` removes the
 link between the two (any kind); if more than one kind joins that pair it
 refuses and lists them. Links cross repos freely, and `--repo` plays no part.
+
+**Swimlanes classify scope separately from status and urgency.** Set one
+explicitly with `--swimlane required|nice_to_have|waiting_for_feedback|needs_decision`
+on create or patch. Existing tickets and unspecified new tickets start in
+`needs_decision`; do not infer a lane from priority, status or wording.
+
+- `required`: necessary for the agreed scope/phase; identify the requirement.
+- `nice_to_have`: useful but deferrable without preventing that scope's completion.
+- `waiting_for_feedback`: the next meaningful step needs a person's answer,
+  review or confirmation. Record who/what is awaited and the previous lane
+  in the ticket context; no extra UI prompt is enforced. Explicitly return
+  or reclassify after feedback. Ticket dependencies use links instead.
+- `needs_decision`: unclassified or insufficient evidence; the default until
+  someone actively decides. A swimlane-only patch leaves status unchanged.
 
 **Every ticket has an issue key (`DEVMACHINE-12`)**, the repo name
 uppercased plus a number counted per repo. `TICKET` above is that key
