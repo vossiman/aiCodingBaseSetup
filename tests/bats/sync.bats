@@ -443,7 +443,8 @@ EOF
     > "$AICODING_MANIFEST.t" && mv "$AICODING_MANIFEST.t" "$AICODING_MANIFEST"
   printf 'model = "my-personal-model"\n' > "$HOME/.codex/config.toml"
 
-  AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  run env AICODING_UPDATE_TTL=0 bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_sync --boot'
+  [ "$status" -ne 0 ]
   grep -q 'my-personal-model' "$HOME/.codex/config.toml"
   run ls "$HOME/.codex/config.toml.bak."*
   [ "$status" -ne 0 ]
