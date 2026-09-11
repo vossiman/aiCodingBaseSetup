@@ -123,12 +123,13 @@ EOF
   [ "$(cat "$TMP/prepared")" = $'mcp-context7|0|1\nmcp-playwright|0|1' ]
 }
 
-@test "offline exact MCP preprovision fails closed when local packages are not ready" {
+@test "offline exact MCP preprovision reports a nonfatal deferral when local packages are not ready" {
   export AICODINGSETUP_SKIP_NETWORK=1
   aicoding_update_component() { : > "$TMP/network-called"; }
 
-  run aicoding_prepare_exact_mcps
-  [ "$status" -ne 0 ]
+  aicoding_prepare_exact_mcps
+  [ "$?" -eq 0 ]
+  [ "${_AICODING_PREPARATION_DEFERRED:-0}" -eq 1 ]
   [ ! -e "$TMP/network-called" ]
   jq -e '.components["mcp-context7"].state == "blocked"
     and .components["mcp-playwright"].state == "blocked"' \
@@ -225,4 +226,18 @@ EOF
   run _provision_reconcile_selected_exact_mcp context7 mcp-context7 context7-mcp
   [ "$status" -eq 0 ]
   [ ! -f "$AICODING_STATE_DIR/update-results.json" ]
+}
+
+@test "mixed exact-MCP deferral and genuine hosted registration failure remains a failed provision step" {
+  cat > "$TMP/stubs/claude" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+  chmod +x "$TMP/stubs/claude"
+  _provision_tool_ready() { return 0; }
+  _provision_reconcile_selected_exact_mcp() { return 3; }
+  ensure_http_mcp() { return 1; }
+
+  run install_claude_mcps
+  [ "$status" -eq 1 ]
 }

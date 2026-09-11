@@ -74,7 +74,12 @@ _aicoding_install_minimal_pi() {
 }
 
 _aicoding_install_enroll() {
-  local source=$1 version=$2 profile=$3 release installer
+  local source=$1 version=$2 profile=$3 release installer; shift 3
+  local -a installer_args=(--unattended)
+  local arg
+  for arg in "$@"; do
+    [ "$arg" = --unattended ] || installer_args+=("$arg")
+  done
   case "$profile" in container|host|minimal-pi) ;; *) echo 'aicoding-install: invalid profile' >&2; return 2 ;; esac
   _aicoding_install_validate_source "$source" "$version" || {
     echo 'aicoding-install: source/version validation failed' >&2; return 1;
@@ -99,7 +104,7 @@ _aicoding_install_enroll() {
   export AICODINGSETUP_NONINTERACTIVE=1 AICODING_BLUEPRINT_CLONE="$release"
   export AICODING_PERSISTENT_ENROLLMENT=1
   if [ "$profile" = host ]; then export AICODING_HOST_BLUEPRINT_DIR="$release"; fi
-  exec bash "$release/$installer" --unattended
+  exec bash "$release/$installer" "${installer_args[@]}"
 }
 
 source_path= version= profile=
@@ -125,7 +130,7 @@ if [ -n "$source_path" ] || [ -n "$version" ] || [ -n "$profile" ]; then
   [ -n "$source_path" ] && [ -n "$version" ] && [ -n "$profile" ] || {
     echo 'aicoding-install: --source, --version and --profile are required together' >&2; exit 2;
   }
-  _aicoding_install_enroll "$source_path" "$version" "$profile"
+  _aicoding_install_enroll "$source_path" "$version" "$profile" "${remaining[@]}"
   exit $?
 fi
 

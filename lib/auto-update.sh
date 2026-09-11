@@ -31,8 +31,11 @@ aicoding_auto_update_once() {
   (cd "$state" && "$sync" --boot </dev/null) >"$output" 2>&1 || rc=$?
   cat "$output"
   AICODING_AUTO_UPDATE_PERFORMED=1
+  AICODING_AUTO_UPDATE_DEFERRED=0
   grep -qF 'aicoding-sync: update already running' "$output" 2>/dev/null \
     && AICODING_AUTO_UPDATE_PERFORMED=0
+  grep -qF 'aicoding-sync: completed with deferrals' "$output" 2>/dev/null \
+    && AICODING_AUTO_UPDATE_DEFERRED=1
   rm -f -- "$output"
   return "$rc"
 }
@@ -109,14 +112,27 @@ _aicoding_auto_stop_worker() {
   local state pid argument arguments= i
   state=$(_aicoding_auto_state_dir) || return 1
   pid=$(cat "$state/worker.pid" 2>/dev/null || true)
-  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
+  if [[ ! "$pid" =~ ^[1-9][0-9]*$ ]]; then
+    rm -f -- "$state/worker.pid"
+    return 0
+  fi
+  if [ ! -d "/proc/$pid" ]; then
+    [ "$(cat "$state/worker.pid" 2>/dev/null || true)" != "$pid" ] || rm -f -- "$state/worker.pid"
+    return 0
+  fi
   [ -r "/proc/$pid/cmdline" ] || return 1
   while IFS= read -r -d '' argument; do arguments+="$argument "; done < "/proc/$pid/cmdline"
-  case "$arguments" in *aicoding-auto-update*' --worker '*) ;; *) return 1 ;; esac
+  case "$arguments" in
+    *aicoding-auto-update*' --worker '*) ;;
+    *) [ "$(cat "$state/worker.pid" 2>/dev/null || true)" != "$pid" ] || rm -f -- "$state/worker.pid"; return 0 ;;
+  esac
   kill "$pid" 2>/dev/null || return 0
   for ((i=0; i<20; i++)); do
     [ -e "$state/worker.pid" ] || return 0
-    kill -0 "$pid" 2>/dev/null || return 0
+    if ! kill -0 "$pid" 2>/dev/null; then
+      [ "$(cat "$state/worker.pid" 2>/dev/null || true)" != "$pid" ] || rm -f -- "$state/worker.pid"
+      return 0
+    fi
     sleep 0.1
   done
   return 1
@@ -198,7 +214,9 @@ aicoding_auto_update_worker() {
       aicoding_auto_update_once >>"$log" 2>&1 || rc=$?
       now=$(date +%s) || now=0
       if [ "$rc" -eq 0 ] && [ "${AICODING_AUTO_UPDATE_PERFORMED:-1}" -eq 1 ]; then
-        _aicoding_auto_atomic_number "$success_file" "$now" || true
+        if [ "${AICODING_AUTO_UPDATE_DEFERRED:-0}" -ne 1 ]; then
+          _aicoding_auto_atomic_number "$success_file" "$now" || true
+        fi
         _aicoding_auto_atomic_number "$next_file" "$((now + AICODING_AUTO_UPDATE_INTERVAL))" || true
         backoff=$AICODING_AUTO_UPDATE_MIN_BACKOFF
       else

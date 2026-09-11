@@ -89,6 +89,15 @@ _aicoding_version_at_least() {
   [ -n "$actual" ] && [ "$(printf '%s\n%s\n' "$required" "$actual" | sort -V | head -1)" = "$required" ]
 }
 
+# Record a conservative deferral and bind it to the adapter invocation that
+# successfully wrote the receipt. The aggregate updater resets this marker
+# before every component, so an old blocked receipt cannot qualify a later
+# failure that returned before recording its own outcome.
+_aicoding_record_deferred() {
+  aicoding_result_record "$@" || return $?
+  AICODING_COMPONENT_ATTEMPT_DISPOSITION=deferred
+}
+
 # Print a short result reason and return nonzero when an actionable managed
 # config depends on a tool capability that is not installed and verified.
 aicoding_config_is_compatible() {
@@ -307,24 +316,24 @@ _aicoding_reconcile_claude_mcp_registration() {
   [ -x "$launcher" ] || { aicoding_result_record "$registration_component" failed "$version" stable_launcher_missing; return 1; }
   if [ "${AICODING_MCP_REGISTRATION_FORCE:-0}" != 1 ] \
       && ! _aicoding_claude_mcp_selected "$name"; then
-    aicoding_result_record "$registration_component" blocked "$version" registration_not_selected
+    _aicoding_record_deferred "$registration_component" blocked "$version" registration_not_selected
     return 0
   fi
   _aicoding_update_receipt_allows claude \
-    || { aicoding_result_record "$registration_component" blocked "$version" claude_update_not_verified; return 1; }
+    || { _aicoding_record_deferred "$registration_component" blocked "$version" claude_update_not_verified; return 1; }
   local claude_version
   claude_version=$(_aicoding_version_from_command claude) || true
   [ -n "$claude_version" ] \
-    || { aicoding_result_record "$registration_component" blocked "$version" claude_version_unavailable; return 1; }
+    || { _aicoding_record_deferred "$registration_component" blocked "$version" claude_version_unavailable; return 1; }
   _aicoding_shared_consumers_require claude "" "$HOME/.claude" \
-    || { aicoding_result_record "$registration_component" blocked "$version" claude_consumers_incompatible; return 1; }
+    || { _aicoding_record_deferred "$registration_component" blocked "$version" claude_consumers_incompatible; return 1; }
   if aicoding_config_is_shared "$HOME/.claude"; then
     _aicoding_shared_consumers_require "$component" "" "$HOME/.claude" \
-      || { aicoding_result_record "$registration_component" blocked "$version" shared_registration_consumers_incompatible; return 1; }
+      || { _aicoding_record_deferred "$registration_component" blocked "$version" shared_registration_consumers_incompatible; return 1; }
   fi
   if declare -F aicoding_shared_locks_acquire >/dev/null 2>&1; then
     aicoding_shared_locks_acquire "$HOME/.claude/settings.json" \
-      || { aicoding_result_record "$registration_component" blocked "$version" shared_registration_busy; return 1; }
+      || { _aicoding_record_deferred "$registration_component" blocked "$version" shared_registration_busy; return 1; }
   fi
   current=$(_aicoding_claude_mcp_get "$name") || current=""
   command_line=$(printf '%s\n' "$current" | sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' | head -1)
@@ -340,7 +349,7 @@ _aicoding_reconcile_claude_mcp_registration() {
       'context7|npx|@upstash/context7-mcp') old_args=(@upstash/context7-mcp) ;;
       'playwright|npx|@playwright/mcp@latest --browser chromium') old_args=(@playwright/mcp@latest --browser chromium) ;;
       'playwright|npx|-y @playwright/mcp@latest --browser chromium') old_args=(-y @playwright/mcp@latest --browser chromium) ;;
-      *) aicoding_result_record "$registration_component" conflict "$version" registration_conflict; return 1 ;;
+      *) _aicoding_record_deferred "$registration_component" conflict "$version" registration_conflict; return 1 ;;
     esac
     _aicoding_registration_recovery_write "$name" "${old_args[@]}" \
       || { aicoding_result_record "$registration_component" failed "$version" registration_recovery_write_failed; return 1; }
@@ -562,7 +571,7 @@ _aicoding_prepare_playwright_browser() {
     local reason=playwright_system_libs_unavailable
     declare -F _sync_profile >/dev/null 2>&1 && [ "$(_sync_profile)" = container ] \
       && reason=manual_rebuild_required_playwright_system_libs
-    aicoding_result_record "$component" blocked "$version" "$reason"
+    _aicoding_record_deferred "$component" blocked "$version" "$reason"
     return 1
   fi
   if ! printf '%s\n' "$bin" > "$cache/.browser-bin.tmp.$$" \
@@ -699,11 +708,11 @@ aicoding_update_npm_entry_component() {
     local node_reason=node_runtime_incompatible
     declare -F _sync_profile >/dev/null 2>&1 && [ "$(_sync_profile)" = container ] \
       && node_reason=$(_aicoding_missing_runtime_reason node)
-    aicoding_result_record "$component" blocked "" "$node_reason"
+    _aicoding_record_deferred "$component" blocked "" "$node_reason"
     return 1
   fi
   if ! command -v npm >/dev/null 2>&1; then
-    aicoding_result_record "$component" blocked "" "$(_aicoding_missing_runtime_reason npm)"
+    _aicoding_record_deferred "$component" blocked "" "$(_aicoding_missing_runtime_reason npm)"
     return 1
   fi
   target=$(_aicoding_npm_target "$package") || true
@@ -751,7 +760,7 @@ aicoding_update_npm_entry_component() {
   if ! _aicoding_npm_tree_ignores_scripts_safely "$stage"; then
     rm -rf "$stage" \
       || { aicoding_result_record "$component" failed "$target" stage_cleanup_failed; return 1; }
-    aicoding_result_record "$component" blocked "$target" lifecycle_scripts_required
+    _aicoding_record_deferred "$component" blocked "$target" lifecycle_scripts_required
     return 1
   fi
   jq -e --arg p "$package" --arg v "$target" '.name == $p and .version == $v' \
@@ -879,7 +888,7 @@ aicoding_update_claude() {
 
 aicoding_update_dvw() {
   local sha final adapter_rc=0
-  sha=$(aicoding_select_ci_sha dvw) || { aicoding_result_record dvw blocked "" ci_selection_unavailable; return 1; }
+  sha=$(aicoding_select_ci_sha dvw) || { _aicoding_record_deferred dvw blocked "" ci_selection_unavailable; return 1; }
   final="$AICODING_DATA_DIR/sources/dvw/$sha"
   _aicoding_stage_git_source "${AICODING_DVW_REMOTE:-https://github.com/vossiman/dvw}" "$sha" "$final" \
     || { aicoding_result_record dvw failed "$sha" source_stage_failed; return 1; }
@@ -893,7 +902,7 @@ aicoding_update_dvw() {
     timeout "$AICODING_VENDOR_TIMEOUT" "$final/dvw-install.sh" \
       --unattended --source "$final" --version "$sha" </dev/null || adapter_rc=$?
   else
-    aicoding_result_record dvw blocked "$sha" managed_adapter_unavailable; return 1
+    _aicoding_record_deferred dvw blocked "$sha" managed_adapter_unavailable; return 1
   fi
   [ "$adapter_rc" -eq 0 ] \
     || { aicoding_result_record dvw failed "$sha" managed_install_failed; return 1; }
@@ -902,7 +911,7 @@ aicoding_update_dvw() {
 
 aicoding_update_bw() {
   local sha source final stage script
-  sha=$(aicoding_select_ci_sha bw-AICode) || { aicoding_result_record bw-AICode blocked "" ci_selection_unavailable; return 1; }
+  sha=$(aicoding_select_ci_sha bw-AICode) || { _aicoding_record_deferred bw-AICode blocked "" ci_selection_unavailable; return 1; }
   source="$AICODING_DATA_DIR/sources/bw-AICode/$sha"
   final="$AICODING_DATA_DIR/versions/bw-AICode/$sha"
   _aicoding_stage_git_source "${AICODING_BW_REMOTE:-https://github.com/vossiman/bw-AICode}" "$sha" "$source" \
@@ -920,7 +929,7 @@ aicoding_update_bw() {
     done
   else
     command -v go >/dev/null 2>&1 \
-      || { aicoding_result_record bw-AICode blocked "$sha" "$(_aicoding_missing_runtime_reason go)"; return 1; }
+      || { _aicoding_record_deferred bw-AICode blocked "$sha" "$(_aicoding_missing_runtime_reason go)"; return 1; }
     (cd "$source" && timeout "$AICODING_VENDOR_TIMEOUT" go test ./... </dev/null >/dev/null 2>&1) \
       || { aicoding_result_record bw-AICode failed "$sha" tests_failed; return 1; }
     stage="$AICODING_DATA_DIR/versions/bw-AICode/.staging.$sha.$$"
@@ -949,7 +958,7 @@ aicoding_update_component() {
     pi) aicoding_update_npm_component pi pi @mariozechner/pi-coding-agent ;;
     claude) aicoding_update_claude ;;
     cursor)
-      aicoding_result_record cursor blocked "" versioned_staging_unavailable
+      _aicoding_record_deferred cursor blocked "" versioned_staging_unavailable
       return 1
       ;;
     dvw) aicoding_update_dvw ;;
@@ -962,12 +971,41 @@ aicoding_update_component() {
   esac
 }
 
+# A component adapter returns nonzero for both a genuine failed attempt and a
+# conservative block. Classify the receipt it just wrote so callers can retry
+# failures promptly while treating unavailable capabilities and preserved user
+# conflicts as completed deferrals. Exact MCP registration has its own receipt
+# and therefore participates in the same disposition as its package update.
+_aicoding_component_attempt_deferred() {
+  local component=$1
+  [ "${AICODING_COMPONENT_ATTEMPT_DISPOSITION:-}" = deferred ] || return 1
+  [ -f "$AICODING_RESULTS_FILE" ] || return 1
+  jq -e --arg c "$component" '
+    ([.components[$c].state]
+      + (if $c == "mcp-context7" then [.components["mcp-registration-claude-context7"].state]
+         elif $c == "mcp-playwright" then [.components["mcp-registration-claude-playwright"].state]
+         else [] end)) as $states
+    | any($states[]; . == "blocked" or . == "conflict")
+      and (all($states[]; . != "failed"))
+  ' "$AICODING_RESULTS_FILE" >/dev/null 2>&1
+}
+
 aicoding_update_installed_components() {
   [ "${AICODINGSETUP_SKIP_NETWORK:-}" != 1 ] || return 0
-  local component rc=0
+  local component component_rc rc=0
+  AICODING_UPDATE_DEFERRED=0
   while IFS= read -r component; do
     case "$component" in ''|aicoding) continue ;; esac
-    aicoding_update_component "$component" || rc=1
+    component_rc=0
+    AICODING_COMPONENT_ATTEMPT_DISPOSITION=
+    aicoding_update_component "$component" || component_rc=$?
+    if [ "$component_rc" -ne 0 ]; then
+      if _aicoding_component_attempt_deferred "$component"; then
+        AICODING_UPDATE_DEFERRED=1
+      else
+        rc=1
+      fi
+    fi
   done < <(aicoding_installed_components)
   return "$rc"
 }

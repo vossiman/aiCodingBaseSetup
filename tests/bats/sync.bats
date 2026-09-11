@@ -57,7 +57,7 @@ teardown() { cd /; rm -rf "$TMP"; }
   if grep -Eq 'claude update|opencode upgrade|agent update|codex update' "$TMP/ran.log"; then false; fi
 }
 
-@test "sync provisioning blocks selected exact MCPs when staging is absent without invoking npx" {
+@test "sync provisioning defers selected exact MCPs when staging is absent without invoking npx" {
   printf '#!/bin/sh\necho "$*" >> "$TMP/npx-calls"\n' > "$TMP/stubs/npx"
   mkdir -p "$HOME/.claude"
   jq -n '{enabledPlugins: {
@@ -67,7 +67,7 @@ teardown() { cd /; rm -rf "$TMP"; }
   export SCRIPT_DIR="$BLUEPRINT_ROOT"
   _sync_source_update_libraries "$BLUEPRINT_ROOT"
   AICODINGSETUP_SKIP_NETWORK= run _sync_provision yes
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
   [ ! -s "$TMP/npx-calls" ]
   jq -e '.components["mcp-context7"].state == "blocked"
     and .components["mcp-context7"].reason == "exact_package_not_staged"
@@ -76,20 +76,65 @@ teardown() { cd /; rm -rf "$TMP"; }
     "$AICODING_STATE_DIR/update-results.json"
 }
 
-@test "unattended provisioning preserves an aggregate failure receipt and does not stamp" {
+@test "a successful package step with deferrals keeps provision blocked without failing the pass" {
+  local clone="$TMP/package-deferral-blueprint"
+  mkdir -p "$clone/lib"
+  printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > "$clone/.aicoding-version"
+  cat > "$clone/lib/provision.sh" <<'EOF'
+install_mcp_packages() { _AICODING_PREPARATION_DEFERRED=1; return 0; }
+install_claude_mcps() { return 0; }
+install_claude_plugins() { return 0; }
+install_codex_plugins() { return 0; }
+remove_deprecated_shims() { return 0; }
+EOF
+  export AICODING_BLUEPRINT_CLONE="$clone"
+  source "$BLUEPRINT_ROOT/lib/update-results.sh"
+
+  run _sync_provision boot
+
+  [ "$status" -eq 0 ]
+  jq -e '.components.provision.state == "blocked"
+    and .components.provision.reason == "preparation_deferred"' \
+    "$AICODING_RESULTS_FILE"
+}
+
+@test "a blocked package plus a genuine package failure remains failed" {
+  local clone="$TMP/package-mixed-blueprint"
+  mkdir -p "$clone/lib"
+  printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > "$clone/.aicoding-version"
+  cat > "$clone/lib/provision.sh" <<'EOF'
+install_mcp_packages() { _AICODING_PREPARATION_DEFERRED=1; return 1; }
+install_claude_mcps() { return 0; }
+install_claude_plugins() { return 0; }
+install_codex_plugins() { return 0; }
+remove_deprecated_shims() { return 0; }
+EOF
+  export AICODING_BLUEPRINT_CLONE="$clone"
+  source "$BLUEPRINT_ROOT/lib/update-results.sh"
+
+  run _sync_provision boot
+
+  [ "$status" -ne 0 ]
+  jq -e '.components.provision.state == "failed"
+    and .components.provision.reason == "partial_provision_failure"' \
+    "$AICODING_RESULTS_FILE"
+}
+
+@test "unattended provisioning preserves an injected aggregate failure receipt and does not stamp" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   _sync_source_update_libraries "$BLUEPRINT_ROOT"
   local before
   before=$(jq -r '.provision_commit' "$AICODING_MANIFEST")
-  cat > "$TMP/stubs/claude" <<'EOF'
-#!/bin/sh
-exit 1
+  local clone="$TMP/provision-failure-blueprint"
+  rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$clone/"
+  cat >> "$clone/lib/provision.sh" <<'EOF'
+install_claude_mcps() { return 1; }
 EOF
-  chmod +x "$TMP/stubs/claude"
+  export AICODING_BLUEPRINT_CLONE="$clone"
   run _sync_provision boot
   [ "$status" -ne 0 ]
   [ "$(jq -r '.provision_commit' "$AICODING_MANIFEST")" = "$before" ]
-  jq -e '.components.provision.state == "blocked" and .components.provision.reason == "partial_provision_failure"' \
+  jq -e '.components.provision.state == "failed" and .components.provision.reason == "partial_provision_failure"' \
     "$AICODING_STATE_DIR/update-results.json"
 }
 
@@ -126,9 +171,14 @@ EOF
 }
 
 @test "sync continues after a component failure but returns aggregate failure" {
-  printf '#!/bin/sh\nexit 7\n' > "$TMP/stubs/claude"; chmod +x "$TMP/stubs/claude"
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  run env AICODING_UPDATE_TTL=0 bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_sync --boot'
+  local clone="$TMP/sync-failure-blueprint"
+  rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$clone/"
+  cat >> "$clone/lib/provision.sh" <<'EOF'
+install_claude_mcps() { return 1; }
+EOF
+  run env AICODING_BLUEPRINT_CLONE="$clone" AICODING_BLUEPRINT_LOCAL=1 \
+      AICODING_UPDATE_TTL=0 bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_sync --boot'
   [ "$status" -ne 0 ]
 }
 
@@ -304,7 +354,8 @@ EOF
   echo "# user edit" >> "$HOME/.tmux.conf"
   local before; before=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
   run env AICODING_UPDATE_TTL=0 bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_sync --boot'
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"aicoding-sync: completed with deferrals"* ]]
   [ "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')" = "$before" ]
 }
 
@@ -321,7 +372,7 @@ EOF
   _sync_source_update_libraries "$clone"
   _SYNC_REFRESHED=1 run _sync_reconcile boot
 
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
   [ "$(jq -r '.blueprint_commit' "$AICODING_MANIFEST")" = "$old_commit" ]
   jq -e --arg target "$new_commit" \
     '.components.config.state == "conflict"
@@ -398,6 +449,7 @@ remove_deprecated_shims() { echo local-cleanup >> "$PROVISION_LOG"; }
 EOF
   export AICODING_BLUEPRINT_CLONE="$clone" PROVISION_LOG="$TMP/provision.log"
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  source "$BLUEPRINT_ROOT/lib/update-results.sh"
   (
     exec 9> "$HOME/.claude/.aicoding-update.lock"
     flock 9
@@ -411,7 +463,10 @@ EOF
   kill "$holder" 2>/dev/null || true
   wait "$holder" 2>/dev/null || true
 
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
+  jq -e '.components.provision.state == "blocked"
+    and .components.provision.reason == "preparation_deferred"' \
+    "$AICODING_STATE_DIR/update-results.json"
   grep -q '^packages$' "$PROVISION_LOG"
   grep -q '^local-cleanup$' "$PROVISION_LOG"
   if grep -qE 'claude-|codex-' "$PROVISION_LOG"; then false; fi
@@ -434,7 +489,7 @@ EOF
 
   run _sync_provision boot
 
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
   if grep -q '^claude-' "$PROVISION_LOG"; then false; fi
   grep -q '^codex-plugins$' "$PROVISION_LOG"
   grep -q '^local-cleanup$' "$PROVISION_LOG"
@@ -474,7 +529,8 @@ EOF
   printf 'model = "my-personal-model"\n' > "$HOME/.codex/config.toml"
 
   run env AICODING_UPDATE_TTL=0 bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_sync --boot'
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"aicoding-sync: completed with deferrals"* ]]
   grep -q 'my-personal-model' "$HOME/.codex/config.toml"
   run ls "$HOME/.codex/config.toml.bak."*
   [ "$status" -ne 0 ]
@@ -483,13 +539,17 @@ EOF
 @test "boot blocks incompatible Codex config while unrelated config advances" {
   local clone="$TMP/compat-blueprint"
   rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$clone/"
+  ( cd "$clone" && git init -q && git add -A &&
+    git -c user.email=t@t -c user.name=t commit -q -m initial )
   export AICODING_BLUEPRINT_CLONE="$clone" AICODING_BLUEPRINT_LOCAL=1 SCRIPT_DIR="$clone"
   bash "$clone/install.sh" </dev/null
   local old_codex old_tmux
   old_codex=$(cat "$HOME/.codex/config.toml")
   old_tmux=$(cat "$HOME/.tmux.conf")
-  printf '\nfuture_setting = true\n' >> "$clone/configs/codex/config.toml"
+  sed -i 's/model = "gpt-5.6-sol"/model = "future-model"/' "$clone/configs/codex/config.toml"
   printf '\n# unrelated safe update\n' >> "$clone/configs/tmux/tmux.conf"
+  ( cd "$clone" && git add -A &&
+    git -c user.email=t@t -c user.name=t commit -q -m update )
   cat > "$TMP/stubs/codex" <<'EOF'
 #!/bin/sh
 echo 'codex-cli 0.147.0'
@@ -502,12 +562,13 @@ EOF
   [ "$output" = codex_requires_0.148 ]
 
   run aicoding_sync --boot
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"aicoding-sync: completed with deferrals"* ]]
   [ "$(cat "$HOME/.codex/config.toml")" = "$old_codex" ]
   [ "$(cat "$HOME/.tmux.conf")" != "$old_tmux" ]
   grep -q 'unrelated safe update' "$HOME/.tmux.conf"
   jq -e '.components.config.state == "blocked" and .components.config.reason == "partial_config_blocked"' \
     "$AICODING_STATE_DIR/update-results.json"
-  [ "$status" -ne 0 ]
 }
 
 @test "sync --yes backs up an existing unmanaged file before managing it" {
@@ -540,6 +601,38 @@ EOF
       --blueprint="$BLUEPRINT_ROOT" </dev/null
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "Mode: first"
+}
+
+@test "aicoding-install: managed enrollment forwards --force-reinstall to the selected installer" {
+  local defs="$TMP/aicoding-install-definitions" harness="$TMP/install-harness"
+  sed '/^source_path=/,$d' "$BLUEPRINT_ROOT/bin/aicoding-install" > "$defs"
+  mkdir -p "$harness/lib"
+  cat > "$harness/lib/ci-selector.sh" <<'EOF'
+aicoding_ci_qualified() { return 0; }
+EOF
+  cat > "$harness/lib/runtime.sh" <<'EOF'
+aicoding_stage_source() {
+  mkdir -p "$AICODING_DATA_DIR/versions/aicoding/$3"
+  cp "$2/install.sh" "$AICODING_DATA_DIR/versions/aicoding/$3/install.sh"
+}
+aicoding_activate_version() { return 0; }
+EOF
+  local source="$TMP/managed-source" sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  mkdir -p "$source"
+  cat > "$source/install.sh" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" > "$TMP/selected-installer-args"
+EOF
+  chmod +x "$source/install.sh"
+
+  run bash -c '
+    source "$1"
+    SCRIPT_DIR=$2
+    _aicoding_install_validate_source() { return 0; }
+    _aicoding_install_enroll "$3" "$4" container --force-reinstall
+  ' _ "$defs" "$harness" "$source" "$sha"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$TMP/selected-installer-args")" = "--unattended --force-reinstall" ]
 }
 
 @test "aicoding-install --blueprint rejects a non-checkout directory" {

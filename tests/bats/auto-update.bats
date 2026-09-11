@@ -29,6 +29,10 @@ fi
 exec {sync_fd}>"$AICODING_STATE_DIR/sync.lock"
 flock -n "$sync_fd" || exit 0
 printf '%s %s\n' "$PWD" "$*" >> "$AICODING_TEST_ATTEMPTS"
+if [ "${AICODING_TEST_DEFERRED:-0}" = 1 ]; then
+  echo 'aicoding-sync: completed with deferrals' >&2
+  exit 0
+fi
 count=$(wc -l < "$AICODING_TEST_ATTEMPTS")
 if [ "$count" -le "${AICODING_TEST_FAILS:-0}" ]; then exit 1; fi
 EOF
@@ -110,6 +114,18 @@ EOF
   [ -s "$AICODING_STATE_DIR/auto-update/last-success" ]
 }
 
+@test "fallback worker schedules the normal interval for a completed pass with deferrals without stamping success" {
+  false_systemd_shim
+  export AICODING_TEST_DEFERRED=1 AICODING_AUTO_UPDATE_INTERVAL=30
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_lines 1
+  for _ in $(seq 40); do [ -s "$AICODING_STATE_DIR/auto-update/next-due" ] && break; sleep 0.05; done
+  [ ! -e "$AICODING_STATE_DIR/auto-update/last-success" ]
+  [ "$(cat "$AICODING_STATE_DIR/auto-update/next-due")" -gt "$(date +%s)" ]
+  sleep 0.3
+  [ "$(wc -l < "$AICODING_TEST_ATTEMPTS")" -eq 1 ]
+}
+
 @test "long-running fallback worker rotates and reopens its log between passes" {
   false_systemd_shim
   "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
@@ -133,6 +149,13 @@ EOF
   "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
   wait_for_lines 1
   [ -s "$AICODING_STATE_DIR/auto-update/last-attempt" ]
+}
+
+@test "monotonic timer keeps startup catch-up without an ineffective Persistent directive" {
+  local timer="$TEST_ROOT/runtime/configs/systemd/aicoding-auto-update.timer"
+  grep -q '^OnBootSec=' "$timer"
+  grep -q '^OnUnitActiveSec=' "$timer"
+  if grep -q '^Persistent=' "$timer"; then false; fi
 }
 
 @test "a verified user manager with linger installs and enables the persistent timer" {
@@ -218,6 +241,48 @@ EOF
   [ -f "$HOME/.config/systemd/user/aicoding-auto-update.timer" ] || { cat "$AICODING_STATE_DIR/auto-update/enroll.log"; cat "$TEST_ROOT/systemctl.calls"; find "$HOME/.config" -type f -print 2>/dev/null; false; }
   [ ! -e "$AICODING_STATE_DIR/auto-update/worker.pid" ]
   if kill -0 "$worker" 2>/dev/null; then false; fi
+}
+
+@test "healthy user manager transition removes a proven stale worker pid" {
+  mkdir -p "$AICODING_STATE_DIR/auto-update"
+  printf '999999999\n' > "$AICODING_STATE_DIR/auto-update/worker.pid"
+  cat > "$TEST_ROOT/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  '--user is-system-running') echo running ;;
+  '--user show --property=Version --value') echo 257 ;;
+  '--user is-enabled aicoding-auto-update.timer') echo enabled ;;
+  '--user is-active aicoding-auto-update.timer') echo active ;;
+esac
+exit 0
+EOF
+  cat > "$TEST_ROOT/bin/loginctl" <<'EOF'
+#!/usr/bin/env bash
+echo yes
+EOF
+  chmod +x "$TEST_ROOT/bin/systemctl" "$TEST_ROOT/bin/loginctl"
+
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  for _ in $(seq 40); do
+    [ -f "$HOME/.config/systemd/user/aicoding-auto-update.timer" ] \
+      && [ ! -e "$AICODING_STATE_DIR/auto-update/worker.pid" ] && break
+    sleep 0.05
+  done
+  [ -f "$HOME/.config/systemd/user/aicoding-auto-update.timer" ]
+  [ ! -e "$AICODING_STATE_DIR/auto-update/worker.pid" ]
+}
+
+@test "worker cleanup never signals an unrelated live process named by a stale pid file" {
+  sleep 30 & local unrelated=$!
+  mkdir -p "$AICODING_STATE_DIR/auto-update"
+  printf '%s\n' "$unrelated" > "$AICODING_STATE_DIR/auto-update/worker.pid"
+
+  run bash -c '. "$1/lib/auto-update.sh"; _aicoding_auto_stop_worker' _ "$TEST_ROOT/runtime"
+  [ "$status" -eq 0 ]
+  kill -0 "$unrelated"
+  [ ! -e "$AICODING_STATE_DIR/auto-update/worker.pid" ]
+  kill "$unrelated"
+  wait "$unrelated" 2>/dev/null || true
 }
 
 @test "a delayed busy result is not recorded as a successful update" {

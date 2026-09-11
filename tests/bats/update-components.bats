@@ -57,6 +57,30 @@ EOF
   [ "$output" = $'aicoding\ndvw' ]
 }
 
+@test "known Cursor staging limitation is a completed component deferral" {
+  unset AICODINGSETUP_SKIP_NETWORK
+  _tool agent 'cursor-agent 2026.08.01'
+
+  run aicoding_update_installed_components
+  [ "$status" -eq 0 ]
+  jq -e '.components.cursor.state == "blocked"
+    and .components.cursor.reason == "versioned_staging_unavailable"' \
+    "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "a stale blocked receipt cannot hide an adapter failure without a fresh receipt" {
+  unset AICODINGSETUP_SKIP_NETWORK
+  aicoding_result_record cursor blocked "" old_staging_limit
+  aicoding_installed_components() { printf 'cursor\n'; }
+  aicoding_update_component() { return 1; }
+
+  run aicoding_update_installed_components
+
+  [ "$status" -ne 0 ]
+  [ "${AICODING_UPDATE_DEFERRED:-0}" -eq 0 ]
+  jq -e '.components.cursor.reason == "old_staging_limit"' "$AICODING_RESULTS_FILE"
+}
+
 @test "Codex config capability requires the verified minimum version" {
   _tool codex 'codex-cli 0.147.0'
   run aicoding_config_is_compatible "$HOME/.codex/config.toml"

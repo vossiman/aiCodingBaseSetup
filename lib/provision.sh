@@ -38,7 +38,9 @@ declare -F err    >/dev/null || err()    { echo "ERROR: $*"; }
 
 # Installers remain fail-open for people running install.sh. Unattended sync
 # needs truthful aggregate status, so known failures propagate in that mode.
-_provision_soft_failure() { [ -z "${AICODING_SYNC_MODE:-}" ]; }
+_provision_soft_failure() {
+  [ -z "${AICODING_SYNC_MODE:-}" ] && [ "${AICODING_PERSISTENT_ENROLLMENT:-0}" != 1 ]
+}
 
 # Scheduled calls are closed-stdin and bounded. Interactive install.sh keeps
 # the upstream command behavior because a person can answer its prompts.
@@ -51,6 +53,7 @@ _provision_run() {
 }
 
 _provision_record_blocked() {
+  _AICODING_PREPARATION_DEFERRED=1
   command -v aicoding_result_record >/dev/null 2>&1 \
     && aicoding_result_record "$1" blocked "" "$2" || true
 }
@@ -67,11 +70,17 @@ _provision_reconcile_exact_mcp() {
   local name=$1 component=$2 launcher=$3; shift 3
   _provision_ensure_update_components || return 1
   local version state
-  [ -f "$AICODING_RESULTS_FILE" ] || { _provision_record_blocked "$component" exact_package_not_staged; return 1; }
+  [ -f "$AICODING_RESULTS_FILE" ] || { _provision_record_blocked "$component" exact_package_not_staged; return 3; }
   state=$(jq -r --arg c "$component" '.components[$c].state // empty' "$AICODING_RESULTS_FILE" 2>/dev/null)
   version=$(jq -r --arg c "$component" '.components[$c].successful_version // .components[$c].target_version // empty' "$AICODING_RESULTS_FILE" 2>/dev/null)
-  case "$state" in current|updated) ;; *) _provision_record_blocked "$component" exact_package_not_staged; return 1 ;; esac
-  _aicoding_reconcile_claude_mcp_registration "$name" "$component" "$version" "$launcher" "$@" || return 1
+  case "$state" in current|updated) ;; *) _provision_record_blocked "$component" exact_package_not_staged; return 3 ;; esac
+  local registration_rc=0
+  AICODING_COMPONENT_ATTEMPT_DISPOSITION=
+  _aicoding_reconcile_claude_mcp_registration "$name" "$component" "$version" "$launcher" "$@" \
+    || registration_rc=$?
+  [ "$registration_rc" -eq 0 ] && return 0
+  _aicoding_component_attempt_deferred "$component" && return 3
+  return 1
 }
 
 _provision_reconcile_selected_exact_mcp() {
@@ -87,7 +96,7 @@ _provision_reconcile_selected_exact_mcp() {
 # this before first config deployment; --register-claude additionally creates
 # or migrates the user-scope Claude registrations and their separate receipts.
 aicoding_prepare_exact_mcps() {
-  local register_claude=0 component rc=0
+  local register_claude=0 component component_rc rc=0
   case "${1:-}" in
     '') ;;
     --register-claude) register_claude=1; shift ;;
@@ -95,26 +104,37 @@ aicoding_prepare_exact_mcps() {
   esac
   [ "$#" -eq 0 ] || return 2
   _provision_ensure_update_components || {
-    _provision_record_blocked mcp-context7 staged_updater_unavailable
-    _provision_record_blocked mcp-playwright staged_updater_unavailable
+    command -v aicoding_result_record >/dev/null 2>&1 \
+      && aicoding_result_record mcp-context7 failed "" staged_updater_unavailable || true
+    command -v aicoding_result_record >/dev/null 2>&1 \
+      && aicoding_result_record mcp-playwright failed "" staged_updater_unavailable || true
     return 1
   }
   if [ "${AICODINGSETUP_SKIP_NETWORK:-0}" = 1 ]; then
     if ! _aicoding_active_npm_entry_valid mcp-context7 context7-mcp @upstash/context7-mcp; then
       _provision_record_blocked mcp-context7 offline_exact_package_not_ready
-      rc=1
+      _AICODING_PREPARATION_DEFERRED=1
     fi
     if ! _aicoding_active_npm_entry_valid mcp-playwright playwright-mcp @playwright/mcp; then
       _provision_record_blocked mcp-playwright offline_exact_package_not_ready
-      rc=1
+      _AICODING_PREPARATION_DEFERRED=1
     fi
-    return "$rc"
+    return 0
   fi
   for component in mcp-context7 mcp-playwright; do
+    component_rc=0
+    AICODING_COMPONENT_ATTEMPT_DISPOSITION=
     if [ "$register_claude" -eq 1 ]; then
-      AICODING_MCP_REGISTRATION_FORCE=1 aicoding_update_component "$component" || rc=1
+      AICODING_MCP_REGISTRATION_FORCE=1 aicoding_update_component "$component" || component_rc=$?
     else
-      AICODING_MCP_REGISTRATION_DISABLE=1 aicoding_update_component "$component" || rc=1
+      AICODING_MCP_REGISTRATION_DISABLE=1 aicoding_update_component "$component" || component_rc=$?
+    fi
+    if [ "$component_rc" -ne 0 ]; then
+      if _aicoding_component_attempt_deferred "$component"; then
+        _AICODING_PREPARATION_DEFERRED=1
+      else
+        rc=1
+      fi
     fi
   done
   return "$rc"
@@ -125,10 +145,19 @@ aicoding_prepare_exact_mcps() {
 # files remain conservatively deferred by aicoding_config_is_compatible.
 aicoding_prepare_installed_config_tools() {
   _provision_ensure_update_components || return 1
-  local component rc=0
+  local component component_rc rc=0
   while IFS= read -r component; do
     case "$component" in claude|codex|opencode|pi)
-      aicoding_update_component "$component" || rc=1
+      component_rc=0
+      AICODING_COMPONENT_ATTEMPT_DISPOSITION=
+      aicoding_update_component "$component" || component_rc=$?
+      if [ "$component_rc" -ne 0 ]; then
+        if _aicoding_component_attempt_deferred "$component"; then
+          _AICODING_PREPARATION_DEFERRED=1
+        else
+          rc=1
+        fi
+      fi
       ;;
     esac
   done < <(aicoding_installed_components)
@@ -142,14 +171,14 @@ _provision_tool_ready() {
   local component=$1 command_name=$2 minimum=${3:-} root=${4:-} version
   [ -z "${AICODING_SYNC_MODE:-}" ] && return 0
   _provision_ensure_update_components || return 1
-  _aicoding_update_receipt_allows "$component" || { _provision_record_blocked "provision-$component" "${component}_update_not_verified"; return 1; }
-  _aicoding_command_is_linux "$command_name" || { _provision_record_blocked "provision-$component" "${component}_not_installed"; return 1; }
+  _aicoding_update_receipt_allows "$component" || { _provision_record_blocked "provision-$component" "${component}_update_not_verified"; return 3; }
+  _aicoding_command_is_linux "$command_name" || { _provision_record_blocked "provision-$component" "${component}_not_installed"; return 3; }
   version=$(_aicoding_version_from_command "$command_name") || true
-  [ -n "$version" ] || { _provision_record_blocked "provision-$component" "${component}_version_unavailable"; return 1; }
+  [ -n "$version" ] || { _provision_record_blocked "provision-$component" "${component}_version_unavailable"; return 3; }
   [ -z "$minimum" ] || _aicoding_version_at_least "$version" "$minimum" \
-    || { _provision_record_blocked "provision-$component" "${component}_runtime_incompatible"; return 1; }
+    || { _provision_record_blocked "provision-$component" "${component}_runtime_incompatible"; return 3; }
   _aicoding_shared_consumers_require "$component" "$minimum" "$root" \
-    || { _provision_record_blocked "provision-$component" "${component}_shared_consumers_incompatible"; return 1; }
+    || { _provision_record_blocked "provision-$component" "${component}_shared_consumers_incompatible"; return 3; }
 }
 
 # --- MCP npm packages ---
@@ -164,9 +193,18 @@ install_mcp_packages() {
 
   [ "${AICODINGSETUP_SKIP_NETWORK:-0}" != 1 ] || return 0
   if _provision_ensure_update_components; then
-    local component rc=0
+    local component component_rc rc=0
     for component in mcp-firecrawl mcp-brave; do
-      aicoding_update_component "$component" || rc=1
+      component_rc=0
+      AICODING_COMPONENT_ATTEMPT_DISPOSITION=
+      aicoding_update_component "$component" || component_rc=$?
+      if [ "$component_rc" -ne 0 ]; then
+        if _aicoding_component_attempt_deferred "$component"; then
+          _AICODING_PREPARATION_DEFERRED=1
+        else
+          rc=1
+        fi
+      fi
     done
     aicoding_prepare_exact_mcps || rc=1
     [ "$rc" -eq 0 ] || { _provision_soft_failure; return $?; }
@@ -243,12 +281,15 @@ install_claude_mcps() {
     return 0
   fi
 
-  _provision_tool_ready claude claude "" "$HOME/.claude" || {
+  local ready_rc=0
+  _provision_tool_ready claude claude "" "$HOME/.claude" || ready_rc=$?
+  if [ "$ready_rc" -ne 0 ]; then
     warn "Claude MCP provisioning deferred until its update and shared consumers are verified"
-    _provision_soft_failure; return $?
-  }
+    [ -z "${AICODING_SYNC_MODE:-}" ] && return 0
+    return "$ready_rc"
+  fi
 
-  local rc=0
+  local rc=0 deferred=0 registration_rc
 
   # firecrawl
   if [[ -n "${FIRECRAWL_API_KEY:-}" ]]; then
@@ -280,12 +321,16 @@ install_claude_mcps() {
 
   local registration_force=0
   [ -n "${AICODING_SYNC_MODE:-}" ] || registration_force=1
+  registration_rc=0
   AICODING_MCP_REGISTRATION_FORCE=$registration_force \
     _provision_reconcile_selected_exact_mcp context7 mcp-context7 context7-mcp \
-    && ok "context7 MCP exact registration reconciled when selected" || rc=1
+    || registration_rc=$?
+  case "$registration_rc" in 0) ok "context7 MCP exact registration reconciled when selected" ;; 3) deferred=1 ;; *) rc=1 ;; esac
+  registration_rc=0
   AICODING_MCP_REGISTRATION_FORCE=$registration_force \
     _provision_reconcile_selected_exact_mcp playwright mcp-playwright playwright-mcp --browser chromium \
-    && ok "playwright MCP exact registration reconciled when selected" || rc=1
+    || registration_rc=$?
+  case "$registration_rc" in 0) ok "playwright MCP exact registration reconciled when selected" ;; 3) deferred=1 ;; *) rc=1 ;; esac
 
   # logfire — hosted MCP, EU region. The logfire plugin hardcodes the US URL
   # in its bundled .mcp.json (no env override); its README tells EU users to
@@ -304,6 +349,7 @@ install_claude_mcps() {
     warn "memory-router MCP skipped (MEMORY_ROUTER_TOKEN not set)"
   fi
   [ "$rc" -eq 0 ] || { _provision_soft_failure; return $?; }
+  if [ "$deferred" -eq 1 ] && [ -n "${AICODING_SYNC_MODE:-}" ]; then return 3; fi
 }
 
 # --- Claude Code marketplace plugins ---
@@ -315,25 +361,40 @@ install_claude_plugins() {
     return 0
   fi
 
-  _provision_tool_ready claude claude "" "$HOME/.claude" || {
+  local ready_rc=0
+  _provision_tool_ready claude claude "" "$HOME/.claude" || ready_rc=$?
+  if [ "$ready_rc" -ne 0 ]; then
     warn "Claude plugin provisioning deferred until its update and shared consumers are verified"
-    _provision_soft_failure; return $?
-  }
+    [ -z "${AICODING_SYNC_MODE:-}" ] && return 0
+    return "$ready_rc"
+  fi
 
-  local plugin rc=0
+  local plugin rc=0 deferred=0 registration_rc
   for plugin in "${MANAGED_PLUGINS[@]}"; do
     case "$plugin" in
       playwright@*)
-        if _provision_reconcile_selected_exact_mcp playwright mcp-playwright playwright-mcp --browser chromium; then
+        registration_rc=0
+        _provision_reconcile_selected_exact_mcp playwright mcp-playwright playwright-mcp --browser chromium \
+          || registration_rc=$?
+        if [ "$registration_rc" -eq 0 ]; then
           ok "$plugin skipped; exact MCP is absent or its stable registration verified"
+        elif [ "$registration_rc" -eq 3 ]; then
+          warn "$plugin refresh skipped; exact MCP registration deferred"
+          deferred=1
         else
           warn "$plugin refresh skipped; exact MCP registration unavailable"
           rc=1
         fi
         continue ;;
       context7@*)
-        if _provision_reconcile_selected_exact_mcp context7 mcp-context7 context7-mcp; then
+        registration_rc=0
+        _provision_reconcile_selected_exact_mcp context7 mcp-context7 context7-mcp \
+          || registration_rc=$?
+        if [ "$registration_rc" -eq 0 ]; then
           ok "$plugin skipped; exact MCP is absent or its stable registration verified"
+        elif [ "$registration_rc" -eq 3 ]; then
+          warn "$plugin refresh skipped; exact MCP registration deferred"
+          deferred=1
         else
           warn "$plugin refresh skipped; exact MCP registration unavailable"
           rc=1
@@ -356,6 +417,7 @@ install_claude_plugins() {
     fi
   done
   [ "$rc" -eq 0 ] || { _provision_soft_failure; return $?; }
+  if [ "$deferred" -eq 1 ] && [ -n "${AICODING_SYNC_MODE:-}" ]; then return 3; fi
 }
 
 # --- Retired CLI shims ---
@@ -371,10 +433,13 @@ remove_deprecated_shims() {
 install_codex_plugins() {
   [[ "${AICODINGSETUP_SKIP_NETWORK:-0}" == 1 ]] && return 0
   command -v codex >/dev/null 2>&1 || return 0
-  _provision_tool_ready codex codex 0.148.0 "${CODEX_HOME:-$HOME/.codex}" || {
+  local ready_rc=0
+  _provision_tool_ready codex codex 0.148.0 "${CODEX_HOME:-$HOME/.codex}" || ready_rc=$?
+  if [ "$ready_rc" -ne 0 ]; then
     warn "Codex plugin provisioning deferred until its update and shared consumers are verified"
-    _provision_soft_failure; return $?
-  }
+    [ -z "${AICODING_SYNC_MODE:-}" ] && return 0
+    return "$ready_rc"
+  fi
   header "Codex Plugins"
   local plugin="superpowers@openai-curated-remote" installed result package link old
   local codex_home="${CODEX_HOME:-$HOME/.codex}"

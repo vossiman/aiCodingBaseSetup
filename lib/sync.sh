@@ -635,7 +635,8 @@ _sync_reconcile() {
       echo "$blocked_count managed config update(s) blocked by tool compatibility"
       command -v aicoding_result_record >/dev/null 2>&1 \
         && aicoding_result_record config blocked "$NEW_COMMIT" partial_config_blocked || true
-      return 1
+      _SYNC_PASS_DEFERRED=1
+      return 0
     elif [ "$OLD_COMMIT" != "$NEW_COMMIT" ] && [ "$NEW_COMMIT" != unknown ]; then
       manifest_stage_begin || return $?
       local origin
@@ -761,8 +762,10 @@ _sync_reconcile() {
       aicoding_result_record config blocked "$NEW_COMMIT" partial_config_blocked || true
     fi
   fi
-  [ "$blocked_count" -eq 0 ] && [ "$conflict_count" -eq 0 ] \
-    && [ "$apply_rc" -eq 0 ] && [ "$commit_rc" -eq 0 ]
+  if [ "$blocked_count" -gt 0 ] || [ "$conflict_count" -gt 0 ]; then
+    _SYNC_PASS_DEFERRED=1
+  fi
+  [ "$apply_rc" -eq 0 ] && [ "$commit_rc" -eq 0 ]
 }
 
 # --- Change report ----------------------------------------------------------
@@ -1078,7 +1081,8 @@ _sync_provision() {
   # and must not re-warn on every container start.
   AICODING_SYNC_MODE="${1:-}"
 
-  local blueprint_lib="" rc=0 target SCRIPT_DIR
+  local blueprint_lib="" rc=0 target SCRIPT_DIR provision_deferred=0 step_rc
+  _AICODING_PREPARATION_DEFERRED=0
   declare -p _SYNC_DEFERRED_PROVISION_COMPONENTS >/dev/null 2>&1 \
     || declare -gA _SYNC_DEFERRED_PROVISION_COMPONENTS=()
   if [ -f "$AICODING_BLUEPRINT_CLONE/lib/provision.sh" ]; then
@@ -1104,10 +1108,17 @@ _sync_provision() {
       && ! aicoding_shared_locks_acquire_managed_roots; then
     echo "aicoding-sync: shared configuration writer is busy; deferring shared provisioning" >&2
     shared_config_ready=0
-    rc=1
+    provision_deferred=1
   fi
 
-  install_mcp_packages   || rc=1
+  step_rc=0; _AICODING_PREPARATION_DEFERRED=0
+  install_mcp_packages || step_rc=$?
+  [ "${_AICODING_PREPARATION_DEFERRED:-0}" -eq 1 ] && provision_deferred=1
+  case "$step_rc" in
+    0) ;;
+    3) provision_deferred=1 ;;
+    *) rc=1 ;;
+  esac
   local claude_installed=0
   if command -v _aicoding_command_is_linux >/dev/null 2>&1; then
     _aicoding_command_is_linux claude && claude_installed=1
@@ -1116,18 +1127,30 @@ _sync_provision() {
   fi
   if [ "$claude_installed" -eq 1 ] && [ "$shared_config_ready" -eq 1 ] \
       && [ -z "${_SYNC_DEFERRED_PROVISION_COMPONENTS[claude]:-}" ]; then
-    install_claude_mcps    || rc=1
-    install_claude_plugins || rc=1
+    step_rc=0; _AICODING_PREPARATION_DEFERRED=0
+    install_claude_mcps || step_rc=$?
+    if [ "$step_rc" -ne 0 ]; then
+      if [ "$step_rc" -eq 3 ]; then provision_deferred=1; else rc=1; fi
+    fi
+    step_rc=0; _AICODING_PREPARATION_DEFERRED=0
+    install_claude_plugins || step_rc=$?
+    if [ "$step_rc" -ne 0 ]; then
+      if [ "$step_rc" -eq 3 ]; then provision_deferred=1; else rc=1; fi
+    fi
   elif [ "$claude_installed" -eq 1 ] \
       && { [ "$shared_config_ready" -eq 0 ] \
         || [ -n "${_SYNC_DEFERRED_PROVISION_COMPONENTS[claude]:-}" ]; }; then
-    rc=1
+    provision_deferred=1
   fi
   if [ "$shared_config_ready" -eq 1 ] \
       && [ -z "${_SYNC_DEFERRED_PROVISION_COMPONENTS[codex]:-}" ]; then
-    install_codex_plugins || rc=1
+    step_rc=0; _AICODING_PREPARATION_DEFERRED=0
+    install_codex_plugins || step_rc=$?
+    if [ "$step_rc" -ne 0 ]; then
+      if [ "$step_rc" -eq 3 ]; then provision_deferred=1; else rc=1; fi
+    fi
   elif command -v codex >/dev/null 2>&1; then
-    rc=1
+    provision_deferred=1
   fi
   remove_deprecated_shims || rc=1
 
@@ -1211,14 +1234,18 @@ _sync_provision() {
 
   target=$(_sync_blueprint_version "$(dirname "$blueprint_lib")" || echo unknown)
   [ "$target" != unknown ] || rc=1
-  if [ "$rc" -eq 0 ]; then
+  if [ "$rc" -eq 0 ] && [ "$provision_deferred" -eq 0 ]; then
     command -v manifest_stamp_provision >/dev/null 2>&1 && [ "$target" != unknown ] \
       && manifest_stamp_provision "$target"
     command -v aicoding_result_record >/dev/null 2>&1 \
       && aicoding_result_record provision current "$target" verified "$target" || true
-  else
+  elif [ "$rc" -ne 0 ]; then
     command -v aicoding_result_record >/dev/null 2>&1 \
-      && aicoding_result_record provision blocked "$target" partial_provision_failure || true
+      && aicoding_result_record provision failed "$target" partial_provision_failure || true
+  else
+    _SYNC_PASS_DEFERRED=1
+    command -v aicoding_result_record >/dev/null 2>&1 \
+      && aicoding_result_record provision blocked "$target" preparation_deferred || true
   fi
   return "$rc"
 }
@@ -1305,6 +1332,7 @@ aicoding_sync() {
   # An unattended pass advances only to an exact main SHA whose required CI
   # succeeded. Selection failure keeps the existing installation active.
   local overall_rc=0 selected="${AICODING_SELECTED_AICODING_SHA:-}"
+  _SYNC_PASS_DEFERRED=0
   if [ "$mode" != dry-run ] && [ "$AICODING_BLUEPRINT_LOCAL" != 1 ] \
       && [ "${AICODING_SYNC_REEXECED:-0}" != 1 ] \
       && [ "${AICODINGSETUP_SKIP_NETWORK:-}" != 1 ] \
@@ -1339,7 +1367,11 @@ aicoding_sync() {
     if [ "$mode" = boot ] && _sync_binaries_fresh; then :; else
       if [ "${AICODINGSETUP_SKIP_NETWORK:-}" != 1 ] \
           && command -v aicoding_update_installed_components >/dev/null 2>&1; then
-        aicoding_update_installed_components || overall_rc=1
+        if ! aicoding_update_installed_components; then
+          overall_rc=1
+        elif [ "${AICODING_UPDATE_DEFERRED:-0}" -eq 1 ]; then
+          _SYNC_PASS_DEFERRED=1
+        fi
       fi
     fi
   fi
@@ -1368,6 +1400,9 @@ aicoding_sync() {
       aicoding_result_record aicoding failed "$selected" activation_failed || true
       overall_rc=1
     fi
+  fi
+  if [ "$overall_rc" -eq 0 ] && [ "${_SYNC_PASS_DEFERRED:-0}" -eq 1 ]; then
+    echo 'aicoding-sync: completed with deferrals'
   fi
   return "$overall_rc"
 }

@@ -19,6 +19,15 @@ setup() {
   for t in git curl node npm bwrap claude; do
     printf '#!/bin/bash\nexit 0\n' > "$TMPDIR/stubs/$t"; chmod +x "$TMPDIR/stubs/$t"
   done
+  cat > "$TMPDIR/stubs/claude" <<'STUB'
+#!/bin/bash
+case "$*" in
+  --version) echo '2.1.0' ;;
+  "mcp get logfire") printf '  URL: https://logfire-eu.pydantic.dev/mcp\n' ;;
+esac
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/claude"
   # dirname and jq are real passthroughs, not no-op stubs. install-host.sh's
   # SCRIPT_DIR resolution (`dirname "${BASH_SOURCE[0]}"`) needs dirname's
   # actual output at source-time, and the deploy engine's manifest read/write
@@ -101,14 +110,44 @@ _source_host_lib() {
   [ "$output" = "host" ]
 }
 
-@test "persistent host install reports required preparation failure without a provision stamp" {
+@test "persistent host install reports expected preparation deferrals without failing enrollment or stamping provision" {
   export AICODING_PERSISTENT_ENROLLMENT=1
-  run bash "$BLUEPRINT_ROOT/install-host.sh" </dev/null
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"=== Incomplete ==="* ]]
+  run env _AICODINGSETUP_NVS_STRIPPED=1 bash -c '
+    source "$1"
+    aicoding_prepare_installed_config_tools() {
+      _AICODING_PREPARATION_DEFERRED=1
+      _provision_record_blocked provision-claude claude_shared_consumers_incompatible
+    }
+    aicoding_prepare_exact_mcps() {
+      _AICODING_PREPARATION_DEFERRED=1
+      _provision_record_blocked mcp-context7 node_runtime_unavailable
+      _provision_record_blocked mcp-playwright playwright_system_libs_unavailable
+    }
+    main
+  ' _ "$BLUEPRINT_ROOT/install-host.sh" </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"=== Enrolled with deferrals ==="* ]]
   [[ "$output" != *"=== Done! ==="* ]]
   jq -e '.profile == "host" and (.provision_commit // null) == null' "$AICODING_MANIFEST"
   jq -e '.components.provision.state == "blocked"
+    and .components.provision.reason == "preparation_deferred"' \
+    "$HOME/.local/state/aicoding/update-results.json"
+}
+
+@test "persistent host install propagates an injected preparation failure" {
+  export AICODING_PERSISTENT_ENROLLMENT=1
+  run env _AICODINGSETUP_NVS_STRIPPED=1 bash -c '
+    source "$1"
+    aicoding_prepare_installed_config_tools() {
+      aicoding_result_record claude failed 2.1.51 stage_install_failed
+      return 1
+    }
+    aicoding_prepare_exact_mcps() { return 0; }
+    main
+  ' _ "$BLUEPRINT_ROOT/install-host.sh" </dev/null
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"=== Incomplete ==="* ]]
+  jq -e '.components.provision.state == "failed"
     and .components.provision.reason == "partial_provision_failure"' \
     "$HOME/.local/state/aicoding/update-results.json"
 }
