@@ -84,6 +84,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then check_prerequisites; fi
 main() {
   local force_reinstall=0 persistent_provision_failed=0
   local _AICODING_INITIAL_CONFIG_DEFERRED=0 _AICODING_PREPARATION_DEFERRED=0
+  local _AICODING_GUARDED_PROVISION_DEFERRED=0
+  local _AICODING_INSTALL_SHARED_LOCKS_READY=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --force-reinstall) force_reinstall=1; shift ;;
@@ -113,6 +115,12 @@ main() {
   ensure_gh_credential_helper
   ensure_gh_stored_auth
   ensure_git_credential_file_fallback
+  # Hold writer locks before any tool-owned mutation or managed-file mode
+  # detection. A busy shared root is handled per destination as a deferral so
+  # confirmed-local setup can continue.
+  if ! aicoding_shared_locks_acquire_managed_roots; then
+    _AICODING_INSTALL_SHARED_LOCKS_READY=0
+  fi
   report_unmanaged
   install_mcp_packages \
     || { warn "MCP package preparation failed"; persistent_provision_failed=1; }
@@ -188,13 +196,19 @@ main() {
     header "Incomplete"
     warn "Required provisioning is incomplete; a scheduled pass will retry"
     return 1
-  elif [[ "${AICODING_PERSISTENT_ENROLLMENT:-0}" == 1 \
-      && ( "${_AICODING_PREPARATION_DEFERRED:-0}" == 1 \
-        || "${_AICODING_INITIAL_CONFIG_DEFERRED:-0}" == 1 ) ]]; then
+  elif [[ "${_AICODING_INITIAL_CONFIG_DEFERRED:-0}" == 1 \
+      || "${_AICODING_GUARDED_PROVISION_DEFERRED:-0}" == 1 \
+      || ( "${AICODING_PERSISTENT_ENROLLMENT:-0}" == 1 \
+        && "${_AICODING_PREPARATION_DEFERRED:-0}" == 1 ) ]]; then
     command -v aicoding_result_record >/dev/null 2>&1 \
       && aicoding_result_record provision blocked "$(_aicoding_managed_source_version "$SCRIPT_DIR")" preparation_deferred || true
-    header "Enrolled with deferrals"
-    info "Runtime enrollment succeeded; unavailable capabilities and dependent config were deferred"
+    if [[ "${AICODING_PERSISTENT_ENROLLMENT:-0}" == 1 ]]; then
+      header "Enrolled with deferrals"
+      info "Runtime enrollment succeeded; unavailable capabilities and dependent config were deferred"
+    else
+      header "Completed with deferrals"
+      info "Unavailable capabilities and dependent config were deferred"
+    fi
     return 0
   else
     manifest_stamp_provision "$(_aicoding_managed_source_version "$SCRIPT_DIR")"

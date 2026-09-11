@@ -1006,6 +1006,10 @@ _aicoding_component_attempt_deferred() {
 aicoding_update_installed_components() {
   [ "${AICODINGSETUP_SKIP_NETWORK:-}" != 1 ] || return 0
   local component component_rc rc=0
+  # The scheduled aggregate may migrate exact MCP registrations after package
+  # activation. Require the independently verified Claude update receipt for
+  # those mutations; direct legacy component calls retain their existing API.
+  local AICODING_REQUIRE_UPDATE_RECEIPT=1
   AICODING_UPDATE_DEFERRED=0
   while IFS= read -r component; do
     case "$component" in ''|aicoding) continue ;; esac

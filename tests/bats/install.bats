@@ -130,6 +130,319 @@ blueprint_copy() {
     "$HOME/.local/state/aicoding/update-results.json"
 }
 
+@test "direct first-deploy preserves shared config without consumer evidence and does not stamp success" {
+  local shared_root="$TMPDIR/shared-codex"
+  mkdir -p "$shared_root"
+  ln -s "$shared_root" "$HOME/.codex"
+  printf 'user-owned = true\n' > "$shared_root/config.toml"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/missing-consumers.json"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
+
+  [ "$status" -eq 0 ]
+  [ "$(cat "$shared_root/config.toml")" = "user-owned = true" ]
+  [[ "$output" == *"=== Completed with deferrals ==="* ]]
+  [[ "$output" != *"=== Done! ==="* ]]
+  jq -e '(.provision_commit // null) == null' "$AICODING_MANIFEST"
+}
+
+@test "direct adopt does not create missing config below a shared root without evidence" {
+  local shared_root="$TMPDIR/shared-codex"
+  mkdir -p "$shared_root"
+  ln -s "$shared_root" "$HOME/.codex"
+  printf 'existing local file\n' > "$HOME/.tmux.conf"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/missing-consumers.json"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+
+  [ "$status" -eq 0 ]
+  [ ! -e "$shared_root/config.toml" ]
+  [[ "$output" == *"=== Completed with deferrals ==="* ]]
+  [[ "$output" != *"=== Done! ==="* ]]
+  jq -e '(.provision_commit // null) == null' "$AICODING_MANIFEST"
+}
+
+@test "direct reconcile does not restore config into a shared root without evidence" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  rm -rf "$HOME/.codex"
+  local shared_root="$TMPDIR/shared-codex" tmp_manifest
+  mkdir -p "$shared_root"
+  ln -s "$shared_root" "$HOME/.codex"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/missing-consumers.json"
+  tmp_manifest=$(mktemp)
+  jq 'del(.provision_commit)' "$AICODING_MANIFEST" > "$tmp_manifest"
+  mv "$tmp_manifest" "$AICODING_MANIFEST"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+
+  [ "$status" -eq 0 ]
+  [ ! -e "$shared_root/config.toml" ]
+  [[ "$output" == *"=== Completed with deferrals ==="* ]]
+  [[ "$output" != *"=== Done! ==="* ]]
+  jq -e '(.provision_commit // null) == null' "$AICODING_MANIFEST"
+}
+
+@test "direct first-deploy still writes a missing confirmed-local config root" {
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/missing-consumers.json"
+  [ ! -e "$HOME/.codex" ]
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+
+  [ "$status" -eq 0 ]
+  [ -f "$HOME/.codex/config.toml" ]
+  [[ "$output" == *"=== Done! ==="* ]]
+}
+
+@test "direct first-deploy treats an unclassifiable existing config root as guarded" {
+  mkdir -p "$HOME/.codex"
+  printf 'user-owned = true\n' > "$HOME/.codex/config.toml"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/missing-consumers.json"
+  cat > "$TMPDIR/stubs/findmnt" <<'STUB'
+#!/bin/sh
+exit 1
+STUB
+  chmod +x "$TMPDIR/stubs/findmnt"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
+
+  [ "$status" -eq 0 ]
+  [ "$(cat "$HOME/.codex/config.toml")" = "user-owned = true" ]
+  [[ "$output" == *"=== Completed with deferrals ==="* ]]
+  [[ "$output" != *"=== Done! ==="* ]]
+  jq -e '(.provision_commit // null) == null' "$AICODING_MANIFEST"
+}
+
+@test "direct first-deploy uses a shared config root when complete evidence is present" {
+  local shared_root="$TMPDIR/shared-codex" expires results
+  mkdir -p "$shared_root" "$HOME/.local/state/aicoding"
+  ln -s "$shared_root" "$HOME/.codex"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/consumers.json"
+  expires=$(( $(date +%s) + 3600 ))
+  jq -n --arg root "$shared_root" --argjson expires "$expires" \
+    '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
+      consumers:[{id:"known",components:{
+        codex:{version:"0.200.0",config_compatible:true},
+        "mcp-context7":{version:"1.0.0",config_compatible:true},
+        "mcp-playwright":{version:"1.0.0",config_compatible:true}
+      }}]}]}' > "$AICODING_SHARED_CONSUMERS_FILE"
+  results="$HOME/.local/state/aicoding/update-results.json"
+  jq -n '{schema:1,components:{
+    codex:{state:"current"},
+    "mcp-context7":{state:"current"},
+    "mcp-playwright":{state:"current"}
+  }}' > "$results"
+  cat > "$TMPDIR/stubs/codex" <<'STUB'
+#!/bin/sh
+[ "$*" != --version ] || printf 'codex-cli 0.200.0\n'
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/codex"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
+
+  [ "$status" -eq 0 ]
+  [ -f "$shared_root/config.toml" ]
+  grep -q '^approval_policy = "never"$' "$shared_root/config.toml"
+}
+
+@test "legacy Claude provisioning defers shared mutation without consumer evidence" {
+  local shared_root="$TMPDIR/shared-claude"
+  mkdir -p "$shared_root"
+  ln -s "$shared_root" "$HOME/.claude"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/missing-consumers.json"
+  export AICODING_RESULTS_FILE="$TMPDIR/results.json"
+  cat > "$TMPDIR/stubs/claude" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$TMPDIR/claude-calls"
+[ "$*" != --version ] || printf '2.1.0\n'
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/claude"
+  export _AICODINGSETUP_NVS_STRIPPED=1
+  source "$BLUEPRINT_ROOT/install.sh"
+  _provision_ensure_update_components
+  aicoding_result_record claude current 2.1.0 verified 2.1.0
+
+  run install_claude_plugins
+
+  [ "$status" -eq 0 ]
+  ! grep -q '^plugin ' "$TMPDIR/claude-calls" 2>/dev/null
+  jq -e '.components["provision-claude"].state == "blocked"
+    and .components["provision-claude"].reason == "claude_shared_consumers_incompatible"' \
+    "$AICODING_RESULTS_FILE"
+}
+
+@test "legacy guarded Codex provisioning defers on writer lock contention" {
+  local shared_root="$TMPDIR/shared-codex" expires
+  mkdir -p "$shared_root"
+  ln -s "$shared_root" "$HOME/.codex"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/consumers.json"
+  export AICODING_RESULTS_FILE="$TMPDIR/results.json"
+  expires=$(( $(date +%s) + 3600 ))
+  jq -n --arg root "$shared_root" --argjson expires "$expires" \
+    '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
+      consumers:[{id:"known",components:{codex:{version:"0.200.0",config_compatible:true}}}]}]}' \
+    > "$AICODING_SHARED_CONSUMERS_FILE"
+  cat > "$TMPDIR/stubs/codex" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$TMPDIR/codex-calls"
+[ "$*" != --version ] || printf 'codex-cli 0.200.0\n'
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/codex"
+  export AICODINGSETUP_SKIP_NETWORK=
+  export _AICODINGSETUP_NVS_STRIPPED=1
+  source "$BLUEPRINT_ROOT/install.sh"
+  _provision_ensure_update_components
+  aicoding_result_record codex current 0.200.0 verified 0.200.0
+  aicoding_shared_locks_acquire() { return 1; }
+
+  run install_codex_plugins
+
+  [ "$status" -eq 0 ]
+  ! grep -q '^plugin ' "$TMPDIR/codex-calls" 2>/dev/null
+  jq -e '.components["provision-codex"].state == "blocked"
+    and .components["provision-codex"].reason == "codex_shared_config_busy"' \
+    "$AICODING_RESULTS_FILE"
+}
+
+@test "shared legacy Codex provisioning requires a receipt even with complete consumer evidence" {
+  local shared_root="$TMPDIR/shared-codex" expires
+  mkdir -p "$shared_root"
+  ln -s "$shared_root" "$HOME/.codex"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/consumers.json"
+  export AICODING_RESULTS_FILE="$TMPDIR/results.json"
+  expires=$(( $(date +%s) + 3600 ))
+  jq -n --arg root "$shared_root" --argjson expires "$expires" \
+    '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
+      consumers:[{id:"known",components:{codex:{version:"0.200.0",config_compatible:true}}}]}]}' \
+    > "$AICODING_SHARED_CONSUMERS_FILE"
+  cat > "$TMPDIR/stubs/codex" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$TMPDIR/codex-calls"
+[ "$*" != --version ] || printf 'codex-cli 0.200.0\n'
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/codex"
+  export AICODINGSETUP_SKIP_NETWORK=
+  export _AICODINGSETUP_NVS_STRIPPED=1
+  source "$BLUEPRINT_ROOT/install.sh"
+  _provision_ensure_update_components
+
+  run install_codex_plugins
+
+  [ "$status" -eq 0 ]
+  ! grep -q '^plugin ' "$TMPDIR/codex-calls" 2>/dev/null
+  jq -e '.components["provision-codex"].state == "blocked"
+    and .components["provision-codex"].reason == "codex_update_not_verified"' \
+    "$AICODING_RESULTS_FILE"
+}
+
+@test "persistent and sync tool readiness require receipts on a confirmed-local root" {
+  mkdir -p "$HOME/.codex"
+  export AICODING_RESULTS_FILE="$TMPDIR/results.json"
+  cat > "$TMPDIR/stubs/codex" <<'STUB'
+#!/bin/sh
+[ "$*" != --version ] || printf 'codex-cli 0.200.0\n'
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/codex"
+  export _AICODINGSETUP_NVS_STRIPPED=1
+  source "$BLUEPRINT_ROOT/install.sh"
+  _provision_ensure_update_components
+
+  export AICODING_PERSISTENT_ENROLLMENT=1
+  unset AICODING_SYNC_MODE AICODING_REQUIRE_UPDATE_RECEIPT
+  run _provision_tool_ready codex codex 0.148.0 "$HOME/.codex"
+  [ "$status" -eq 3 ]
+  jq -e '.components["provision-codex"].reason == "codex_update_not_verified"' "$AICODING_RESULTS_FILE"
+
+  rm -f "$AICODING_RESULTS_FILE"
+  export AICODING_PERSISTENT_ENROLLMENT=0 AICODING_SYNC_MODE=boot
+  unset AICODING_REQUIRE_UPDATE_RECEIPT
+  run _provision_tool_ready codex codex 0.148.0 "$HOME/.codex"
+  [ "$status" -eq 3 ]
+  jq -e '.components["provision-codex"].reason == "codex_update_not_verified"' "$AICODING_RESULTS_FILE"
+}
+
+@test "a shared guard does not make later confirmed-local legacy provisioning strict" {
+  local shared_root="$TMPDIR/shared-claude" expires
+  mkdir -p "$shared_root"
+  ln -s "$shared_root" "$HOME/.claude"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/consumers.json"
+  export AICODING_RESULTS_FILE="$TMPDIR/results.json"
+  expires=$(( $(date +%s) + 3600 ))
+  jq -n --arg root "$shared_root" --argjson expires "$expires" \
+    '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
+      consumers:[{id:"known",components:{claude:{version:"2.1.0",config_compatible:true}}}]}]}' \
+    > "$AICODING_SHARED_CONSUMERS_FILE"
+  cat > "$TMPDIR/stubs/claude" <<'STUB'
+#!/bin/sh
+[ "$*" != --version ] || printf '2.1.0\n'
+exit 0
+STUB
+  cat > "$TMPDIR/stubs/codex" <<'STUB'
+#!/bin/sh
+case "$*" in
+  --version) printf 'codex-cli 0.200.0\n'; exit 0 ;;
+  "plugin add"*) exit 1 ;;
+esac
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/claude" "$TMPDIR/stubs/codex"
+  export AICODINGSETUP_SKIP_NETWORK=
+  export _AICODINGSETUP_NVS_STRIPPED=1
+  source "$BLUEPRINT_ROOT/install.sh"
+  _provision_ensure_update_components
+  aicoding_result_record claude current 2.1.0 verified 2.1.0
+  _provision_tool_ready claude claude "" "$HOME/.claude"
+  [ "${_AICODING_PROVISION_GUARDED:-0}" -eq 1 ]
+
+  run install_codex_plugins
+
+  [ "$status" -eq 0 ]
+}
+
+@test "genuine failure in guarded legacy Codex provisioning is truthful" {
+  local shared_root="$TMPDIR/shared-codex" expires
+  mkdir -p "$shared_root"
+  ln -s "$shared_root" "$HOME/.codex"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/consumers.json"
+  export AICODING_RESULTS_FILE="$TMPDIR/results.json"
+  expires=$(( $(date +%s) + 3600 ))
+  jq -n --arg root "$shared_root" --argjson expires "$expires" \
+    '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
+      consumers:[{id:"known",components:{codex:{version:"0.200.0",config_compatible:true}}}]}]}' \
+    > "$AICODING_SHARED_CONSUMERS_FILE"
+  cat > "$TMPDIR/stubs/codex" <<'STUB'
+#!/bin/sh
+case "$*" in
+  --version) printf 'codex-cli 0.200.0\n'; exit 0 ;;
+  "plugin add"*) exit 1 ;;
+esac
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/codex"
+  export AICODINGSETUP_SKIP_NETWORK=
+  export _AICODINGSETUP_NVS_STRIPPED=1
+  source "$BLUEPRINT_ROOT/install.sh"
+  _provision_ensure_update_components
+  aicoding_result_record codex current 0.200.0 verified 0.200.0
+
+  run install_codex_plugins
+
+  [ "$status" -ne 0 ]
+}
+
 @test "install.sh mode: adopt when managed files exist but no manifest" {
   mkdir -p "$HOME"
   echo "user-customised tmux config" > "$HOME/.tmux.conf"

@@ -3,10 +3,42 @@
 # blueprint-deploy.sh plus install.sh globals/loggers; sourced only.
 
 _aicoding_initial_config_ready() {
-  local dest=$1 reason
-  [ "${AICODING_REQUIRE_UPDATE_RECEIPT:-0}" = 1 ] || return 0
+  local dest=$1 reason classification_rc=2
+  # Local-source development changes where bytes come from; it must not waive
+  # destination safety. Load the classifier even on an offline legacy install,
+  # where install_mcp_packages may have returned before sourcing it.
+  if ! declare -F aicoding_config_shared_root >/dev/null 2>&1; then
+    _provision_ensure_update_components >/dev/null 2>&1 || {
+      _AICODING_INITIAL_CONFIG_DEFERRED=1
+      warn "preserving $dest because destination compatibility is unavailable"
+      return 1
+    }
+  fi
+  if aicoding_config_shared_root "$dest" >/dev/null; then
+    classification_rc=0
+  else
+    classification_rc=$?
+  fi
+  # Preserve the legacy local-development interface only for a root that the
+  # classifier positively identifies as local.
+  if [ "${AICODING_REQUIRE_UPDATE_RECEIPT:-0}" != 1 ] \
+      && [ "$classification_rc" -eq 1 ]; then
+    return 0
+  fi
+  # Installer main acquires all managed-root locks before mode detection and
+  # classification. Direct helper callers acquire the relevant root here.
+  if [ "$classification_rc" -ne 1 ]; then
+    if [ "${_AICODING_INSTALL_SHARED_LOCKS_READY:-}" = 0 ] \
+        || { [ "${_AICODING_INSTALL_SHARED_LOCKS_READY:-}" != 1 ] \
+          && ! aicoding_shared_locks_acquire "$dest"; }; then
+      _AICODING_INITIAL_CONFIG_DEFERRED=1
+      warn "preserving $dest because its shared writer lock is busy"
+      return 1
+    fi
+  fi
   if declare -F aicoding_config_is_compatible >/dev/null 2>&1 \
-      && reason=$(AICODING_REQUIRE_SHARED_COMPATIBILITY=1 \
+      && reason=$(AICODING_REQUIRE_UPDATE_RECEIPT=1 \
+        AICODING_REQUIRE_SHARED_COMPATIBILITY=1 \
         aicoding_config_is_compatible "$dest"); then
     return 0
   fi

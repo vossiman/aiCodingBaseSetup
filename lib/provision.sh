@@ -39,7 +39,9 @@ declare -F err    >/dev/null || err()    { echo "ERROR: $*"; }
 # Installers remain fail-open for people running install.sh. Unattended sync
 # needs truthful aggregate status, so known failures propagate in that mode.
 _provision_soft_failure() {
-  [ -z "${AICODING_SYNC_MODE:-}" ] && [ "${AICODING_PERSISTENT_ENROLLMENT:-0}" != 1 ]
+  [ -z "${AICODING_SYNC_MODE:-}" ] \
+    && [ "${AICODING_PERSISTENT_ENROLLMENT:-0}" != 1 ] \
+    && [ "${_AICODING_PROVISION_GUARDED:-0}" != 1 ]
 }
 
 # Record an unavailable capability without turning a healthy enrollment into
@@ -66,6 +68,12 @@ _provision_record_blocked() {
     && aicoding_result_record "$1" blocked "" "$2" || true
 }
 
+_provision_tool_blocked() {
+  _AICODING_GUARDED_PROVISION_DEFERRED=1
+  _provision_record_blocked "$@"
+  return 3
+}
+
 _provision_ensure_update_components() {
   declare -F aicoding_update_component >/dev/null 2>&1 && return 0
   local root=${SCRIPT_DIR:-${BLUEPRINT_ROOT:-}}
@@ -77,14 +85,19 @@ _provision_ensure_update_components() {
 _provision_reconcile_exact_mcp() {
   local name=$1 component=$2 launcher=$3; shift 3
   _provision_ensure_update_components || return 1
-  local version state
+  local version state require_receipt=${AICODING_REQUIRE_UPDATE_RECEIPT:-0}
+  if [ -n "${AICODING_SYNC_MODE:-}" ] \
+      || [ "${AICODING_PERSISTENT_ENROLLMENT:-0}" = 1 ]; then
+    require_receipt=1
+  fi
   [ -f "$AICODING_RESULTS_FILE" ] || { _provision_record_blocked "$component" exact_package_not_staged; return 3; }
   state=$(jq -r --arg c "$component" '.components[$c].state // empty' "$AICODING_RESULTS_FILE" 2>/dev/null)
   version=$(jq -r --arg c "$component" '.components[$c].successful_version // .components[$c].target_version // empty' "$AICODING_RESULTS_FILE" 2>/dev/null)
   case "$state" in current|updated) ;; *) _provision_record_blocked "$component" exact_package_not_staged; return 3 ;; esac
   local registration_rc=0
   AICODING_COMPONENT_ATTEMPT_DISPOSITION=
-  _aicoding_reconcile_claude_mcp_registration "$name" "$component" "$version" "$launcher" "$@" \
+  AICODING_REQUIRE_UPDATE_RECEIPT=$require_receipt \
+    _aicoding_reconcile_claude_mcp_registration "$name" "$component" "$version" "$launcher" "$@" \
     || registration_rc=$?
   [ "$registration_rc" -eq 0 ] && return 0
   _aicoding_component_attempt_deferred "$component" && return 3
@@ -105,12 +118,19 @@ _provision_reconcile_selected_exact_mcp() {
 # or migrates the user-scope Claude registrations and their separate receipts.
 aicoding_prepare_exact_mcps() {
   local register_claude=0 component component_rc rc=0
+  local require_receipt=${AICODING_REQUIRE_UPDATE_RECEIPT:-0}
+  local AICODING_REQUIRE_UPDATE_RECEIPT=$require_receipt
   case "${1:-}" in
     '') ;;
     --register-claude) register_claude=1; shift ;;
     *) return 2 ;;
   esac
   [ "$#" -eq 0 ] || return 2
+  if [ "$register_claude" -eq 1 ] \
+      && { [ -n "${AICODING_SYNC_MODE:-}" ] \
+        || [ "${AICODING_PERSISTENT_ENROLLMENT:-0}" = 1 ]; }; then
+    AICODING_REQUIRE_UPDATE_RECEIPT=1
+  fi
   _provision_ensure_update_components || {
     command -v aicoding_result_record >/dev/null 2>&1 \
       && aicoding_result_record mcp-context7 failed "" staged_updater_unavailable || true
@@ -176,17 +196,39 @@ aicoding_prepare_installed_config_tools() {
 # tool receipt, local capability, and any shared-root inventory even when no
 # managed config file happened to be actionable in this pass.
 _provision_tool_ready() {
-  local component=$1 command_name=$2 minimum=${3:-} root=${4:-} version
-  [ -z "${AICODING_SYNC_MODE:-}" ] && return 0
+  local component=$1 command_name=$2 minimum=${3:-} root=${4:-}
+  local version classification_rc=2 enforce=0
   _provision_ensure_update_components || return 1
-  _aicoding_update_receipt_allows "$component" || { _provision_record_blocked "provision-$component" "${component}_update_not_verified"; return 3; }
-  _aicoding_command_is_linux "$command_name" || { _provision_record_blocked "provision-$component" "${component}_not_installed"; return 3; }
+  if aicoding_config_shared_root "$root" >/dev/null; then
+    classification_rc=0
+  else
+    classification_rc=$?
+  fi
+  if [ -n "${AICODING_SYNC_MODE:-}" ] \
+      || [ "${AICODING_PERSISTENT_ENROLLMENT:-0}" = 1 ] \
+      || [ "$classification_rc" -ne 1 ]; then
+    enforce=1
+  fi
+  [ "$enforce" -eq 1 ] || return 0
+  AICODING_REQUIRE_UPDATE_RECEIPT=1
+  if [ "$classification_rc" -ne 1 ]; then
+    _AICODING_PROVISION_GUARDED=1
+    if [ "${_AICODING_INSTALL_SHARED_LOCKS_READY:-}" = 0 ] \
+        || { [ "${_AICODING_INSTALL_SHARED_LOCKS_READY:-}" != 1 ] \
+          && ! aicoding_shared_locks_acquire "$root/.aicoding-provision"; }; then
+      _provision_tool_blocked "provision-$component" "${component}_shared_config_busy"
+      return $?
+    fi
+  fi
+  AICODING_REQUIRE_UPDATE_RECEIPT=1 _aicoding_update_receipt_allows "$component" \
+    || { _provision_tool_blocked "provision-$component" "${component}_update_not_verified"; return $?; }
+  _aicoding_command_is_linux "$command_name" || { _provision_tool_blocked "provision-$component" "${component}_not_installed"; return $?; }
   version=$(_aicoding_version_from_command "$command_name") || true
-  [ -n "$version" ] || { _provision_record_blocked "provision-$component" "${component}_version_unavailable"; return 3; }
+  [ -n "$version" ] || { _provision_tool_blocked "provision-$component" "${component}_version_unavailable"; return $?; }
   [ -z "$minimum" ] || _aicoding_version_at_least "$version" "$minimum" \
-    || { _provision_record_blocked "provision-$component" "${component}_runtime_incompatible"; return 3; }
+    || { _provision_tool_blocked "provision-$component" "${component}_runtime_incompatible"; return $?; }
   _aicoding_shared_consumers_require "$component" "$minimum" "$root" \
-    || { _provision_record_blocked "provision-$component" "${component}_shared_consumers_incompatible"; return 3; }
+    || { _provision_tool_blocked "provision-$component" "${component}_shared_consumers_incompatible"; return $?; }
 }
 
 # --- MCP npm packages ---
@@ -282,6 +324,9 @@ ensure_http_mcp() {
 
 # --- Claude Code MCPs ---
 install_claude_mcps() {
+  local inherited_receipt=${AICODING_REQUIRE_UPDATE_RECEIPT:-0}
+  local AICODING_REQUIRE_UPDATE_RECEIPT=$inherited_receipt
+  local _AICODING_PROVISION_GUARDED=0
   header "Claude Code MCPs"
 
   if ! command -v claude &>/dev/null; then
@@ -362,6 +407,9 @@ install_claude_mcps() {
 
 # --- Claude Code marketplace plugins ---
 install_claude_plugins() {
+  local inherited_receipt=${AICODING_REQUIRE_UPDATE_RECEIPT:-0}
+  local AICODING_REQUIRE_UPDATE_RECEIPT=$inherited_receipt
+  local _AICODING_PROVISION_GUARDED=0
   header "Claude Code Plugins"
 
   if ! command -v claude &>/dev/null; then
@@ -439,6 +487,9 @@ remove_deprecated_shims() {
 # Use the native catalog, not Claude's versioned plugin cache. Repeated add
 # refreshes the installed version and enables it (verified on codex 0.148+).
 install_codex_plugins() {
+  local inherited_receipt=${AICODING_REQUIRE_UPDATE_RECEIPT:-0}
+  local AICODING_REQUIRE_UPDATE_RECEIPT=$inherited_receipt
+  local _AICODING_PROVISION_GUARDED=0
   [[ "${AICODINGSETUP_SKIP_NETWORK:-0}" == 1 ]] && return 0
   command -v codex >/dev/null 2>&1 || return 0
   local ready_rc=0

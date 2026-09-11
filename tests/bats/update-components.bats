@@ -84,6 +84,59 @@ EOF
   jq -e '.components.cursor.reason == "old_staging_limit"' "$AICODING_RESULTS_FILE"
 }
 
+_stub_selected_context7_aggregate() {
+  printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/context7-mcp"
+  chmod +x "$HOME/.local/bin/context7-mcp"
+  cat > "$TMP/stubs/claude" <<'EOF'
+#!/bin/sh
+case "$*" in
+  --version) echo '2.1.50 (Claude Code)' ;;
+  'mcp get context7')
+    echo 'Command: npx'
+    echo 'Args: -y @upstash/context7-mcp'
+    ;;
+  mcp\ remove*|mcp\ add*) touch "$TMP/claude-mutated" ;;
+esac
+EOF
+  chmod +x "$TMP/stubs/claude"
+  aicoding_installed_components() { printf 'mcp-context7\n'; }
+  aicoding_update_npm_entry_component() {
+    local component=$1
+    aicoding_result_record "$component" updated 4.1.0 installed 4.1.0
+    _aicoding_reconcile_claude_mcp_registration \
+      context7 "$component" 4.1.0 context7-mcp
+  }
+}
+
+@test "scheduled MCP registration requires a Claude success receipt" {
+  unset AICODINGSETUP_SKIP_NETWORK
+  _stub_selected_context7_aggregate
+
+  run aicoding_update_installed_components
+
+  [ "$status" -eq 0 ]
+  [ ! -e "$TMP/claude-mutated" ]
+  jq -e '.components["mcp-context7"].state == "updated"
+    and .components["mcp-registration-claude-context7"].state == "blocked"
+    and .components["mcp-registration-claude-context7"].reason == "claude_update_not_verified"' \
+    "$AICODING_RESULTS_FILE"
+}
+
+@test "scheduled MCP registration rejects a failed Claude receipt" {
+  unset AICODINGSETUP_SKIP_NETWORK
+  _stub_selected_context7_aggregate
+  aicoding_result_record claude failed 2.1.51 stage_install_failed
+
+  run aicoding_update_installed_components
+
+  [ "$status" -eq 0 ]
+  [ ! -e "$TMP/claude-mutated" ]
+  jq -e '.components["mcp-context7"].state == "updated"
+    and .components["mcp-registration-claude-context7"].state == "blocked"
+    and .components["mcp-registration-claude-context7"].reason == "claude_update_not_verified"' \
+    "$AICODING_RESULTS_FILE"
+}
+
 @test "Codex config capability requires the verified minimum version" {
   _tool codex 'codex-cli 0.147.0'
   run aicoding_config_is_compatible "$HOME/.codex/config.toml"

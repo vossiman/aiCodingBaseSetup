@@ -25,6 +25,7 @@ _managed_launcher() {
 
 @test "scheduled provision migrates a recognized moving Context7 registration to the stable launcher" {
   _managed_launcher context7-mcp mcp-context7 4.1.0
+  aicoding_result_record claude current 2.1.50 installed 2.1.50
   cat > "$TMP/stubs/claude" <<'EOF'
 #!/bin/sh
 echo "$*" >> "$TMP/claude-calls"
@@ -49,6 +50,7 @@ EOF
 
 @test "scheduled provision preserves an unrecognized user MCP registration as a conflict" {
   _managed_launcher context7-mcp mcp-context7 4.1.0
+  aicoding_result_record claude current 2.1.50 installed 2.1.50
   cat > "$TMP/stubs/claude" <<'EOF'
 #!/bin/sh
 echo "$*" >> "$TMP/claude-calls"
@@ -68,6 +70,7 @@ EOF
 
 @test "failed stable registration restores the recognized moving registration" {
   _managed_launcher playwright-mcp mcp-playwright 0.0.80
+  aicoding_result_record claude current 2.1.50 installed 2.1.50
   cat > "$TMP/stubs/claude" <<'EOF'
 #!/bin/sh
 echo "$*" >> "$TMP/claude-calls"
@@ -142,6 +145,9 @@ EOF
   export AICODING_SHARED_CONFIG_ROOTS="$(readlink -f "$HOME/.claude")"
   export AICODING_SHARED_CONSUMERS_FILE="$TMP/missing-consumers.json"
   unset AICODING_REQUIRE_SHARED_COMPATIBILITY
+  # This unit isolates consumer evidence; installer coverage exercises the
+  # real writer-lock boundary and lock-contention deferral separately.
+  aicoding_shared_locks_acquire() { return 0; }
   cat > "$TMP/stubs/claude" <<'EOF'
 #!/bin/sh
 echo '2.1.50 (Claude Code)'
@@ -151,6 +157,28 @@ EOF
   run _provision_tool_ready claude claude "" "$HOME/.claude"
   [ "$status" -ne 0 ]
   jq -e '.components["provision-claude"].reason == "claude_shared_consumers_incompatible"' \
+    "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "scheduled exact registration cannot bypass a missing Claude receipt" {
+  _managed_launcher context7-mcp mcp-context7 4.1.0
+  cat > "$TMP/stubs/claude" <<'EOF'
+#!/bin/sh
+echo "$*" >> "$TMP/claude-calls"
+case "$*" in
+  '--version') echo '2.1.50 (Claude Code)' ;;
+  'mcp get context7') printf 'Command: npx\nArgs: -y @upstash/context7-mcp\n' ;;
+  'mcp remove -s user context7'|'mcp add context7'*) : > "$TMP/mutated" ;;
+esac
+EOF
+  chmod +x "$TMP/stubs/claude"
+  unset AICODING_REQUIRE_UPDATE_RECEIPT
+
+  run _provision_reconcile_exact_mcp context7 mcp-context7 context7-mcp
+
+  [ "$status" -ne 0 ]
+  [ ! -e "$TMP/mutated" ]
+  jq -e '.components["mcp-registration-claude-context7"].reason == "claude_update_not_verified"' \
     "$AICODING_STATE_DIR/update-results.json"
 }
 
@@ -196,6 +224,7 @@ EOF
 
 @test "failed registration restoration keeps recovery material and reports rollback failure" {
   _managed_launcher playwright-mcp mcp-playwright 0.0.80
+  aicoding_result_record claude current 2.1.50 installed 2.1.50
   cat > "$TMP/stubs/claude" <<'EOF'
 #!/bin/sh
 echo "$*" >> "$TMP/claude-calls"
