@@ -246,18 +246,15 @@ expand_path() {
 }
 
 # True when any equivalent spelling identifies the protected Codex sync state.
-# Keep the raw candidate so glob tokens still match before shell expansion, then
-# add lexical and symlink-resolved absolute candidates. realpath reads path
-# metadata only; it never reads receipt contents.
+# Check the raw path before normalization so an existing symlink cannot hide a
+# protected spelling. realpath reads path metadata only, never receipt contents.
 is_codex_sync_state_path() {
   local filepath lexical resolved candidate
   filepath="$(expand_path "$1")"
 
-  for candidate in "$filepath"; do
-    case "$candidate" in
-      */.codex/.aicoding-sync|*/.codex/.aicoding-sync/*) return 0 ;;
-    esac
-  done
+  case "$filepath" in
+    */.codex/.aicoding-sync|*/.codex/.aicoding-sync/*) return 0 ;;
+  esac
 
   [[ "$filepath" == /* ]] || return 1
   lexical="$(realpath -ms -- "$filepath" 2>/dev/null)" || return 1

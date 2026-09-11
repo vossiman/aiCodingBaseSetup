@@ -624,6 +624,24 @@ X"
   done < <(jq -r '.permissions.deny[] | select(test("p12|pfx"))' "$claude")
 }
 
+@test "fallback configs deny the Codex sync receipt directory and descendants" {
+  local cursor="$BLUEPRINT_ROOT/configs/cursor/cli-config.json"
+  local opencode="$BLUEPRINT_ROOT/configs/opencode/opencode.json"
+  local claude="$BLUEPRINT_ROOT/configs/claude/settings.json"
+
+  jq -e '.permissions.deny | contains([
+    "Read(**/.codex/.aicoding-sync)",
+    "Read(**/.codex/.aicoding-sync/**)"
+  ])' "$cursor"
+  jq -e '.permission.read |
+    .["**/.codex/.aicoding-sync"] == "deny" and
+    .["**/.codex/.aicoding-sync/**"] == "deny"' "$opencode"
+  jq -e '.permissions.deny | contains([
+    "Read(~/.codex/.aicoding-sync)",
+    "Read(~/.codex/.aicoding-sync/**)"
+  ])' "$claude"
+}
+
 @test "listing and cd still work on sensitive directories" {
   bash_hook "ls $HOME/.aicodingsetup .aicodingsetup"
   allowed

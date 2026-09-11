@@ -74,6 +74,14 @@ seed_verified_claude_config_dependencies() {
   done
 }
 
+@test "regression: Python bytecode caches are ignored throughout the blueprint" {
+  run git -C "$BLUEPRINT_ROOT" check-ignore --no-index -v \
+    lib/__pycache__/codex_merge.cpython-312.pyc \
+    tests/__pycache__/test_codex_merge.cpython-312.pyc
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 2 ]
+}
+
 # Bug 1 regression: ~/.bashrc must survive aicoding-sync --yes.
 @test "regression: aicoding-sync does not delete ~/.bashrc" {
   # Bootstrap via install.sh.

@@ -87,9 +87,17 @@ commit_blueprint_fixture() {
 }
 
 @test "aicoding-sync: exits with error when no manifest" {
-  run "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync"
+  local maintenance_log="$TMPDIR/maintenance.log" command
+  for command in claude opencode agent cursor-agent npx npm; do
+    printf '#!/bin/sh\necho "%s $*" >> "%s"\n' "$command" "$maintenance_log" \
+      > "$TMPDIR/stubs/$command"
+    chmod +x "$TMPDIR/stubs/$command"
+  done
+
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync"
   [ "$status" -ne 0 ]
   echo "$output" | grep -q "no manifest"
+  [ ! -s "$maintenance_log" ]
 }
 
 @test "aicoding-sync: reads existing manifest and prints blueprint commit" {

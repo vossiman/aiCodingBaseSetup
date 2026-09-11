@@ -490,6 +490,21 @@ STUB
   [ ! -e "$HOME/.codex/.aicoding-sync" ]
 }
 
+@test "Codex smart planning rejects a Python executable without the capability marker" {
+  local stubs="$TMPDIR/no-capability-python"
+  mkdir -p "$stubs"
+  printf '#!/bin/sh\nexit 0\n' > "$stubs/python3"
+  chmod +x "$stubs/python3"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+
+  PATH="$stubs:$PATH" codex_smart_plan \
+    "$HOME/.codex/config.toml" "$BLUEPRINT_ROOT/configs/codex/config.toml" yes
+
+  [ "$(codex_smart_error_code "$CODEX_SMART_RESULT")" = runtime_unavailable ]
+  [ ! -e "$HOME/.codex/config.toml" ]
+  [ ! -e "$HOME/.codex/.aicoding-sync" ]
+}
+
 @test "Codex smart render failures stop before apply and clean private temporaries" {
   local tool case_dir clone dest state stubs old_path=$PATH before_pending
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"

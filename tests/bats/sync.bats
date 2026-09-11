@@ -741,6 +741,23 @@ EOF
   echo "$output" | grep -q '0 smart_conflict'
 }
 
+@test "sync --first leaves an unmanaged Codex config untouched without claiming a backup" {
+  _smart_blueprint_copy
+  mkdir -p "$(dirname "$AICODING_MANIFEST")" "$HOME/.codex"
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  printf 'model = "personal-first-run"\n' > "$HOME/.codex/config.toml"
+  local before
+  before=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
+
+  run bash -c '. "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync --first'
+
+  [ "$status" -eq 0 ]
+  [ "$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')" = "$before" ]
+  [[ "$output" != *"new (existing file backed up): $HOME/.codex/config.toml"* ]]
+  if ls "$HOME"/.codex/config.toml.bak.* 2>/dev/null; then false; fi
+  jq -e '.files | has("'"$HOME"'/.codex/config.toml") | not' "$AICODING_MANIFEST"
+}
+
 @test "sync --yes preserves Astra effort and exact trust values while applying an unrelated Codex default" {
   _smart_blueprint_copy
   bash "$BP/install.sh" </dev/null
@@ -916,6 +933,37 @@ EOF
   grep -q 'claude mcp add' "$TMP/ran.log"
   if ls "$HOME"/.codex/config.toml.bak.* 2>/dev/null; then false; fi
   [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'aicoding-codex-*' -print)" ]
+}
+
+@test "Codex apply failure stays value-safe and unadopted while maintenance continues" {
+  _smart_blueprint_copy
+  bash "$BP/install.sh" </dev/null
+  jq 'del(.files["'"$HOME"'/.codex/config.toml"])' "$AICODING_MANIFEST" \
+    > "$AICODING_MANIFEST.t" && mv "$AICODING_MANIFEST.t" "$AICODING_MANIFEST"
+  printf 'local_probe = "do-not-print-this-value"\n' >> "$HOME/.codex/config.toml"
+  cat >> "$BP/lib/codex-merge.sh" <<'STUB'
+
+_codex_smart_invoke() {
+  local action=$1
+  if [[ "$action" == plan ]]; then
+    CODEX_SMART_RESULT='{"config_changed":true,"state_changed":true,"conflicts":[],"error":null,"unmanaged":false,"token":"plan-v1:fixed","changes":[{"path":["safe_setting"],"operation":"replace"}],"adoption_notices":[]}'
+  else
+    CODEX_SMART_RESULT='{"config_changed":false,"state_changed":false,"conflicts":[],"error":{"code":"fixed_apply_failure"},"unmanaged":false,"token":null,"changes":[],"adoption_notices":[],"applied":false}'
+  fi
+  return 0
+}
+STUB
+  : > "$TMP/ran.log"
+
+  run bash -c '. "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"; aicoding_sync --yes'
+
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q 'fixed_apply_failure'
+  if echo "$output" | grep -q 'do-not-print-this-value'; then false; fi
+  [[ "$output" != *"merged Codex settings"* ]]
+  [[ "$output" != *"updated Codex merge state"* ]]
+  jq -e '.files | has("'"$HOME"'/.codex/config.toml") | not' "$AICODING_MANIFEST"
+  grep -q 'claude mcp add' "$TMP/ran.log"
 }
 
 @test "aicoding-install: pulls the blueprint and re-runs the installer (reconcile)" {
@@ -1485,6 +1533,20 @@ _kvm_unused_gid() {
   if echo "$output" | grep -q '{{FIRECRAWL'; then false; fi   # substituted, so the key line is unchanged
   echo "$output" | grep -qx -- '-old = 1'
   echo "$output" | grep -qx -- '+new = 1'
+}
+
+@test "raw diff helper refuses every applicable bucket for toml_merge mode" {
+  local dest="$HOME/.codex/config.toml" bucket
+  declare -gA FILE_MODE FILE_SOURCE
+  FILE_MODE[$dest]=toml_merge
+  FILE_SOURCE[$dest]=configs/codex/config.toml
+  _sync_diff_body() { echo raw-diff-helper-called; return 97; }
+
+  for bucket in will_update will_update_owned drifted_and_updating new_file_existing; do
+    run _sync_diff_for_bucket "$dest" "$bucket"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+  done
 }
 
 @test "sync --yes prints a change report with the diff for each applied file" {

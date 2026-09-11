@@ -13,8 +13,8 @@
 **Execution checkpoint (`6ec351f`):** All three implementation tasks and their
 review fixes are complete. At this checkpoint, whole-branch review and an
 independent green full-suite gate are still pending; known test-harness races
-are recorded in `out/sync-smart-diff-validation.md`. The checklist below
-records the original task requirements.
+are recorded in the PR validation notes. The checklist below records the
+original task requirements.
 
 ## Global constraints
 

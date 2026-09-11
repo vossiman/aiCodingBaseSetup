@@ -586,6 +586,11 @@ _sync_collect_smart_decisions() {
 _sync_reconcile() {
   local mode=$1
   declare -gA _SYNC_DEFERRED_PROVISION_COMPONENTS=()
+  # Clear prior classifications before any early return. The caller uses this
+  # snapshot to distinguish actual smart errors from ordinary reconcile
+  # failures that must still abort before maintenance.
+  declare -gA BUCKETS
+  BUCKETS=()
   if _sync_color_on; then _SYNC_COLOR=1; else _SYNC_COLOR=0; fi
 
   # _sync_refresh_and_reexec already fetched in this process; a second fetch
@@ -851,6 +856,7 @@ _sync_reconcile() {
   while IFS= read -r d; do
     bucket=${BUCKETS[$d]}
     case " $buckets " in *" $bucket "*) ;; *) continue ;; esac
+    [[ "${FILE_MODE[$d]:-}" != toml_merge ]] || continue
     case "$bucket" in
       restore|new_file|new_file_existing|will_update|will_update_owned|drifted_and_updating|merge|to_remove) ;;
       *) continue ;;
@@ -1015,6 +1021,7 @@ _sync_diff_for_bucket() {
     *) return 0 ;;
   esac
   [ "${FILE_MODE[$dest]:-overwrite}" != marker_block ] || return 0
+  [ "${FILE_MODE[$dest]:-overwrite}" != toml_merge ] || return 0
   _sync_diff_body "$dest" "$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]}" "${FILE_MODE[$dest]:-overwrite}"
 }
 
