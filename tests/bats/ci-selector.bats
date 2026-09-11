@@ -39,14 +39,14 @@ STUB
   printf '#!/usr/bin/env bash\nexit 22\n' > "$TMP/bin/curl"
   chmod +x "$TMP/bin/curl"
   printf '%s\n' '{"id":330421083,"name":"tests","path":".github/workflows/tests.yml","state":"active"}' > "$CI_FIXTURE/workflow"
-  printf '%s\n' '{"id":440001234,"name":"ci","path":".github/workflows/ci.yml","state":"active"}' > "$CI_FIXTURE/workflow-dvw"
+  printf '%s\n' '{"id":355909244,"name":"ci","path":".github/workflows/ci.yml","state":"active"}' > "$CI_FIXTURE/workflow-dvw"
   printf '%s\n' '{"id":344911642,"name":"ci","path":".github/workflows/ci.yml","state":"active"}' > "$CI_FIXTURE/workflow-bw"
   printf '[{"sha":"%s"},{"sha":"%s"}]\n' "$NEW" "$OLD" > "$CI_FIXTURE/commits"
   printf '{"status":"ahead","merge_base_commit":{"sha":"%s"}}\n' "$NEW" > "$CI_FIXTURE/compare"
   fixture_run "$NEW" completed success
   fixture_run "$OLD" completed success
-  fixture_run "$NEW" completed success 440001234 runs-dvw
-  fixture_run "$OLD" completed success 440001234 runs-dvw
+  fixture_run "$NEW" completed success 355909244 runs-dvw
+  fixture_run "$OLD" completed success 355909244 runs-dvw
   fixture_run "$NEW" completed success 344911642 runs-bw
   fixture_run "$OLD" completed success 344911642 runs-bw
 }
@@ -196,4 +196,12 @@ EOF
   run select_sha
   [ "$status" -eq 0 ]
   [ "$output" = "$NEW" ]
+}
+
+@test "dvw rejects a recreated workflow even when its path and name match" {
+  jq '.id = 355909245' "$CI_FIXTURE/workflow-dvw" > "$CI_FIXTURE/replaced-workflow"
+  mv "$CI_FIXTURE/replaced-workflow" "$CI_FIXTURE/workflow-dvw"
+  run bash "$BLUEPRINT_ROOT/bin/aicoding-select" dvw
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"required workflow missing or invalid"* ]]
 }
