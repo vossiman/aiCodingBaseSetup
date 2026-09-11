@@ -121,11 +121,16 @@ if [ -n "$uv_heal_reason" ] && [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ]; then
 fi
 
 # Boot sweep: scrub transcripts left by crashed sessions or other containers.
-# Fail-open, bounded, and synchronous: a detached sweep outlives this script
-# and keeps writing state into a HOME the caller may already be tearing down
-# (CI, 2026-09-07: the bats teardown lost the race and failed on a non-empty
-# temp dir). The sync above has just refreshed the symlink.
-if command -v redact-sessions >/dev/null 2>&1; then
-  timeout 120 redact-sessions --sweep >/dev/null 2>&1 || true
+# Detach from the startup session and its pipes so DevPod can finish while
+# the sweep runs to completion. A separate lock skips overlapping boot jobs;
+# the scrubber's own state lock still protects individual updates. Gate the
+# worker in tests so it cannot outlive a temporary HOME's teardown.
+if [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ] && command -v redact-sessions >/dev/null 2>&1; then
+  sweep_state="${REDACT_SESSIONS_STATE:-$HOME/.claude/state/redact-sessions}"
+  if (umask 077; mkdir -p "$sweep_state"); then
+    nohup setsid flock -n "$sweep_state/boot-sweep.lock" redact-sessions --sweep \
+      </dev/null >/dev/null 2>&1 &
+    echo "INFO: Transcript redaction sweep dispatched in background"
+  fi
 fi
 exit 0
