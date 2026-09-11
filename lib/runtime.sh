@@ -214,8 +214,12 @@ _aicoding_runtime_switch_link() {
     _aicoding_runtime_pending_temp=""
     return 1
   fi
-  if ! rmdir -- "$temporary"; then return 1; fi
+  if ! rmdir -- "$temporary"; then
+    printf 'aicoding runtime: pointer published; empty temporary directory retained at %s\n' \
+      "$temporary" >&2
+  fi
   _aicoding_runtime_pending_temp=""
+  return 0
 }
 
 _aicoding_runtime_commit_wrapper() { _aicoding_runtime_commit_path "$1" "$2"; }

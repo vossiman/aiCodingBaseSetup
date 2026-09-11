@@ -312,6 +312,33 @@ EOF
   [ "$output" = old ]
 }
 
+@test "current publication stays committed when only empty temp cleanup fails" {
+  local old=3131313131313131313131313131313131313131
+  local new=3232323232323232323232323232323232323232
+  make_release "$TEST_ROOT/sources/old" "$old" old
+  make_release "$TEST_ROOT/sources/new" "$new" new
+  aicoding_stage_source demo "$TEST_ROOT/sources/old" "$old"
+  aicoding_activate_version demo "$old" demo-tool bin/tool
+  aicoding_stage_source demo "$TEST_ROOT/sources/new" "$new"
+  rmdir() {
+    local candidate=${!#}
+    case "$candidate" in
+      "$AICODING_DATA_DIR/current/.demo.link."*) return 1 ;;
+      *) command rmdir "$@" ;;
+    esac
+  }
+
+  run aicoding_activate_version demo "$new" demo-tool bin/tool
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pointer published; empty temporary directory retained at"* ]]
+  [ "$(readlink "$AICODING_DATA_DIR/current/demo")" = "../versions/demo/$new" ]
+  [ "$(readlink "$AICODING_DATA_DIR/previous/demo")" = "../versions/demo/$old" ]
+  find "$AICODING_DATA_DIR/current" -maxdepth 1 -type d -name '.demo.link.*' -print -quit | grep -q .
+  run "$HOME/.local/bin/demo-tool"
+  [ "$status" -eq 0 ]
+  [ "$output" = new ]
+}
+
 @test "incomplete rollback retains the recovery snapshot and reports its path" {
   local old=4040404040404040404040404040404040404040
   local new=5050505050505050505050505050505050505050
