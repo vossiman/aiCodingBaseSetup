@@ -920,6 +920,9 @@ EOF
 }
 
 @test "bw-AICode identifies missing Go in a container as a rebuild prerequisite" {
+  # An ambient Go installation must not change this missing-runtime scenario.
+  printf '#!/bin/sh\necho unexpected-go-call >> "$TMP/go-calls"\nexit 1\n' > "$TMP/stubs/go"
+  chmod +x "$TMP/stubs/go"
   local sha=cccccccccccccccccccccccccccccccccccccccc
   aicoding_select_ci_sha() { printf '%s\n' cccccccccccccccccccccccccccccccccccccccc; }
   _aicoding_stage_git_source() {
@@ -928,10 +931,11 @@ EOF
     : > "$3/go.mod"; printf '%s\n' "$2" > "$3/.aicoding-version"
   }
   _sync_profile() { echo container; }
-  command() { [ "$1 $2" != 'command -v' ] || return 1; builtin command "$@"; }
+  command() { [ "$1 ${2:-}" != '-v go' ] || return 1; builtin command "$@"; }
   export -f aicoding_select_ci_sha _aicoding_stage_git_source _sync_profile command
   run aicoding_update_bw
   [ "$status" -ne 0 ]
+  [ ! -e "$TMP/go-calls" ]
   jq -e '.components["bw-AICode"].state == "blocked"
     and .components["bw-AICode"].reason == "manual_rebuild_required_go"' \
     "$AICODING_STATE_DIR/update-results.json"
