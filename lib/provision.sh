@@ -55,6 +55,78 @@ _provision_record_blocked() {
     && aicoding_result_record "$1" blocked "" "$2" || true
 }
 
+_provision_ensure_update_components() {
+  declare -F aicoding_update_component >/dev/null 2>&1 && return 0
+  local root=${SCRIPT_DIR:-${BLUEPRINT_ROOT:-}}
+  [ -n "$root" ] && [ -f "$root/lib/update-results.sh" ] && [ -f "$root/lib/update-components.sh" ] || return 1
+  . "$root/lib/update-results.sh"
+  . "$root/lib/update-components.sh"
+}
+
+_provision_reconcile_exact_mcp() {
+  local name=$1 component=$2 launcher=$3; shift 3
+  _provision_ensure_update_components || return 1
+  local version state
+  [ -f "$AICODING_RESULTS_FILE" ] || { _provision_record_blocked "$component" exact_package_not_staged; return 1; }
+  state=$(jq -r --arg c "$component" '.components[$c].state // empty' "$AICODING_RESULTS_FILE" 2>/dev/null)
+  version=$(jq -r --arg c "$component" '.components[$c].successful_version // .components[$c].target_version // empty' "$AICODING_RESULTS_FILE" 2>/dev/null)
+  case "$state" in current|updated) ;; *) _provision_record_blocked "$component" exact_package_not_staged; return 1 ;; esac
+  _aicoding_reconcile_claude_mcp_registration "$name" "$component" "$version" "$launcher" "$@" || return 1
+}
+
+_provision_reconcile_selected_exact_mcp() {
+  local name=$1
+  if [ -n "${AICODING_SYNC_MODE:-}" ]; then
+    _provision_ensure_update_components || return 1
+    _aicoding_claude_mcp_selected "$name" || return 0
+  fi
+  _provision_reconcile_exact_mcp "$@"
+}
+
+# Stage both exact MCP packages without running the broader installer. C calls
+# this before first config deployment; --register-claude additionally creates
+# or migrates the user-scope Claude registrations and their separate receipts.
+aicoding_prepare_exact_mcps() {
+  local register_claude=0 component rc=0
+  case "${1:-}" in
+    '') ;;
+    --register-claude) register_claude=1; shift ;;
+    *) return 2 ;;
+  esac
+  [ "$#" -eq 0 ] || return 2
+  [ "${AICODINGSETUP_SKIP_NETWORK:-0}" != 1 ] || return 0
+  _provision_ensure_update_components || {
+    _provision_record_blocked mcp-context7 staged_updater_unavailable
+    _provision_record_blocked mcp-playwright staged_updater_unavailable
+    return 1
+  }
+  for component in mcp-context7 mcp-playwright; do
+    if [ "$register_claude" -eq 1 ]; then
+      AICODING_MCP_REGISTRATION_FORCE=1 aicoding_update_component "$component" || rc=1
+    else
+      AICODING_MCP_REGISTRATION_DISABLE=1 aicoding_update_component "$component" || rc=1
+    fi
+  done
+  return "$rc"
+}
+
+# Provisioning mutates tool-owned user state, so scheduled calls re-check the
+# tool receipt, local capability, and any shared-root inventory even when no
+# managed config file happened to be actionable in this pass.
+_provision_tool_ready() {
+  local component=$1 command_name=$2 minimum=${3:-} root=${4:-} version
+  [ -z "${AICODING_SYNC_MODE:-}" ] && return 0
+  _provision_ensure_update_components || return 1
+  _aicoding_update_receipt_allows "$component" || { _provision_record_blocked "provision-$component" "${component}_update_not_verified"; return 1; }
+  _aicoding_command_is_linux "$command_name" || { _provision_record_blocked "provision-$component" "${component}_not_installed"; return 1; }
+  version=$(_aicoding_version_from_command "$command_name") || true
+  [ -n "$version" ] || { _provision_record_blocked "provision-$component" "${component}_version_unavailable"; return 1; }
+  [ -z "$minimum" ] || _aicoding_version_at_least "$version" "$minimum" \
+    || { _provision_record_blocked "provision-$component" "${component}_runtime_incompatible"; return 1; }
+  _aicoding_shared_consumers_allow "$component" "$minimum" "$root" \
+    || { _provision_record_blocked "provision-$component" "${component}_shared_consumers_incompatible"; return 1; }
+}
+
 # --- MCP npm packages ---
 # Install MCP server binaries that aren't run via npx
 install_mcp_packages() {
@@ -65,30 +137,18 @@ install_mcp_packages() {
     return 0
   fi
 
-  if ! command -v npm &>/dev/null; then
-    warn "npm not found — skipping MCP package installation"
-    _provision_soft_failure; return $?
+  [ "${AICODINGSETUP_SKIP_NETWORK:-0}" != 1 ] || return 0
+  if _provision_ensure_update_components; then
+    local component rc=0
+    for component in mcp-firecrawl mcp-brave; do
+      aicoding_update_component "$component" || rc=1
+    done
+    aicoding_prepare_exact_mcps || rc=1
+    [ "$rc" -eq 0 ] || { _provision_soft_failure; return $?; }
+    return 0
   fi
-
-  local packages=("firecrawl-mcp" "@brave/brave-search-mcp-server") rc=0
-  for pkg in "${packages[@]}"; do
-    if npm list -g "$pkg" &>/dev/null; then
-      ok "$pkg already installed"
-    else
-      # Unprivileged first (user-writable prefix: nvm on universal,
-      # NPM_CONFIG_PREFIX=~/.local on devbox-base), sudo as fallback for
-      # root-owned prefixes. sudo -n: never hang on a password prompt.
-      if npm install -g "$pkg" 2>/dev/null; then
-        ok "$pkg installed"
-      elif command -v sudo &>/dev/null && sudo -n env "PATH=$PATH" npm install -g "$pkg" 2>/dev/null; then
-        ok "$pkg installed (sudo)"
-      else
-        warn "Failed to install $pkg — install manually with: npm install -g $pkg"
-        rc=1
-      fi
-    fi
-  done
-  [ "$rc" -eq 0 ] || { _provision_soft_failure; return $?; }
+  warn "Staged MCP updater unavailable; global package replacement was not attempted"
+  _provision_soft_failure; return $?
 }
 
 # Per-server fingerprint of the extra `claude mcp add` args (headers). The
@@ -158,6 +218,11 @@ install_claude_mcps() {
     return 0
   fi
 
+  _provision_tool_ready claude claude "" "$HOME/.claude" || {
+    warn "Claude MCP provisioning deferred until its update and shared consumers are verified"
+    _provision_soft_failure; return $?
+  }
+
   local rc=0
 
   # firecrawl
@@ -188,25 +253,14 @@ install_claude_mcps() {
     warn "Skipping brave-search MCP — no API key"
   fi
 
-  # The current registration is a moving npx package. Scheduled sync keeps an
-  # existing registration byte-for-byte and defers until its exact immutable
-  # package tree can be staged. Interactive first install retains prior setup.
-  if [ -n "${AICODING_SYNC_MODE:-}" ] && [ "${AICODINGSETUP_SKIP_NETWORK:-0}" != 1 ]; then
-    warn "context7 MCP refresh deferred — exact staged launcher unavailable"
-    _provision_record_blocked mcp-context7 exact_version_staging_unavailable
-    rc=1
-  elif _provision_run claude mcp add context7 -s user -- npx -y @upstash/context7-mcp 2>/dev/null; then
-    ok "context7 MCP configured"
-  elif _provision_run claude mcp get context7 &>/dev/null; then
-    ok "context7 MCP already configured"
-  else
-    warn "context7 MCP may need manual setup"
-    rc=1
-  fi
-
-  # playwright — provided by the playwright plugin, not as a standalone MCP
-  # The plugin install (install_claude_plugins) handles this
-  ok "playwright MCP provided by playwright plugin"
+  local registration_force=0
+  [ -n "${AICODING_SYNC_MODE:-}" ] || registration_force=1
+  AICODING_MCP_REGISTRATION_FORCE=$registration_force \
+    _provision_reconcile_selected_exact_mcp context7 mcp-context7 context7-mcp \
+    && ok "context7 MCP exact registration reconciled when selected" || rc=1
+  AICODING_MCP_REGISTRATION_FORCE=$registration_force \
+    _provision_reconcile_selected_exact_mcp playwright mcp-playwright playwright-mcp --browser chromium \
+    && ok "playwright MCP exact registration reconciled when selected" || rc=1
 
   # logfire — hosted MCP, EU region. The logfire plugin hardcodes the US URL
   # in its bundled .mcp.json (no env override); its README tells EU users to
@@ -236,21 +290,31 @@ install_claude_plugins() {
     return 0
   fi
 
+  _provision_tool_ready claude claude "" "$HOME/.claude" || {
+    warn "Claude plugin provisioning deferred until its update and shared consumers are verified"
+    _provision_soft_failure; return $?
+  }
+
   local plugin rc=0
   for plugin in "${MANAGED_PLUGINS[@]}"; do
-    if [ -n "${AICODING_SYNC_MODE:-}" ] && [ "${AICODINGSETUP_SKIP_NETWORK:-0}" != 1 ]; then
-      case "$plugin" in
-        playwright@*)
-          warn "$plugin refresh deferred — exact staged launcher unavailable"
-          _provision_record_blocked mcp-playwright exact_version_staging_unavailable
-          rc=1; continue ;;
-        context7@*)
-          # Context7's moving registration was already recorded above. Do not
-          # let its marketplace plugin refresh it through another path.
-          _provision_record_blocked mcp-context7 exact_version_staging_unavailable
-          rc=1; continue ;;
-      esac
-    fi
+    case "$plugin" in
+      playwright@*)
+        if _provision_reconcile_selected_exact_mcp playwright mcp-playwright playwright-mcp --browser chromium; then
+          ok "$plugin skipped; exact MCP is absent or its stable registration verified"
+        else
+          warn "$plugin refresh skipped; exact MCP registration unavailable"
+          rc=1
+        fi
+        continue ;;
+      context7@*)
+        if _provision_reconcile_selected_exact_mcp context7 mcp-context7 context7-mcp; then
+          ok "$plugin skipped; exact MCP is absent or its stable registration verified"
+        else
+          warn "$plugin refresh skipped; exact MCP registration unavailable"
+          rc=1
+        fi
+        continue ;;
+    esac
     # Try install first; if already installed, try update
     if _provision_run claude plugin install "$plugin" 2>/dev/null; then
       ok "Installed $plugin"
@@ -282,6 +346,10 @@ remove_deprecated_shims() {
 install_codex_plugins() {
   [[ "${AICODINGSETUP_SKIP_NETWORK:-0}" == 1 ]] && return 0
   command -v codex >/dev/null 2>&1 || return 0
+  _provision_tool_ready codex codex 0.148.0 "${CODEX_HOME:-$HOME/.codex}" || {
+    warn "Codex plugin provisioning deferred until its update and shared consumers are verified"
+    _provision_soft_failure; return $?
+  }
   header "Codex Plugins"
   local plugin="superpowers@openai-curated-remote" installed result package link old
   local codex_home="${CODEX_HOME:-$HOME/.codex}"

@@ -6,7 +6,6 @@ setup() {
   export HOME="$TMP/home"
   export AICODING_STATE_DIR="$TMP/state"
   export AICODING_DATA_DIR="$TMP/data"
-  export AICODING_EXACT_MCP_CONFIG_READY=1
   mkdir -p "$HOME/.local/bin" "$TMP/stubs"
   export PATH="$HOME/.local/bin:$TMP/stubs:/usr/bin:/bin"
   . "$BLUEPRINT_ROOT/lib/update-results.sh"
@@ -79,14 +78,37 @@ EOF
 }
 
 @test "moving npx MCP config is deferred while ordinary skill text can advance" {
-  export AICODING_EXACT_MCP_CONFIG_READY=0
   export AICODING_REQUIRE_UPDATE_RECEIPT=1
   unset AICODINGSETUP_SKIP_NETWORK
   _tool codex 'codex-cli 0.200.0'
+  aicoding_result_record codex current 0.200.0 installed 0.200.0
   run aicoding_config_is_compatible "$HOME/.codex/config.toml"
   [ "$status" -ne 0 ]
   [ "$output" = mcp_exact_version_staging_unavailable ]
   run aicoding_config_is_compatible "$HOME/.codex/AGENTS.md"
+  [ "$status" -eq 0 ]
+}
+
+@test "Claude registration readiness is separate from package readiness for other harnesses" {
+  for component in mcp-context7 mcp-playwright; do
+    aicoding_result_record "$component" current 1.0.0 installed 1.0.0
+  done
+  run aicoding_exact_mcp_config_ready "$HOME/.codex/config.toml"
+  [ "$status" -eq 0 ]
+  run aicoding_exact_mcp_config_ready "$HOME/.claude/settings.json"
+  [ "$status" -ne 0 ]
+  for component in mcp-registration-claude-context7 mcp-registration-claude-playwright; do
+    aicoding_result_record "$component" current 1.0.0 registration_verified 1.0.0
+  done
+  run aicoding_exact_mcp_config_ready "$HOME/.claude/settings.json"
+  [ "$status" -eq 0 ]
+}
+
+@test "Cursor hook config does not depend on unrelated exact MCP packages" {
+  _tool agent 'agent 1.2.3'
+  aicoding_result_record cursor current 1.2.3 installed 1.2.3
+  export AICODING_REQUIRE_UPDATE_RECEIPT=1
+  run aicoding_config_is_compatible "$HOME/.cursor/hooks.json"
   [ "$status" -eq 0 ]
 }
 
@@ -321,6 +343,7 @@ if [ "$1" = view ]; then echo '"1.2.3"'; exit 0; fi
 prefix=
 while [ $# -gt 0 ]; do [ "$1" = --prefix ] && { prefix=$2; shift 2; continue; }; shift; done
 mkdir -p "$prefix/node_modules/firecrawl-mcp/dist"
+printf '{"lockfileVersion":3,"packages":{"node_modules/firecrawl-mcp":{"version":"1.2.3","integrity":"sha512-fixture"}}}\n' > "$prefix/package-lock.json"
 cat > "$prefix/node_modules/firecrawl-mcp/package.json" <<'JSON'
 {"name":"firecrawl-mcp","version":"1.2.3","bin":{"firecrawl-mcp":"dist/index.js"}}
 JSON
@@ -332,6 +355,136 @@ EOF
   [ "$status" -eq 0 ]
   [ -x "$HOME/.local/bin/firecrawl-mcp" ]
   jq -e '.components["mcp-firecrawl"].successful_version == "1.2.3"' "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "registered Context7 and Playwright are discovered without installing absent harnesses" {
+  mkdir -p "$HOME/.codex" "$HOME/.cursor"
+  cat > "$HOME/.codex/config.toml" <<'EOF'
+[mcp_servers.context7]
+command = "npx"
+EOF
+  cat > "$HOME/.cursor/mcp.json" <<'EOF'
+{"mcpServers":{"playwright":{"command":"npx"}}}
+EOF
+  run aicoding_installed_components
+  [ "$status" -eq 0 ]
+  [ "$output" = $'aicoding\nmcp-context7\nmcp-playwright' ]
+}
+
+_stub_exact_mcp_npm() {
+  cat > "$TMP/stubs/npm" <<'EOF'
+#!/bin/sh
+case "$*" in
+  'view @upstash/context7-mcp version --json') echo '"4.1.0"'; exit 0 ;;
+  'view @playwright/mcp version --json') echo '"0.0.80"'; exit 0 ;;
+esac
+printf '%s\n' "$*" >> "$TMP/npm-mcp-args"
+prefix=
+package=
+while [ $# -gt 0 ]; do
+  [ "$1" = --prefix ] && { prefix=$2; shift 2; continue; }
+  case "$1" in @upstash/context7-mcp@*) package=context7 ;; @playwright/mcp@*) package=playwright ;; esac
+  shift
+done
+printf '%s\n' "$package" >> "$TMP/npm-mcp-installs"
+mkdir -p "$prefix"
+if [ "$package" = context7 ]; then
+  dir="$prefix/node_modules/@upstash/context7-mcp"
+  mkdir -p "$dir/dist"
+  printf '{"lockfileVersion":3,"packages":{"node_modules/@upstash/context7-mcp":{"version":"4.1.0","integrity":"sha512-fixture"}}}\n' > "$prefix/package-lock.json"
+  printf '{"name":"@upstash/context7-mcp","version":"4.1.0","bin":{"context7-mcp":"dist/index.js"}}\n' > "$dir/package.json"
+  printf '#!/bin/sh\nexit 0\n' > "$dir/dist/index.js"
+  chmod +x "$dir/dist/index.js"
+else
+  dir="$prefix/node_modules/@playwright/mcp"
+  mkdir -p "$dir" "$prefix/node_modules/playwright-core"
+  printf '{"lockfileVersion":3,"packages":{"node_modules/@playwright/mcp":{"version":"0.0.80","integrity":"sha512-fixture"}}}\n' > "$prefix/package-lock.json"
+  printf '{"name":"@playwright/mcp","version":"0.0.80","bin":{"playwright-mcp":"cli.js"}}\n' > "$dir/package.json"
+  cat > "$dir/cli.js" <<'CLI'
+#!/bin/sh
+if [ "$1" = install-browser ]; then
+  mkdir -p "$PLAYWRIGHT_BROWSERS_PATH/chromium-123/chrome-linux64"
+  printf '#!/bin/sh\nexit 0\n' > "$PLAYWRIGHT_BROWSERS_PATH/chromium-123/chrome-linux64/chrome"
+  chmod +x "$PLAYWRIGHT_BROWSERS_PATH/chromium-123/chrome-linux64/chrome"
+fi
+exit 0
+CLI
+  printf '#!/bin/sh\nexit 0\n' > "$prefix/node_modules/playwright-core/cli.js"
+  chmod +x "$dir/cli.js" "$prefix/node_modules/playwright-core/cli.js"
+fi
+EOF
+  chmod +x "$TMP/stubs/npm"
+}
+
+@test "Context7 stages an exact immutable tree and activates its stable launcher" {
+  _stub_exact_mcp_npm
+  run aicoding_update_component mcp-context7
+  [ "$status" -eq 0 ]
+  [ -x "$AICODING_DATA_DIR/versions/mcp-context7/4.1.0/node_modules/@upstash/context7-mcp/dist/index.js" ]
+  [ "$(readlink "$AICODING_DATA_DIR/current/mcp-context7")" = ../versions/mcp-context7/4.1.0 ]
+  [ -x "$HOME/.local/bin/context7-mcp" ]
+  grep -q -- '--engine-strict' "$TMP/npm-mcp-args"
+  jq -e '.components["mcp-context7"].successful_version == "4.1.0"' "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "Playwright uses its exact staged CLI and a version-specific retained browser cache" {
+  _stub_exact_mcp_npm
+  mkdir -p "$AICODING_DATA_DIR/browser-cache/mcp-playwright/old/chromium-old"
+  cat > "$TMP/stubs/ldd" <<'EOF'
+#!/bin/sh
+echo 'libgbm.so.1 => /lib/libgbm.so.1'
+EOF
+  chmod +x "$TMP/stubs/ldd"
+  run aicoding_update_component mcp-playwright
+  [ "$status" -eq 0 ]
+  [ -x "$AICODING_DATA_DIR/browser-cache/mcp-playwright/0.0.80/chromium-123/chrome-linux64/chrome" ]
+  [ -d "$AICODING_DATA_DIR/browser-cache/mcp-playwright/old/chromium-old" ]
+  [ -x "$HOME/.local/bin/playwright-mcp" ]
+  grep -q '^playwright$' "$TMP/npm-mcp-installs"
+  if rg -q '@latest|npx' "$HOME/.local/bin/playwright-mcp" "$TMP/npm-mcp-installs"; then false; fi
+}
+
+@test "Playwright leaves the old active release selected when exact browser libraries are unavailable" {
+  _stub_exact_mcp_npm
+  mkdir -p "$AICODING_DATA_DIR/current" "$AICODING_DATA_DIR/versions/mcp-playwright/old"
+  ln -s ../versions/mcp-playwright/old "$AICODING_DATA_DIR/current/mcp-playwright"
+  cat > "$TMP/stubs/ldd" <<'EOF'
+#!/bin/sh
+echo 'libmissing.so => not found'
+EOF
+  printf '#!/bin/sh\nexit 1\n' > "$TMP/stubs/sudo"
+  chmod +x "$TMP/stubs/ldd" "$TMP/stubs/sudo"
+  run aicoding_update_component mcp-playwright
+  [ "$status" -ne 0 ]
+  [ "$(readlink "$AICODING_DATA_DIR/current/mcp-playwright")" = ../versions/mcp-playwright/old ]
+  jq -e '.components["mcp-playwright"].state == "blocked"
+    and (.components["mcp-playwright"].reason | contains("system_libs"))' "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "an old container Node runtime reports a manual rebuild prerequisite" {
+  _tool node 'v18.20.0'
+  _sync_profile() { echo container; }
+  run aicoding_update_component mcp-context7
+  [ "$status" -ne 0 ]
+  jq -e '.components["mcp-context7"].state == "blocked"
+    and .components["mcp-context7"].reason == "manual_rebuild_required_node"' \
+    "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "an engine-strict npm rejection is classified as a container Node prerequisite" {
+  _sync_profile() { echo container; }
+  cat > "$TMP/stubs/npm" <<'EOF'
+#!/bin/sh
+if [ "$1" = view ]; then echo '"4.1.0"'; exit 0; fi
+echo 'npm ERR! code EBADENGINE' >&2
+exit 1
+EOF
+  chmod +x "$TMP/stubs/npm"
+  run aicoding_update_component mcp-context7
+  [ "$status" -ne 0 ]
+  jq -e '.components["mcp-context7"].state == "blocked"
+    and .components["mcp-context7"].reason == "manual_rebuild_required_node"' \
+    "$AICODING_STATE_DIR/update-results.json"
 }
 
 @test "Claude uses the documented exact-version installer in an isolated HOME before activation" {
@@ -435,4 +588,22 @@ EOF
   run aicoding_update_bw
   [ "$status" -eq 0 ]
   [ ! -s "$TMP/go-calls" ]
+}
+
+@test "bw-AICode identifies missing Go in a container as a rebuild prerequisite" {
+  local sha=cccccccccccccccccccccccccccccccccccccccc
+  aicoding_select_ci_sha() { printf '%s\n' cccccccccccccccccccccccccccccccccccccccc; }
+  _aicoding_stage_git_source() {
+    mkdir -p "$3/cmd/bw-docker-guard"
+    for s in claude-bw opencode-bw pi-bw; do printf '#!/bin/sh\nexit 0\n' > "$3/$s.sh"; chmod +x "$3/$s.sh"; done
+    : > "$3/go.mod"; printf '%s\n' "$2" > "$3/.aicoding-version"
+  }
+  _sync_profile() { echo container; }
+  command() { [ "$1 $2" != 'command -v' ] || return 1; builtin command "$@"; }
+  export -f aicoding_select_ci_sha _aicoding_stage_git_source _sync_profile command
+  run aicoding_update_bw
+  [ "$status" -ne 0 ]
+  jq -e '.components["bw-AICode"].state == "blocked"
+    and .components["bw-AICode"].reason == "manual_rebuild_required_go"' \
+    "$AICODING_STATE_DIR/update-results.json"
 }
