@@ -90,9 +90,6 @@ class LifecycleQueue:
             if row.claim_id:
                 claim = self.store.claim(row.handle, row.claim_id)
                 ticket_ref = (claim or {}).get("ticket_id") or (claim or {}).get("ticket")
-            elif row.kind == "end_session":
-                claim = self.store.active_claim(row.handle)
-                ticket_ref = (claim or {}).get("ticket_id") or (claim or {}).get("ticket")
             authoritative_refresh(
                 self.store, self.transport, row.handle, work_session_id,
                 ticket_ref=ticket_ref,

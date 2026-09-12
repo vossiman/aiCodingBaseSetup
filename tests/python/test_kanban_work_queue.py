@@ -1,16 +1,20 @@
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 from lib.kanban_work.events import EventIngestor
 from lib.kanban_work.queue import LifecycleQueue
 from lib.kanban_work.schema import BridgeError
-from lib.kanban_work.store import MAX_QUEUE_ROWS, NativeIdentity, Store
+from lib.kanban_work.store import MAX_QUEUE_ROWS, NativeIdentity, QueueEvent, Store
 
 
 HANDLE = "11111111-1111-4111-8111-111111111111"
@@ -172,9 +176,75 @@ class QueueTestCase(unittest.TestCase):
         self.event("end", "event-end")
         self.assertEqual(self.queue.drain_once(), "delivered")
         self.assertEqual(self.store.get_execution(HANDLE).state, "ended")
-        self.event("stop", "event-late-stop")
-        self.assertIsNone(self.store.claim(HANDLE, CLAIM)["latest_release_operation_id"])
-        self.assertEqual([row.kind for row in self.queue.pending()], ["end_session"])
+        self.transport.calls.clear()
+        self.assertEqual(self.queue.drain_once(), "delivered")
+        self.assertEqual([name for name, _ in self.transport.calls],
+                         ["end_session", "get_session", "get_ticket"])
+
+    def test_reconstructed_end_retains_historical_claim_for_ticket_refresh(self):
+        self.event("end", "event-end")
+        self.assertEqual(self.store.execution_intent(HANDLE)["latest_end_claim_id"], CLAIM)
+        self.store.clear_queue()
+        self.queue.reconstruct()
+        row = self.queue.pending()[0]
+        self.assertEqual(row.claim_id, CLAIM)
+        self.assertNotIn("claim_id", row.payload)
+
+    def test_end_retry_after_refresh_crash_still_fetches_historical_ticket(self):
+        self.event("end", "event-end")
+        with mock.patch.object(
+            self.store, "mark_intent_delivered", side_effect=RuntimeError("simulated crash")
+        ), self.assertRaisesRegex(RuntimeError, "simulated crash"):
+            self.queue.drain_once()
+        self.assertIsNone(self.store.active_claim(HANDLE))
+        self.transport.calls.clear()
+        self.clock.advance(seconds=61)
+        self.assertEqual(self.queue.drain_once(), "delivered")
+        self.assertEqual([name for name, _ in self.transport.calls],
+                         ["end_session", "get_session", "get_ticket"])
+
+    def test_refresh_reads_end_marker_inside_write_lock_even_when_end_index_cannot_fit(self):
+        for _ in range(MAX_QUEUE_ROWS):
+            self.store.enqueue(QueueEvent(HANDLE, RUN, "release", "{}", NOW))
+        peer = Store(self.path)
+        waiting = threading.Event()
+        proceed = threading.Event()
+        errors = []
+        original_immediate = self.store._immediate
+
+        @contextmanager
+        def paused_immediate():
+            waiting.set()
+            self.assertTrue(proceed.wait(5))
+            with original_immediate() as db:
+                yield db
+
+        def refresh():
+            try:
+                self.store.refresh_authoritative(
+                    HANDLE, session_snapshot(claim=None), ticket_snapshot(claim=None, status="todo")
+                )
+            except Exception as error:
+                errors.append(error)
+
+        try:
+            with mock.patch.object(self.store, "_immediate", paused_immediate):
+                thread = threading.Thread(target=refresh)
+                thread.start()
+                self.assertTrue(waiting.wait(5))
+                peer.persist_end_intent(HANDLE, RUN, "peer-end", "handoff", NOW)
+                self.assertEqual(peer.queue_count(), MAX_QUEUE_ROWS)
+                proceed.set()
+                thread.join(5)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(self.store.get_execution(HANDLE).state, "ended")
+            self.assertEqual(
+                self.store.execution_intent(HANDLE)["latest_end_operation_id"], "peer-end"
+            )
+        finally:
+            proceed.set()
+            peer.close()
 
     def test_replacement_claim_can_enqueue_immediate_activity(self):
         self.event("tool_start", "event-1", native_call_id="tool-1")
@@ -199,6 +269,108 @@ class QueueTestCase(unittest.TestCase):
         self.store.clear_queue()
         self.store.cleanup(NOW)
         self.assertIsNotNone(self.store.get_execution(HANDLE))
+
+    def test_stranded_journal_before_intent_is_replayed_instead_of_suppressed(self):
+        self.store.begin_native_event("codex", "crash-before", "stop", HANDLE, RUN, NOW)
+        result = self.event("stop", "crash-before")
+        self.assertEqual(result["status"], "observed")
+        self.assertIsNotNone(self.store.claim(HANDLE, CLAIM)["latest_release_operation_id"])
+
+    def test_stranded_journal_after_intent_finishes_idempotently(self):
+        event_id = "crash-after"
+        operation_id = self.events._operation_id(HANDLE, RUN, event_id, "release")
+        self.store.begin_native_event("codex", event_id, "stop", HANDLE, RUN, NOW)
+        self.store.persist_release_intent(
+            HANDLE, RUN, CLAIM, operation_id, "Parser implemented.", "stopped", NOW
+        )
+        result = self.event("stop", event_id)
+        self.assertEqual(result["operation_id"], operation_id)
+        journal = self.store.native_event("codex", event_id)
+        self.assertEqual(journal["state"], "done")
+
+    def test_critical_journal_crash_before_intent_rolls_back_reservation(self):
+        self.store._connection.execute(
+            "CREATE TRIGGER fail_before_release BEFORE UPDATE OF latest_release_operation_id "
+            "ON claims BEGIN SELECT RAISE(ABORT,'crash before intent'); END"
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.event("stop", "atomic-before")
+        self.assertIsNone(self.store.native_event("codex", "atomic-before"))
+        self.assertIsNone(self.store.claim(HANDLE, CLAIM)["latest_release_operation_id"])
+        self.store._connection.execute("DROP TRIGGER fail_before_release")
+        self.assertEqual(self.event("stop", "atomic-before")["status"], "observed")
+
+    def test_critical_journal_crash_after_intent_rolls_back_intent_and_reservation(self):
+        self.store._connection.execute(
+            "CREATE TRIGGER fail_after_release BEFORE UPDATE OF state ON native_events "
+            "WHEN NEW.state='done' BEGIN SELECT RAISE(ABORT,'crash after intent'); END"
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.event("stop", "atomic-after")
+        self.assertIsNone(self.store.native_event("codex", "atomic-after"))
+        self.assertIsNone(self.store.claim(HANDLE, CLAIM)["latest_release_operation_id"])
+        self.assertEqual(self.queue.pending(), [])
+        self.store._connection.execute("DROP TRIGGER fail_after_release")
+        self.assertEqual(self.event("stop", "atomic-after")["status"], "observed")
+
+    def test_stranded_tool_start_replay_cannot_reopen_closed_operation_or_requeue_activity(self):
+        event_id = "stranded-tool-start"
+        operation_id = self.events._operation_id(HANDLE, RUN, event_id, "activity")
+        self.store.begin_native_event("codex", event_id, "tool_start", HANDLE, RUN, NOW)
+        self.store.start_tool_operation(HANDLE, RUN, "tool-1", NOW, operation_id)
+        self.event("tool_success", "tool-success", native_call_id="tool-1")
+        self.store.clear_queue()
+        self.clock.advance(seconds=61)
+
+        self.event("tool_start", event_id, native_call_id="tool-1")
+
+        self.assertFalse(self.store.tool_operation(HANDLE, "tool-1")["active"])
+        self.assertEqual(self.queue.pending(), [])
+
+    def test_stranded_start_receipt_reuses_one_minted_execution(self):
+        payload = {
+            "native_session_id": "crashed-start-thread", "native_event_id": "crashed-start",
+            "checkout": "/tmp/repo", "lifecycle_capable": True,
+        }
+        with mock.patch.object(
+            self.store, "finish_native_event", side_effect=SystemExit("simulated crash")
+        ), self.assertRaisesRegex(SystemExit, "simulated crash"):
+            self.events.ingest_event("codex", "start", payload)
+        first = self.store._connection.execute(
+            "SELECT handle,run_generation FROM executions WHERE native_session_id=?",
+            ("crashed-start-thread",),
+        ).fetchone()
+
+        result = self.events.ingest_event("codex", "start", payload)
+
+        rows = self.store._connection.execute(
+            "SELECT handle,run_generation FROM executions WHERE native_session_id=?",
+            ("crashed-start-thread",),
+        ).fetchall()
+        self.assertEqual(rows, [first])
+        self.assertEqual((result["handle"], result["run_generation"]), first)
+
+    def test_completed_native_event_journal_retains_seven_days_and_prunes_only_done_rows(self):
+        self.event("activity", "done-old")
+        self.store.begin_native_event("codex", "processing-old", "activity", HANDLE, RUN, NOW)
+        old = NOW - timedelta(days=8)
+        self.store._connection.execute(
+            "UPDATE native_events SET created_at=?,completed_at=CASE WHEN state='done' THEN ? ELSE NULL END",
+            (old.isoformat(), old.isoformat()),
+        )
+        self.store.cleanup(NOW)
+        self.assertIsNone(self.store.native_event("codex", "done-old"))
+        self.assertEqual(self.store.native_event("codex", "processing-old")["state"], "processing")
+
+    def test_native_event_retention_uses_injected_receipt_time_and_exact_boundary(self):
+        self.event("activity", "retention-boundary")
+        self.assertEqual(
+            self.store.native_event("codex", "retention-boundary")["completed_at"], NOW
+        )
+        self.store.cleanup(NOW + timedelta(days=7))
+        self.assertIsNotNone(self.store.native_event("codex", "retention-boundary"))
+        self.store.cleanup(NOW + timedelta(days=7, microseconds=1))
+        self.assertIsNone(self.store.native_event("codex", "retention-boundary"))
 
     def test_queue_cap_evicts_oldest_activity_before_critical_rows(self):
         for index in range(MAX_QUEUE_ROWS - 1):

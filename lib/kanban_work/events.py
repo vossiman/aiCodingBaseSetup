@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 from typing import Callable
-from uuid import uuid4, uuid5
+from uuid import uuid5
 
 from .queue import LifecycleQueue
 from .schema import BridgeError, validate_local_handle
@@ -61,8 +61,12 @@ class EventIngestor:
             if duplicate is not None:
                 return duplicate
             try:
-                handle = str(uuid4())
-                generation = str(uuid4())
+                handle = str(uuid5(
+                    OPERATION_NAMESPACE, f"native-handle\0{harness}\0{event_id}"
+                ))
+                generation = str(uuid5(
+                    OPERATION_NAMESPACE, f"run-generation\0{harness}\0{event_id}"
+                ))
                 self.store.start_execution(
                     harness,
                     _bounded(payload.get("native_session_id"), "native_session_id"),
@@ -75,7 +79,7 @@ class EventIngestor:
                 )
                 result = {"status": "minted", "handle": handle,
                           "run_generation": generation}
-                self.store.finish_native_event(harness, event_id, result)
+                self.store.finish_native_event(harness, event_id, result, observed_at)
                 return result
             except Exception:
                 self.store.abandon_native_event(harness, event_id)
@@ -87,6 +91,13 @@ class EventIngestor:
         self._reject_unknown(payload, allowed)
         handle = validate_local_handle(payload.get("handle"))
         generation = _bounded(payload.get("run_generation"), "run_generation")
+        if event_name in {"stop", "end"}:
+            operation_id = self._operation_id(handle, generation, event_id,
+                                              "release" if event_name == "stop" else "end")
+            return self.store.ingest_critical_native_event(
+                harness, event_id, event_name, handle, generation, operation_id,
+                observed_at, DEFAULT_HANDOFF,
+            )
         duplicate = self.store.begin_native_event(
             harness, event_id, event_name, handle, generation, observed_at
         )
@@ -131,29 +142,9 @@ class EventIngestor:
                 )
                 result = {"status": "observed", "handle": handle,
                           "run_generation": generation, "sequence": sequence}
-            elif event_name == "stop":
-                self.store.close_tool_operations(handle, generation, observed_at)
-                claim = self.store.active_claim(handle)
-                operation_id = None
-                if claim is not None:
-                    handoff = claim.get("checkpoint") or DEFAULT_HANDOFF
-                    operation_id = self._operation_id(handle, generation, event_id, "release")
-                    self.store.persist_release_intent(
-                        handle, generation, claim["id"], operation_id,
-                        handoff, "stopped", observed_at,
-                    )
-                result = {"status": "observed", "handle": handle,
-                          "run_generation": generation, "operation_id": operation_id}
             else:
-                claim = self.store.active_claim(handle)
-                handoff = (claim or {}).get("checkpoint") or DEFAULT_HANDOFF
-                operation_id = self._operation_id(handle, generation, event_id, "end")
-                self.store.persist_end_intent(
-                    handle, generation, operation_id, handoff, observed_at
-                )
-                result = {"status": "observed", "handle": handle,
-                          "run_generation": generation, "operation_id": operation_id}
-            self.store.finish_native_event(harness, event_id, result)
+                raise BridgeError(422, f"unsupported native event {event_name!r}")
+            self.store.finish_native_event(harness, event_id, result, observed_at)
             return result
         except Exception:
             self.store.abandon_native_event(harness, event_id)
