@@ -30,6 +30,8 @@ if [[ "${_AICODINGSETUP_NVS_STRIPPED:-}" != 1 ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+: "${AICODING_BLUEPRINT_CLONE:=$SCRIPT_DIR}"
+export AICODING_BLUEPRINT_CLONE
 
 # Shared deployment library — used by both install.sh and aicoding-sync.
 . "$SCRIPT_DIR/lib/blueprint-deploy.sh"

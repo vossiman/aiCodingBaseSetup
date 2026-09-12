@@ -50,6 +50,8 @@ STUB
   rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$AICODING_BLUEPRINT_CLONE/"
   (cd "$AICODING_BLUEPRINT_CLONE" && git init -q && git add -A && \
     git -c user.email=t@t -c user.name=t commit -q -m initial)
+  git -C "$AICODING_BLUEPRINT_CLONE" remote add origin "$BLUEPRINT_ROOT"
+  git -C "$AICODING_BLUEPRINT_CLONE" update-ref refs/remotes/origin/main HEAD
   # cwd must leave the real checkout: _sync_devcontainer_pin targets the
   # cwd's repo, and tests must never write into $BLUEPRINT_ROOT.
   cd "$TMPDIR"
@@ -70,6 +72,14 @@ seed_verified_claude_config_dependencies() {
       mcp-registration-claude-context7 mcp-registration-claude-playwright; do
     aicoding_result_record "$component" current 1.0.0 verified 1.0.0
   done
+}
+
+@test "regression: Python bytecode caches are ignored throughout the blueprint" {
+  run git -C "$BLUEPRINT_ROOT" check-ignore --no-index -v \
+    lib/__pycache__/codex_merge.cpython-312.pyc \
+    tests/__pycache__/test_codex_merge.cpython-312.pyc
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 2 ]
 }
 
 # Bug 1 regression: ~/.bashrc must survive aicoding-sync --yes.

@@ -49,6 +49,16 @@ apt_install() {
   $SUDO env DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" install -y --no-install-recommends "$@"
 }
 
+# The smart Codex config planner is authored for Python 3.8 or newer. Require
+# a probe marker so a no-op command named python3 cannot satisfy the check.
+python3_at_least_3_8() {
+  local marker
+  command -v python3 &>/dev/null || return 1
+  marker="$(python3 -c 'import sys; print("aicoding-python-supported" if sys.version_info >= (3, 8) else "")' 2>/dev/null)" \
+    || return 1
+  [[ "$marker" == "aicoding-python-supported" ]]
+}
+
 # Universal:2 ships an apt source for dl.yarnpkg.com with a stale GPG key
 # (NO_PUBKEY 62D54FD4003F6525) that spams errors on every apt-get update.
 # We don't use yarn from apt; drop the source the first time we hit it.
@@ -669,6 +679,8 @@ auto_install_prereqs() {
   ensure_login_shells_clean
   ensure_dind_log_rotation
   command -v git    &>/dev/null || { info "Installing git";    apt_install git; }
+  python3_at_least_3_8 \
+    || { info "Installing Python 3.8 or newer"; apt_install python3; }
   # The old universal image shipped git-lfs via devcontainer feature; the
   # self-built devbox-base must carry it in the image (and this fallback
   # covers containers created from an image built before it was added).
@@ -723,12 +735,15 @@ check_prerequisites() {
   fi
 
   local missing=()
+  local python_missing=0
   command -v git   &>/dev/null || missing+=("git")
   command -v jq    &>/dev/null || missing+=("jq")
   command -v claude &>/dev/null || missing+=("claude (Claude Code CLI)")
+  python3_at_least_3_8 || { missing+=("python3"); python_missing=1; }
 
   if [[ ${#missing[@]} -gt 0 ]]; then
     err "Missing required tools: ${missing[*]}"
+    (( python_missing == 0 )) || err "Python 3.8 or newer is required."
     err "Please install them and re-run."
     exit 1
   fi
@@ -745,6 +760,7 @@ check_prerequisites() {
 # node/npm are needed for the npm packages backing stdio MCPs.
 check_prerequisites_host() {
   local missing=()
+  local python_missing=0
   command -v git  &>/dev/null || missing+=("git")
   command -v curl &>/dev/null || missing+=("curl")
   command -v jq   &>/dev/null || missing+=("jq")
@@ -752,8 +768,10 @@ check_prerequisites_host() {
   command -v npm  &>/dev/null || missing+=("npm")
   # Claude Code's Linux Bash-sandbox mode needs bwrap (apt pkg: bubblewrap).
   command -v bwrap &>/dev/null || missing+=("bubblewrap")
+  python3_at_least_3_8 || { missing+=("python3"); python_missing=1; }
   if [[ ${#missing[@]} -gt 0 ]]; then
     err "Missing required tools: ${missing[*]}"
+    (( python_missing == 0 )) || err "Python 3.8 or newer is required."
     err "Install them, then re-run:  sudo apt install ${missing[*]}"
     exit 1
   fi

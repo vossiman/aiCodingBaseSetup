@@ -73,6 +73,8 @@
       "**/.config/gh/**": "deny",
       "**/.claude.json": "deny",
       "**/.codex/config.toml": "deny",
+      "**/.codex/.aicoding-sync": "deny",
+      "**/.codex/.aicoding-sync/**": "deny",
       "**/.config/opencode/opencode.json": "deny",
       "**/.cursor/mcp.json": "deny",
       "**/*.p12": "deny",

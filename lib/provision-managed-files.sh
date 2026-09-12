@@ -59,6 +59,64 @@ _aicoding_managed_source_version() {
   git -C "$root" rev-parse HEAD 2>/dev/null || printf 'unknown\n'
 }
 
+# Reconcile setting-aware files without exposing their rendered values. The
+# engine owns all config/receipt writes; this wrapper only stages the local
+# manifest entry after a successful managed apply. It always returns zero so
+# set -e installers continue unrelated provisioning on a file-level failure.
+_provision_smart_managed_files() {
+  local context=${1:-installer} dest mode source bucket code plan result
+  local config_changed state_changed
+  _AICODING_PROVISION_SMART_ERRORS=0
+  _AICODING_PROVISION_SMART_CONFLICTS=0
+  while IFS='|' read -r dest mode source; do
+    [[ -z "$dest" ]] && continue
+    # Smart config writes require the same verified runtime/shared-consumer
+    # compatibility as every other managed destination.
+    _aicoding_initial_config_ready "$dest" || continue
+    codex_smart_plan "$dest" "$SCRIPT_DIR/$source" "$context"
+    plan=$CODEX_SMART_RESULT
+    bucket=$(codex_smart_bucket "$plan")
+    case "$bucket" in
+      smart_error)
+        code=$(codex_smart_error_code "$plan")
+        warn "Codex config not updated ($code): $dest"
+        _AICODING_INITIAL_CONFIG_DEFERRED=1
+        _AICODING_PROVISION_SMART_ERRORS=$((_AICODING_PROVISION_SMART_ERRORS + 1))
+        ;;
+      new_file_existing)
+        info "Leaving unmanaged Codex config untouched: $dest"
+        ;;
+      *)
+        codex_smart_apply "$dest" "$SCRIPT_DIR/$source" "$source" "$context"
+        result=$CODEX_SMART_RESULT
+        code=$(codex_smart_error_code "$result")
+        if [[ -n "$code" ]]; then
+          warn "Codex config not updated ($code): $dest"
+          _AICODING_INITIAL_CONFIG_DEFERRED=1
+          _AICODING_PROVISION_SMART_ERRORS=$((_AICODING_PROVISION_SMART_ERRORS + 1))
+        elif [[ $(printf '%s' "$result" | jq -r '.unmanaged') == true ]]; then
+          info "Leaving unmanaged Codex config untouched: $dest"
+        elif (( $(printf '%s' "$result" | jq '.conflicts | length') > 0 )); then
+          _AICODING_INITIAL_CONFIG_DEFERRED=1
+          config_changed=$(printf '%s' "$result" | jq -r '.config_changed')
+          state_changed=$(printf '%s' "$result" | jq -r '.state_changed')
+          if [[ "$config_changed" == true ]]; then
+            warn "Applied safe Codex updates but kept conflicting settings local: $dest"
+          elif [[ "$state_changed" == true ]]; then
+            warn "Updated Codex merge state; conflicting settings kept local: $dest"
+          else
+            warn "Conflicting Codex settings kept local; no updates applied: $dest"
+          fi
+          _AICODING_PROVISION_SMART_CONFLICTS=$((_AICODING_PROVISION_SMART_CONFLICTS + 1))
+        else
+          ok "reconciled Codex settings at $dest"
+        fi
+        ;;
+    esac
+  done < <(managed_inventory_smart)
+  return 0
+}
+
 # deploy_all_managed_files — wraps every managed-file deployment in a single
 # manifest staging session. Skill files are enumerated from MANAGED_SKILLS.
 deploy_all_managed_files() {
@@ -88,6 +146,8 @@ deploy_all_managed_files() {
       ok "merged $dest"
     fi
   done < <(managed_inventory_merge)
+
+  _provision_smart_managed_files installer
 
   # ~/.bashrc managed block.
   deploy_marker_block "$HOME/.bashrc" "$(managed_bashrc_block_body)" \
@@ -238,7 +298,7 @@ detect_install_mode() {
   # rebuild, 2026-08-17). Command substitution waits for the producer, so
   # there is no concurrent writer left to kill.
   local inventory dest
-  inventory=$(managed_inventory_overwrite; managed_inventory_merge)
+  inventory=$(managed_inventory_overwrite; managed_inventory_merge; managed_inventory_smart)
   while IFS='|' read -r dest _ _; do
     [[ -z "$dest" ]] && continue
     [[ -e "$dest" ]] && { echo "adopt"; return; }
@@ -292,6 +352,11 @@ adopt_existing_files() {
       deployed+=("$dest")
     fi
   done < <(managed_inventory_merge)
+
+  # Existing configs with no shared receipt are personal/unmanaged here and
+  # stay byte-for-byte untouched. Explicit aicoding-sync --yes performs the
+  # conservative adoption instead.
+  _provision_smart_managed_files installer
 
   # One-time fixup: today's install.sh appends a standalone Go-PATH export
   # to ~/.bashrc. The managed block now absorbs this export, so we strip
@@ -348,7 +413,7 @@ reconcile_existing_install() {
   export AICODING_BLUEPRINT_CLONE="$SCRIPT_DIR"
 
   declare -gA BUCKETS FILE_MODE FILE_SOURCE
-  classify_managed_files
+  classify_managed_files installer
 
   # Owned overwrite files self-heal even in the conservative reconcile path.
   local _d
@@ -370,14 +435,31 @@ reconcile_existing_install() {
           config-*) _AICODING_INITIAL_CONFIG_DEFERRED=1 ;;
         esac
         ;;
-      restore|new_file|will_update|will_update_owned|drifted_but_aligned|merge)
+      restore|new_file|will_update|will_update_owned|drifted_but_aligned|merge|smart_update|smart_conflict)
         _aicoding_initial_config_ready "$_d" || BUCKETS[$_d]=blocked
         ;;
+      smart_error) _AICODING_INITIAL_CONFIG_DEFERRED=1 ;;
     esac
   done
 
   manifest_stage_begin
-  apply_managed_buckets "restore new_file will_update will_update_owned drifted_but_aligned merge"
+  apply_managed_buckets \
+    "restore new_file will_update will_update_owned drifted_but_aligned merge smart_update smart_conflict smart_retired" \
+    installer
+  # Planning and apply-time failures (for example a concurrent edit or receipt
+  # write failure) are file-local. Surface only their fixed code, preserve the
+  # old manifest entry, and continue the rest of installation.
+  local smart_result smart_code
+  for _d in "${!SMART_PLAN[@]}"; do
+    smart_result=${SMART_APPLY_RESULT[$_d]:-${SMART_PLAN[$_d]}}
+    smart_code=$(codex_smart_error_code "$smart_result")
+    if [[ -n "$smart_code" ]]; then
+      warn "Codex config not updated ($smart_code): $_d"
+      _AICODING_INITIAL_CONFIG_DEFERRED=1
+    elif (( $(printf '%s' "$smart_result" | jq '.conflicts | length') > 0 )); then
+      _AICODING_INITIAL_CONFIG_DEFERRED=1
+    fi
+  done
   # Stamp the blueprint commit/origin we reconciled to, so the manifest's
   # recorded version matches what's actually deployed. Without this, reconcile
   # leaves blueprint_commit stale (first-deploy/adopt set it, reconcile didn't),
@@ -403,6 +485,16 @@ reconcile_existing_install() {
       merge)                n_merged=$((n_merged+1)) ;;
       drifted_and_updating) n_drifted=$((n_drifted+1)) ;;
       to_remove)            n_to_review=$((n_to_review+1)) ;;
+      smart_update)
+        smart_result=${SMART_APPLY_RESULT[$dest]:-${SMART_PLAN[$dest]}}
+        if [[ -n "$(codex_smart_error_code "$smart_result")" ]]; then
+          n_to_review=$((n_to_review+1))
+        else
+          n_updated=$((n_updated+1))
+        fi
+        ;;
+      smart_conflict)       n_to_review=$((n_to_review+1)) ;;
+      smart_error)          n_to_review=$((n_to_review+1)) ;;
     esac
   done
 

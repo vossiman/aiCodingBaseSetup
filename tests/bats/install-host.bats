@@ -6,6 +6,7 @@ setup() {
   export HOME="$TMPDIR"
   export AICODING_MANIFEST="$TMPDIR/.local/state/aicoding/manifest.json"
   export AICODINGSETUP_NONINTERACTIVE=1
+  export AICODING_BLUEPRINT_LOCAL=1
   # install-host.sh's nvs-strip prelude (copied from install.sh) unconditionally
   # `exec`s into `bash "$0"` unless this is already set. Under bats, sourcing
   # via `_source_host_lib` runs in a subshell whose $0 is bats' own test
@@ -16,7 +17,7 @@ setup() {
   export PATH="$TMPDIR/stubs:$PATH"
   mkdir -p "$TMPDIR/stubs" "$TMPDIR/.local/bin"
   # Prereq stubs present by default; individual tests remove them.
-  for t in git curl node npm bwrap claude; do
+  for t in curl node npm bwrap claude; do
     printf '#!/bin/bash\nexit 0\n' > "$TMPDIR/stubs/$t"; chmod +x "$TMPDIR/stubs/$t"
   done
   cat > "$TMPDIR/stubs/claude" <<'STUB'
@@ -28,6 +29,8 @@ esac
 exit 0
 STUB
   chmod +x "$TMPDIR/stubs/claude"
+  printf '#!/bin/bash\nexec /usr/bin/python3 "$@"\n' > "$TMPDIR/stubs/python3"
+  chmod +x "$TMPDIR/stubs/python3"
   # dirname and jq are real passthroughs, not no-op stubs. install-host.sh's
   # SCRIPT_DIR resolution (`dirname "${BASH_SOURCE[0]}"`) needs dirname's
   # actual output at source-time, and the deploy engine's manifest read/write
@@ -48,6 +51,69 @@ STUB
 
 teardown() { rm -rf "$TMPDIR"; }
 
+# Exercise the deployed host installer, not only the Python merge API. The
+# evidence cache is a test-owned stand-in for earlier CI-qualified hydration.
+make_gitless_host_release() {
+  export AICODING_STATE_DIR="$TMPDIR/.local/state/aicoding"
+  export AICODING_DATA_DIR="$TMPDIR/data"
+  export RELEASE_FIXTURE="$TMPDIR/release-source"
+  export AICODING_HOST_BLUEPRINT_DIR="$TMPDIR/gitless-release"
+  export AICODING_BLUEPRINT_CLONE="$AICODING_HOST_BLUEPRINT_DIR"
+  export AICODING_BLUEPRINT_LOCAL=0
+  rsync -a --exclude=.git --exclude=.claude/worktrees --exclude=out --exclude=__pycache__ \
+    "$BLUEPRINT_ROOT/" "$RELEASE_FIXTURE/"
+  git -C "$RELEASE_FIXTURE" init -q -b main
+  git -C "$RELEASE_FIXTURE" add -A
+  git -C "$RELEASE_FIXTURE" -c user.name=Test -c user.email=test@example.invalid commit -qm fixture
+  export RELEASE_SHA=$(git -C "$RELEASE_FIXTURE" rev-parse HEAD)
+  mkdir -p "$AICODING_HOST_BLUEPRINT_DIR"
+  git -C "$RELEASE_FIXTURE" archive HEAD | tar -x -C "$AICODING_HOST_BLUEPRINT_DIR"
+  printf '%s\n' "$RELEASE_SHA" > "$AICODING_HOST_BLUEPRINT_DIR/.aicoding-version"
+  (
+    umask 077
+    mkdir -p "$AICODING_STATE_DIR/code-provenance"
+    local cache="$AICODING_STATE_DIR/code-provenance/aicoding.git"
+    git clone -q --bare --no-local "$RELEASE_FIXTURE" "$cache"
+    git --git-dir="$cache" remote set-url origin https://github.com/vossiman/aiCodingBaseSetup
+    git --git-dir="$cache" update-ref "refs/aicoding/qualified/$RELEASE_SHA" "$RELEASE_SHA"
+  )
+  source "$BLUEPRINT_ROOT/lib/runtime.sh"
+  _aicoding_runtime_tree_digest "$AICODING_HOST_BLUEPRINT_DIR" > "$AICODING_HOST_BLUEPRINT_DIR/.aicoding-tree.sha256"
+}
+
+@test "Gitless host enrollment migrates tracked Codex preferences and repeats offline" {
+  make_gitless_host_release
+  mkdir -p "$HOME/.codex" "$(dirname "$AICODING_MANIFEST")"
+  printf 'model = "personal-model"\nmodel_reasoning_effort = "high"\n[projects."/personal/project"]\ntrust_level = "trusted"\n' > "$HOME/.codex/config.toml"
+  jq -n --arg dest "$HOME/.codex/config.toml" '{schema_version:1,profile:"host",files:{($dest):{mode:"overwrite",source:"configs/codex/config.toml",deployed_hash:"legacy"}}}' > "$AICODING_MANIFEST"
+  run bash "$AICODING_HOST_BLUEPRINT_DIR/install-host.sh" </dev/null
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  [ -f "$HOME/.codex/.aicoding-sync/config-state.json" ]
+  grep -Fxq 'model = "personal-model"' "$HOME/.codex/config.toml"
+  grep -Fxq 'model_reasoning_effort = "high"' "$HOME/.codex/config.toml"
+  grep -Fxq 'trust_level = "trusted"' "$HOME/.codex/config.toml"
+  jq -e --arg sha "$RELEASE_SHA" '.provenance.revision == $sha and .provenance.source_kind == "tracking"' "$HOME/.codex/.aicoding-sync/config-state.json"
+  cp "$HOME/.codex/config.toml" "$TMPDIR/first-config"
+  run bash "$AICODING_HOST_BLUEPRINT_DIR/install-host.sh" </dev/null
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  cmp "$TMPDIR/first-config" "$HOME/.codex/config.toml"
+  [[ "$output" != *invalid_blueprint_clone* ]]
+}
+
+@test "Gitless host enrollment without offline evidence preserves tracked Codex config" {
+  make_gitless_host_release
+  rm -rf "$AICODING_STATE_DIR/code-provenance"
+  mkdir -p "$HOME/.codex" "$(dirname "$AICODING_MANIFEST")"
+  printf 'model = "personal-model"\n' > "$HOME/.codex/config.toml"
+  cp "$HOME/.codex/config.toml" "$TMPDIR/before-config"
+  jq -n --arg dest "$HOME/.codex/config.toml" '{schema_version:1,profile:"host",files:{($dest):{mode:"overwrite",source:"configs/codex/config.toml",deployed_hash:"legacy"}}}' > "$AICODING_MANIFEST"
+  run bash "$AICODING_HOST_BLUEPRINT_DIR/install-host.sh" </dev/null
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  cmp "$TMPDIR/before-config" "$HOME/.codex/config.toml"
+  [ ! -e "$HOME/.codex/.aicoding-sync/config-state.json" ]
+  [[ "$output" == *revision_unavailable* ]]
+}
+
 _source_host_lib() {
   ( cd "$BLUEPRINT_ROOT" && source ./install-host.sh >/dev/null 2>&1; "$@" )
 }
@@ -67,6 +133,17 @@ _source_host_lib() {
   [ "$status" -eq 1 ]
   [[ "$output" == *"sudo apt install"*"jq"* ]]
   [[ "$output" == *"npm"* ]]
+}
+
+@test "check_prerequisites_host: Python older than 3.8 aborts with a manual install hint" {
+  printf '#!/bin/bash\nexit 1\n' > "$TMPDIR/stubs/python3"
+  chmod +x "$TMPDIR/stubs/python3"
+
+  run _source_host_lib check_prerequisites_host
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Python 3.8 or newer"* ]]
+  [[ "$output" == *"sudo apt install"*"python3"* ]]
+  [[ "$output" != *"Auto-installing"* ]]
 }
 
 @test "ensure_homelab_wiki: no-op when clone exists, no git call" {
@@ -213,6 +290,20 @@ EOF
   # belongs to an interactive `aicoding-sync`.
   grep -q 'my-personal-model' "$HOME/.codex/config.toml"
   if grep -q 'mcp_servers' "$HOME/.codex/config.toml"; then false; fi
+}
+
+@test "install-host.sh: force reinstall preserves an untracked personal Codex config" {
+  export AICODINGSETUP_SKIP_NETWORK=1
+  mkdir -p "$HOME/.codex"
+  printf 'model = "gpt-6-astra"\nmodel_reasoning_effort = "xhigh"\n' \
+    > "$HOME/.codex/config.toml"
+
+  run bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh --force-reinstall"
+  [ "$status" -eq 0 ]
+  grep -Fxq 'model = "gpt-6-astra"' "$HOME/.codex/config.toml"
+  grep -Fxq 'model_reasoning_effort = "xhigh"' "$HOME/.codex/config.toml"
+  if grep -q '^\[mcp_servers' "$HOME/.codex/config.toml"; then false; fi
+  jq -e '.files | has("'"$HOME"'/.codex/config.toml") | not' "$AICODING_MANIFEST"
 }
 
 @test "install-host.sh: absent MEMORY_ROUTER_TOKEN deploys no memory-router, keeps a manual one" {

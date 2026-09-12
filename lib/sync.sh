@@ -491,14 +491,118 @@ _sync_stage_selected_blueprint() {
   printf '%s\n' "$final"
 }
 
+_sync_has_smart_errors() {
+  local dest
+  for dest in "${!BUCKETS[@]}"; do
+    [[ ${BUCKETS[$dest]} == smart_error ]] && return 0
+    if [[ -n "${SMART_APPLY_RESULT[$dest]:-}" ]] \
+       && [[ $(printf '%s' "${SMART_APPLY_RESULT[$dest]}" | jq -r '.error != null') == true ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Value-free smart preview: only paths, operation names, and fixed diagnostic
+# codes are public. Rendered/local TOML and receipt fingerprints stay private.
+_sync_print_smart_details() {
+  local dest plan code item path operation
+  # Compatibility can block any managed destination, including non-smart files.
+  while IFS= read -r dest; do
+    [[ -n "$dest" && "${BUCKETS[$dest]}" == blocked ]] || continue
+    printf '      blocked by tool compatibility (no changes applied): %s\n' "$dest"
+  done < <(printf '%s\n' "${!BUCKETS[@]}" | sort)
+  while IFS= read -r dest; do
+    [[ -n "$dest" ]] || continue
+    [[ "${BUCKETS[$dest]:-}" != blocked ]] || continue
+    plan=${SMART_PLAN[$dest]:-}
+    [[ -n "$plan" ]] || continue
+    code=$(codex_smart_error_code "$plan")
+    if [[ -n "$code" ]]; then
+      printf '  ERROR: Codex config merge failed for %s (%s)\n' "$dest" "$code" >&2
+      continue
+    fi
+    while IFS= read -r item; do
+      [[ -n "$item" ]] || continue
+      path=$(printf '%s' "$item" | codex_smart_path_text)
+      operation=$(printf '%s' "$item" | jq -r '.operation')
+      printf '      safe %s: %s :: %s\n' "$operation" "$dest" "$path"
+    done < <(printf '%s' "$plan" | jq -c '.changes[]')
+    while IFS= read -r item; do
+      [[ -n "$item" ]] || continue
+      path=$(printf '%s' "$item" | codex_smart_path_text)
+      printf '      conflict (kept local): %s :: %s\n' "$dest" "$path"
+    done < <(printf '%s' "$plan" | jq -c '.conflicts[]')
+    while IFS= read -r item; do
+      [[ -n "$item" ]] || continue
+      path=$(printf '%s' "$item" | codex_smart_path_text)
+      printf '      profile adoption notice (kept local): %s :: %s\n' "$dest" "$path"
+    done < <(printf '%s' "$plan" | jq -c '.adoption_notices[]')
+  done < <(printf '%s\n' "${!SMART_PLAN[@]}" | sort)
+}
+
+# Collect optional path-level conflict/adoption decisions after the existing
+# overall apply confirmation. Empty input or EOF preserves local without
+# acknowledging the incoming value; an explicit local choice acknowledges it.
+_sync_collect_smart_decisions() {
+  local dest plan item path_json path kind answer decisions
+  for dest in "${!SMART_PLAN[@]}"; do
+    case "${BUCKETS[$dest]:-}" in smart_update|smart_conflict) ;; *) continue ;; esac
+    plan=${SMART_PLAN[$dest]}
+    decisions='[]'
+    # Keep the plan stream on fd 3 so the nested prompt still reads the
+    # caller's stdin. Redirecting the whole loop's stdin to jq would consume
+    # the next JSON item (or EOF) as the user's answer.
+    while IFS= read -r item <&3; do
+      [[ -n "$item" ]] || continue
+      path_json=$(printf '%s' "$item" | jq -c '.path')
+      path=$(printf '%s' "$item" | codex_smart_path_text)
+      kind=$(printf '%s' "$item" | jq -r '.kind')
+      if [[ "$kind" == adoption ]]; then
+        printf 'Codex profile adoption at %s :: %s — [l]ocal/[b]lueprint/[Enter skips]: ' "$dest" "$path"
+      else
+        printf 'Codex conflict at %s :: %s — [l]ocal/[b]lueprint/[Enter skips]: ' "$dest" "$path"
+      fi
+      if ! read -r answer; then
+        [ -t 0 ] || echo
+        break
+      fi
+      [ -t 0 ] || echo
+      case "$answer" in
+        l|L|local)
+          decisions=$(printf '%s' "$decisions" \
+            | jq --argjson path "$path_json" '. + [{path:$path,choice:"local"}]')
+          ;;
+        b|B|blueprint)
+          decisions=$(printf '%s' "$decisions" \
+            | jq --argjson path "$path_json" '. + [{path:$path,choice:"blueprint"}]')
+          ;;
+        *) : ;;
+      esac
+    done 3< <(printf '%s' "$plan" | jq -c \
+      '(.conflicts[] | . + {kind:"conflict"}), (.adoption_notices[] | . + {kind:"adoption"})')
+    SMART_DECISIONS[$dest]=$decisions
+  done
+}
+
 # Config reconcile: classify managed files, preview/prompt/apply per mode,
 # stamp the manifest. Ported from the old aicoding-update CLI and folded in.
 # $1 = mode: boot | first | dry-run | yes | interactive.
-# Returns 1 only in the no-manifest manual-error case (interactive/dry-run/yes);
-# returns 0 everywhere else.
+# Returns nonzero for manual no-manifest and smart-merge errors. Boot/first
+# remain fail-open so unattended maintenance continues.
 _sync_reconcile() {
   local mode=$1
   declare -gA _SYNC_DEFERRED_PROVISION_COMPONENTS=()
+  # Clear prior classifications before any early return. The caller uses this
+  # snapshot to distinguish actual smart errors from ordinary reconcile
+  # failures that must still abort before maintenance.
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE SMART_PLAN SMART_APPLY_RESULT SMART_DECISIONS
+  BUCKETS=()
+  FILE_MODE=()
+  FILE_SOURCE=()
+  SMART_PLAN=()
+  SMART_APPLY_RESULT=()
+  SMART_DECISIONS=()
   if _sync_color_on; then _SYNC_COLOR=1; else _SYNC_COLOR=0; fi
 
   # _sync_refresh_and_reexec already fetched in this process; a second fetch
@@ -544,7 +648,7 @@ _sync_reconcile() {
 
   declare -gA BUCKETS FILE_MODE FILE_SOURCE
   export AICODING_BLUEPRINT_CLONE
-  classify_managed_files
+  classify_managed_files "$mode"
 
   # Re-bucket owned overwrites: a drifted-but-blueprint-owned file is ours to
   # update without a "needs your decision" prompt.
@@ -566,7 +670,11 @@ _sync_reconcile() {
     export AICODING_REQUIRE_SHARED_COMPATIBILITY=1
     for d in "${!BUCKETS[@]}"; do
       case "${BUCKETS[$d]}" in
-        restore|new_file|will_update|will_update_owned|drifted_but_aligned|merge) ;;
+        restore|new_file|will_update|will_update_owned|drifted_but_aligned|merge|smart_update|smart_conflict) ;;
+        smart_error)
+          _SYNC_DEFERRED_PROVISION_COMPONENTS[codex]=1
+          continue
+          ;;
         *) continue ;;
       esac
       if ! reason=$(aicoding_config_is_compatible "$d"); then
@@ -591,7 +699,8 @@ _sync_reconcile() {
   declare -A COUNT
   local b
   for b in up_to_date will_update will_update_owned drifted_but_aligned \
-           drifted_and_updating restore new_file new_file_existing to_remove merge blocked; do
+           drifted_and_updating restore new_file new_file_existing to_remove merge \
+           smart_update smart_conflict smart_error smart_retired blocked; do
     COUNT[$b]=0
   done
   for d in "${!BUCKETS[@]}"; do
@@ -605,15 +714,21 @@ _sync_reconcile() {
 
   if [[ "$mode" == dry-run ]]; then
     for b in up_to_date will_update will_update_owned drifted_but_aligned \
-               drifted_and_updating restore new_file new_file_existing to_remove merge blocked; do
+             drifted_and_updating restore new_file new_file_existing to_remove merge \
+             smart_update smart_conflict smart_error smart_retired blocked; do
       echo "  ${COUNT[$b]} $b"
     done
+    _sync_print_smart_details
+    _sync_has_smart_errors && return 1
     return 0
   fi
 
   # Interactive preview (default mode only): counts + inline diffs.
   if [[ "$mode" == interactive ]]; then
     _sync_print_summary
+    _sync_print_smart_details
+  else
+    _sync_print_smart_details
   fi
 
   # Nothing actionable across every apply bucket?
@@ -622,12 +737,24 @@ _sync_reconcile() {
   # a pure manifest-hash refresh would wrongly trigger an Apply? prompt.
   if (( COUNT[will_update] + COUNT[will_update_owned] + COUNT[drifted_and_updating] \
         + COUNT[restore] + COUNT[new_file] + COUNT[new_file_existing] \
-        + COUNT[to_remove] + COUNT[merge] == 0 )); then
-    echo "Nothing to do."
+        + COUNT[to_remove] + COUNT[merge] + COUNT[smart_update] \
+        + COUNT[smart_conflict] + COUNT[smart_retired] == 0 )); then
+    if (( COUNT[smart_error] > 0 )); then
+      echo "No managed config changes applied."
+    else
+      echo "Nothing to do."
+    fi
     # Still advance the blueprint_commit stamp: the blueprint may have moved
     # without touching any managed file (lib/tests/bin-only changes). Leaving
     # the old commit recorded keeps aicoding-status on "behind" forever.
-    if [ "$blocked_count" -gt 0 ]; then
+    if _sync_has_smart_errors; then
+      _SYNC_DEFERRED_PROVISION_COMPONENTS[codex]=1
+      _SYNC_PASS_DEFERRED=1
+      command -v aicoding_result_record >/dev/null 2>&1 \
+        && aicoding_result_record config failed "$NEW_COMMIT" managed_config_apply_failed || true
+      if [[ "$mode" != boot && "$mode" != first ]]; then return 1; fi
+      return 0
+    elif [ "$blocked_count" -gt 0 ]; then
       echo "$blocked_count managed config update(s) blocked by tool compatibility"
       command -v aicoding_result_record >/dev/null 2>&1 \
         && aicoding_result_record config blocked "$NEW_COMMIT" partial_config_blocked || true
@@ -658,8 +785,13 @@ _sync_reconcile() {
     [ -t 0 ] || echo
     case "$answer" in
       y|Y|yes) ;;
-      *) echo "Skipped managed config changes. Continuing the rest of sync."; return 0 ;;
+      *)
+        echo "Skipped managed config changes. Continuing the rest of sync."
+        if _sync_has_smart_errors; then return 1; fi
+        return 0
+        ;;
     esac
+    _sync_collect_smart_decisions
   fi
 
   manifest_stage_begin || return $?
@@ -670,7 +802,7 @@ _sync_reconcile() {
     # new_file_existing, no to_remove) since boot runs unattended on every
     # container start — a personal file at a newly managed path must never be
     # replaced without a human in the loop.
-    buckets="restore new_file will_update will_update_owned drifted_but_aligned merge"
+    buckets="restore new_file will_update will_update_owned drifted_but_aligned merge smart_update smart_conflict smart_retired"
     if [ "$conflict_count" -gt 0 ]; then
       for d in "${!BUCKETS[@]}"; do
         case "${BUCKETS[$d]}" in
@@ -685,7 +817,7 @@ _sync_reconcile() {
     fi
   else
     # interactive / yes / first: full reconcile.
-    buckets="restore new_file new_file_existing will_update will_update_owned drifted_but_aligned drifted_and_updating merge to_remove"
+    buckets="restore new_file new_file_existing will_update will_update_owned drifted_but_aligned drifted_and_updating merge to_remove smart_update smart_conflict smart_retired"
   fi
   # The receipt's diffs must be taken before apply: afterwards dest == source.
   local -A DIFFS=()
@@ -698,8 +830,8 @@ _sync_reconcile() {
     done
   fi
 
-  local apply_rc=0
-  apply_managed_buckets "$buckets" || apply_rc=1
+  local apply_rc=0 smart_error_count=0
+  apply_managed_buckets "$buckets" "$mode" || apply_rc=1
   if [ "$apply_rc" -ne 0 ]; then
     for d in "${!APPLY_FAILURES[@]}"; do
       component=$(_aicoding_config_component "$d")
@@ -709,12 +841,34 @@ _sync_reconcile() {
     done
   fi
 
+  # The smart adapter reports value-safe failures in JSON so set -e callers
+  # can continue unrelated work. Fold those results back into the shared
+  # apply/deferred accounting before provisioning or result recording.
+  for d in "${!SMART_PLAN[@]}"; do
+    local smart_result smart_code
+    case "${BUCKETS[$d]:-}" in
+      smart_update|smart_conflict|smart_error) ;;
+      *) continue ;;
+    esac
+    smart_result=${SMART_APPLY_RESULT[$d]:-${SMART_PLAN[$d]}}
+    smart_code=$(codex_smart_error_code "$smart_result")
+    if [[ -n "$smart_code" ]]; then
+      APPLY_FAILURES[$d]=1
+      smart_error_count=$((smart_error_count + 1))
+      _SYNC_DEFERRED_PROVISION_COMPONENTS[codex]=1
+    elif (( $(printf '%s' "$smart_result" | jq '.conflicts | length') > 0 )); then
+      conflict_count=$((conflict_count + 1))
+      _SYNC_DEFERRED_PROVISION_COMPONENTS[codex]=1
+    fi
+  done
+
   # Per-bucket announcements (interactive output, not deploy behavior). Only
   # report buckets that were actually in the applied set for this mode. Boot
   # and first-run output goes to logs nobody reads, so those stay one-liners.
   while IFS= read -r d; do
     bucket=${BUCKETS[$d]}
     case " $buckets " in *" $bucket "*) ;; *) continue ;; esac
+    [[ "${FILE_MODE[$d]:-}" != toml_merge ]] || continue
     case "$bucket" in
       restore|new_file|new_file_existing|will_update|will_update_owned|drifted_and_updating|merge|to_remove) ;;
       *) continue ;;
@@ -726,12 +880,46 @@ _sync_reconcile() {
     fi
   done < <(printf '%s\n' "${!BUCKETS[@]}" | sort)
 
+  # Smart application results are intentionally not described as a complete
+  # merge when conflicts remain, and never reuse the raw-diff reporter.
+  while IFS= read -r d; do
+    [[ -n "$d" ]] || continue
+    bucket=${BUCKETS[$d]}
+    case " $buckets " in *" $bucket "*) ;; *) continue ;; esac
+    if [[ "$bucket" == smart_retired ]]; then
+      echo "      retired Codex management (config preserved): $d"
+      continue
+    fi
+    [[ -n "${SMART_APPLY_RESULT[$d]:-}" ]] || continue
+    local smart_result smart_code smart_config_changed smart_state_changed
+    smart_result=${SMART_APPLY_RESULT[$d]}
+    smart_code=$(codex_smart_error_code "$smart_result")
+    smart_config_changed=$(printf '%s' "$smart_result" | jq -r '.config_changed')
+    smart_state_changed=$(printf '%s' "$smart_result" | jq -r '.state_changed')
+    if [[ -n "$smart_code" ]]; then
+      printf '  ERROR: Codex config merge failed for %s (%s)\n' "$d" "$smart_code" >&2
+    elif (( $(printf '%s' "$smart_result" | jq '.conflicts | length') > 0 )); then
+      if [[ "$smart_config_changed" == true ]]; then
+        echo "      applied safe Codex updates; conflicting settings kept local: $d"
+      elif [[ "$smart_state_changed" == true ]]; then
+        echo "      updated Codex merge state; conflicting settings kept local: $d"
+      else
+        echo "      conflicting Codex settings kept local; no updates applied: $d"
+      fi
+    elif [[ "$smart_config_changed" == true ]]; then
+      echo "      merged Codex settings: $d"
+    elif [[ "$smart_state_changed" == true ]]; then
+      echo "      updated Codex merge state (config bytes preserved): $d"
+    fi
+  done < <(printf '%s\n' "${!BUCKETS[@]}" | sort)
+
   local origin
   origin=$(blueprint_origin "$AICODING_BLUEPRINT_CLONE")
   # Stamps the new commit and drops aicoding-status's cached `latest`, so the
   # next tick re-fetches instead of comparing against a pre-sync remote SHA
   # (see the helper's comment for why that drop still matters).
-  if [ "$blocked_count" -eq 0 ] && [ "$conflict_count" -eq 0 ] && [ "$apply_rc" -eq 0 ]; then
+  if [ "$blocked_count" -eq 0 ] && [ "$conflict_count" -eq 0 ] \
+      && [ "$smart_error_count" -eq 0 ] && [ "$apply_rc" -eq 0 ]; then
     if ! manifest_stage_set_blueprint "$NEW_COMMIT" "$origin"; then
       apply_rc=1
       _SYNC_DEFERRED_PROVISION_COMPONENTS[claude]=1
@@ -748,7 +936,7 @@ _sync_reconcile() {
   if command -v aicoding_result_record >/dev/null 2>&1; then
     if [ "$commit_rc" -ne 0 ]; then
       aicoding_result_record config failed "$NEW_COMMIT" manifest_write_failed || true
-    elif [ "$apply_rc" -ne 0 ]; then
+    elif [ "$apply_rc" -ne 0 ] || [ "$smart_error_count" -gt 0 ]; then
       aicoding_result_record config failed "$NEW_COMMIT" managed_config_apply_failed || true
     elif [ "$conflict_count" -gt 0 ]; then
       aicoding_result_record config conflict "$NEW_COMMIT" managed_config_conflict || true
@@ -758,8 +946,12 @@ _sync_reconcile() {
       aicoding_result_record config blocked "$NEW_COMMIT" partial_config_blocked || true
     fi
   fi
-  if [ "$blocked_count" -gt 0 ] || [ "$conflict_count" -gt 0 ]; then
+  if [ "$blocked_count" -gt 0 ] || [ "$conflict_count" -gt 0 ] \
+      || [ "$smart_error_count" -gt 0 ]; then
     _SYNC_PASS_DEFERRED=1
+  fi
+  if [ "$smart_error_count" -gt 0 ] && [[ "$mode" != boot && "$mode" != first ]]; then
+    return 1
   fi
   [ "$apply_rc" -eq 0 ] && [ "$commit_rc" -eq 0 ]
 }
@@ -846,6 +1038,7 @@ _sync_diff_for_bucket() {
     *) return 0 ;;
   esac
   [ "${FILE_MODE[$dest]:-overwrite}" != marker_block ] || return 0
+  [ "${FILE_MODE[$dest]:-overwrite}" != toml_merge ] || return 0
   _sync_diff_body "$dest" "$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]}" "${FILE_MODE[$dest]:-overwrite}"
 }
 
@@ -922,6 +1115,34 @@ _sync_print_summary() {
     echo "  ${COUNT[merge]} merge target(s)     (will re-merge, additions preserved):"
     for dest in "${!BUCKETS[@]}"; do
       [[ ${BUCKETS[$dest]} == merge ]] && echo "      $dest"
+    done
+  fi
+
+  if (( COUNT[smart_update] > 0 )); then
+    echo "  ${COUNT[smart_update]} Codex smart update(s) (safe setting/receipt changes):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} == smart_update ]] && echo "      $dest"
+    done
+  fi
+
+  if (( COUNT[smart_conflict] > 0 )); then
+    echo "  ${COUNT[smart_conflict]} Codex config(s) with path-level choices (local preserved by default):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} == smart_conflict ]] && echo "      $dest"
+    done
+  fi
+
+  if (( COUNT[smart_error] > 0 )); then
+    echo "  ${COUNT[smart_error]} Codex smart merge error(s) (config preserved):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} == smart_error ]] && echo "      $dest"
+    done
+  fi
+
+  if (( COUNT[smart_retired] > 0 )); then
+    echo "  ${COUNT[smart_retired]} retired Codex target(s) (config and receipt preserved):"
+    for dest in "${!BUCKETS[@]}"; do
+      [[ ${BUCKETS[$dest]} == smart_retired ]] && echo "      $dest"
     done
   fi
 

@@ -416,10 +416,148 @@ EOF
   cp "$BLUEPRINT_ROOT/configs/codex/config.toml" "$TMPDIR/clone/configs/codex/config.toml"
   _substitute_file_to "$TMPDIR/clone/configs/codex/config.toml" "$TMPDIR/out.toml"
   if grep -q '^\[mcp_servers.memory-router\]' "$TMPDIR/out.toml"; then false; fi
+  # Removed servers must not leave explanatory comments suggesting availability.
+  if grep -q 'memory-router\|memory_search' "$TMPDIR/out.toml"; then false; fi
   # No dangling empty bearer anywhere in the rendered file.
   if grep -q 'Bearer "' "$TMPDIR/out.toml"; then false; fi
   # Other content is intact.
   grep -q '^model' "$TMPDIR/out.toml"
+}
+
+@test "Codex rendered comments stay generic while configured server and HOME values render" {
+  export MEMORY_ROUTER_TOKEN=synthetic-comment-test
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  _substitute_file_to "$BLUEPRINT_ROOT/configs/codex/config.toml" "$TMPDIR/out.toml"
+  grep '^#' "$TMPDIR/out.toml" > "$TMPDIR/comments"
+  # Prose explains substitution without itself becoming a path or placeholder.
+  if grep -qF "$HOME" "$TMPDIR/comments"; then false; fi
+  if grep -qF '{{' "$TMPDIR/comments"; then false; fi
+  grep -qF "notify = [\"$HOME/.local/bin/codex-turn-done\"]" "$TMPDIR/out.toml"
+  grep -q '^\[mcp_servers.memory-router\]' "$TMPDIR/out.toml"
+  grep -q 'memory_search tool' "$TMPDIR/comments"
+  grep -qF 'Authorization = "Bearer synthetic-comment-test"' "$TMPDIR/out.toml"
+}
+
+@test "Codex smart render and strip files stay private through the engine boundary" {
+  local clone="$TMPDIR/private-clone" dest="$TMPDIR/private-home/.codex/config.toml"
+  local stubs="$TMPDIR/private-stubs" old_path=$PATH
+  mkdir -p "$clone/configs/codex" "$stubs" "$(dirname "$dest")"
+  cat > "$clone/configs/codex/config.toml" <<'EOF'
+private_token = "{{FIRECRAWL_API_KEY}}"
+
+[mcp_servers.memory-router]
+http_headers = { Authorization = "Bearer {{MEMORY_ROUTER_TOKEN}}" }
+EOF
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  export AICODING_BLUEPRINT_CLONE="$clone" AICODING_BLUEPRINT_LOCAL=1
+  export FIRECRAWL_API_KEY=fake-render-secret
+  unset MEMORY_ROUTER_TOKEN
+  export AICODING_TEST_STRIP_MODE="$TMPDIR/strip-mode"
+  export AICODING_TEST_ENGINE_MODE="$TMPDIR/engine-mode"
+
+  cat > "$stubs/awk" <<'STUB'
+#!/bin/bash
+target=$(/usr/bin/readlink "/proc/$$/fd/1")
+/usr/bin/stat -c '%a' "$target" > "$AICODING_TEST_STRIP_MODE"
+exec /usr/bin/awk "$@"
+STUB
+  cat > "$stubs/python3" <<'STUB'
+#!/bin/bash
+if [[ "${1:-}" == -c ]]; then
+  exec /usr/bin/python3 "$@"
+fi
+source_path=
+while (( $# > 0 )); do
+  if [[ "$1" == --source ]]; then
+    shift
+    source_path=$1
+  fi
+  shift
+done
+/usr/bin/stat -c '%a' "$source_path" > "$AICODING_TEST_ENGINE_MODE"
+printf '%s\n' '{"config_changed":false,"state_changed":false,"conflicts":[],"error":null,"unmanaged":false,"token":"plan-v1:test","changes":[],"adoption_notices":[]}'
+STUB
+  chmod +x "$stubs/awk" "$stubs/python3"
+
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  umask 0022
+  export PATH="$stubs:$PATH"
+  codex_smart_plan "$dest" "$clone/configs/codex/config.toml" yes
+  export PATH=$old_path
+
+  [ "$(cat "$AICODING_TEST_STRIP_MODE")" = 600 ]
+  [ "$(cat "$AICODING_TEST_ENGINE_MODE")" = 600 ]
+  [ "$(codex_smart_error_code "$CODEX_SMART_RESULT")" = "" ]
+  [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'aicoding-codex-*' -print)" ]
+}
+
+@test "Codex smart planning reports runtime_unavailable for Python older than 3.8" {
+  local stubs="$TMPDIR/old-python"
+  mkdir -p "$stubs"
+  printf '#!/bin/sh\nexit 1\n' > "$stubs/python3"
+  chmod +x "$stubs/python3"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+
+  PATH="$stubs:$PATH" codex_smart_plan \
+    "$HOME/.codex/config.toml" "$BLUEPRINT_ROOT/configs/codex/config.toml" yes
+
+  [ "$(codex_smart_error_code "$CODEX_SMART_RESULT")" = runtime_unavailable ]
+  [ ! -e "$HOME/.codex/config.toml" ]
+  [ ! -e "$HOME/.codex/.aicoding-sync" ]
+}
+
+@test "Codex smart planning rejects a Python executable without the capability marker" {
+  local stubs="$TMPDIR/no-capability-python"
+  mkdir -p "$stubs"
+  printf '#!/bin/sh\nexit 0\n' > "$stubs/python3"
+  chmod +x "$stubs/python3"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+
+  PATH="$stubs:$PATH" codex_smart_plan \
+    "$HOME/.codex/config.toml" "$BLUEPRINT_ROOT/configs/codex/config.toml" yes
+
+  [ "$(codex_smart_error_code "$CODEX_SMART_RESULT")" = runtime_unavailable ]
+  [ ! -e "$HOME/.codex/config.toml" ]
+  [ ! -e "$HOME/.codex/.aicoding-sync" ]
+}
+
+@test "Codex smart render failures stop before apply and clean private temporaries" {
+  local tool case_dir clone dest state stubs old_path=$PATH before_pending
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  unset MEMORY_ROUTER_TOKEN
+  for tool in sed awk mv; do
+    case_dir="$TMPDIR/fail-$tool"
+    clone="$case_dir/clone"
+    dest="$case_dir/home/.codex/config.toml"
+    state="$case_dir/home/.codex/.aicoding-sync/config-state.json"
+    stubs="$case_dir/stubs"
+    mkdir -p "$clone/configs/codex" "$stubs" "$(dirname "$dest")"
+    cat > "$clone/configs/codex/config.toml" <<'EOF'
+private_token = "{{FIRECRAWL_API_KEY}}"
+
+[mcp_servers.memory-router]
+http_headers = { Authorization = "Bearer {{MEMORY_ROUTER_TOKEN}}" }
+EOF
+    export AICODING_MANIFEST="$case_dir/manifest.json"
+    echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+    export AICODING_BLUEPRINT_CLONE="$clone" AICODING_BLUEPRINT_LOCAL=1
+    export FIRECRAWL_API_KEY=fake-render-secret
+    printf '#!/bin/sh\nexit 9\n' > "$stubs/$tool"
+    chmod +x "$stubs/$tool"
+
+    manifest_stage_begin
+    before_pending=$_aicoding_pending_manifest
+    export PATH="$stubs:$old_path"
+    codex_smart_apply "$dest" "$clone/configs/codex/config.toml" \
+      configs/codex/config.toml yes
+    export PATH=$old_path
+
+    [ "$(codex_smart_error_code "$CODEX_SMART_RESULT")" = source_render_failed ]
+    [ "$_aicoding_pending_manifest" = "$before_pending" ]
+    [ ! -e "$dest" ]
+    [ ! -e "$state" ]
+    [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'aicoding-codex-*' -print)" ]
+  done
 }
 
 @test "merge with token absent preserves an existing manual memory-router entry" {
@@ -913,11 +1051,74 @@ EOF
   echo "$output" | grep -qE "^      backup: $HOME/.tmux.conf.bak\.[0-9]+-[0-9]+$"
 }
 
-@test "managed_inventory_overwrite: includes codex config.toml" {
+@test "managed_inventory_smart: owns codex config.toml in toml_merge mode" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run managed_inventory_overwrite
+  run managed_inventory_smart
   [ "$status" -eq 0 ]
-  echo "$output" | grep -qF "$HOME/.codex/config.toml|overwrite|configs/codex/config.toml"
+  echo "$output" | grep -qxF "$HOME/.codex/config.toml|toml_merge|configs/codex/config.toml"
+  run managed_inventory_overwrite
+  [[ "$output" != *"/.codex/config.toml|"* ]]
+}
+
+@test "codex_smart_bucket: error and conflict precedence retain mixed plans" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  local base
+  base='{"config_changed":true,"state_changed":true,"conflicts":[{"path":["x"]}],"error":{"code":"invalid_destination_toml"},"unmanaged":false,"token":null,"changes":[{"path":["safe"],"operation":"add"}],"adoption_notices":[]}'
+  [ "$(codex_smart_bucket "$base")" = smart_error ]
+  [ "$(codex_smart_bucket "$(printf '%s' "$base" | jq '.error = null')")" = smart_conflict ]
+  [ "$(codex_smart_bucket "$(printf '%s' "$base" | jq '.error = null | .conflicts = [] | .adoption_notices = [{path:["profile"]}]')")" = smart_conflict ]
+  [ "$(codex_smart_bucket "$(printf '%s' "$base" | jq '.error = null | .conflicts = [] | .adoption_notices = []')")" = smart_update ]
+}
+
+@test "smart manifest recording bumps schema only when toml_merge is recorded" {
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+
+  manifest_stage_begin
+  manifest_set_file "$TMPDIR/generic" '{"mode":"overwrite","source":"generic","deployed_hash":"abc"}'
+  manifest_stage_commit
+  jq -e '.schema_version == 1' "$AICODING_MANIFEST"
+
+  manifest_stage_begin
+  codex_smart_record_manifest "$HOME/.codex/config.toml" configs/codex/config.toml
+  manifest_stage_commit
+  jq -e '.schema_version == 2' "$AICODING_MANIFEST"
+  jq -e '.files["'"$HOME"'/.codex/config.toml"] == {"mode":"toml_merge","source":"configs/codex/config.toml"}' \
+    "$AICODING_MANIFEST"
+  run manifest_check_schema
+  [ "$status" -eq 0 ]
+}
+
+@test "smart retirement preserves Codex config and receipt for current and legacy entries" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/empty-blueprint"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE" "$HOME/.codex/.aicoding-sync"
+  printf 'model = "personal"\n' > "$HOME/.codex/config.toml"
+  printf '{"private":"state"}\n' > "$HOME/.codex/.aicoding-sync/config-state.json"
+  local config_before receipt_before mode
+  config_before=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
+  receipt_before=$(sha256sum "$HOME/.codex/.aicoding-sync/config-state.json" | awk '{print $1}')
+
+  # Simulate a future blueprint removing the smart target entirely.
+  managed_inventory_overwrite() { :; }
+  managed_inventory_merge() { :; }
+  managed_inventory_smart() { :; }
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE
+  for mode in toml_merge overwrite; do
+    printf '{"schema_version":1,"files":{"%s":{"mode":"%s","source":"configs/codex/config.toml"}}}\n' \
+      "$HOME/.codex/config.toml" "$mode" > "$AICODING_MANIFEST"
+    classify_managed_files
+    [ "${BUCKETS[$HOME/.codex/config.toml]}" = smart_retired ]
+    manifest_stage_begin
+    apply_managed_buckets smart_retired
+    manifest_stage_commit
+    jq -e '.files | has("'"$HOME"'/.codex/config.toml") | not' "$AICODING_MANIFEST"
+    [ "$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')" = "$config_before" ]
+    [ "$(sha256sum "$HOME/.codex/.aicoding-sync/config-state.json" | awk '{print $1}')" = "$receipt_before" ]
+  done
+
+  classify_managed_files
+  [ -z "${BUCKETS[$HOME/.codex/config.toml]+present}" ]
 }
 
 @test "managed_inventory_overwrite: includes global claude CLAUDE.md" {
@@ -1148,16 +1349,18 @@ EOF
   [ "$output" = "host" ]
 }
 
-@test "inventories: container profile output is unchanged (no boot-sync, has tmux/codex/cursor)" {
+@test "inventories: container profile has tmux/cursor and routes Codex separately" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run managed_inventory_overwrite
   [[ "$output" == *"/.tmux.conf|"* ]]
   [[ "$output" == *"aicoding-ssh-auth-sock.sh|"* ]]
-  [[ "$output" == *"/.codex/config.toml|"* ]]
+  [[ "$output" != *"/.codex/config.toml|"* ]]
   [[ "$output" != *"aicoding-boot-sync.sh"* ]]
   run managed_inventory_merge
   [[ "$output" == *"opencode.json|"* ]]
   [[ "$output" == *"/.cursor/mcp.json|"* ]]
+  run managed_inventory_smart
+  [[ "$output" == *"/.codex/config.toml|toml_merge|"* ]]
 }
 
 @test "inventories: host profile drops container-only wiring, keeps agent CLI configs" {
@@ -1169,8 +1372,9 @@ EOF
   [[ "$output" != *"aicoding-ssh-auth-sock.sh|"* ]]
   [[ "$output" == *"$HOME/.bashrc.d/aicoding-boot-sync.sh|overwrite|configs/bash/boot-sync.sh"* ]]
   [[ "$output" == *"/.claude/CLAUDE.md|"* ]]
-  # Agent CLI configs are managed on hosts too (user decision 2026-08-19).
-  [[ "$output" == *"/.codex/config.toml|"* ]]
+  # Agent CLI configs are managed on hosts too (user decision 2026-08-19),
+  # but Codex config is setting-aware rather than an overwrite target.
+  [[ "$output" != *"/.codex/config.toml|"* ]]
   [[ "$output" == *"/.codex/AGENTS.md|"* ]]
   [[ "$output" == *"/.cursor/skills/aicoding-estate/SKILL.md|overwrite|configs/cursor/skills/aicoding-estate/SKILL.md"* ]]
   run managed_inventory_merge
@@ -1178,6 +1382,8 @@ EOF
   [[ "$output" == *"opencode.json|"* ]]
   [[ "$output" == *"/.cursor/mcp.json|"* ]]
   [[ "$output" == *"/.cursor/cli-config.json|"* ]]
+  run managed_inventory_smart
+  [[ "$output" == *"/.codex/config.toml|toml_merge|"* ]]
   unset AICODING_PROFILE
 }
 

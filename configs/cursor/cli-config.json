@@ -8,6 +8,8 @@
       "Read(**/*.secrets.env)",
       "Read(**/.aicodingsetup/**)",
       "Read(**/.claude.json)",
+      "Read(**/.codex/.aicoding-sync)",
+      "Read(**/.codex/.aicoding-sync/**)",
       "Read(**/.codex/config.toml)",
       "Read(**/.config/gh/**)",
       "Read(**/.config/opencode/opencode.json)",
