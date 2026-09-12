@@ -76,15 +76,19 @@ adversarial security boundary against another process running as that user.
 Lifecycle mutations stay disabled unless the exact installed client version is
 listed in `configs/kanban/qualified-clients.json`; board read tools remain
 available. A missing matrix, malformed matrix, or unlisted version therefore
-keeps compatibility mode. The qualification phase runs each real client
-against a loopback fake board with:
+keeps compatibility mode. The qualification preflight observes each real
+client's exact version and writes an honest unsupported report unless native
+lifecycle evidence exists:
 
 ```bash
 tools/qualify-kanban-clients --all --output out/kanban-mcp-qualification
 ```
 
-That command uses a temporary exact-version candidate matrix and fake test
-credential. It does not enable production enforcement by itself.
+It launches no model today, and the production matrix is empty. Rollout is
+Codex-first; the other clients are not a prerequisite for a later Codex-only
+rollout. Codex remains unsupported because its available nonexecuting hook
+inventory does not use the same configuration as the proposed model launch.
+See [the qualification status and blockers](docs/kanban-mcp-qualification.md).
 
 ### Claude Code Plugins (Marketplace)
 

@@ -884,6 +884,14 @@ git commit -m "feat(kanban): pin and register the canonical MCP"
 
 ### Task 8: Real-client qualification and rollout evidence
 
+> Scope update (user-approved, 2026-09-12): rollout is Codex-first and does not
+> require four clients to qualify. Task 8 currently delivers only honest
+> version observation and unsupported preflight reports; it launches no model
+> and leaves the production matrix empty. The original four-qualified expected
+> results below describe the earlier target and have not been achieved. Codex
+> remains blocked because the nonexecuting app-server inventory does not load
+> the same configuration as `exec --ignore-user-config`.
+
 **Files:**
 - Create: `tools/qualify-kanban-clients`
 - Create: `configs/kanban/qualified-clients.json`

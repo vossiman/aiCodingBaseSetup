@@ -56,7 +56,7 @@ that source.
 | Client | Native integration | Lifecycle behavior | Enforcement gate |
 |---|---|---|---|
 | Claude Code | SessionStart, PreToolUse, PostToolUse, PostToolUseFailure, Stop, SubagentStop, SessionEnd hooks | Native session and agent identity, tool activity, child-aware stop, final reconciliation | Exact qualified Claude Code version |
-| Codex | Managed SessionStart, PreToolUse, PostToolUse, PostToolUseFailure, Stop, SessionEnd hooks | Native thread and turn generation, tool activity, failed-call reconciliation, final reconciliation | Exact qualified Codex version |
+| Codex | Managed SessionStart, PreToolUse, PostToolUse, Stop, SessionEnd hooks | Native thread and turn generation, successful tool activity, bounded failed-call reconciliation gate, final reconciliation | Exact qualified Codex version |
 | Cursor Agent | SessionStart, preToolUse, postToolUse, postToolUseFailure, stop, subagentStop, sessionEnd hooks | Native conversation and generation identity, tool activity, child-stop correlation, final reconciliation | Exact qualified Cursor build string |
 | OpenCode | Local plugin lifecycle and tool hooks | Native session and plugin-instance generation, tool activity, parent/child tracking, idle and deletion reconciliation | Exact qualified OpenCode version |
 
@@ -70,6 +70,13 @@ string do not imply support. Qualification runs with:
 ```bash
 tools/qualify-kanban-clients --all --output out/kanban-mcp-qualification
 ```
+
+This command is currently a version-observing preflight and records all native
+scenarios as unobserved. The matrix is empty. Rollout is Codex-first, without a
+four-client prerequisite, but Codex 0.154.0 remains unsupported because the
+available nonexecuting app-server inventory does not load the same
+configuration as `exec --ignore-user-config`. See
+[Kanban MCP qualification](kanban-mcp-qualification.md).
 
 The local SQLite registry binds a handle to one native identity and run
 generation, consumes a matching pre-call permit once, renews activity while a
