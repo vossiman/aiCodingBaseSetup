@@ -589,8 +589,13 @@ _sync_reconcile() {
   # Clear prior classifications before any early return. The caller uses this
   # snapshot to distinguish actual smart errors from ordinary reconcile
   # failures that must still abort before maintenance.
-  declare -gA BUCKETS
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE SMART_PLAN SMART_APPLY_RESULT SMART_DECISIONS
   BUCKETS=()
+  FILE_MODE=()
+  FILE_SOURCE=()
+  SMART_PLAN=()
+  SMART_APPLY_RESULT=()
+  SMART_DECISIONS=()
   if _sync_color_on; then _SYNC_COLOR=1; else _SYNC_COLOR=0; fi
 
   # _sync_refresh_and_reexec already fetched in this process; a second fetch

@@ -1469,7 +1469,7 @@ EOF
   [ "$status" -eq 0 ]
   echo "$output" | grep -q 'invalid_destination_toml'
   [[ "$output" != *"do-not-print"* ]]
-  echo "$output" | grep -qE 'updated 0 .*to_review [1-9][0-9]*$'
+  echo "$output" | grep -q 'Completed with deferrals'
   [[ "$output" != *"reconciled Codex settings"* ]]
   grep -Fxq 'private-value = "do-not-print"' "$HOME/.codex/config.toml"
 }

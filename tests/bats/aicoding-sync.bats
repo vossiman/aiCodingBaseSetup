@@ -280,7 +280,7 @@ EOF
   (cd "$AICODING_BLUEPRINT_CLONE" && git checkout -q -B main)
   first=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD)
   git clone -q --bare "$AICODING_BLUEPRINT_CLONE" "$TMPDIR/exact-origin.git"
-  git -C "$AICODING_BLUEPRINT_CLONE" remote add origin "$TMPDIR/exact-origin.git"
+  git -C "$AICODING_BLUEPRINT_CLONE" remote set-url origin "$TMPDIR/exact-origin.git"
   local work="$TMPDIR/exact-work"
   git clone -q "$TMPDIR/exact-origin.git" "$work"
   echo newer >> "$work/README.md"

@@ -61,6 +61,13 @@ teardown() { cd /; rm -rf "$TMP"; }
 _smart_blueprint_copy() {
   BP="$TMP/smart-blueprint"
   rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$BP/"
+  # These tests exercise smart-merge semantics, not update qualification. Main's
+  # compatibility gate has dedicated coverage and would otherwise require each
+  # fixture commit to carry a synthetic runtime receipt.
+  cat >> "$BP/lib/update-components.sh" <<'EOF'
+
+aicoding_config_is_compatible() { return 0; }
+EOF
   git -C "$BP" init -q
   git -C "$BP" add -A
   git -C "$BP" -c user.email=t@t -c user.name=t commit -q -m baseline
@@ -680,6 +687,8 @@ EOF
   rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$clone/"
   ( cd "$clone" && git init -q && git add -A &&
     git -c user.email=t@t -c user.name=t commit -q -m initial )
+  git -C "$clone" remote add origin "$BLUEPRINT_ROOT"
+  git -C "$clone" update-ref refs/remotes/origin/main HEAD
   export AICODING_BLUEPRINT_CLONE="$clone" AICODING_BLUEPRINT_LOCAL=1 SCRIPT_DIR="$clone"
   bash "$clone/install.sh" </dev/null
   local old_codex old_tmux
@@ -930,7 +939,8 @@ EOF
   if echo "$output" | grep -q 'never-print-me'; then false; fi
   if echo "$output" | grep -q "merged: $HOME/.codex/config.toml"; then false; fi
   grep -Fxq 'credential-super-secret = "never-print-me"' "$HOME/.codex/config.toml"
-  grep -q 'claude mcp add' "$TMP/ran.log"
+  echo "$output" | grep -q 'dvw-probe installed'
+  if grep -q '^codex plugin' "$TMP/ran.log"; then false; fi
   if ls "$HOME"/.codex/config.toml.bak.* 2>/dev/null; then false; fi
   [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'aicoding-codex-*' -print)" ]
 }
@@ -963,7 +973,8 @@ STUB
   [[ "$output" != *"merged Codex settings"* ]]
   [[ "$output" != *"updated Codex merge state"* ]]
   jq -e '.files | has("'"$HOME"'/.codex/config.toml") | not' "$AICODING_MANIFEST"
-  grep -q 'claude mcp add' "$TMP/ran.log"
+  echo "$output" | grep -q 'dvw-probe installed'
+  if grep -q '^codex plugin' "$TMP/ran.log"; then false; fi
 }
 
 @test "aicoding-install: pulls the blueprint and re-runs the installer (reconcile)" {
