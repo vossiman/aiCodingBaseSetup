@@ -40,3 +40,39 @@ PY
   run rg -F "app-server inventory does not use the same configuration" "$reports"/codex-*.json
   [ "$status" -eq 0 ]
 }
+
+@test "all-client preflight contains a hung process tree and continues without traceback" {
+  fakebin="$BATS_TEST_TMPDIR/bin"
+  reports="$BATS_TEST_TMPDIR/all-reports"
+  child_pid="$BATS_TEST_TMPDIR/version-child.pid"
+  mkdir -p "$fakebin"
+  cat >"$fakebin/claude" <<PY
+#!/usr/bin/env python3
+import pathlib, subprocess, sys, time
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+pathlib.Path("$child_pid").write_text(str(child.pid))
+time.sleep(30)
+PY
+  cat >"$fakebin/codex" <<'SH'
+#!/usr/bin/env sh
+printf '%s\n' 'codex-cli 0.154.0'
+SH
+  cat >"$fakebin/agent" <<'SH'
+#!/usr/bin/env sh
+printf '%s\n' '2026.09.10-fd3934a'
+SH
+  cat >"$fakebin/opencode" <<'SH'
+#!/usr/bin/env sh
+printf '%s\n' '1.18.30'
+SH
+  chmod +x "$fakebin"/*
+
+  PATH="$fakebin:$PATH" run tools/qualify-kanban-clients --all --output "$reports"
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"Traceback"* ]]
+  [ "$(find "$reports" -maxdepth 1 -name '*.json' | wc -l)" -eq 4 ]
+  run rg -F "timed out" "$reports"/claude-*.json
+  [ "$status" -eq 0 ]
+  pid=$(cat "$child_pid")
+  ! kill -0 "$pid" 2>/dev/null
+}

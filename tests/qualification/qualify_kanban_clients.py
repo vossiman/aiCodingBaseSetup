@@ -10,10 +10,13 @@ import argparse
 import json
 import os
 import re
+import selectors
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,10 +40,7 @@ BINARIES = {
 }
 VERSION_RE = re.compile(r"(?<![A-Za-z0-9.])\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?(?![A-Za-z0-9.])")
 PIN_FILE = Path(__file__).resolve().parents[2] / "configs" / "versions" / "kanban-mcp.rev"
-
-
-class CommandTimeout(RuntimeError):
-    pass
+MAX_VERSION_OUTPUT = 4096
 
 
 @dataclass(frozen=True)
@@ -68,6 +68,64 @@ def candidate_matrix(client: str, version: str) -> dict:
     return {"schema": 1, "clients": {client: [version]}}
 
 
+def _terminate_process_group(process: subprocess.Popen) -> None:
+    """Stop a version command and every descendant still in its process group."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=0.25)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=0.5)
+
+
+def _bounded_process_output(process: subprocess.Popen, timeout: float) -> tuple[bytes | None, str | None]:
+    """Read at most MAX_VERSION_OUTPUT bytes until EOF or a fixed deadline."""
+    deadline = time.monotonic() + timeout
+    output = bytearray()
+    selector = selectors.DefaultSelector()
+    assert process.stdout is not None
+    os.set_blocking(process.stdout.fileno(), False)
+    selector.register(process.stdout, selectors.EVENT_READ)
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _terminate_process_group(process)
+                return None, "timed out"
+            events = selector.select(min(remaining, 0.05))
+            if not events:
+                continue
+            for key, _ in events:
+                try:
+                    chunk = os.read(key.fileobj.fileno(), min(4096, MAX_VERSION_OUTPUT + 1 - len(output)))
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    process.wait(timeout=max(0.01, deadline - time.monotonic()))
+                    return bytes(output), None
+                output.extend(chunk)
+                if len(output) > MAX_VERSION_OUTPUT:
+                    _terminate_process_group(process)
+                    return None, "exceeded the 4096-byte output limit"
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(process)
+        return None, "timed out"
+    finally:
+        selector.close()
+
+
 def observe_version(binary: Path | str, client: str, *, timeout: float = 2,
                     environment: dict[str, str] | None = None) -> VersionObservation:
     command = Path(binary).name
@@ -75,22 +133,23 @@ def observe_version(binary: Path | str, client: str, *, timeout: float = 2,
     if environment:
         env.update(environment)
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             [str(binary), "--version"], stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            timeout=timeout, shell=False, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            shell=False, env=env, start_new_session=True,
         )
-    except subprocess.TimeoutExpired as error:
-        raise CommandTimeout(f"{command} --version timed out") from error
     except OSError:
         return VersionObservation(client, command, None, False, f"{command} is not installed")
-    if result.returncode != 0:
+    output, failure = _bounded_process_output(process, timeout)
+    if failure:
+        return VersionObservation(client, command, None, True, f"{command} --version {failure}")
+    if process.returncode != 0:
         return VersionObservation(
             client, command, None, True,
             f"{command} --version exited nonzero without a usable version",
         )
-    output = (result.stdout + "\n" + result.stderr)[:4096]
-    match = VERSION_RE.search(output)
+    text = (output or b"").decode("utf-8", errors="replace")
+    match = VERSION_RE.search(text)
     if not match or len(match.group(0)) > 100:
         return VersionObservation(
             client, command, None, True,

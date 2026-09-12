@@ -12,7 +12,6 @@ from fake_kanban_board import FAKE_TOKEN, FakeKanbanBoard
 from qualify_kanban_clients import (
     CLIENTS,
     REQUIRED_SCENARIOS,
-    CommandTimeout,
     build_report,
     candidate_matrix,
     observe_version,
@@ -91,9 +90,21 @@ import time
 time.sleep(30)
 """)
         started = time.monotonic()
-        with self.assertRaises(CommandTimeout):
-            observe_version(client, "claude", timeout=0.1)
+        observation = observe_version(client, "claude", timeout=0.1)
         self.assertLess(time.monotonic() - started, 3)
+        self.assertTrue(observation.observed)
+        self.assertIn("timed out", observation.reason)
+
+    def test_noisy_version_output_is_stopped_at_fixed_limit(self):
+        client = self.executable("noisy-client", """
+import sys
+while True:
+    sys.stdout.write("x" * 4096)
+    sys.stdout.flush()
+""")
+        observation = observe_version(client, "claude", timeout=2)
+        self.assertIsNone(observation.version)
+        self.assertIn("output limit", observation.reason)
 
     def test_candidate_matrix_contains_only_one_exact_pair(self):
         self.assertEqual(candidate_matrix("codex", "0.154.0"), {

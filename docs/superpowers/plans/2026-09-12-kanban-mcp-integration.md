@@ -891,6 +891,12 @@ git commit -m "feat(kanban): pin and register the canonical MCP"
 > results below describe the earlier target and have not been achieved. Codex
 > remains blocked because the nonexecuting app-server inventory does not load
 > the same configuration as `exec --ignore-user-config`.
+>
+> Deferred observations for the final whole-branch review:
+> - schema handling of nested mutable defaults;
+> - cleanup of expired, unconsumed permits;
+> - unsupported Cursor child-stop identity validation;
+> - separate OpenCode stdout and stderr output caps.
 
 **Files:**
 - Create: `tools/qualify-kanban-clients`

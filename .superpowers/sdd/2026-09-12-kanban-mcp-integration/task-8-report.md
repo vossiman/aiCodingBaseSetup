@@ -141,3 +141,41 @@ only in test processes and is stripped if it reaches a report value.
 
 No push, PR, review, merge, deployment, live activation, secret access, or
 production board write was performed as part of Task 8.
+
+## Task review fix
+
+The task review found one Important issue: a hung real `--version` command
+raised through the CLI, wrote no unsupported report, skipped later clients in
+`--all`, and could leave a descendant holding captured pipes. The original
+`subprocess.run(..., timeout=...)` also buffered unbounded output before the
+4096-byte slice.
+
+I added the CLI-level failing case before the fix. It starts a version wrapper
+with a sleeping child and confirms that the initial implementation printed a
+traceback and failed to write all four reports. A second unit case exposed
+unbounded noisy output. The implementation now starts each probe in its own
+process group, reads at most 4097 bytes through a selector, terminates the
+complete group on deadline or output limit, reaps the direct process with
+bounded waits, returns a controlled `VersionObservation`, writes an unsupported
+report, and continues the remaining clients.
+
+Focused GREEN after the fix:
+
+```text
+$ bash tests/bats/run.sh kanban-client-qualification
+1..5
+ok 1 qualification harness self-tests pass
+ok 2 qualification command exposes focused and all-client modes
+ok 3 tracked client matrix starts with no fixture-qualified clients
+ok 4 focused preflight exits unsupported and labels unobserved native evidence
+ok 5 all-client preflight contains a hung process tree and continues without traceback
+
+$ bash tests/bats/run.sh blueprint-deploy -f 'Stop hook is the async distill launcher'
+1..1
+ok 1 claude settings fragment: Stop hook is the async distill launcher
+```
+
+The blueprint-deploy assertion is the only first-full-suite integration fix. It
+now finds the async distill Stop handler by command identity instead of assuming
+array index zero after the Kanban handler was added. The first merged full run
+completed 1300/1301 tests; this stale order assertion was its only failure.
