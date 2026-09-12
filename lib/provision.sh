@@ -90,8 +90,14 @@ _provision_tool_blocked() {
 }
 
 _provision_ensure_update_components() {
-  declare -F aicoding_update_component >/dev/null 2>&1 && return 0
   local root=${SCRIPT_DIR:-${BLUEPRINT_ROOT:-}}
+  # Shell functions do not survive the installer exec; adapters need their
+  # selector dependency even when another caller already sourced them.
+  if ! declare -F aicoding_select_ci_sha >/dev/null 2>&1; then
+    [ -n "$root" ] && [ -f "$root/lib/ci-selector.sh" ] || return 1
+    . "$root/lib/ci-selector.sh" || return 1
+  fi
+  declare -F aicoding_update_component >/dev/null 2>&1 && return 0
   [ -n "$root" ] && [ -f "$root/lib/update-results.sh" ] && [ -f "$root/lib/update-components.sh" ] || return 1
   . "$root/lib/update-results.sh"
   . "$root/lib/update-components.sh"

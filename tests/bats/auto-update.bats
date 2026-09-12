@@ -370,3 +370,58 @@ EOF
   [ ! -s "$AICODING_TEST_ATTEMPTS" ]
   grep -q 'enabled timer state cannot be verified' "$AICODING_STATE_DIR/auto-update/enroll.log"
 }
+
+@test "detached scheduler never retains shared configuration writer locks" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  mkdir -p "$HOME/.claude"
+  exec {held_fd}>"$HOME/.claude/.aicoding-update.lock"
+  flock "$held_fd"
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  run flock -n "$HOME/.claude/.aicoding-update.lock" true
+  [ "$status" -ne 0 ]
+  exec {held_fd}>&-
+  wait_for_lines 1
+  run flock -n "$HOME/.claude/.aicoding-update.lock" true
+  [ "$status" -eq 0 ]
+}
+
+@test "ensure replaces a legacy worker retaining shared configuration locks" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  mkdir -p "$HOME/.claude" "$TEST_ROOT/legacy"
+  cat > "$TEST_ROOT/legacy/aicoding-auto-update" <<'LEGACY'
+#!/usr/bin/env bash
+# Exercise the real worker without the corrected executable's FD cleanup.
+source "$TEST_ROOT/runtime/lib/auto-update.sh"
+aicoding_auto_update_worker
+LEGACY
+  chmod +x "$TEST_ROOT/legacy/aicoding-auto-update"
+  exec {held_fd}>"$HOME/.claude/.aicoding-update.lock"
+  flock "$held_fd"
+  "$TEST_ROOT/legacy/aicoding-auto-update" --worker </dev/null >/dev/null 2>&1 &
+  local old_worker=$!
+  exec {held_fd}>&-
+  wait_for_lines 1
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  local i
+  for ((i=0; i<60; i++)); do
+    kill -0 "$old_worker" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$old_worker" 2>/dev/null; then false; fi
+  run flock -n "$HOME/.claude/.aicoding-update.lock" true
+  [ "$status" -eq 0 ]
+}
+
+@test "legacy lock recovery does not signal an unrelated process in a stale PID file" {
+  source "$TEST_ROOT/runtime/lib/auto-update.sh"
+  mkdir -p "$HOME/.claude" "$AICODING_STATE_DIR/auto-update"
+  exec {held_fd}>"$HOME/.claude/.aicoding-update.lock"
+  flock "$held_fd"
+  printf '%s\n' "$BASHPID" > "$AICODING_STATE_DIR/auto-update/worker.pid"
+  _aicoding_auto_recover_shared_lock_worker
+  run flock -n "$HOME/.claude/.aicoding-update.lock" true
+  [ "$status" -ne 0 ]
+  exec {held_fd}>&-
+}

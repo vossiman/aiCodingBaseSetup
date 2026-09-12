@@ -9,6 +9,43 @@ _aicoding_auto_positive_integer() { [[ "$1" =~ ^[1-9][0-9]*$ ]]; }
 
 _aicoding_auto_state_dir() { printf '%s/auto-update\n' "$AICODING_STATE_DIR"; }
 
+# Detached scheduler processes cannot inherit the installer's writer locks:
+# their new shell has none of the bookkeeping that makes those FDs reentrant.
+# Inspect descriptor targets, never their contents, including locks inherited
+# from an older installer that did not export a descriptor list.
+_aicoding_auto_shared_lock_fds() {
+  local pid=$1 path target fd
+  for path in /proc/"$pid"/fd/[0-9]*; do
+    fd=${path##*/}
+    [ "$fd" -gt 2 ] 2>/dev/null || continue
+    target=$(readlink "$path" 2>/dev/null) || continue
+    case "$target" in
+      */.aicoding-update.lock|*/.aicoding-update.lock\ \(deleted\)) printf '%s\n' "$fd" ;;
+    esac
+  done
+}
+
+_aicoding_auto_close_shared_lock_fds() {
+  local fd
+  while IFS= read -r fd; do
+    exec {fd}>&- || return 1
+  done < <(_aicoding_auto_shared_lock_fds "$$")
+}
+
+_aicoding_auto_recover_shared_lock_worker() (
+  local state pid fds ensure_fd
+  state=$(_aicoding_auto_state_dir) || return 1
+  mkdir -p "$state" || return 1
+  exec {ensure_fd}>"$state/ensure.lock" || return 1
+  flock -n "$ensure_fd" || return 0
+  pid=$(cat "$state/worker.pid" 2>/dev/null || true)
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
+  fds=$(_aicoding_auto_shared_lock_fds "$pid")
+  [ -n "$fds" ] || return 0
+  # The stop helper verifies worker identity before signaling any process.
+  _aicoding_auto_stop_worker
+)
+
 _aicoding_auto_atomic_number() {
   local path=$1 value=$2 tmp
   tmp="${path}.tmp.$$"
@@ -175,6 +212,7 @@ aicoding_auto_update_ensure() {
     echo 'aicoding-auto-update: interval must be a positive integer' >&2
     return 2
   }
+  _aicoding_auto_recover_shared_lock_worker || return 1
   local state log self
   state=$(_aicoding_auto_state_dir) || return 1
   mkdir -p "$state" || return 1
