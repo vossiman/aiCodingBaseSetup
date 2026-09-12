@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import UUID, uuid5
+from uuid import UUID, uuid4, uuid5
 
 from .schema import BridgeError, MAX_OPAQUE, validate_local_handle
 
@@ -104,6 +104,22 @@ class QueueEvent:
     created_at: datetime
 
 
+@dataclass(frozen=True)
+class QueueRow:
+    row_id: int
+    handle: str
+    run_generation: str
+    kind: str
+    payload: dict
+    operation_id: str
+    claim_id: str | None
+    observed_at: datetime | None
+    sequence: int | None
+    attempts: int
+    last_error_class: str | None
+    claim_token: str | None = None
+
+
 SCHEMA = """
 CREATE TABLE executions (
   handle TEXT PRIMARY KEY,
@@ -123,7 +139,12 @@ CREATE TABLE executions (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   ended_at TEXT,
-  end_handoff TEXT
+  end_handoff TEXT,
+  latest_end_operation_id TEXT,
+  latest_end_payload TEXT,
+  end_intent_created_at TEXT,
+  end_delivered_at TEXT,
+  last_activity_at TEXT
 );
 CREATE TABLE permits (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,6 +169,10 @@ CREATE TABLE claims (
   active INTEGER NOT NULL,
   checkpoint TEXT,
   handoff TEXT,
+  latest_release_operation_id TEXT,
+  latest_release_payload TEXT,
+  release_intent_created_at TEXT,
+  release_delivered_at TEXT,
   updated_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX one_active_claim_per_execution ON claims(handle) WHERE active = 1;
@@ -169,7 +194,39 @@ CREATE TABLE queue (
   run_generation TEXT NOT NULL,
   kind TEXT NOT NULL,
   payload TEXT NOT NULL,
+  operation_id TEXT,
+  claim_id TEXT,
+  observed_at TEXT,
+  sequence INTEGER,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error_class TEXT,
+  claim_token TEXT,
+  claimed_at TEXT,
   created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX queue_operation ON queue(handle,run_generation,kind,operation_id)
+  WHERE operation_id IS NOT NULL;
+CREATE TABLE native_events (
+  harness TEXT NOT NULL,
+  native_event_id TEXT NOT NULL,
+  event_name TEXT NOT NULL,
+  handle TEXT,
+  run_generation TEXT,
+  state TEXT NOT NULL,
+  result TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(harness,native_event_id)
+);
+CREATE TABLE tool_operations (
+  handle TEXT NOT NULL REFERENCES executions(handle) ON DELETE CASCADE,
+  run_generation TEXT NOT NULL,
+  native_call_id TEXT NOT NULL,
+  claim_id TEXT,
+  active INTEGER NOT NULL,
+  started_at TEXT NOT NULL,
+  latest_native_event_at TEXT NOT NULL,
+  last_activity_at TEXT,
+  PRIMARY KEY(handle,run_generation,native_call_id)
 );
 """
 
@@ -185,6 +242,7 @@ class Store:
         self._connection = self._connect(self.path)
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA foreign_keys=ON")
+        self._migrate()
         self._recheck_modes()
         self.cleanup()
 
@@ -221,6 +279,57 @@ class Store:
     def _recheck_modes(self):
         os.chmod(self.path.parent, 0o700)
         os.chmod(self.path, 0o600)
+
+    def _migrate(self):
+        """Add lifecycle-delivery columns to registries created by Task 2."""
+        additions = {
+            "executions": {
+                "latest_end_operation_id": "TEXT",
+                "latest_end_payload": "TEXT",
+                "end_intent_created_at": "TEXT",
+                "end_delivered_at": "TEXT",
+                "last_activity_at": "TEXT",
+            },
+            "claims": {
+                "latest_release_operation_id": "TEXT",
+                "latest_release_payload": "TEXT",
+                "release_intent_created_at": "TEXT",
+                "release_delivered_at": "TEXT",
+            },
+            "queue": {
+                "operation_id": "TEXT",
+                "claim_id": "TEXT",
+                "observed_at": "TEXT",
+                "sequence": "INTEGER",
+                "attempts": "INTEGER NOT NULL DEFAULT 0",
+                "last_error_class": "TEXT",
+                "claim_token": "TEXT",
+                "claimed_at": "TEXT",
+            },
+        }
+        with self._immediate() as db:
+            for table, columns in additions.items():
+                existing = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+                for name, declaration in columns.items():
+                    if name not in existing:
+                        db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS queue_operation "
+                "ON queue(handle,run_generation,kind,operation_id) WHERE operation_id IS NOT NULL"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS native_events ("
+                "harness TEXT NOT NULL,native_event_id TEXT NOT NULL,event_name TEXT NOT NULL,"
+                "handle TEXT,run_generation TEXT,state TEXT NOT NULL,result TEXT,created_at TEXT NOT NULL,"
+                "PRIMARY KEY(harness,native_event_id))"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS tool_operations ("
+                "handle TEXT NOT NULL REFERENCES executions(handle) ON DELETE CASCADE,"
+                "run_generation TEXT NOT NULL,native_call_id TEXT NOT NULL,claim_id TEXT,"
+                "active INTEGER NOT NULL,started_at TEXT NOT NULL,latest_native_event_at TEXT NOT NULL,"
+                "last_activity_at TEXT,PRIMARY KEY(handle,run_generation,native_call_id))"
+            )
 
     def close(self):
         self._connection.close()
@@ -387,6 +496,278 @@ class Store:
                 raise BridgeError(404, "unknown work handle")
             return db.execute("SELECT sequence FROM executions WHERE handle=?", (handle,)).fetchone()[0]
 
+    @staticmethod
+    def _admit_queue(db, handle: str, run_generation: str, kind: str, payload: dict,
+                     operation_id: str, claim_id: str | None, observed_at: datetime | None,
+                     sequence: int | None, created_at: datetime) -> bool:
+        if db.execute(
+            "SELECT 1 FROM queue WHERE handle=? AND run_generation=? AND kind=? AND operation_id=?",
+            (handle, run_generation, kind, operation_id),
+        ).fetchone():
+            return True
+        count = db.execute("SELECT count(*) FROM queue").fetchone()[0]
+        if count >= MAX_QUEUE_ROWS:
+            oldest_activity = db.execute(
+                "SELECT id FROM queue WHERE kind='activity' ORDER BY id LIMIT 1"
+            ).fetchone()
+            if oldest_activity is None:
+                return False
+            db.execute("DELETE FROM queue WHERE id=?", (oldest_activity[0],))
+        db.execute(
+            "INSERT INTO queue(handle,run_generation,kind,payload,operation_id,claim_id,"
+            "observed_at,sequence,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (handle, run_generation, kind,
+             json.dumps(payload, sort_keys=True, separators=(",", ":")), operation_id,
+             claim_id, _stamp(observed_at) if observed_at else None, sequence, _stamp(created_at)),
+        )
+        return True
+
+    def enqueue_activity(self, handle: str, run_generation: str, claim_id: str,
+                         sequence: int, observed_at: datetime, operation_id: str, *,
+                         created_at: datetime | None = None) -> bool:
+        _opaque(operation_id, "operation_id")
+        with self._immediate() as db:
+            execution = db.execute(
+                "SELECT run_generation,state,latest_end_operation_id,backend_session_id "
+                "FROM executions WHERE handle=?", (handle,)
+            ).fetchone()
+            if execution is None:
+                raise BridgeError(404, "unknown work handle")
+            if execution[0] != run_generation:
+                raise BridgeError(409, "queued event belongs to another run generation")
+            if execution[1] == "ended" or execution[2] is not None:
+                return False
+            owner = db.execute(
+                "SELECT 1 FROM claims WHERE handle=? AND claim_id=? AND run_generation=? AND active=1",
+                (handle, claim_id, run_generation),
+            ).fetchone()
+            if owner is None:
+                return False
+            payload = {
+                "work_session_id": execution[3], "claim_id": claim_id,
+                "observed_at": _stamp(observed_at), "sequence": sequence,
+            }
+            return self._admit_queue(
+                db, handle, run_generation, "activity", payload, operation_id,
+                claim_id, observed_at, sequence, created_at or observed_at,
+            )
+
+    def maybe_enqueue_activity(self, handle: str, run_generation: str, observed_at: datetime,
+                               operation_id: str, *, force: bool = False) -> int | None:
+        with self._immediate() as db:
+            execution = db.execute(
+                "SELECT run_generation,state,latest_end_operation_id,backend_session_id,last_activity_at "
+                "FROM executions WHERE handle=?", (handle,)
+            ).fetchone()
+            if execution is None:
+                raise BridgeError(404, "unknown work handle")
+            if execution[0] != run_generation or execution[1] == "ended" or execution[2] is not None:
+                return None
+            claim = db.execute(
+                "SELECT claim_id FROM claims WHERE handle=? AND run_generation=? AND active=1",
+                (handle, run_generation),
+            ).fetchone()
+            if claim is None or execution[3] is None:
+                return None
+            last = _parse(execution[4]) if execution[4] else None
+            if not force and last is not None and _utc(observed_at) < last + timedelta(seconds=60):
+                return None
+            db.execute(
+                "UPDATE executions SET sequence=sequence+1,last_activity_at=?,updated_at=? WHERE handle=?",
+                (_stamp(observed_at), _stamp(observed_at), handle),
+            )
+            sequence = db.execute(
+                "SELECT sequence FROM executions WHERE handle=?", (handle,)
+            ).fetchone()[0]
+            payload = {
+                "work_session_id": execution[3], "claim_id": claim[0],
+                "observed_at": _stamp(observed_at), "sequence": sequence,
+            }
+            admitted = self._admit_queue(
+                db, handle, run_generation, "activity", payload, operation_id,
+                claim[0], observed_at, sequence, observed_at,
+            )
+            return sequence if admitted else None
+
+    def persist_release_intent(self, handle: str, run_generation: str, claim_id: str,
+                               operation_id: str, handoff: str, reason: str,
+                               observed_at: datetime, *, feedback_target: str | None = None,
+                               swimlane: str | None = None) -> bool:
+        if reason not in {"paused", "feedback", "stopped"}:
+            raise BridgeError(422, "invalid release reason")
+        payload = {
+            "handoff": handoff, "reason": reason,
+            "feedback_target": feedback_target, "swimlane": swimlane,
+        }
+        with self._immediate() as db:
+            execution = db.execute(
+                "SELECT run_generation,backend_session_id FROM executions WHERE handle=?", (handle,)
+            ).fetchone()
+            claim = db.execute(
+                "SELECT run_generation FROM claims WHERE handle=? AND claim_id=?",
+                (handle, claim_id),
+            ).fetchone()
+            if execution is None:
+                raise BridgeError(404, "unknown work handle")
+            if execution[0] != run_generation or claim is None or claim[0] != run_generation:
+                raise BridgeError(409, "release intent belongs to another run generation or claim")
+            db.execute(
+                "UPDATE claims SET handoff=?,latest_release_operation_id=?,latest_release_payload=?,"
+                "release_intent_created_at=?,release_delivered_at=NULL,updated_at=? WHERE claim_id=?",
+                (handoff, operation_id, json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                 _stamp(observed_at), _stamp(observed_at), claim_id),
+            )
+            wire = {**payload, "work_session_id": execution[1], "claim_id": claim_id}
+            return self._admit_queue(
+                db, handle, run_generation, "release", wire, operation_id,
+                claim_id, observed_at, None, observed_at,
+            )
+
+    def persist_end_intent(self, handle: str, run_generation: str, operation_id: str,
+                           handoff: str | None, observed_at: datetime) -> bool:
+        payload = {"handoff": handoff}
+        with self._immediate() as db:
+            execution = db.execute(
+                "SELECT run_generation,backend_session_id FROM executions WHERE handle=?", (handle,)
+            ).fetchone()
+            if execution is None:
+                raise BridgeError(404, "unknown work handle")
+            if execution[0] != run_generation:
+                raise BridgeError(409, "end intent belongs to another run generation")
+            db.execute(
+                "UPDATE executions SET state='ended',ended_at=?,end_handoff=?,"
+                "latest_end_operation_id=?,latest_end_payload=?,end_intent_created_at=?,"
+                "end_delivered_at=NULL,updated_at=? WHERE handle=?",
+                (_stamp(observed_at), handoff, operation_id,
+                 json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                 _stamp(observed_at), _stamp(observed_at), handle),
+            )
+            db.execute(
+                "UPDATE tool_operations SET active=0,latest_native_event_at=? "
+                "WHERE handle=? AND run_generation=? AND active=1",
+                (_stamp(observed_at), handle, run_generation),
+            )
+            db.execute(
+                "DELETE FROM queue WHERE handle=? AND run_generation=? AND kind='activity'",
+                (handle, run_generation),
+            )
+            wire = {**payload, "work_session_id": execution[1]}
+            return self._admit_queue(
+                db, handle, run_generation, "end", wire, operation_id,
+                None, observed_at, None, observed_at,
+            )
+
+    def begin_native_event(self, harness: str, native_event_id: str, event_name: str,
+                           handle: str | None, run_generation: str | None,
+                           observed_at: datetime) -> dict | None:
+        for value, name in ((harness, "harness"), (native_event_id, "native_event_id"),
+                            (event_name, "event_name")):
+            _opaque(value, name)
+        try:
+            with self._immediate() as db:
+                db.execute(
+                    "INSERT INTO native_events(harness,native_event_id,event_name,handle,run_generation,"
+                    "state,created_at) VALUES(?,?,?,?,?,'processing',?)",
+                    (harness, native_event_id, event_name, handle, run_generation,
+                     _stamp(observed_at)),
+                )
+            return None
+        except sqlite3.IntegrityError:
+            row = self._connection.execute(
+                "SELECT event_name,handle,run_generation,state,result FROM native_events "
+                "WHERE harness=? AND native_event_id=?", (harness, native_event_id),
+            ).fetchone()
+            if row is None or row[0] != event_name:
+                raise BridgeError(409, "native_event_id was reused for another event") from None
+            if row[3] != "done" or row[4] is None:
+                return {"status": "duplicate_in_progress", "handle": row[1],
+                        "run_generation": row[2]}
+            return json.loads(row[4])
+
+    def finish_native_event(self, harness: str, native_event_id: str, result: dict):
+        encoded = json.dumps(result, sort_keys=True, separators=(",", ":"))
+        with self._immediate() as db:
+            if db.execute(
+                "UPDATE native_events SET state='done',result=? WHERE harness=? AND native_event_id=?",
+                (encoded, harness, native_event_id),
+            ).rowcount != 1:
+                raise BridgeError(404, "native event reservation is missing")
+
+    def abandon_native_event(self, harness: str, native_event_id: str):
+        with self._immediate() as db:
+            db.execute(
+                "DELETE FROM native_events WHERE harness=? AND native_event_id=? AND state='processing'",
+                (harness, native_event_id),
+            )
+
+    def start_tool_operation(self, handle: str, run_generation: str, native_call_id: str,
+                             observed_at: datetime, activity_operation_id: str) -> int | None:
+        _opaque(native_call_id, "native_call_id")
+        execution = self.get_execution(handle)
+        if execution is None:
+            raise BridgeError(404, "unknown work handle")
+        if execution.run_generation != run_generation:
+            return None
+        claim = self.active_claim(handle)
+        with self._immediate() as db:
+            db.execute(
+                "INSERT INTO tool_operations(handle,run_generation,native_call_id,claim_id,active,"
+                "started_at,latest_native_event_at) VALUES(?,?,?,?,1,?,?) "
+                "ON CONFLICT(handle,run_generation,native_call_id) DO UPDATE SET "
+                "latest_native_event_at=excluded.latest_native_event_at",
+                (handle, run_generation, native_call_id, (claim or {}).get("id"),
+                 _stamp(observed_at), _stamp(observed_at)),
+            )
+        return self.maybe_enqueue_activity(
+            handle, run_generation, observed_at, activity_operation_id
+        )
+
+    def finish_tool_operation(self, handle: str, run_generation: str, native_call_id: str,
+                              observed_at: datetime, activity_operation_id: str) -> int | None:
+        _opaque(native_call_id, "native_call_id")
+        with self._immediate() as db:
+            changed = db.execute(
+                "UPDATE tool_operations SET active=0,latest_native_event_at=? "
+                "WHERE handle=? AND run_generation=? AND native_call_id=? AND active=1",
+                (_stamp(observed_at), handle, run_generation, native_call_id),
+            ).rowcount
+        if changed != 1:
+            return None
+        return self.maybe_enqueue_activity(
+            handle, run_generation, observed_at, activity_operation_id
+        )
+
+    def close_tool_operations(self, handle: str, run_generation: str, observed_at: datetime):
+        with self._immediate() as db:
+            db.execute(
+                "UPDATE tool_operations SET active=0,latest_native_event_at=? "
+                "WHERE handle=? AND run_generation=? AND active=1",
+                (_stamp(observed_at), handle, run_generation),
+            )
+
+    def tool_operation(self, handle: str, native_call_id: str) -> dict | None:
+        row = self._connection.execute(
+            "SELECT run_generation,claim_id,active,started_at,latest_native_event_at,last_activity_at "
+            "FROM tool_operations WHERE handle=? AND native_call_id=?",
+            (handle, native_call_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "run_generation": row[0], "claim_id": row[1], "active": bool(row[2]),
+            "started_at": _parse(row[3]), "latest_native_event_at": _parse(row[4]),
+            "last_activity_at": _parse(row[5]) if row[5] else None,
+        }
+
+    def mark_tool_activity(self, handle: str, run_generation: str, native_call_id: str,
+                           observed_at: datetime):
+        with self._immediate() as db:
+            db.execute(
+                "UPDATE tool_operations SET last_activity_at=? WHERE handle=? AND run_generation=? "
+                "AND native_call_id=? AND active=1",
+                (_stamp(observed_at), handle, run_generation, native_call_id),
+            )
+
     def record_bound(self, handle: str, work_session_id: str, repo: str, label: str,
                      checkout: str | None = None):
         _opaque(work_session_id, "work_session_id")
@@ -412,6 +793,9 @@ class Store:
             ).fetchone()
             if generation is None:
                 raise BridgeError(404, "unknown work handle")
+            prior = db.execute(
+                "SELECT claim_id FROM claims WHERE handle=? AND active=1", (handle,)
+            ).fetchone()
             db.execute("UPDATE claims SET active=0,updated_at=? WHERE handle=? AND active=1", (_stamp(), handle))
             db.execute(
                 "INSERT INTO claims(claim_id,handle,run_generation,ticket_ref,ticket_id,active,updated_at) "
@@ -420,20 +804,32 @@ class Store:
                 "run_generation=excluded.run_generation,ticket_id=excluded.ticket_id,active=1,updated_at=excluded.updated_at",
                 (claim_id, handle, generation[0], ticket_ref, ticket_id, _stamp()),
             )
+            if prior is None or prior[0] != claim_id:
+                db.execute("UPDATE executions SET last_activity_at=NULL WHERE handle=?", (handle,))
 
     def active_claim(self, handle: str) -> dict | None:
         row = self._connection.execute(
-            "SELECT claim_id,ticket_ref,ticket_id FROM claims WHERE handle=? AND active=1", (handle,)
+            "SELECT claim_id,ticket_ref,ticket_id,checkpoint,handoff,run_generation "
+            "FROM claims WHERE handle=? AND active=1", (handle,)
         ).fetchone()
-        return None if row is None else {"id": row[0], "ticket": row[1], "ticket_id": row[2]}
+        return None if row is None else {
+            "id": row[0], "ticket": row[1], "ticket_id": row[2],
+            "checkpoint": row[3], "handoff": row[4], "run_generation": row[5],
+        }
 
     def claim(self, handle: str, claim_id: str) -> dict | None:
         row = self._connection.execute(
-            "SELECT claim_id,ticket_ref,ticket_id,active FROM claims WHERE handle=? AND claim_id=?",
+            "SELECT claim_id,ticket_ref,ticket_id,active,latest_release_operation_id,"
+            "latest_release_payload,release_intent_created_at,release_delivered_at "
+            "FROM claims WHERE handle=? AND claim_id=?",
             (handle, claim_id),
         ).fetchone()
         return None if row is None else {
-            "id": row[0], "ticket": row[1], "ticket_id": row[2], "active": bool(row[3])
+            "id": row[0], "ticket": row[1], "ticket_id": row[2], "active": bool(row[3]),
+            "latest_release_operation_id": row[4],
+            "latest_release_payload": json.loads(row[5]) if row[5] else None,
+            "release_intent_created_at": _parse(row[6]) if row[6] else None,
+            "release_delivered_at": _parse(row[7]) if row[7] else None,
         }
 
     def owns_claim(self, handle: str, claim_id: str, run_generation: str) -> bool:
@@ -557,6 +953,10 @@ class Store:
                 raise BridgeError(502, "authoritative ticket claim does not match session")
             if not active and projected_id is not None:
                 raise BridgeError(502, "authoritative ticket still has an active claim")
+        prior_claim = self.active_claim(handle)
+        durable_end = self._connection.execute(
+            "SELECT latest_end_operation_id FROM executions WHERE handle=?", (handle,)
+        ).fetchone()[0]
         with self._immediate() as db:
             db.execute("UPDATE claims SET active=0,updated_at=? WHERE handle=? AND active=1",
                        (_stamp(), handle))
@@ -576,11 +976,17 @@ class Store:
                     (active[0], handle, execution.run_generation, ticket_ref or active[1], active[1],
                      checkpoint, handoff, _stamp()),
                 )
-            state = "ended" if session.get("ended_at") is not None else "bound"
+            prior_claim_id = (prior_claim or {}).get("id")
+            current_claim_id = active[0] if active else None
+            if prior_claim_id != current_claim_id:
+                db.execute("UPDATE executions SET last_activity_at=NULL WHERE handle=?", (handle,))
+            state = "ended" if session.get("ended_at") is not None or durable_end else "bound"
             fields = ("backend_session_id=?,label=?,repo=?,lifecycle_capable=?,state=?,cache_trusted=1,"
                       "ended_at=?,updated_at=?")
             values = [session_id, label, repo, int(session["lifecycle_capable"]), state,
-                      _stamp() if state == "ended" else None, _stamp()]
+                      _stamp(execution.ended_at) if execution.ended_at else (
+                          _stamp() if state == "ended" else None
+                      ), _stamp()]
             if checkout is not None:
                 fields += ",checkout=?"
                 values.append(checkout)
@@ -615,20 +1021,22 @@ class Store:
         _opaque(event.kind, "queue kind")
         with self._immediate() as db:
             generation = db.execute(
-                "SELECT run_generation,state FROM executions WHERE handle=?", (event.handle,)
+                "SELECT run_generation,state,latest_end_operation_id FROM executions WHERE handle=?",
+                (event.handle,)
             ).fetchone()
             if generation is None:
                 raise BridgeError(404, "unknown work handle")
             if generation[0] != event.run_generation:
                 raise BridgeError(409, "queued event belongs to another run generation")
             if event.kind == "activity" and (
-                generation[1] == "ended" or db.execute(
-                    "SELECT 1 FROM queue WHERE handle=? AND run_generation=? AND kind='end' LIMIT 1",
+                generation[1] == "ended" or generation[2] is not None or db.execute(
+                    "SELECT 1 FROM queue WHERE handle=? AND run_generation=? "
+                    "AND kind IN ('end','end_session') LIMIT 1",
                     (event.handle, event.run_generation),
                 ).fetchone() is not None
             ):
                 return
-            if event.kind == "end":
+            if event.kind in {"end", "end_session"}:
                 db.execute(
                     "DELETE FROM queue WHERE handle=? AND run_generation=? AND kind='activity'",
                     (event.handle, event.run_generation),
@@ -640,9 +1048,145 @@ class Store:
                     db.execute("DELETE FROM queue WHERE id=?", (row[0],))
                 else:
                     return
-            db.execute("INSERT INTO queue(handle,run_generation,kind,payload,created_at) VALUES(?,?,?,?,?)",
-                       (event.handle, event.run_generation, event.kind, event.payload,
-                        _stamp(event.created_at)))
+            db.execute(
+                "INSERT INTO queue(handle,run_generation,kind,payload,created_at) VALUES(?,?,?,?,?)",
+                (event.handle, event.run_generation, event.kind, event.payload,
+                 _stamp(event.created_at)),
+            )
+
+    @staticmethod
+    def _queue_row(row) -> QueueRow:
+        payload = json.loads(row[4])
+        kind = {"release": "release_ticket", "end": "end_session"}.get(row[3], row[3])
+        return QueueRow(
+            row_id=row[0], handle=row[1], run_generation=row[2], kind=kind,
+            payload=payload, operation_id=row[5], claim_id=row[6],
+            observed_at=_parse(row[7]) if row[7] else None, sequence=row[8],
+            attempts=row[9], last_error_class=row[10], claim_token=row[11],
+        )
+
+    def pending_queue(self, handle: str | None = None) -> list[QueueRow]:
+        query = (
+            "SELECT id,handle,run_generation,kind,payload,operation_id,claim_id,observed_at,"
+            "sequence,attempts,last_error_class,claim_token FROM queue"
+        )
+        params = ()
+        if handle is not None:
+            query += " WHERE handle=?"
+            params = (handle,)
+        query += " ORDER BY id"
+        return [self._queue_row(row) for row in self._connection.execute(query, params)]
+
+    def queue_count(self) -> int:
+        return self._connection.execute("SELECT count(*) FROM queue").fetchone()[0]
+
+    def clear_queue(self):
+        with self._immediate() as db:
+            db.execute("DELETE FROM queue")
+
+    def claim_queue_row(self, now: datetime) -> QueueRow | None:
+        token = str(uuid4())
+        stale = _stamp(_utc(now) - timedelta(seconds=60))
+        with self._immediate() as db:
+            row = db.execute(
+                "SELECT id FROM queue WHERE claim_token IS NULL OR claimed_at<? ORDER BY id LIMIT 1",
+                (stale,),
+            ).fetchone()
+            if row is None:
+                return None
+            if db.execute(
+                "UPDATE queue SET claim_token=?,claimed_at=? WHERE id=? "
+                "AND (claim_token IS NULL OR claimed_at<?)",
+                (token, _stamp(now), row[0], stale),
+            ).rowcount != 1:
+                return None
+            claimed = db.execute(
+                "SELECT id,handle,run_generation,kind,payload,operation_id,claim_id,observed_at,"
+                "sequence,attempts,last_error_class,claim_token FROM queue WHERE id=?", (row[0],)
+            ).fetchone()
+        return self._queue_row(claimed)
+
+    def finish_queue_row(self, row: QueueRow, *, success: bool,
+                         error_class: str | None = None):
+        with self._immediate() as db:
+            if success:
+                db.execute(
+                    "DELETE FROM queue WHERE id=? AND claim_token=?", (row.row_id, row.claim_token)
+                )
+                return
+            error = (error_class or "DeliveryError")[:100]
+            db.execute(
+                "UPDATE queue SET attempts=attempts+1,last_error_class=?,claim_token=NULL,claimed_at=NULL "
+                "WHERE id=? AND claim_token=?", (error, row.row_id, row.claim_token),
+            )
+
+    def reconstruct_intents(self, now: datetime) -> int:
+        inserted = 0
+        with self._immediate() as db:
+            releases = db.execute(
+                "SELECT c.handle,c.run_generation,c.claim_id,c.latest_release_operation_id,"
+                "c.latest_release_payload,e.backend_session_id,c.release_intent_created_at "
+                "FROM claims c JOIN executions e ON e.handle=c.handle "
+                "WHERE c.latest_release_operation_id IS NOT NULL AND c.release_delivered_at IS NULL "
+                "ORDER BY c.release_intent_created_at,c.claim_id"
+            ).fetchall()
+            for handle, generation, claim_id, operation_id, payload, session_id, created in releases:
+                wire = json.loads(payload)
+                wire.update({"work_session_id": session_id, "claim_id": claim_id})
+                if self._admit_queue(
+                    db, handle, generation, "release", wire, operation_id, claim_id,
+                    _parse(created), None, _parse(created),
+                ):
+                    inserted += 1
+            ends = db.execute(
+                "SELECT handle,run_generation,latest_end_operation_id,latest_end_payload,"
+                "backend_session_id,end_intent_created_at FROM executions "
+                "WHERE latest_end_operation_id IS NOT NULL AND end_delivered_at IS NULL "
+                "ORDER BY end_intent_created_at,handle"
+            ).fetchall()
+            for handle, generation, operation_id, payload, session_id, created in ends:
+                wire = json.loads(payload)
+                wire["work_session_id"] = session_id
+                if self._admit_queue(
+                    db, handle, generation, "end", wire, operation_id, None,
+                    _parse(created), None, _parse(created),
+                ):
+                    inserted += 1
+        return inserted
+
+    def execution_intent(self, handle: str) -> dict:
+        row = self._connection.execute(
+            "SELECT latest_end_operation_id,latest_end_payload,end_intent_created_at,end_delivered_at "
+            "FROM executions WHERE handle=?", (handle,)
+        ).fetchone()
+        if row is None:
+            raise BridgeError(404, "unknown work handle")
+        return {
+            "latest_end_operation_id": row[0],
+            "latest_end_payload": json.loads(row[1]) if row[1] else None,
+            "end_intent_created_at": _parse(row[2]) if row[2] else None,
+            "end_delivered_at": _parse(row[3]) if row[3] else None,
+        }
+
+    def mark_intent_delivered(self, row: QueueRow, delivered_at: datetime):
+        with self._immediate() as db:
+            if row.kind == "release_ticket":
+                db.execute(
+                    "UPDATE claims SET release_delivered_at=?,latest_release_operation_id=NULL,"
+                    "latest_release_payload=NULL,release_intent_created_at=NULL,updated_at=? "
+                    "WHERE handle=? AND claim_id=? AND run_generation=? "
+                    "AND latest_release_operation_id=?",
+                    (_stamp(delivered_at), _stamp(delivered_at), row.handle, row.claim_id,
+                     row.run_generation, row.operation_id),
+                )
+            elif row.kind == "end_session":
+                db.execute(
+                    "UPDATE executions SET end_delivered_at=?,latest_end_operation_id=NULL,"
+                    "latest_end_payload=NULL,end_intent_created_at=NULL,updated_at=? "
+                    "WHERE handle=? AND run_generation=? AND latest_end_operation_id=?",
+                    (_stamp(delivered_at), _stamp(delivered_at), row.handle,
+                     row.run_generation, row.operation_id),
+                )
 
     def cleanup(self, now: datetime | None = None):
         cutoff = _stamp(_utc(now) - ENDED_RETENTION)
@@ -651,11 +1195,15 @@ class Store:
             db.execute("DELETE FROM permits WHERE consumed_at IS NOT NULL AND consumed_at<?", (permit_cutoff,))
             db.execute(
                 "DELETE FROM executions WHERE ended_at IS NOT NULL AND ended_at<? "
+                "AND latest_end_operation_id IS NULL "
+                "AND NOT EXISTS(SELECT 1 FROM claims WHERE claims.handle=executions.handle "
+                "AND claims.latest_release_operation_id IS NOT NULL) "
                 "AND NOT EXISTS(SELECT 1 FROM queue WHERE queue.handle=executions.handle)", (cutoff,)
             )
 
     def schema_columns(self) -> list[str]:
         result = []
-        for table in ("executions", "permits", "claims", "operations", "queue"):
+        for table in ("executions", "permits", "claims", "operations", "queue",
+                      "native_events", "tool_operations"):
             result.extend(row[1] for row in self._connection.execute(f"PRAGMA table_info({table})"))
         return result

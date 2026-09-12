@@ -90,6 +90,29 @@ def derive_github_repo(checkout: str) -> str | None:
     return match.group(1) if match else None
 
 
+def authoritative_refresh(store: Store, transport: Callable[[str, dict], dict],
+                          handle: str, work_session_id: str, *,
+                          ticket_ref: str | None = None, checkout: str | None = None,
+                          derive_repo: Callable[[str], str | None] = derive_github_repo):
+    """Refresh lifecycle cache after a receipt, failing closed on any mismatch."""
+    try:
+        session = transport("get_session", {"work_session_id": work_session_id})
+        if ticket_ref is None and isinstance(session, dict):
+            claims = session.get("claims")
+            if isinstance(claims, list) and len(claims) == 1 and isinstance(claims[0], dict):
+                candidate = claims[0].get("ticket_id")
+                if isinstance(candidate, str) and candidate:
+                    ticket_ref = candidate
+        ticket = transport("get_ticket", {"ticket": ticket_ref}) if ticket_ref else None
+        if checkout is not None and isinstance(session, dict):
+            if derive_repo(checkout) != session.get("repo"):
+                checkout = None
+        store.refresh_authoritative(handle, session, ticket, checkout=checkout)
+    except (BridgeError, sqlite3.Error):
+        store.mark_untrusted(handle, work_session_id)
+        raise BridgeError(503, "authoritative refresh failed; retry after checking current state") from None
+
+
 class Bridge:
     def __init__(self, store: Store | None = None,
                  transport: Callable[[str, dict], dict] | None = None, *,
@@ -119,22 +142,10 @@ class Bridge:
 
     def _refresh(self, handle: str, work_session_id: str, *, ticket_ref: str | None = None,
                  checkout: str | None = None):
-        try:
-            session = self.transport("get_session", {"work_session_id": work_session_id})
-            if ticket_ref is None and isinstance(session, dict):
-                claims = session.get("claims")
-                if isinstance(claims, list) and len(claims) == 1 and isinstance(claims[0], dict):
-                    candidate = claims[0].get("ticket_id")
-                    if isinstance(candidate, str) and candidate:
-                        ticket_ref = candidate
-            ticket = self.transport("get_ticket", {"ticket": ticket_ref}) if ticket_ref else None
-            if checkout is not None and isinstance(session, dict):
-                if self.derive_repo(checkout) != session.get("repo"):
-                    checkout = None
-            self.store.refresh_authoritative(handle, session, ticket, checkout=checkout)
-        except (BridgeError, sqlite3.Error):
-            self.store.mark_untrusted(handle, work_session_id)
-            raise BridgeError(503, "authoritative refresh failed; retry after checking current state") from None
+        authoritative_refresh(
+            self.store, self.transport, handle, work_session_id,
+            ticket_ref=ticket_ref, checkout=checkout, derive_repo=self.derive_repo,
+        )
 
     def _ensure_trusted(self, execution: Execution) -> Execution:
         if execution.cache_trusted:

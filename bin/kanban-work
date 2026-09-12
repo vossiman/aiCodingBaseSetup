@@ -2,6 +2,8 @@
 """Public JSON entry point for the native Kanban work-session bridge."""
 
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -9,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from lib.kanban_work import Bridge, BridgeError  # noqa: E402
+from lib.kanban_work import Bridge, BridgeError, EventIngestor, LifecycleQueue, Store  # noqa: E402
 from lib.kanban_work.bridge import MAX_JSON_STDIN, PUBLIC_OPERATIONS  # noqa: E402
 
 
@@ -20,18 +22,73 @@ def emit(ok, *, data=None, code=None, message=None):
     print(json.dumps(value, separators=(",", ":")))
 
 
+def read_payload():
+    raw = sys.stdin.buffer.read(MAX_JSON_STDIN + 1)
+    if len(raw) > MAX_JSON_STDIN:
+        raise BridgeError(422, "stdin exceeds 256 KiB")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise BridgeError(422, "stdin must contain one valid JSON object") from None
+    if not isinstance(payload, dict):
+        raise BridgeError(422, "stdin must contain one valid JSON object")
+    return payload
+
+
+def spawn_mode(*args):
+    if os.environ.get("AICODINGSETUP_SKIP_NETWORK") == "1":
+        return
+    try:
+        subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), *args],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True, close_fds=True,
+        )
+    except OSError:
+        return
+
+
 def main():
     try:
-        if len(sys.argv) != 3 or sys.argv[1] != "--json" or sys.argv[2] not in PUBLIC_OPERATIONS:
-            raise BridgeError(422, "usage: kanban-work --json bind|lookup|execute|instructions")
-        raw = sys.stdin.buffer.read(MAX_JSON_STDIN + 1)
-        if len(raw) > MAX_JSON_STDIN:
-            raise BridgeError(422, "stdin exceeds 256 KiB")
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise BridgeError(422, "stdin must contain one valid JSON object") from None
-        data = Bridge().dispatch(sys.argv[2], payload)
+        if len(sys.argv) == 3 and sys.argv[1] == "--json" and sys.argv[2] in PUBLIC_OPERATIONS:
+            data = Bridge().dispatch(sys.argv[2], read_payload())
+        elif len(sys.argv) == 4 and sys.argv[1] == "hook":
+            store = Store()
+            try:
+                queue = LifecycleQueue(store)
+                ingress = EventIngestor(
+                    store, queue,
+                    start_supervisor=lambda handle, call_id: spawn_mode(
+                        "supervise", handle, call_id
+                    ),
+                )
+                data = ingress.ingest_event(sys.argv[2], sys.argv[3], read_payload())
+                spawn_mode("drain", "2000")
+            finally:
+                store.close()
+        elif len(sys.argv) in {2, 3} and sys.argv[1] == "drain":
+            try:
+                budget = int(sys.argv[2]) if len(sys.argv) == 3 else 2_000
+            except ValueError:
+                raise BridgeError(422, "drain budget_ms must be an integer") from None
+            store = Store()
+            try:
+                data = LifecycleQueue(store).drain(budget)
+            finally:
+                store.close()
+        elif len(sys.argv) == 4 and sys.argv[1] == "supervise":
+            store = Store()
+            try:
+                data = LifecycleQueue(store).supervise(sys.argv[2], sys.argv[3])
+            finally:
+                store.close()
+        else:
+            raise BridgeError(
+                422,
+                "usage: kanban-work --json bind|lookup|execute|instructions; "
+                "kanban-work hook HARNESS EVENT; kanban-work drain [BUDGET_MS]; "
+                "kanban-work supervise HANDLE NATIVE_CALL_ID",
+            )
         emit(True, data=data)
         return 0
     except BridgeError as error:
