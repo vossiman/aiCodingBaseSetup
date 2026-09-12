@@ -352,7 +352,7 @@ state directory. Different CLIs have different update paths:
 |-----|-------------|---------------------|
 | Claude Code | exact requested version through the official installer in isolated staging, then validated immutable activation | ✅ |
 | opencode | exact npm version in an isolated prefix, validated before immutable activation | ✅ |
-| Cursor Agent | no safe exact-version staging interface is currently available; retain the installed version and record `blocked/versioned_staging_unavailable` | ❌ blocked |
+| Cursor Agent | exact Linux x64/arm64 archive selected from the official installer, safely extracted and version-probed before immutable activation | ✅ |
 | OpenAI Codex | exact npm version plus matching `codex-code-mode-host`, validated before immutable activation | ✅ |
 
 Firecrawl, Brave, Context7 and Playwright MCP servers use the same exact npm
@@ -400,7 +400,7 @@ The pre-manifest installer would silently clobber any file you'd hand-edited on 
 
 ## Windows
 
-Unsupported. A quarantined PowerShell stub lives at `contrib/windows/install.ps1` for archaeology only — use Linux/WSL `install.sh`.
+Unsupported. A quarantined PowerShell stub lives at `contrib/windows/install.ps1` for archaeology only — use WSL with `bash bootstrap-aicoding.sh --profile host`. For a local checkout, use `AICODING_PROFILE=host aicoding-install --blueprint /path/to/checkout`.
 
 ## Devcontainers (DevPod / Codespaces / VS Code Dev Containers)
 
@@ -502,7 +502,7 @@ The same persist-once-share-everywhere property applies to all four CLIs once th
 
 ```
 aiCodingBaseSetup/
-├── install.sh                     # Linux/WSL installer (three-mode dispatch)
+├── install.sh                     # container installer (three-mode dispatch)
 ├── bootstrap-aicoding.sh          # self-contained verified first enrollment
 ├── on-start.sh                    # container startup maintenance + scheduler ensure
 ├── contrib/windows/               # quarantined Windows stub (unsupported)

@@ -6,6 +6,10 @@ export AICODING_RUNTIME_ROOT
 export AICODING_AUTO_UPDATE_SELF="$SCRIPT_REAL"
 . "$AICODING_RUNTIME_ROOT/lib/auto-update.sh"
 
+case "${1:-}" in
+  --once|--ensure|--enroll|--worker) _aicoding_auto_close_shared_lock_fds || exit 1 ;;
+esac
+
 # An installer may invoke --ensure while it owns the whole-run sync lock.
 # Detached scheduler processes must close that inherited descriptor before
 # they start a worker which will later acquire the same lock.

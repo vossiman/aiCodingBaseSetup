@@ -60,14 +60,15 @@ EOF
   [ "$output" = $'aicoding\ndvw' ]
 }
 
-@test "known Cursor staging limitation is a completed component deferral" {
+@test "unsupported Cursor platform is a completed component deferral" {
   unset AICODINGSETUP_SKIP_NETWORK
   _tool agent 'cursor-agent 2026.08.01'
+  _tool uname 'Unsupported'
 
   run aicoding_update_installed_components
   [ "$status" -eq 0 ]
   jq -e '.components.cursor.state == "blocked"
-    and .components.cursor.reason == "versioned_staging_unavailable"' \
+    and .components.cursor.reason == "unsupported_platform"' \
     "$AICODING_STATE_DIR/update-results.json"
 }
 
@@ -677,6 +678,55 @@ EOF
   run aicoding_update_component mcp-context7
   [ "$status" -eq 0 ]
   [ "$(cat "$AICODING_DATA_DIR/versions/mcp-context7/4.1.0/node_modules/stable-dep/index.js")" = first ]
+  [ "$(wc -l < "$TMP/npm-mcp-installs")" -eq 1 ]
+}
+
+@test "retained MCP package repairs its launcher and registration without another download" {
+  _stub_exact_mcp_npm
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-context7
+  [ "$status" -eq 0 ]
+  rm "$HOME/.local/bin/context7-mcp"
+  cat > "$TMP/stubs/claude" <<'EOF'
+#!/bin/sh
+case "$*" in
+  --version) echo '2.1.50 (Claude Code)' ;;
+  'mcp get context7')
+    [ -f "$TMP/registered" ] || exit 1
+    printf 'Command: %s/.local/bin/context7-mcp\nArgs: \n' "$HOME" ;;
+  'mcp add '*) touch "$TMP/registered" ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "$TMP/stubs/claude"
+  AICODING_MCP_REGISTRATION_FORCE=1 run aicoding_update_component mcp-context7
+  [ "$status" -eq 0 ]
+  [ -x "$HOME/.local/bin/context7-mcp" ]
+  jq -e '.components["mcp-registration-claude-context7"].successful_version == "4.1.0"' "$AICODING_RESULTS_FILE"
+  [ "$(wc -l < "$TMP/npm-mcp-installs")" -eq 1 ]
+}
+
+@test "retained Playwright package restores a missing browser without another download" {
+  _stub_exact_mcp_npm
+  _tool ldd 'libgbm.so.1 => /lib/libgbm.so.1'
+  run aicoding_update_component mcp-playwright
+  [ "$status" -eq 0 ]
+  rm -rf "$AICODING_DATA_DIR/browser-cache/mcp-playwright/0.0.80"
+  run aicoding_update_component mcp-playwright
+  [ "$status" -eq 0 ]
+  [ -x "$AICODING_DATA_DIR/browser-cache/mcp-playwright/0.0.80/chromium-123/chrome-linux64/chrome" ]
+  [ "$(wc -l < "$TMP/npm-mcp-installs")" -eq 1 ]
+}
+
+@test "a newer MCP target downloads and activates while retaining the previous release" {
+  _stub_exact_mcp_npm
+  run aicoding_update_component mcp-context7
+  [ "$status" -eq 0 ]
+  sed -i 's/4\.1\.0/4.2.0/g' "$TMP/stubs/npm"
+  run aicoding_update_component mcp-context7
+  [ "$status" -eq 0 ]
+  [ "$(readlink -f "$AICODING_DATA_DIR/current/mcp-context7")" = "$AICODING_DATA_DIR/versions/mcp-context7/4.2.0" ]
+  [ -d "$AICODING_DATA_DIR/versions/mcp-context7/4.1.0" ]
+  [ "$(wc -l < "$TMP/npm-mcp-installs")" -eq 2 ]
 }
 
 @test "exact MCP staging rejects ignored install lifecycle scripts in package dependencies" {
@@ -690,7 +740,18 @@ EOF
     "$AICODING_STATE_DIR/update-results.json"
 }
 
-@test "corrupt retained MCP release is rejected against the fresh exact stage" {
+@test "failed MCP package enumeration is a failure rather than a successful or deferred install" {
+  _stub_exact_mcp_npm
+  find() { return 1; }
+  run aicoding_update_component mcp-context7
+  [ "$status" -ne 0 ]
+  [ ! -e "$AICODING_DATA_DIR/current/mcp-context7" ]
+  jq -e '.components["mcp-context7"].state == "failed"
+    and .components["mcp-context7"].reason == "package_inventory_unavailable"' \
+    "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "corrupt retained MCP release is rejected before download or activation" {
   _stub_exact_mcp_npm
   run aicoding_update_component mcp-context7
   [ "$status" -eq 0 ]
@@ -704,6 +765,7 @@ EOF
   [ "$(readlink "$AICODING_DATA_DIR/current/mcp-context7")" = ../versions/mcp-context7/old ]
   jq -e '.components["mcp-context7"].reason == "existing_release_invalid"' \
     "$AICODING_STATE_DIR/update-results.json"
+  [ "$(wc -l < "$TMP/npm-mcp-installs")" -eq 1 ]
 }
 
 @test "failed exact MCP release commit replaces an old success receipt" {

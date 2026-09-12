@@ -780,6 +780,18 @@ EOF
   echo "$output" | grep -qE '^INSTALL OK  blueprint [0-9a-f]+  new [0-9]+  restored [0-9]+  updated [0-9]+  merged [0-9]+  drifted [0-9]+  to_review [0-9]+$'
 }
 
+@test "install summary identifies a Gitless immutable release" {
+  mkdir -p "$TMPDIR/release"
+  printf '%s\n' 50120b9b97a4233263e33c9b73932ff5b28506f3 > "$TMPDIR/release/.aicoding-version"
+  run bash -c '
+    source "$1/lib/provision-managed-files.sh"
+    SCRIPT_DIR=$2
+    _print_install_summary DEFERRED
+  ' _ "$BLUEPRINT_ROOT" "$TMPDIR/release"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "INSTALL DEFERRED  blueprint 50120b9  new "* ]]
+}
+
 @test "install.sh: prints NOTE follow-up when drifted or to_review > 0" {
   blueprint_copy
   bash "$BP/install.sh" </dev/null
@@ -791,6 +803,7 @@ EOF
   run bash "$BP/install.sh" </dev/null
   [ "$status" -eq 0 ]
   echo "$output" | grep -qE '^NOTE: [0-9]+ drifted file\(s\), [0-9]+ file\(s\) to review'
+  [[ "$output" == *"INSTALL OK  blueprint"* ]]
 }
 
 @test "install.sh: ERR trap announces step name on failure" {

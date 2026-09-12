@@ -7,7 +7,8 @@ trap '_rc=$?; printf "INSTALL FAILED  step=%s  line=%s\n" "$_CURRENT_STEP" "$LIN
 # ============================================================================
 # AI Coding Base Setup — Installer/Updater
 # Configures Claude Code and opencode with shared MCPs, skills, hooks, plugins
-# Supports: Linux, WSL (bash). Windows is unsupported (see contrib/windows/).
+# Container installer (bash). Direct WSL uses install-host.sh.
+# Native Windows is unsupported (see contrib/windows/).
 # ============================================================================
 
 # Microsoft's devcontainer universal images ship `/etc/profile` sourcing
@@ -95,6 +96,11 @@ main() {
     esac
   done
 
+  if [[ "${ENV_TYPE:-}" == wsl ]]; then
+    err "Container installer cannot run directly in WSL; use --profile host with bootstrap-aicoding.sh. For a local blueprint: AICODING_PROFILE=host aicoding-install --blueprint /path/to/checkout"
+    return 1
+  fi
+
   header "AI Coding Base Setup"
 
   seed_github_known_host
@@ -120,6 +126,7 @@ main() {
   # Hold writer locks before any tool-owned mutation or managed-file mode
   # detection. A busy shared root is handled per destination as a deferral so
   # confirmed-local setup can continue.
+  _provision_recover_scheduler_locks
   if ! aicoding_shared_locks_acquire_managed_roots; then
     _AICODING_INSTALL_SHARED_LOCKS_READY=0
   fi
@@ -184,7 +191,8 @@ main() {
   ensure_agents_skills_symlink
   ensure_codex_managed_hooks
   install_tmux_plugins
-  install_bubblewrap
+  install_bubblewrap \
+    || { warn "bw-AICode provisioning failed"; persistent_provision_failed=1; }
   install_infra_audit
   check_playwright
   ensure_lfs_autopull_safe
@@ -206,11 +214,12 @@ main() {
       && aicoding_result_record provision blocked "$(_aicoding_managed_source_version "$SCRIPT_DIR")" preparation_deferred || true
     if [[ "${AICODING_PERSISTENT_ENROLLMENT:-0}" == 1 ]]; then
       header "Enrolled with deferrals"
-      info "Runtime enrollment succeeded; unavailable capabilities and dependent config were deferred"
+      info "Runtime enrollment succeeded; some tool or configuration changes were deferred"
     else
       header "Completed with deferrals"
-      info "Unavailable capabilities and dependent config were deferred"
+      info "Some tool or configuration changes were deferred"
     fi
+    _print_install_summary DEFERRED
     return 0
   else
     manifest_stamp_provision "$(_aicoding_managed_source_version "$SCRIPT_DIR")"

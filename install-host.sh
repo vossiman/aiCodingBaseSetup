@@ -179,6 +179,7 @@ main() {
   ensure_gh_credential_helper
   ensure_gh_stored_auth
   ensure_git_credential_file_fallback
+  _provision_recover_scheduler_locks
   if ! aicoding_shared_locks_acquire_managed_roots; then
     _AICODING_INSTALL_SHARED_LOCKS_READY=0
   fi
@@ -235,7 +236,8 @@ main() {
   manifest_set_profile host
 
   ensure_codex_managed_hooks
-  install_bubblewrap
+  install_bubblewrap \
+    || { warn "bw-AICode provisioning failed"; persistent_provision_failed=1; }
   ensure_homelab_wiki
   ensure_aicoding_auto_update
 
@@ -253,11 +255,12 @@ main() {
       && aicoding_result_record provision blocked "$(_aicoding_managed_source_version "$SCRIPT_DIR")" preparation_deferred || true
     if [[ "${AICODING_PERSISTENT_ENROLLMENT:-0}" == 1 ]]; then
       header "Enrolled with deferrals"
-      info "Runtime enrollment succeeded; unavailable capabilities and dependent config were deferred"
+      info "Runtime enrollment succeeded; some tool or configuration changes were deferred"
     else
       header "Completed with deferrals"
-      info "Unavailable capabilities and dependent config were deferred"
+      info "Some tool or configuration changes were deferred"
     fi
+    _print_install_summary DEFERRED
     return 0
   else
     manifest_stamp_provision "$(_aicoding_managed_source_version "$SCRIPT_DIR")"

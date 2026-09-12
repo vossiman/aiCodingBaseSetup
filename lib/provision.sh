@@ -68,15 +68,52 @@ _provision_record_blocked() {
     && aicoding_result_record "$1" blocked "" "$2" || true
 }
 
+_provision_report_component_attempt() {
+  local component=$1 reason= receipt=${AICODING_COMPONENT_LAST_RESULT:-}
+  case "$receipt" in
+    "$component"|"mcp-registration-claude-${component#mcp-}")
+      reason=$(jq -r --arg component "$receipt" '.components[$component]
+        | select(.state == "failed" or .state == "blocked" or .state == "conflict")
+        | .reason // empty' "$AICODING_RESULTS_FILE" 2>/dev/null) || reason=
+      ;;
+  esac
+  # Receipts are metadata, but do not echo arbitrary content from a damaged
+  # or user-edited file into installer output.
+  [[ "$reason" =~ ^[a-z0-9_]+$ ]] || reason=update_not_verified
+  warn "$component: $reason"
+}
+
 _provision_tool_blocked() {
   _AICODING_GUARDED_PROVISION_DEFERRED=1
   _provision_record_blocked "$@"
   return 3
 }
 
+# Recover old scheduler-held writer locks before the installer takes its own.
+# A worker still finishing a pass is a deferral, never an installer abort.
+_provision_recover_scheduler_locks() {
+  [ "${AICODINGSETUP_SKIP_NETWORK:-0}" != 1 ] || return 0
+  if ! declare -F _aicoding_auto_recover_shared_lock_worker >/dev/null 2>&1; then
+    . "$SCRIPT_DIR/lib/auto-update.sh" || return 1
+  fi
+  local recovery_rc=0
+  _aicoding_auto_recover_shared_lock_worker || recovery_rc=$?
+  if [ "$recovery_rc" -ne 0 ] && [ "$recovery_rc" -ne 4 ]; then
+    _AICODING_PREPARATION_DEFERRED=1
+    warn "Legacy updater recovery deferred; shared configuration may remain busy"
+  fi
+  return 0
+}
+
 _provision_ensure_update_components() {
-  declare -F aicoding_update_component >/dev/null 2>&1 && return 0
   local root=${SCRIPT_DIR:-${BLUEPRINT_ROOT:-}}
+  # Shell functions do not survive the installer exec; adapters need their
+  # selector dependency even when another caller already sourced them.
+  if ! declare -F aicoding_select_ci_sha >/dev/null 2>&1; then
+    [ -n "$root" ] && [ -f "$root/lib/ci-selector.sh" ] || return 1
+    . "$root/lib/ci-selector.sh" || return 1
+  fi
+  declare -F aicoding_update_component >/dev/null 2>&1 && return 0
   [ -n "$root" ] && [ -f "$root/lib/update-results.sh" ] && [ -f "$root/lib/update-components.sh" ] || return 1
   . "$root/lib/update-results.sh"
   . "$root/lib/update-components.sh"
@@ -96,6 +133,7 @@ _provision_reconcile_exact_mcp() {
   case "$state" in current|updated) ;; *) _provision_record_blocked "$component" exact_package_not_staged; return 3 ;; esac
   local registration_rc=0
   AICODING_COMPONENT_ATTEMPT_DISPOSITION=
+  AICODING_COMPONENT_LAST_RESULT=
   AICODING_REQUIRE_UPDATE_RECEIPT=$require_receipt \
     _aicoding_reconcile_claude_mcp_registration "$name" "$component" "$version" "$launcher" "$@" \
     || registration_rc=$?
@@ -152,12 +190,14 @@ aicoding_prepare_exact_mcps() {
   for component in mcp-context7 mcp-playwright; do
     component_rc=0
     AICODING_COMPONENT_ATTEMPT_DISPOSITION=
+    AICODING_COMPONENT_LAST_RESULT=
     if [ "$register_claude" -eq 1 ]; then
       AICODING_MCP_REGISTRATION_FORCE=1 aicoding_update_component "$component" || component_rc=$?
     else
       AICODING_MCP_REGISTRATION_DISABLE=1 aicoding_update_component "$component" || component_rc=$?
     fi
     if [ "$component_rc" -ne 0 ]; then
+      _provision_report_component_attempt "$component"
       if _aicoding_component_attempt_deferred "$component"; then
         _AICODING_PREPARATION_DEFERRED=1
       else
@@ -169,17 +209,18 @@ aicoding_prepare_exact_mcps() {
 }
 
 # Establish real update receipts for installed harnesses whose managed config
-# is capability-dependent. Cursor has no exact staged updater yet, so its
-# files remain conservatively deferred by aicoding_config_is_compatible.
+# is capability-dependent, including Cursor’s exact vendor archive.
 aicoding_prepare_installed_config_tools() {
   _provision_ensure_update_components || return 1
   local component component_rc rc=0
   while IFS= read -r component; do
-    case "$component" in claude|codex|opencode|pi)
+    case "$component" in claude|codex|opencode|pi|cursor)
       component_rc=0
       AICODING_COMPONENT_ATTEMPT_DISPOSITION=
+      AICODING_COMPONENT_LAST_RESULT=
       aicoding_update_component "$component" || component_rc=$?
       if [ "$component_rc" -ne 0 ]; then
+        _provision_report_component_attempt "$component"
         if _aicoding_component_attempt_deferred "$component"; then
           _AICODING_PREPARATION_DEFERRED=1
         else
@@ -247,8 +288,10 @@ install_mcp_packages() {
     for component in mcp-firecrawl mcp-brave; do
       component_rc=0
       AICODING_COMPONENT_ATTEMPT_DISPOSITION=
+      AICODING_COMPONENT_LAST_RESULT=
       aicoding_update_component "$component" || component_rc=$?
       if [ "$component_rc" -ne 0 ]; then
+        _provision_report_component_attempt "$component"
         if _aicoding_component_attempt_deferred "$component"; then
           _AICODING_PREPARATION_DEFERRED=1
         else
