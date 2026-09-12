@@ -52,8 +52,8 @@ teardown() {
 }
 
 wait_for_lines() {
-  local wanted=$1 i
-  for ((i=0; i<60; i++)); do
+  local wanted=$1 attempts=${2:-60} i
+  for ((i=0; i<attempts; i++)); do
     [ "$(wc -l < "$AICODING_TEST_ATTEMPTS")" -ge "$wanted" ] && return 0
     sleep 0.1
   done
@@ -443,7 +443,7 @@ LEGACY
   mkdir -p "$HOME/.claude" "$TEST_ROOT/legacy"
   # Keep the real legacy worker inside its synchronous update long enough
   # to exceed the bounded TERM wait; the replacement must still start.
-  printf '\nsleep 4\n' >> "$TEST_ROOT/bin/aicoding-sync"
+  printf '\nif [ "${AICODING_TEST_SLOW_LEGACY:-0}" = 1 ]; then sleep 4; fi\n' >> "$TEST_ROOT/bin/aicoding-sync"
   cat > "$TEST_ROOT/legacy/aicoding-auto-update" <<'LEGACY'
 #!/usr/bin/env bash
 source "$TEST_ROOT/runtime/lib/auto-update.sh"
@@ -452,12 +452,34 @@ LEGACY
   chmod +x "$TEST_ROOT/legacy/aicoding-auto-update"
   exec {held_fd}>"$HOME/.claude/.aicoding-update.lock"
   flock "$held_fd"
-  "$TEST_ROOT/legacy/aicoding-auto-update" --worker </dev/null >/dev/null 2>&1 &
+  AICODING_TEST_SLOW_LEGACY=1 "$TEST_ROOT/legacy/aicoding-auto-update" --worker </dev/null >/dev/null 2>&1 &
   exec {held_fd}>&-
   wait_for_lines 1
-  run "$TEST_ROOT/aicoding-auto-update" --ensure
+  run "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
   [ "$status" -eq 0 ]
-  wait_for_lines 2
+  wait_for_lines 2 150
   run flock -n "$HOME/.claude/.aicoding-update.lock" true
   [ "$status" -eq 0 ]
+}
+
+@test "detached legacy recovery has a deadline and reports why enrollment deferred" {
+  export AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT=1
+  run timeout 4 bash -c '
+    source "$TEST_ROOT/runtime/lib/auto-update.sh"
+    _aicoding_auto_recover_shared_lock_worker_locked() { return 3; }
+    aicoding_auto_update_enroll
+  '
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'waiting for legacy worker'* ]]
+  [[ "$output" == *'recovery timed out'* ]]
+}
+
+@test "shared lock recovery reports competing enrollment as deferred" {
+  source "$TEST_ROOT/runtime/lib/auto-update.sh"
+  mkdir -p "$AICODING_STATE_DIR/auto-update"
+  exec {held_fd}>"$AICODING_STATE_DIR/auto-update/ensure.lock"
+  flock "$held_fd"
+  run _aicoding_auto_recover_shared_lock_worker
+  [ "$status" -eq 3 ]
+  exec {held_fd}>&-
 }

@@ -91,7 +91,7 @@ ensure_aicoding_auto_update() {
     return 0
   fi
   "$command" --ensure </dev/null || { warn "could not ensure automatic updater"; return 1; }
-  ok "automatic updater ensured"
+  ok "automatic updater enrollment requested"
 }
 
 # --- agent-notify CLI symlink ---

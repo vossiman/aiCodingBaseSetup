@@ -4,6 +4,7 @@
 : "${AICODING_AUTO_UPDATE_INTERVAL:=21600}"
 : "${AICODING_AUTO_UPDATE_MIN_BACKOFF:=300}"
 : "${AICODING_AUTO_UPDATE_MAX_BACKOFF:=3600}"
+: "${AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT:=120}"
 
 _aicoding_auto_positive_integer() { [[ "$1" =~ ^[1-9][0-9]*$ ]]; }
 
@@ -49,7 +50,7 @@ _aicoding_auto_recover_shared_lock_worker() (
   state=$(_aicoding_auto_state_dir) || return 1
   mkdir -p "$state" || return 1
   exec {ensure_fd}>"$state/ensure.lock" || return 1
-  flock -n "$ensure_fd" || return 0
+  flock -n "$ensure_fd" || return 3
   _aicoding_auto_recover_shared_lock_worker_locked
 )
 
@@ -186,20 +187,40 @@ _aicoding_auto_stop_worker() {
 }
 
 aicoding_auto_update_enroll() {
+  if ! _aicoding_auto_positive_integer "$AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT" \
+      || [ "${#AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT}" -gt 4 ] \
+      || [ "$AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT" -gt 3600 ]; then
+    echo 'aicoding-auto-update: recovery timeout must be 1..3600 seconds' >&2
+    return 2
+  fi
   local state ensure_fd
   state=$(_aicoding_auto_state_dir) || return 1
   mkdir -p "$state" || return 1
   exec {ensure_fd}>"$state/ensure.lock" || return 1
-  flock -w 15 "$ensure_fd" || { exec {ensure_fd}>&-; return 0; }
+  flock -w 15 "$ensure_fd" || {
+    echo 'aicoding-auto-update: another scheduler enrollment is in progress' >&2
+    exec {ensure_fd}>&-
+    return 0
+  }
   # This is the detached enrollment process. A TERM-pending legacy worker
   # may still be finishing a foreground update; wait before starting its
   # successor so the successor cannot exit against the old worker's lock.
-  local recovery_rc
+  local recovery_rc recovery_wait_reported=0
+  local recovery_deadline=$((SECONDS + AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT))
   while :; do
     recovery_rc=0
     _aicoding_auto_recover_shared_lock_worker_locked || recovery_rc=$?
     [ "$recovery_rc" -ne 0 ] || break
     [ "$recovery_rc" -eq 3 ] || { exec {ensure_fd}>&-; return "$recovery_rc"; }
+    if [ "$recovery_wait_reported" -eq 0 ]; then
+      echo 'aicoding-auto-update: waiting for legacy worker to finish before replacement' >&2
+      recovery_wait_reported=1
+    fi
+    if [ "$SECONDS" -ge "$recovery_deadline" ]; then
+      echo 'aicoding-auto-update: legacy worker recovery timed out; scheduler enrollment deferred' >&2
+      exec {ensure_fd}>&-
+      return 1
+    fi
     sleep 1
   done
   if _aicoding_auto_user_manager_available; then
