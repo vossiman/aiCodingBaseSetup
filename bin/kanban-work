@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Public JSON entry point for the native Kanban work-session bridge."""
+
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from lib.kanban_work import Bridge, BridgeError  # noqa: E402
+from lib.kanban_work.bridge import MAX_JSON_STDIN, PUBLIC_OPERATIONS  # noqa: E402
+
+
+def emit(ok, *, data=None, code=None, message=None):
+    value = {"ok": True, "data": data} if ok else {
+        "ok": False, "error": {"code": code, "message": message}
+    }
+    print(json.dumps(value, separators=(",", ":")))
+
+
+def main():
+    try:
+        if len(sys.argv) != 3 or sys.argv[1] != "--json" or sys.argv[2] not in PUBLIC_OPERATIONS:
+            raise BridgeError(422, "usage: kanban-work --json bind|lookup|execute|instructions")
+        raw = sys.stdin.buffer.read(MAX_JSON_STDIN + 1)
+        if len(raw) > MAX_JSON_STDIN:
+            raise BridgeError(422, "stdin exceeds 256 KiB")
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise BridgeError(422, "stdin must contain one valid JSON object") from None
+        data = Bridge().dispatch(sys.argv[2], payload)
+        emit(True, data=data)
+        return 0
+    except BridgeError as error:
+        emit(False, code=error.code, message=error.message)
+        return 1
+    except Exception as error:
+        emit(False, code=500, message=type(error).__name__)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

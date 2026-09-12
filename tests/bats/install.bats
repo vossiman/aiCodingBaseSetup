@@ -1724,9 +1724,11 @@ LDD
 
 @test "install.sh symlinks the kanban board client" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  [ -L "$HOME/.local/bin/kanban-post" ]
-  [ -x "$HOME/.local/bin/kanban-post" ]
-  readlink "$HOME/.local/bin/kanban-post" | grep -q "bin/kanban-post"
+  for h in kanban-post kanban-work; do
+    [ -L "$HOME/.local/bin/$h" ]
+    [ -x "$HOME/.local/bin/$h" ]
+    [ "$(readlink -f "$HOME/.local/bin/$h")" = "$BLUEPRINT_ROOT/bin/$h" ]
+  done
   for h in dokploy-api kuma-admin bugsink-api; do
     [ -L "$HOME/.local/bin/$h" ]
     [ -x "$HOME/.local/bin/$h" ]

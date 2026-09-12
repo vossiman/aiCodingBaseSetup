@@ -1191,6 +1191,7 @@ _sync_provision() {
     install_agent_notify_symlink || rc=1
     install_update_status_symlink || rc=1
     install_kanban_post_symlink || rc=1
+    install_kanban_work_symlink || rc=1
     install_measure_remote_symlink || rc=1
     install_dokploy_api_symlink || rc=1
     install_bugsink_api_symlink || rc=1
@@ -1211,7 +1212,7 @@ _sync_provision() {
   # concrete local artifacts before writing a success stamp. Optional sources
   # that are absent from this blueprint are excluded.
   local name source dest
-  for name in dvw-probe agent-notify aicoding-status kanban-post measure-remote \
+  for name in dvw-probe agent-notify aicoding-status kanban-post kanban-work measure-remote \
               dokploy-api bugsink-api kuma-admin redact-transcript redact-sessions codex-turn-done; do
     source="$(dirname "$blueprint_lib")/bin/$name"
     dest="$HOME/.local/bin/$name"

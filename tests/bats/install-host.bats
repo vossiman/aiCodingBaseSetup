@@ -110,6 +110,17 @@ _source_host_lib() {
   [ "$output" = "host" ]
 }
 
+@test "install-host.sh installs both Kanban helpers from the durable blueprint" {
+  export AICODINGSETUP_SKIP_NETWORK=1
+  bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  local durable="${AICODING_HOST_BLUEPRINT_DIR:-$HOME/.local/share/aicoding/blueprint}"
+  for h in kanban-post kanban-work; do
+    [ -L "$HOME/.local/bin/$h" ]
+    [ -x "$HOME/.local/bin/$h" ]
+    [ "$(readlink -f "$HOME/.local/bin/$h")" = "$durable/bin/$h" ]
+  done
+}
+
 @test "persistent host install reports expected preparation deferrals without failing enrollment or stamping provision" {
   export AICODING_PERSISTENT_ENROLLMENT=1
   run env _AICODINGSETUP_NVS_STRIPPED=1 bash -c '

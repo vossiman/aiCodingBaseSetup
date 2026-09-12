@@ -433,13 +433,15 @@ EOF
     and .components.provision.successful_version == $sha' "$AICODING_RESULTS_FILE"
 }
 
-@test "sync --boot restores a missing kanban-post symlink" {
+@test "sync --boot restores missing Kanban helper symlinks" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  rm -f "$HOME/.local/bin/kanban-post"
+  rm -f "$HOME/.local/bin/kanban-post" "$HOME/.local/bin/kanban-work"
   AICODING_UPDATE_TTL=0 aicoding_sync --boot
-  [ -L "$HOME/.local/bin/kanban-post" ]
-  [ -x "$HOME/.local/bin/kanban-post" ]
-  readlink "$HOME/.local/bin/kanban-post" | grep -q "bin/kanban-post"
+  for h in kanban-post kanban-work; do
+    [ -L "$HOME/.local/bin/$h" ]
+    [ -x "$HOME/.local/bin/$h" ]
+    readlink "$HOME/.local/bin/$h" | grep -q "bin/$h"
+  done
 }
 
 @test "sync --boot restores missing dokploy-api and kuma-admin symlinks" {

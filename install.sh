@@ -146,6 +146,7 @@ main() {
   install_dvw_probe_symlink
   install_clip_shim_symlinks
   install_kanban_post_symlink
+  install_kanban_work_symlink
   install_measure_remote_symlink
   install_dokploy_api_symlink
   install_bugsink_api_symlink

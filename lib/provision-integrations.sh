@@ -151,6 +151,17 @@ install_kanban_post_symlink() {
   ok "kanban-post installed at ~/.local/bin/kanban-post -> $src"
 }
 
+# Native lifecycle bridge shared by every supported agent client. It stores
+# only local identifiers and calls kanban-post for credential-bearing traffic.
+install_kanban_work_symlink() {
+  header "kanban native work bridge"
+  local src="$SCRIPT_DIR/bin/kanban-work"
+  [[ -f "$src" ]] || { warn "bin/kanban-work not found — skipping"; return; }
+  mkdir -p "$HOME/.local/bin"; chmod +x "$src"
+  ln -sf "$src" "$HOME/.local/bin/kanban-work"
+  ok "kanban-work installed at ~/.local/bin/kanban-work -> $src"
+}
+
 # --- Dokploy panel and Uptime Kuma clients ---
 # Same pattern as kanban-post: the panel's API token and Kuma's admin login
 # live in the shared secrets store, an agent may not expand them, so each
