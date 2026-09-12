@@ -388,6 +388,28 @@ EOF
   [ ! -f "$TMPDIR/requests" ]
 }
 
+@test "--done with evidence rejects every legacy mutation argument before bridge lookup" {
+  _start_api_server myrepo
+  _fake_kanban_work
+  export KANBAN_WORK_HANDLE="handle-hint"
+  local -a incompatible=(title body status priority swimlane due)
+  local name
+  for name in "${incompatible[@]}"; do
+    case "$name" in
+      title) run "$KP" "ignored title" --done MYREPO-1 --evidence "tests pass" ;;
+      body) run "$KP" --done MYREPO-1 --evidence "tests pass" --body "ignored body" ;;
+      status) run "$KP" --done MYREPO-1 --evidence "tests pass" --status todo ;;
+      priority) run "$KP" --done MYREPO-1 --evidence "tests pass" --priority high ;;
+      swimlane) run "$KP" --done MYREPO-1 --evidence "tests pass" --swimlane required ;;
+      due) run "$KP" --done MYREPO-1 --evidence "tests pass" --due none ;;
+    esac
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"--done --evidence cannot be combined"* ]]
+    [ ! -f "$KANBAN_FAKE_LOG" ]
+  done
+  [ ! -f "$TMPDIR/requests" ]
+}
+
 @test "--done with evidence delegates the bound claim and references to kanban-work" {
   _start_api_server myrepo
   _fake_kanban_work

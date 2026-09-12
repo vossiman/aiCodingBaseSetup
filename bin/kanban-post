@@ -814,6 +814,18 @@ def main() -> int:
         if a.repo:
             p.error("--patch does not move a ticket between repos; --repo applies to filing a new one")
         if a.done and a.evidence is not None:
+            incompatible = []
+            if a.title is not None:
+                incompatible.append("positional title")
+            incompatible.extend(
+                f"--{name}" for name in ("body", "status", "priority", "swimlane", "due")
+                if getattr(a, name) is not None
+            )
+            if incompatible:
+                p.error(
+                    "--done --evidence cannot be combined with "
+                    + ", ".join(incompatible)
+                )
             handle = a.work_handle or os.environ.get("KANBAN_WORK_HANDLE")
             if not handle:
                 die("--done --evidence requires a bound native work session; use the Kanban MCP")
