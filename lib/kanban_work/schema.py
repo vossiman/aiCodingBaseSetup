@@ -54,7 +54,7 @@ TOOL_SPECS = MappingProxyType({
     "unlink_tickets": _spec(("handle", "ticket", "target"), kind=None, operation_id=None),
     "claim_ticket": _spec(("handle", "ticket"), operation_id=None),
     "checkpoint_work": _spec(("handle", "claim_id", "checkpoint"), operation_id=None),
-    "release_ticket": _spec(("handle", "claim_id", "handoff", "reason"),
+    "release_ticket": _spec(("handle", "claim_id", "handoff"), reason="paused",
                             feedback_target=None, swimlane=None, operation_id=None),
     "complete_ticket": _spec(("handle", "claim_id", "evidence"), references=[], operation_id=None),
     "end_work_session": _spec(("handle",), handoff=None, operation_id=None),

@@ -181,3 +181,51 @@ No shared installer file changed in this fix round, and no focused failure or na
 - Activity suppression and end dominance execute inside the existing `BEGIN IMMEDIATE` transaction and compare the ingress generation. Release rows are preserved for Task 3's later critical-intent reconstruction work.
 - Public UUID validation happens before database/helper access for both affected operations.
 - The two Minor findings from the review (nested mutable spec defaults and expired-unconsumed permit cleanup) remain deliberately deferred for final review, as directed.
+
+## Cross-repository default correction
+
+Aligned Task 2's canonical `release_ticket` normalization with the frozen plan and
+MCP contract at controller base `5c2ee3189ae14537b675239a17c21ad95cc14949`.
+`reason` now defaults to `paused`; `handle`, `claim_id`, and `handoff` remain
+required, and the existing feedback-target validation is unchanged.
+
+### RED evidence
+
+Command:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v tests.python.test_kanban_work tests.python.test_kanban_work_legacy
+```
+
+Result: exit `1`, `40` tests run, with only the two new regressions failing:
+
+```text
+ERROR: test_release_permit_from_omitted_reason_matches_explicit_default_request
+ERROR: test_release_omitted_reason_normalizes_identically_to_explicit_paused
+BridgeError: missing field 'reason' for release_ticket
+FAILED (errors=2)
+```
+
+### GREEN evidence
+
+Command:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v tests.python.test_kanban_work tests.python.test_kanban_work_legacy && bash tests/bats/run.sh kanban-work
+```
+
+Result: exit `0`.
+
+```text
+Ran 40 tests in 0.846s
+OK
+1..1
+ok 1 kanban-work Python contract in 1351ms
+```
+
+### Self-review
+
+- Omitted and explicit `reason: "paused"` normalize to identical sorted compact bytes.
+- A permit minted from the omitted hook arguments is consumed by an explicit-default bridge request and sends `reason: "paused"` to the transport.
+- `link_tickets.kind` and every other required/default field remain unchanged.
+- No native queue, bridge, MCP, installer, or configuration file changed. Per the focused fix brief, the full suite was not repeated.

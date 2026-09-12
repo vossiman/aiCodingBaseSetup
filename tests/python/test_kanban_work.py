@@ -206,6 +206,15 @@ class SchemaTests(unittest.TestCase):
              "operation_id": None},
         )
 
+    def test_release_omitted_reason_normalizes_identically_to_explicit_paused(self):
+        omitted = {
+            "handle": HANDLE, "claim_id": CLAIM, "handoff": "tests remain",
+        }
+        explicit = {**omitted, "reason": "paused"}
+        normalized = normalize_tool_args("release_ticket", omitted)
+        self.assertEqual(normalized, normalize_tool_args("release_ticket", explicit))
+        self.assertEqual(json.loads(normalized)["reason"], "paused")
+
     def test_unknown_keys_bad_uuid_bad_enums_and_long_operation_ids_are_rejected(self):
         cases = [
             ("claim_ticket", {"handle": HANDLE, "ticket": "K-1", "native_session_id": "stolen"}),
@@ -474,6 +483,24 @@ class BridgeTests(unittest.TestCase):
             self.bridge.dispatch("execute", {"handle": HANDLE, "operation": "claim_ticket",
                                               "payload": {"ticket": "AICODINGBASESETUP-2"}})
         self.assertEqual(len(self.transport.calls), before)
+
+    def test_release_permit_from_omitted_reason_matches_explicit_default_request(self):
+        self.bind()
+        claim = self.execute("claim_ticket", {"ticket": "AICODINGBASESETUP-2"})["claim"]["id"]
+        omitted = {"handle": HANDLE, "claim_id": claim, "handoff": "ready"}
+        normalized = normalize_tool_args("release_ticket", omitted)
+        self.store.permit_call(self.identity, "release-default", "release_ticket", normalized, NOW)
+
+        result = self.bridge.dispatch("execute", {
+            "handle": HANDLE,
+            "operation": "release_ticket",
+            "payload": {"claim_id": claim, "handoff": "ready", "reason": "paused"},
+        })
+
+        sent = next(payload for operation, payload in self.transport.calls
+                    if operation == "release_ticket")
+        self.assertEqual(sent["reason"], "paused")
+        self.assertEqual(result["claim"]["id"], claim)
 
     def test_explicit_operation_id_is_preserved_and_ordinary_mutation_strips_it(self):
         self.bind()
