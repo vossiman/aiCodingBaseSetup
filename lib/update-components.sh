@@ -658,12 +658,44 @@ _aicoding_release_integrity_valid() {
   [ "$actual" = "$recorded" ]
 }
 
-# npm was deliberately invoked with --ignore-scripts. Reject any resolved
-# package whose install lifecycle would therefore be skipped.
-_aicoding_npm_tree_ignores_scripts_safely() {
-  local root=$1 manifest manifests key rc=0
-  jq -e '[.packages[] | select(.hasInstallScript == true)] | length == 0' \
+# tldjs 2.3.2 ships its public-suffix rules. Its audited postinstall only
+# refreshes them when npm_config_tldjs_update_rules=true; it is unnecessary
+# for runtime. Keep --ignore-scripts: this exception NEVER executes a hook.
+# Pin registry provenance and the reviewed hook/data bytes; any package update
+# or added lifecycle work requires a new audit, rather than a broad allowlist.
+_aicoding_npm_optional_refresh_is_bundled() {
+  local root=$1 key=$2 dir="$1/$2" hook_hash rules_hash
+  case "$key" in node_modules/*) ;; *) return 1 ;; esac
+  case "/$key/" in */../*|*/./*) return 1 ;; esac
+  jq -e --arg key "$key" '.packages[$key]
+    | .version == "2.3.2" and .link != true
+      and .resolved == "https://registry.npmjs.org/tldjs/-/tldjs-2.3.2.tgz"
+      and .integrity == "sha512-EORDwFMSZKrHPUVDhejCMDeAovRS5d8jZKiqALFiPp3cjKjEldPkxBY39ZSx3c45awz3RpKwJD1cCgGxEfy8/A=="' \
     "$root/package-lock.json" >/dev/null 2>&1 || return 1
+  jq -e '.name == "tldjs" and .version == "2.3.2"
+    and (.scripts.preinstall // "") == ""
+    and (.scripts.install // "") == ""
+    and .scripts.postinstall == "node ./bin/postinstall.js"' \
+    "$dir/package.json" >/dev/null 2>&1 || return 1
+  [ -f "$dir/bin/postinstall.js" ] && [ ! -L "$dir/bin/postinstall.js" ] \
+    && [ -f "$dir/rules.json" ] && [ ! -L "$dir/rules.json" ] || return 1
+  hook_hash=$(sha256sum "$dir/bin/postinstall.js") || return 1
+  rules_hash=$(sha256sum "$dir/rules.json") || return 1
+  [ "${hook_hash%% *}" = a967eff8a98099b264a5dd8b0c91289c064ba16fe9fe92ee0fb41c04e5734b38 ] \
+    && [ "${rules_hash%% *}" = f8acee981e0a21eb83e4df023413247607b8f7af2d322a46ee4fc3877fbb68a1 ]
+}
+
+# npm was deliberately invoked with --ignore-scripts. Reject any resolved
+# package whose required install lifecycle would therefore be skipped.
+_aicoding_npm_tree_ignores_scripts_safely() {
+  local root=$1 manifest manifests key install_keys rc=0
+  install_keys=$(jq -er '.packages | to_entries
+    | map(select(.value.hasInstallScript == true) | .key) | join("\n")' \
+    "$root/package-lock.json") || return 1
+  while IFS= read -r key; do
+    [ -z "$key" ] && continue
+    _aicoding_npm_optional_refresh_is_bundled "$root" "$key" || return 1
+  done <<< "$install_keys"
   # Finish enumeration before inspecting. Returning early from a process-
   # substitution reader gives find SIGPIPE and fires an inherited installer
   # ERR trap; it also used to hide genuine enumeration failures.
@@ -675,7 +707,10 @@ _aicoding_npm_tree_ignores_scripts_safely() {
   while IFS= read -r -d '' manifest; do
     jq -e '(.scripts // {}) as $s
       | all(["preinstall","install","postinstall"][];
-          ($s[.] // "") == "")' "$manifest" >/dev/null 2>&1 || { rc=1; break; }
+          ($s[.] // "") == "")' "$manifest" >/dev/null 2>&1 || {
+      key=${manifest#"$root/"}; key=${key%/package.json}
+      _aicoding_npm_optional_refresh_is_bundled "$root" "$key" || { rc=1; break; }
+    }
     if ! jq -e '(.scripts // {}) as $s
       | all(["prepublish","preprepare","prepare","postprepare"][];
           ($s[.] // "") == "")' "$manifest" >/dev/null 2>&1; then
