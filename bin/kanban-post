@@ -25,10 +25,12 @@ Usage:
   kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P] [--swimlane KEY] [--due DATE]
   kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority P] [--swimlane KEY] [--due DATE|none]
   kanban-post --done TICKET
+  kanban-post --done TICKET --evidence TEXT [--reference TEXT ...]
   kanban-post --comment TICKET "text" | --comment TICKET --body TEXT
   kanban-post --link TICKET --depends-on OTHER | --blocks OTHER | --relates OTHER
   kanban-post --unlink TICKET OTHER
   kanban-post --list-repos | --list-tickets
+  kanban-post --json OPERATION  # reads one JSON object from stdin
   kanban-post --selftest        # proves the token cannot reach the output
 
 --repo is required and must name the repo this checkout belongs to; see
@@ -38,6 +40,7 @@ TICKET is an issue key (DEVMACHINE-12, case-insensitive) or the ticket's
 uuid. The board accepts either; quote the key when writing for a human.
 """
 import argparse
+import datetime
 import json
 import os
 import pathlib
@@ -51,6 +54,25 @@ import urllib.request
 DEFAULT_URL = "https://kanban.dataprospectors.at"
 SECRETS = pathlib.Path.home() / ".aicodingsetup" / ".secrets.env"
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+MAX_JSON_STDIN = 256 * 1024
+MAX_OPAQUE = 300
+STATUSES = {"backlog", "todo", "doing", "done"}
+PRIORITIES = {"low", "normal", "high"}
+SWIMLANES = {"required", "nice_to_have", "waiting_for_feedback", "needs_decision"}
+HARNESSES = {"claude", "codex", "cursor", "opencode"}
+JSON_OPERATIONS = {
+    "list_repos", "list_tickets", "get_ticket", "create_ticket", "update_ticket",
+    "add_comment", "link_tickets", "unlink_tickets", "register_session", "get_session",
+    "rebind_session", "end_session", "claim_ticket", "activity", "checkpoint_work",
+    "release_ticket", "complete_ticket", "override_claim",
+}
+
+
+class InputError(Exception):
+    def __init__(self, code: int, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
 
 def die(message: str) -> "NoReturn":  # noqa: F821
@@ -76,6 +98,8 @@ def base_url() -> str:
         return DEFAULT_URL
     url = override.rstrip("/")
     parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in {"http", "https"}:
+        die("KANBAN_URL must use http or https")
     if (parts.hostname or "") in LOOPBACK:
         return url
     die(
@@ -121,7 +145,7 @@ GITHUB_REMOTE = re.compile(
 )
 
 
-def derive_repo() -> str | None:
+def derive_repo(checkout: str | None = None) -> str | None:
     """The repo name this checkout belongs to, from its github.com origin.
 
     Every ticket carries a repo tag, and that tag is what the phone view
@@ -142,6 +166,7 @@ def derive_repo() -> str | None:
         p = subprocess.run(
             ["git", "remote", "get-url", "origin"],
             capture_output=True, text=True, timeout=10,
+            cwd=checkout,
         )
     except Exception:
         return None
@@ -169,6 +194,13 @@ def scrub(text: str) -> str:
 def emit(value) -> None:
     text = json.dumps(value, indent=2) if isinstance(value, (dict, list)) else str(value)
     print(scrub(text))
+
+
+def emit_json(ok: bool, *, data=None, code=None, message=None) -> None:
+    value = {"ok": True, "data": data} if ok else {
+        "ok": False, "error": {"code": code, "message": message}
+    }
+    print(scrub(json.dumps(value, separators=(",", ":"))))
 
 
 class NoRedirects(urllib.request.HTTPRedirectHandler):
@@ -206,6 +238,349 @@ def call(method: str, path: str, payload: dict | None = None):
         die(f"cannot reach the board: {e.reason}")
     except Exception as e:  # deliberately broad: never surface a traceback
         die(f"request failed: {type(e).__name__}")
+
+
+def _shape(operation: str, payload: dict, required=(), optional=()) -> dict:
+    allowed = set(required) | set(optional)
+    unknown = sorted(set(payload) - allowed)
+    if unknown:
+        raise InputError(422, f"unknown field {unknown[0]!r} for {operation}")
+    missing = [name for name in required if name not in payload]
+    if missing:
+        raise InputError(422, f"missing field {missing[0]!r} for {operation}")
+    return payload
+
+
+def _text(value, name: str, *, maximum=MAX_OPAQUE, blank=False) -> str:
+    if not isinstance(value, str) or len(value) > maximum or (not blank and not value.strip()):
+        qualifier = f"a nonempty string of at most {maximum} characters"
+        raise InputError(422, f"{name} must be {qualifier}")
+    return value
+
+
+def _optional_text(value, name: str, *, maximum=MAX_OPAQUE, blank=False):
+    return None if value is None else _text(value, name, maximum=maximum, blank=blank)
+
+
+def _enum(value, name: str, choices: set[str]) -> str:
+    if not isinstance(value, str) or value not in choices:
+        raise InputError(422, f"{name} must be one of {', '.join(sorted(choices))}")
+    return value
+
+
+def _date(value, name="due_date"):
+    if value is None:
+        return None
+    value = _text(value, name)
+    try:
+        parsed = datetime.date.fromisoformat(value)
+    except ValueError:
+        raise InputError(422, f"{name} must be a date in YYYY-MM-DD form") from None
+    if parsed.isoformat() != value:
+        raise InputError(422, f"{name} must be a date in YYYY-MM-DD form")
+    return value
+
+
+def _timestamp(value, name="observed_at") -> str:
+    value = _text(value, name)
+    try:
+        datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise InputError(422, f"{name} must be an ISO 8601 timestamp") from None
+    return value
+
+
+def _operation_id(payload: dict) -> str:
+    return _text(payload["operation_id"], "operation_id")
+
+
+def _segment(value, name: str) -> str:
+    return urllib.parse.quote(_text(value, name), safe="")
+
+
+def _check_optional_enums(payload: dict) -> None:
+    if payload.get("status") is not None:
+        _enum(payload["status"], "status", STATUSES)
+    if payload.get("priority") is not None:
+        _enum(payload["priority"], "priority", PRIORITIES)
+    if payload.get("swimlane") is not None:
+        _enum(payload["swimlane"], "swimlane", SWIMLANES)
+    if "due_date" in payload:
+        _date(payload["due_date"])
+
+
+def _request(operation: str, method: str, path: str, body=None) -> tuple[int, object]:
+    status, result = call(method, path, body)
+    return status, result
+
+
+def dispatch_json(operation: str, payload: dict) -> tuple[int, object]:
+    """Validate one public operation and map it to its fixed board request."""
+    if operation not in JSON_OPERATIONS:
+        raise InputError(422, f"unknown operation {operation!r}")
+
+    if operation == "list_repos":
+        _shape(operation, payload)
+        return _request(operation, "GET", "/api/repos")
+
+    if operation == "list_tickets":
+        _shape(operation, payload, optional=("repo", "status", "swimlane", "done"))
+        if payload.get("repo") is not None:
+            _text(payload["repo"], "repo")
+        if payload.get("status") is not None:
+            _enum(payload["status"], "status", STATUSES)
+        if payload.get("swimlane") is not None:
+            _enum(payload["swimlane"], "swimlane", SWIMLANES)
+        if payload.get("done") is not None:
+            _enum(payload["done"], "done", {"all", "recent"})
+        query = urllib.parse.urlencode([
+            (name, payload[name]) for name in ("repo", "status", "swimlane", "done")
+            if payload.get(name) is not None
+        ])
+        return _request(operation, "GET", "/api/tickets" + (f"?{query}" if query else ""))
+
+    if operation == "get_ticket":
+        _shape(operation, payload, required=("ticket",))
+        return _request(operation, "GET", f"/api/tickets/{_segment(payload['ticket'], 'ticket')}")
+
+    if operation == "create_ticket":
+        _shape(operation, payload, required=("checkout", "title"),
+               optional=("body", "status", "priority", "swimlane", "due_date"))
+        checkout = _text(payload["checkout"], "checkout", maximum=4096)
+        if not os.path.isabs(checkout):
+            raise InputError(422, "checkout must be an absolute path")
+        repo = derive_repo(checkout)
+        if repo is None:
+            raise InputError(422, "checkout is not a repository with a github.com origin")
+        body = {"repo": repo, "title": _text(payload["title"], "title", maximum=10_000)}
+        _check_optional_enums(payload)
+        for name in ("body", "status", "priority", "swimlane", "due_date"):
+            if name in payload:
+                if name == "body":
+                    _optional_text(payload[name], name, maximum=100_000, blank=True)
+                body[name] = payload[name]
+        return _request(operation, "POST", "/api/tickets", body)
+
+    if operation == "update_ticket":
+        _shape(operation, payload, required=("ticket", "fields"))
+        fields = payload["fields"]
+        if not isinstance(fields, dict):
+            raise InputError(422, "fields must be an object")
+        _shape(operation, fields, optional=("title", "body", "status", "priority", "swimlane", "due_date", "position"))
+        _check_optional_enums(fields)
+        if "title" in fields:
+            _text(fields["title"], "title", maximum=10_000)
+        if "body" in fields:
+            _optional_text(fields["body"], "body", maximum=100_000, blank=True)
+        if "position" in fields and (isinstance(fields["position"], bool) or not isinstance(fields["position"], int) or fields["position"] < 0):
+            raise InputError(422, "position must be a nonnegative integer")
+        return _request(operation, "PATCH", f"/api/tickets/{_segment(payload['ticket'], 'ticket')}", fields)
+
+    if operation == "add_comment":
+        _shape(operation, payload, required=("ticket", "body"))
+        body = _text(payload["body"], "body", maximum=100_000)
+        return _request(operation, "POST", f"/api/tickets/{_segment(payload['ticket'], 'ticket')}/comments", {"body": body})
+
+    if operation == "link_tickets":
+        _shape(operation, payload, required=("ticket", "target", "kind"))
+        target = _text(payload["target"], "target")
+        kind = _enum(payload["kind"], "kind", {"depends_on", "blocks", "relates"})
+        return _request(operation, "POST", f"/api/tickets/{_segment(payload['ticket'], 'ticket')}/links",
+                        {"target": target, "kind": kind})
+
+    if operation == "unlink_tickets":
+        _shape(operation, payload, required=("ticket", "target"), optional=("kind",))
+        ticket = _text(payload["ticket"], "ticket")
+        target = _text(payload["target"], "target")
+        kind = payload.get("kind")
+        if kind is not None:
+            _enum(kind, "kind", {"depends_on", "blocks", "relates"})
+        status, current = _request(operation, "GET", f"/api/tickets/{urllib.parse.quote(ticket, safe='')}")
+        if status >= 400:
+            return status, current
+        links = current.get("links", []) if isinstance(current, dict) else []
+        target_upper = target.upper()
+        matches = [link for link in links
+                   if target_upper in (str(link.get("ticket", {}).get("key", "")).upper(),
+                                       str(link.get("ticket", {}).get("id", "")).upper())
+                   and (kind is None or link.get("kind") == kind)]
+        if not matches:
+            raise InputError(404, f"{ticket} has no matching link to {target}")
+        if len(matches) > 1:
+            raise InputError(409, f"{ticket} has more than one link to {target}; specify kind")
+        link_id = _segment(str(matches[0].get("id", "")), "link id")
+        return _request(operation, "DELETE", f"/api/tickets/{urllib.parse.quote(ticket, safe='')}/links/{link_id}")
+
+    if operation == "register_session":
+        required = ("harness", "native_session_id", "run_generation", "label", "repo", "lifecycle_capable", "operation_id")
+        _shape(operation, payload, required=required, optional=("subagent_id",))
+        _enum(payload["harness"], "harness", HARNESSES)
+        _text(payload["native_session_id"], "native_session_id")
+        _optional_text(payload.get("subagent_id"), "subagent_id")
+        _text(payload["run_generation"], "run_generation")
+        _text(payload["label"], "label")
+        _text(payload["repo"], "repo")
+        if type(payload["lifecycle_capable"]) is not bool:
+            raise InputError(422, "lifecycle_capable must be a boolean")
+        _operation_id(payload)
+        return _request(operation, "POST", "/api/work/sessions", payload)
+
+    if operation == "get_session":
+        _shape(operation, payload, required=("work_session_id",))
+        session = _text(payload["work_session_id"], "work_session_id")
+        return _request(operation, "GET", f"/api/work/sessions/{urllib.parse.quote(session, safe='')}")
+
+    if operation == "rebind_session":
+        _shape(operation, payload, required=("work_session_id", "repo", "operation_id"), optional=("label",))
+        session = _text(payload["work_session_id"], "work_session_id")
+        _text(payload["repo"], "repo")
+        _optional_text(payload.get("label"), "label")
+        _operation_id(payload)
+        body = {key: value for key, value in payload.items() if key != "work_session_id"}
+        return _request(operation, "POST", f"/api/work/sessions/{urllib.parse.quote(session, safe='')}/rebind", body)
+
+    if operation == "end_session":
+        _shape(operation, payload, required=("work_session_id", "operation_id"), optional=("handoff",))
+        session = _text(payload["work_session_id"], "work_session_id")
+        _operation_id(payload)
+        _optional_text(payload.get("handoff"), "handoff", maximum=10_000)
+        body = {key: value for key, value in payload.items() if key != "work_session_id"}
+        return _request(operation, "POST", f"/api/work/sessions/{urllib.parse.quote(session, safe='')}/end", body)
+
+    if operation == "claim_ticket":
+        _shape(operation, payload, required=("work_session_id", "ticket", "operation_id"))
+        session = _text(payload["work_session_id"], "work_session_id")
+        _operation_id(payload)
+        body = {"work_session_id": session, "operation_id": payload["operation_id"]}
+        return _request(operation, "POST", f"/api/work/tickets/{_segment(payload['ticket'], 'ticket')}/claim", body)
+
+    if operation in {"activity", "checkpoint_work", "release_ticket", "complete_ticket"}:
+        required = {
+            "activity": ("work_session_id", "claim_id", "observed_at", "sequence", "operation_id"),
+            "checkpoint_work": ("work_session_id", "claim_id", "checkpoint", "operation_id"),
+            "release_ticket": ("work_session_id", "claim_id", "handoff", "reason", "operation_id"),
+            "complete_ticket": ("work_session_id", "claim_id", "evidence", "operation_id"),
+        }[operation]
+        optional = {
+            "activity": (), "checkpoint_work": (),
+            "release_ticket": ("feedback_target", "swimlane"),
+            "complete_ticket": ("references",),
+        }[operation]
+        _shape(operation, payload, required=required, optional=optional)
+        _text(payload["work_session_id"], "work_session_id")
+        claim = _text(payload["claim_id"], "claim_id")
+        _operation_id(payload)
+        body = {key: value for key, value in payload.items() if key != "claim_id"}
+        if operation == "activity":
+            _timestamp(payload["observed_at"])
+            if isinstance(payload["sequence"], bool) or not isinstance(payload["sequence"], int) or payload["sequence"] < 0:
+                raise InputError(422, "sequence must be a nonnegative integer")
+        elif operation == "checkpoint_work":
+            _text(payload["checkpoint"], "checkpoint", maximum=10_000)
+        elif operation == "release_ticket":
+            _text(payload["handoff"], "handoff", maximum=10_000)
+            reason = _enum(payload["reason"], "reason", {"paused", "feedback", "stopped"})
+            feedback = _optional_text(payload.get("feedback_target"), "feedback_target", maximum=1_000)
+            if reason == "feedback" and feedback is None:
+                raise InputError(422, "feedback_target is required when reason is 'feedback'")
+            if reason != "feedback" and feedback is not None:
+                raise InputError(422, "feedback_target requires reason 'feedback'")
+            if payload.get("swimlane") is not None:
+                swimlane = _enum(payload["swimlane"], "swimlane", SWIMLANES)
+                if swimlane == "waiting_for_feedback":
+                    raise InputError(422, "swimlane must name the prior lane")
+        else:
+            _text(payload["evidence"], "evidence", maximum=10_000)
+            references = payload.get("references", [])
+            if not isinstance(references, list) or len(references) > 50:
+                raise InputError(422, "references must be a list of at most 50 strings")
+            for reference in references:
+                _text(reference, "reference", maximum=1_000)
+            body["references"] = references
+        suffix = {"activity": "activity", "checkpoint_work": "checkpoint", "release_ticket": "release", "complete_ticket": "complete"}[operation]
+        return _request(operation, "POST", f"/api/work/claims/{urllib.parse.quote(claim, safe='')}/{suffix}", body)
+
+    # override_claim is the only remaining allowlisted operation.
+    _shape(operation, payload, required=("claim_id", "reason", "operation_id"),
+           optional=("status", "swimlane", "position"))
+    claim = _text(payload["claim_id"], "claim_id")
+    _text(payload["reason"], "reason", maximum=10_000)
+    _operation_id(payload)
+    _check_optional_enums(payload)
+    if "position" in payload and (isinstance(payload["position"], bool) or not isinstance(payload["position"], int) or payload["position"] < 0):
+        raise InputError(422, "position must be a nonnegative integer")
+    body = {key: value for key, value in payload.items() if key != "claim_id"}
+    return _request(operation, "POST", f"/api/work/claims/{urllib.parse.quote(claim, safe='')}/override", body)
+
+
+def _error_message(value) -> str:
+    if isinstance(value, dict):
+        detail = value.get("detail")
+        if isinstance(detail, str):
+            return detail
+        if detail is not None:
+            return json.dumps(detail, separators=(",", ":"))
+    if isinstance(value, str):
+        return value
+    return f"board returned HTTP error"
+
+
+def run_json_mode(operation: str) -> int:
+    try:
+        raw = sys.stdin.buffer.read(MAX_JSON_STDIN + 1)
+        if len(raw) > MAX_JSON_STDIN:
+            raise InputError(422, "stdin exceeds 256 KiB")
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise InputError(422, "stdin must contain one valid JSON object") from None
+        if not isinstance(payload, dict):
+            raise InputError(422, "stdin must contain one JSON object")
+        status, data = dispatch_json(operation, payload)
+        if status >= 400:
+            emit_json(False, code=status, message=_error_message(data))
+            return 1
+        emit_json(True, data=data)
+        return 0
+    except InputError as error:
+        emit_json(False, code=error.code, message=error.message)
+        return 1
+    except SystemExit as error:
+        message = str(error.code)
+        if message.startswith("kanban-post: "):
+            message = message[len("kanban-post: "):]
+        emit_json(False, code=502, message=message)
+        return 1
+    except urllib.error.HTTPError as error:
+        emit_json(False, code=error.code, message=f"HTTP {error.code}")
+        return 1
+    except urllib.error.URLError as error:
+        emit_json(False, code=502, message=f"cannot reach the board: {error.reason}")
+        return 1
+    except Exception as error:
+        emit_json(False, code=500, message=type(error).__name__)
+        return 1
+
+
+def run_kanban_work(operation: str, payload: dict) -> dict:
+    try:
+        result = subprocess.run(
+            ["kanban-work", "--json", operation],
+            input=json.dumps(payload, separators=(",", ":")),
+            capture_output=True, text=True, timeout=30,
+        )
+        envelope = json.loads(result.stdout)
+        if not isinstance(envelope, dict):
+            raise ValueError("non-object envelope")
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError) as error:
+        die(f"kanban-work failed: {type(error).__name__}")
+    if result.returncode != 0 or not envelope.get("ok"):
+        detail = envelope.get("error", {})
+        message = detail.get("message") if isinstance(detail, dict) else None
+        die(message or "kanban-work rejected the operation")
+    if not isinstance(envelope.get("data"), dict):
+        die("kanban-work returned an invalid success envelope")
+    return envelope
 
 
 def selftest() -> int:
@@ -263,10 +638,10 @@ def selftest() -> int:
     }
     failures = []
 
-    def run(args, label):
+    def run(args, label, input_data=None):
         p = subprocess.run(
             [sys.executable, __file__, *args],
-            capture_output=True, text=True, env=env, timeout=30,
+            input=input_data, capture_output=True, text=True, env=env, timeout=30,
         )
         out = p.stdout + p.stderr
         if fake in out:
@@ -274,6 +649,23 @@ def selftest() -> int:
         return out
 
     run(["--list-tickets"], "error body echoing the credential")
+    before_json_read = len(seen)
+    run(["--json", "list_repos"], "JSON read", "{}")
+    if len(seen) != before_json_read + 1:
+        failures.append("JSON read: did not make exactly one request")
+    # Lifecycle JSON uses only the fake backend identity and fake token.
+    lifecycle = subprocess.run(
+        [sys.executable, __file__, "--json", "claim_ticket"],
+        input=json.dumps({
+            "work_session_id": "11111111-1111-4111-8111-111111111111",
+            "ticket": "SELFTEST-1",
+            "operation_id": "selftest-claim",
+        }), capture_output=True, text=True, env=env, timeout=30,
+    )
+    if fake in lifecycle.stdout + lifecycle.stderr:
+        failures.append("JSON lifecycle: the token appeared in the output")
+    if len(seen) != before_json_read + 2:
+        failures.append("JSON lifecycle: did not make exactly one request")
     # A write path, chosen over filing a ticket because --done needs no
     # checkout to derive a repo name from -- the redaction it exercises is
     # the same call()/emit() pair either way.
@@ -334,8 +726,23 @@ def main() -> int:
                    help="remove the link between TICKET and OTHER (given positionally)")
     p.add_argument("--list-repos", action="store_true")
     p.add_argument("--list-tickets", action="store_true")
+    p.add_argument("--json", metavar="OPERATION", default=None,
+                   help="read one operation payload as JSON from stdin")
+    p.add_argument("--evidence", default=None,
+                   help="completion evidence for --done")
+    p.add_argument("--reference", action="append", default=None,
+                   help="completion reference; repeat as needed")
+    p.add_argument("--work-handle", default=None, help=argparse.SUPPRESS)
     p.add_argument("--selftest", action="store_true")
     a = p.parse_args()
+
+    if a.json is not None:
+        return run_json_mode(a.json)
+
+    if (a.evidence is not None or a.reference or a.work_handle) and not a.done:
+        p.error("--evidence, --reference and --work-handle only apply to --done")
+    if (a.reference or a.work_handle) and a.evidence is None:
+        p.error("--reference and --work-handle require --done --evidence")
 
     if a.swimlane is not None and (a.comment or a.link or a.unlink or a.list_repos or a.list_tickets or a.selftest):
         p.error("--swimlane only applies to creating or patching a ticket")
@@ -406,6 +813,28 @@ def main() -> int:
             p.error("--patch and --done are alternatives; --done T means --patch T --status done")
         if a.repo:
             p.error("--patch does not move a ticket between repos; --repo applies to filing a new one")
+        if a.done and a.evidence is not None:
+            handle = a.work_handle or os.environ.get("KANBAN_WORK_HANDLE")
+            if not handle:
+                die("--done --evidence requires a bound native work session; use the Kanban MCP")
+            current = run_kanban_work("lookup", {"handle": handle})
+            claim = current["data"].get("active_claim")
+            if not isinstance(claim, dict) or str(claim.get("ticket", "")).upper() != a.done.upper():
+                die("--done target is not the bound session's current claim; use the Kanban MCP")
+            claim_id = claim.get("id")
+            if not isinstance(claim_id, str) or not claim_id:
+                die("kanban-work returned an invalid active claim")
+            completed = run_kanban_work("execute", {
+                "handle": handle,
+                "operation": "complete_ticket",
+                "payload": {
+                    "claim_id": claim_id,
+                    "evidence": a.evidence,
+                    "references": a.reference or [],
+                },
+            })
+            emit(completed["data"])
+            return 0
         ticket_id = a.patch or a.done
         fields = {"status": "done"} if a.done else {}
         for name in ("title", "body", "status", "priority", "swimlane"):
