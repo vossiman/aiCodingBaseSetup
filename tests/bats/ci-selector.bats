@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 
 setup() {
   export TMP=$(mktemp -d) HOME="$BATS_TEST_TMPDIR/home"
@@ -61,14 +62,14 @@ fixture_run() {
 select_sha() { bash "$BLUEPRINT_ROOT/bin/aicoding-select" aicoding; }
 
 @test "select exact latest main commit with successful required workflow" {
-  run select_sha
+  run --separate-stderr select_sha
   [ "$status" -eq 0 ]
   [ "$output" = "$NEW" ]
 }
 @test "failed cancelled or skipped latest CI selects older proven main" {
   for conclusion in failure cancelled skipped; do
     fixture_run "$NEW" completed "$conclusion"
-    run select_sha
+    run --separate-stderr select_sha
     [ "$status" -eq 0 ]
     [ "$output" = "$OLD" ]
   done
@@ -76,7 +77,7 @@ select_sha() { bash "$BLUEPRINT_ROOT/bin/aicoding-select" aicoding; }
 @test "queued or in-progress CI with null conclusion selects older proven main" {
   for pending_status in queued in_progress; do
     fixture_run "$NEW" "$pending_status" null
-    run select_sha
+    run --separate-stderr select_sha
     [ "$status" -eq 0 ]
     [ "$output" = "$OLD" ]
   done
@@ -84,7 +85,7 @@ select_sha() { bash "$BLUEPRINT_ROOT/bin/aicoding-select" aicoding; }
 @test "pending rerun cannot reuse an earlier successful run" {
   jq '.total_count=2 | .workflow_runs += [.workflow_runs[0] | .id=23 | .run_number=5 | .status="in_progress" | .conclusion=null]' "$CI_FIXTURE/runs-$NEW" > "$TMP/new"
   mv "$TMP/new" "$CI_FIXTURE/runs-$NEW"
-  run select_sha
+  run --separate-stderr select_sha
   [ "$status" -eq 0 ]
   [ "$output" = "$OLD" ]
 }
@@ -93,31 +94,31 @@ select_sha() { bash "$BLUEPRINT_ROOT/bin/aicoding-select" aicoding; }
     fixture_run "$NEW" completed success
     jq ".workflow_runs[0] |= ($mutation)" "$CI_FIXTURE/runs-$NEW" > "$TMP/new"
     mv "$TMP/new" "$CI_FIXTURE/runs-$NEW"
-    run select_sha
+    run --separate-stderr select_sha
     [ "$status" -eq 0 ]
     [ "$output" = "$OLD" ]
   done
 }
 @test "inaccessible CI aborts instead of silently selecting older commit" {
   rm "$CI_FIXTURE/runs-$NEW"
-  run select_sha
+  run --separate-stderr select_sha
   [ "$status" -ne 0 ]
   [[ "$output" != *"$OLD"* ]]
 }
 @test "missing disabled or substituted required workflow fails closed" {
   for mutation in '.state="disabled_manually"' '.id=999' '.path=".github/workflows/renovate.yml"'; do
     printf '%s\n' '{"id":330421083,"name":"tests","path":".github/workflows/tests.yml","state":"active"}' | jq "$mutation" > "$CI_FIXTURE/workflow"
-    run select_sha
+    run --separate-stderr select_sha
     [ "$status" -ne 0 ]
   done
   rm "$CI_FIXTURE/workflow"
-  run select_sha
+  run --separate-stderr select_sha
   [ "$status" -ne 0 ]
 }
 @test "malformed and truncated API responses never produce a selected version" {
   for invalid in '{"workflow_runs":null}' 'not JSON' '{"total_count":101,"workflow_runs":[]}'; do
     printf '%s\n' "$invalid" > "$CI_FIXTURE/runs-$NEW"
-    run select_sha
+    run --separate-stderr select_sha
     [ "$status" -ne 0 ]
     [[ "$output" != *"$OLD"* ]]
   done
@@ -131,7 +132,7 @@ select_sha() { bash "$BLUEPRINT_ROOT/bin/aicoding-select" aicoding; }
     fixture_run "$NEW" completed success
     jq ".workflow_runs[0] |= ($mutation)" "$CI_FIXTURE/runs-$NEW" > "$TMP/new"
     mv "$TMP/new" "$CI_FIXTURE/runs-$NEW"
-    run select_sha
+    run --separate-stderr select_sha
     [ "$status" -eq 2 ]
     [[ "$output" != *"$OLD"* ]]
   done
@@ -139,7 +140,7 @@ select_sha() { bash "$BLUEPRINT_ROOT/bin/aicoding-select" aicoding; }
 @test "no green candidate fails without claiming success" {
   printf '%s\n' '{"total_count":0,"workflow_runs":[]}' > "$CI_FIXTURE/runs-$NEW"
   fixture_run "$OLD" completed failure
-  run select_sha
+  run --separate-stderr select_sha
   [ "$status" -ne 0 ]
 }
 @test "qualification requires full SHA and ancestry on main" {
@@ -157,20 +158,20 @@ select_sha() { bash "$BLUEPRINT_ROOT/bin/aicoding-select" aicoding; }
   printf 'local work\n' > "$TMP/project/untracked"
   before=$(git -C "$TMP/project" status --porcelain)
   cd "$TMP/project"
-  run select_sha
+  run --separate-stderr select_sha
   [ "$status" -eq 0 ]
   [ "$(git status --porcelain)" = "$before" ]
   [ "$(cat untracked)" = 'local work' ]
 }
 @test "network guard prevents gh invocation" {
   export GH_CALLED="$TMP/gh-called"
-  AICODINGSETUP_SKIP_NETWORK=1 run select_sha
+  AICODINGSETUP_SKIP_NETWORK=1 run --separate-stderr select_sha
   [ "$status" -eq 2 ]
   [ ! -e "$GH_CALLED" ]
 }
 @test "component policies use exact repository and workflow boundaries" {
   for component in dvw bw-AICode; do
-    run bash "$BLUEPRINT_ROOT/bin/aicoding-select" "$component"
+    run --separate-stderr bash "$BLUEPRINT_ROOT/bin/aicoding-select" "$component"
     [ "$status" -eq 0 ]
     [ "$output" = "$NEW" ]
   done
@@ -193,7 +194,7 @@ EOF
   chmod +x "$TMP/bin/gh" "$TMP/bin/curl"
   export TMP
 
-  run select_sha
+  run --separate-stderr select_sha
   [ "$status" -eq 0 ]
   [ "$output" = "$NEW" ]
 }
@@ -204,4 +205,10 @@ EOF
   run bash "$BLUEPRINT_ROOT/bin/aicoding-select" dvw
   [ "$status" -eq 2 ]
   [[ "$output" == *"required workflow missing or invalid"* ]]
+}
+
+@test "missing selector component returns a policy error under nounset" {
+  run bash -uc '. "$BLUEPRINT_ROOT/lib/ci-selector.sh"; aicoding_select_ci_sha'
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"unknown component"* ]]
 }

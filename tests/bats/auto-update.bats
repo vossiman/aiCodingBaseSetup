@@ -102,6 +102,60 @@ EOF
   [ "$(cat "$AICODING_TEST_TTLS")" = 0 ]
 }
 
+@test "once streams progress before sync finishes and captures its final deferral" {
+  cat > "$TEST_ROOT/bin/aicoding-sync" <<'EOF'
+#!/usr/bin/env bash
+echo 'progress stdout'
+echo 'progress stderr' >&2
+touch "$TEST_ROOT/ready"
+for ((i=0; i<100; i++)); do
+  [ -f "$TEST_ROOT/release" ] && break
+  sleep 0.05
+done
+echo 'aicoding-sync: completed with deferrals' >&2
+EOF
+  bash -c '
+    . "$BLUEPRINT_ROOT/lib/auto-update.sh"
+    aicoding_auto_update_once
+    printf "flags:%s:%s\n" "$AICODING_AUTO_UPDATE_PERFORMED" "$AICODING_AUTO_UPDATE_DEFERRED"
+  ' > "$TEST_ROOT/observed" 2>&1 3>&- &
+  local updater=$! i visible=0 rc=0
+  for ((i=0; i<60; i++)); do
+    if [ -f "$TEST_ROOT/ready" ] && grep -q 'progress stderr' "$TEST_ROOT/observed"; then
+      visible=1
+      break
+    fi
+    sleep 0.05
+  done
+  touch "$TEST_ROOT/release"
+  wait "$updater" || rc=$?
+  [ "$visible" -eq 1 ]
+  [ "$rc" -eq 0 ]
+  [ "$(grep -c '^progress stdout$' "$TEST_ROOT/observed")" -eq 1 ]
+  grep -q '^flags:1:1$' "$TEST_ROOT/observed"
+  [ -z "$(find "$AICODING_STATE_DIR/auto-update" -name '.once.*' -print)" ]
+}
+
+@test "once preserves sync failure while streaming output" {
+  printf '#!/usr/bin/env bash\necho sync-failed >&2\nexit 37\n' > "$TEST_ROOT/bin/aicoding-sync"
+  run "$TEST_ROOT/aicoding-auto-update" --once
+  [ "$status" -eq 37 ]
+  [[ "$output" == *sync-failed* ]]
+  [ -z "$(find "$AICODING_STATE_DIR/auto-update" -name '.once.*' -print)" ]
+}
+
+@test "once reports capture failure instead of successful sync" {
+  cat > "$TEST_ROOT/bin/tee" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 23
+EOF
+  chmod +x "$TEST_ROOT/bin/tee"
+  run "$TEST_ROOT/aicoding-auto-update" --once
+  [ "$status" -eq 23 ]
+  [ -z "$(find "$AICODING_STATE_DIR/auto-update" -name '.once.*' -print)" ]
+}
+
 @test "a success-exit systemctl shim falls back to one persistent worker" {
   false_systemd_shim
   "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null

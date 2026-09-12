@@ -102,6 +102,7 @@ _aicoding_auto_atomic_number() {
 
 aicoding_auto_update_once() {
   local state sync output rc=0
+  local -a pipeline_status
   state=$(_aicoding_auto_state_dir) || return 1
   mkdir -p "$state" || return 1
   sync=$(command -v aicoding-sync 2>/dev/null || true)
@@ -110,13 +111,22 @@ aicoding_auto_update_once() {
   fi
   [ -x "$sync" ] || { echo 'aicoding-auto-update: aicoding-sync is unavailable' >&2; return 1; }
   output=$(mktemp "$state/.once.XXXXXX") || return 1
-  # Capture synchronously so a late process-substitution writer cannot race
-  # the busy check or append into a removed attempt file.
+  # Stream progress while retaining a capture for scheduler classification.
+  # A foreground pipeline waits for both writers; process substitution could
+  # race the busy check or append into a removed attempt file.
   # A scheduler tick and an explicit --once are update requests, rather than
   # shell-start noise. Bypass sync's legacy boot throttle for this invocation
   # so a timer firing at the same cadence as the TTL still checks components.
-  (cd "$state" && AICODING_UPDATE_TTL=0 "$sync" --boot </dev/null) >"$output" 2>&1 || rc=$?
-  cat "$output"
+  if (cd "$state" && AICODING_UPDATE_TTL=0 "$sync" --boot </dev/null) 2>&1 | tee "$output"; then
+    pipeline_status=("${PIPESTATUS[@]}")
+  else
+    pipeline_status=("${PIPESTATUS[@]}")
+  fi
+  rc=${pipeline_status[0]}
+  if [ "${pipeline_status[1]}" -ne 0 ]; then
+    echo 'aicoding-auto-update: update output capture failed' >&2
+    [ "$rc" -ne 0 ] || rc=${pipeline_status[1]}
+  fi
   AICODING_AUTO_UPDATE_PERFORMED=1
   AICODING_AUTO_UPDATE_DEFERRED=0
   grep -qF 'aicoding-sync: update already running' "$output" 2>/dev/null \

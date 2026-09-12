@@ -1,3 +1,7 @@
+# Selection can inspect multiple successful-main candidates; report progress
+# on stderr while keeping the selected SHA alone on stdout.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/update-progress.sh"
+
 # Exact main-commit selection using explicitly required GitHub Actions workflows.
 # Read-only API calls; no checkout, credential-store access, or activation.
 
@@ -79,7 +83,11 @@ _aicoding_ci_run_qualified() {
   jq -e '.status == "completed" and .conclusion == "success"' <<< "$latest" >/dev/null 2>&1
 }
 
-aicoding_select_ci_sha() (
+aicoding_select_ci_sha() {
+  aicoding_progress_run "${1:-unknown}: selecting CI-qualified release" _aicoding_select_ci_sha_impl "$@"
+}
+
+_aicoding_select_ci_sha_impl() (
   local component=${1:-} commits sha rc
   _aicoding_ci_policy "$component" || return $?
   _aicoding_ci_workflow || return $?

@@ -5,11 +5,17 @@
 : "${AICODING_DATA_DIR:=$HOME/.local/share/aicoding}"
 : "${AICODING_STATE_DIR:=$HOME/.local/state/aicoding}"
 
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/update-progress.sh"
+
 _aicoding_runtime_safe_segment() {
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]
 }
 
 _aicoding_runtime_tree_digest() {
+  aicoding_progress_run "blueprint: checking release integrity" _aicoding_runtime_tree_digest_impl "$@"
+}
+
+_aicoding_runtime_tree_digest_impl() {
   local root=$1
   (
     set -o pipefail

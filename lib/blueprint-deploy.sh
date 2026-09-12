@@ -429,6 +429,23 @@ classify_file() {
   fi
 }
 
+# Explain conservative conflicts using classification metadata only. Do not print
+# config diffs, key names, or values: managed config files can contain secrets.
+report_managed_conflict() {
+  local dest=$1 bucket=$2 reason
+  case "$bucket" in
+    drifted_and_updating)
+      reason="local content changed since its recorded deployment and differs from the incoming blueprint" ;;
+    new_file_existing)
+      reason="existing file differs from the incoming blueprint and has no recorded managed baseline" ;;
+    to_remove)
+      reason="the incoming blueprint no longer manages this file" ;;
+    *) return 0 ;;
+  esac
+  printf 'managed config conflict: %s (%s; preserved). Review locally with aicoding-sync --dry-run.\n' \
+    "$dest" "$reason" >&2
+}
+
 # _write_atomic <src> <dest> [mode] — THE writer for every deployed file.
 #
 # Deploys used a bare `cp`, which preserves the mode of an EXISTING
