@@ -53,5 +53,6 @@ aicoding_result_record() {
   mv -f "$tmp" "$AICODING_RESULTS_FILE" || mv_rc=$?
   [ "$mv_rc" -eq 0 ] || rm -f "$tmp"
   exec {fd}>&-
+  if [ "$mv_rc" -eq 0 ]; then AICODING_COMPONENT_LAST_RESULT=$component; fi
   return "$mv_rc"
 }
