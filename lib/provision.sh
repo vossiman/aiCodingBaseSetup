@@ -209,13 +209,12 @@ aicoding_prepare_exact_mcps() {
 }
 
 # Establish real update receipts for installed harnesses whose managed config
-# is capability-dependent. Cursor has no exact staged updater yet, so its
-# files remain conservatively deferred by aicoding_config_is_compatible.
+# is capability-dependent, including Cursor’s exact vendor archive.
 aicoding_prepare_installed_config_tools() {
   _provision_ensure_update_components || return 1
   local component component_rc rc=0
   while IFS= read -r component; do
-    case "$component" in claude|codex|opencode|pi)
+    case "$component" in claude|codex|opencode|pi|cursor)
       component_rc=0
       AICODING_COMPONENT_ATTEMPT_DISPOSITION=
       AICODING_COMPONENT_LAST_RESULT=

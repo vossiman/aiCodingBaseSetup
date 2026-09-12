@@ -1050,8 +1050,8 @@ _aicoding_update_component_impl() {
     pi) aicoding_update_npm_component pi pi @mariozechner/pi-coding-agent ;;
     claude) aicoding_update_claude ;;
     cursor)
-      _aicoding_record_deferred cursor blocked "" versioned_staging_unavailable
-      return 1
+      . "${BASH_SOURCE[0]%/*}/update-cursor.sh"
+      aicoding_update_cursor
       ;;
     dvw) aicoding_update_dvw ;;
     bw-AICode) aicoding_update_bw ;;
