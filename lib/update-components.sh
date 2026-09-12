@@ -657,14 +657,37 @@ _aicoding_release_integrity_valid() {
 # npm was deliberately invoked with --ignore-scripts. Reject any resolved
 # package whose install lifecycle would therefore be skipped.
 _aicoding_npm_tree_ignores_scripts_safely() {
-  local root=$1 manifest
+  local root=$1 manifest manifests key rc=0
   jq -e '[.packages[] | select(.hasInstallScript == true)] | length == 0' \
     "$root/package-lock.json" >/dev/null 2>&1 || return 1
+  # Finish enumeration before inspecting. Returning early from a process-
+  # substitution reader gives find SIGPIPE and fires an inherited installer
+  # ERR trap; it also used to hide genuine enumeration failures.
+  manifests=$(mktemp) || return 2
+  if ! find "$root/node_modules" -type f -name package.json -print0 >"$manifests" 2>/dev/null; then
+    rm -f "$manifests"
+    return 2
+  fi
   while IFS= read -r -d '' manifest; do
     jq -e '(.scripts // {}) as $s
-      | all(["preinstall","install","postinstall","prepublish","preprepare","prepare","postprepare"][];
-          ($s[.] // "") == "")' "$manifest" >/dev/null 2>&1 || return 1
-  done < <(find "$root/node_modules" -type f -name package.json -print0 2>/dev/null)
+      | all(["preinstall","install","postinstall"][];
+          ($s[.] // "") == "")' "$manifest" >/dev/null 2>&1 || { rc=1; break; }
+    if ! jq -e '(.scripts // {}) as $s
+      | all(["prepublish","preprepare","prepare","postprepare"][];
+          ($s[.] // "") == "")' "$manifest" >/dev/null 2>&1; then
+      # Publisher/local-source preparation does not run for a named registry
+      # package. Require registry provenance before accepting its prebuilt
+      # bytes; git/link/unknown sources may still need that preparation.
+      key=${manifest#"$root/"}; key=${key%/package.json}
+      jq -e --arg key "$key" '.packages[$key]
+        | (.link != true)
+          and (.resolved | type == "string" and startswith("https://registry.npmjs.org/"))
+          and (.integrity | type == "string" and startswith("sha"))' \
+        "$root/package-lock.json" >/dev/null 2>&1 || { rc=1; break; }
+    fi
+  done < "$manifests"
+  rm -f "$manifests" || return 2
+  return "$rc"
 }
 
 _aicoding_npm_entry_release_valid() {
@@ -772,10 +795,16 @@ aicoding_update_npm_entry_component() {
   fi
   entry=$(jq -r --arg n "$command_name" 'if (.bin|type)=="string" then .bin else .bin[$n] // empty end' "$package_dir/package.json" 2>/dev/null)
   case "$entry" in ''|/*|*'..'*) rm -rf "$stage"; aicoding_result_record "$component" failed "$target" entrypoint_invalid; return 1 ;; esac
-  if ! _aicoding_npm_tree_ignores_scripts_safely "$stage"; then
+  local audit_rc=0
+  _aicoding_npm_tree_ignores_scripts_safely "$stage" || audit_rc=$?
+  if [ "$audit_rc" -ne 0 ]; then
     rm -rf "$stage" \
       || { aicoding_result_record "$component" failed "$target" stage_cleanup_failed; return 1; }
-    _aicoding_record_deferred "$component" blocked "$target" lifecycle_scripts_required
+    if [ "$audit_rc" -eq 2 ]; then
+      aicoding_result_record "$component" failed "$target" package_inventory_unavailable
+    else
+      _aicoding_record_deferred "$component" blocked "$target" lifecycle_scripts_required
+    fi
     return 1
   fi
   jq -e --arg p "$package" --arg v "$target" '.name == $p and .version == $v' \

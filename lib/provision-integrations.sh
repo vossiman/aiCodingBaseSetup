@@ -319,6 +319,14 @@ install_tmux_plugins() {
 }
 
 # --- bubblewrap (bw-AICode) ---
+_provision_bw_has_managed_launcher() {
+  local name
+  for name in claude-bw opencode-bw pi-bw bw-docker-guard; do
+    grep -Fxq '# Managed by aicoding immutable runtime.' "$HOME/.local/bin/$name" 2>/dev/null && return 0
+  done
+  return 1
+}
+
 install_bubblewrap() {
   header "bubblewrap (bw-AICode)"
 
@@ -327,6 +335,27 @@ install_bubblewrap() {
   if [[ "${AICODINGSETUP_SKIP_NETWORK:-}" == "1" ]]; then
     info "Skipping bw-AICode (AICODINGSETUP_SKIP_NETWORK)"
     return
+  fi
+
+  # Enrollment already owns these launchers through the immutable runtime.
+  # The legacy vendor installer replaces them with source-checkout symlinks
+  # and builds its guard directly over the managed launcher. Use the same
+  # staged, verified adapter as subsequent automatic updates instead.
+  if [[ "${AICODING_PERSISTENT_ENROLLMENT:-0}" == 1 ]] || _provision_bw_has_managed_launcher; then
+    _provision_ensure_update_components || return 1
+    local AICODING_COMPONENT_ATTEMPT_DISPOSITION=
+    if aicoding_update_bw; then
+      ok "bw-AICode managed runtime installed"
+      return 0
+    elif _aicoding_component_attempt_deferred bw-AICode; then
+      warn "bw-AICode managed runtime deferred — see update results"
+      _AICODING_GUARDED_PROVISION_DEFERRED=1
+      _provision_deferred
+      return $?
+    else
+      warn "bw-AICode managed runtime installation failed — see update results"
+      return 1
+    fi
   fi
 
   # NOT under $SCRIPT_DIR. bw's installer symlinks ~/.local/bin/{claude,pi,

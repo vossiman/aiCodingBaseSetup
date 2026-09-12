@@ -384,7 +384,7 @@ The pre-manifest installer would silently clobber any file you'd hand-edited on 
 
 ## Windows
 
-Unsupported. A quarantined PowerShell stub lives at `contrib/windows/install.ps1` for archaeology only — use Linux/WSL `install.sh`.
+Unsupported. A quarantined PowerShell stub lives at `contrib/windows/install.ps1` for archaeology only — use WSL with `bash bootstrap-aicoding.sh --profile host`. For a local checkout, use `AICODING_PROFILE=host aicoding-install --blueprint /path/to/checkout`.
 
 ## Devcontainers (DevPod / Codespaces / VS Code Dev Containers)
 
@@ -486,7 +486,7 @@ The same persist-once-share-everywhere property applies to all four CLIs once th
 
 ```
 aiCodingBaseSetup/
-├── install.sh                     # Linux/WSL installer (three-mode dispatch)
+├── install.sh                     # container installer (three-mode dispatch)
 ├── bootstrap-aicoding.sh          # self-contained verified first enrollment
 ├── on-start.sh                    # container startup maintenance + scheduler ensure
 ├── contrib/windows/               # quarantined Windows stub (unsupported)
