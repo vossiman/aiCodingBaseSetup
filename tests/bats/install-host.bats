@@ -173,6 +173,10 @@ _source_host_lib() {
   [ -f "$HOME/.codex/config.toml" ]
   [ -f "$HOME/.codex/AGENTS.md" ]
   [ -f "$HOME/.config/opencode/opencode.json" ]
+  [ -f "$HOME/.config/opencode/plugins/kanban-work.js" ]
+  cmp "$BLUEPRINT_ROOT/configs/opencode/plugins/kanban-work.js" \
+    "$HOME/.config/opencode/plugins/kanban-work.js"
+  jq -e 'has("plugin") | not' "$HOME/.config/opencode/opencode.json"
   [ -f "$HOME/.cursor/mcp.json" ]
   [ -f "$HOME/.cursor/cli-config.json" ]
   [ -f "$HOME/.cursor/hooks.json" ]

@@ -657,6 +657,7 @@ $HOME/.codex/config.toml|overwrite|configs/codex/config.toml
 $HOME/.codex/AGENTS.md|overwrite|configs/codex/AGENTS.md
 $HOME/.cursor/skills/aicoding-estate/SKILL.md|overwrite|configs/cursor/skills/aicoding-estate/SKILL.md
 $HOME/.cursor/hooks.json|overwrite|configs/cursor/hooks.json
+$HOME/.config/opencode/plugins/kanban-work.js|overwrite|configs/opencode/plugins/kanban-work.js
 EOF
   if [[ "$profile" == host ]]; then
     echo "$HOME/.bashrc.d/aicoding-boot-sync.sh|overwrite|configs/bash/boot-sync.sh"

@@ -1763,6 +1763,36 @@ LDD
   [ "$mode" = overwrite ]
 }
 
+@test "install.sh deploys the auto-discovered OpenCode Kanban plugin as managed overwrite" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  local plugin="$HOME/.config/opencode/plugins/kanban-work.js" hash mode
+  [ -f "$plugin" ]
+  cmp "$BLUEPRINT_ROOT/configs/opencode/plugins/kanban-work.js" "$plugin"
+  hash=$(jq -r '.files["'"$plugin"'"].deployed_hash' "$AICODING_MANIFEST")
+  mode=$(jq -r '.files["'"$plugin"'"].mode' "$AICODING_MANIFEST")
+  [ -n "$hash" ]
+  [ "$hash" != null ]
+  [ "$mode" = overwrite ]
+  jq -e 'has("plugin") | not' "$HOME/.config/opencode/opencode.json"
+}
+
+@test "install.sh reconcile updates the managed OpenCode plugin and preserves personal plugins" {
+  blueprint_copy
+  mkdir -p "$HOME/.config/opencode/plugins"
+  printf '%s\n' 'export const PersonalPlugin = async () => ({})' \
+    > "$HOME/.config/opencode/plugins/personal.js"
+  bash "$BP/install.sh" --force-reinstall </dev/null
+
+  printf '%s\n' '// reconcile fixture' >> "$BP/configs/opencode/plugins/kanban-work.js"
+  run bash "$BP/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "Mode: reconcile"
+  cmp "$BP/configs/opencode/plugins/kanban-work.js" \
+    "$HOME/.config/opencode/plugins/kanban-work.js"
+  grep -qx 'export const PersonalPlugin = async () => ({})' \
+    "$HOME/.config/opencode/plugins/personal.js"
+}
+
 @test "install.sh reconcile updates managed Cursor hooks and preserves personal MCP servers" {
   blueprint_copy
   mkdir -p "$HOME/.cursor"

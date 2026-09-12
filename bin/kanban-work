@@ -12,7 +12,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from lib.kanban_work import Bridge, BridgeError, EventIngestor, LifecycleQueue, Store  # noqa: E402
-from lib.kanban_work.adapters import adapt_claude_codex, adapt_cursor  # noqa: E402
+from lib.kanban_work.adapters import (  # noqa: E402
+    adapt_claude_codex,
+    adapt_cursor,
+    adapt_opencode,
+)
 from lib.kanban_work.bridge import MAX_JSON_STDIN, PUBLIC_OPERATIONS  # noqa: E402
 
 
@@ -61,6 +65,8 @@ def main():
               and sys.argv[4] == "--event"):
             if sys.argv[3] == "cursor":
                 result = adapt_cursor(sys.argv[5], read_payload())
+            elif sys.argv[3] == "opencode":
+                result = adapt_opencode(sys.argv[5], read_payload())
             else:
                 result = adapt_claude_codex(sys.argv[3], sys.argv[5], read_payload())
             emit_hook(result.output)

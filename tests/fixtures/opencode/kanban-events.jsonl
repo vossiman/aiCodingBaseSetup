@@ -1,0 +1,6 @@
+{"event":{"id":"evt_created_parent","type":"session.created","properties":{"sessionID":"ses-parent","info":{"id":"ses-parent","slug":"parent","projectID":"global","directory":"/checkout","title":"Parent","version":"1.18.30","time":{"created":1,"updated":1}}}}}
+{"event":{"id":"evt_created_child","type":"session.created","properties":{"sessionID":"ses-child","info":{"id":"ses-child","slug":"child","projectID":"global","directory":"/checkout","title":"Child","version":"1.18.30","time":{"created":1,"updated":1},"parentID":"ses-parent"}}}}
+{"event":{"id":"evt_compacted","type":"session.compacted","properties":{"sessionID":"ses-parent"}}}
+{"event":{"id":"evt_idle","type":"session.idle","properties":{"sessionID":"ses-parent"}}}
+{"event":{"id":"evt_deleted_child","type":"session.deleted","properties":{"sessionID":"ses-child","info":{"id":"ses-child","slug":"child","projectID":"global","directory":"/checkout","title":"Child","version":"1.18.30","time":{"created":1,"updated":1},"parentID":"ses-parent"}}}}
+{"event":{"id":"evt_error_without_session","type":"session.error","properties":{"error":{"name":"UnknownError","data":{"message":"boom"}}}}}

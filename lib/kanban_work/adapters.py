@@ -1,4 +1,4 @@
-"""Claude Code, Codex, and Cursor native Kanban lifecycle adapters."""
+"""Claude Code, Codex, Cursor, and OpenCode native Kanban lifecycle adapters."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from .schema import (
     READ_TOOLS,
     TOOL_SPECS,
     normalize_tool_args,
+    normalized_dict,
     qualified_client_version,
 )
 from .store import Execution, MAX_OPAQUE, Store
@@ -56,6 +57,13 @@ CODEX_BASH_FIELDS = frozenset({"command"})
 CURSOR_SHELL_FIELDS = frozenset({"command", "working_directory"})
 CURSOR_MCP_TOOLS = frozenset(
     f"MCP:{name}" for name in frozenset(TOOL_SPECS) | READ_TOOLS
+)
+OPENCODE_MCP_TOOLS = {
+    f"kanban_{name}": name for name in frozenset(TOOL_SPECS) | READ_TOOLS
+}
+OPENCODE_IDENTITY_ERROR = (
+    "OpenCode lifecycle identity is unavailable; "
+    "Kanban mutations require a qualified native session"
 )
 
 
@@ -809,5 +817,358 @@ def adapt_cursor(event_name: str, payload: dict) -> AdapterResult:
 
         ingress = EventIngestor(store, start_supervisor=start_supervisor)
         return CursorAdapter(store, ingress).adapt(event_name, payload)
+    finally:
+        store.close()
+
+
+class OpenCodeAdapter:
+    """Translate OpenCode's plugin contract into shared lifecycle events."""
+
+    EVENTS = frozenset({
+        "session.created", "session.compacted", "session.idle", "session.deleted",
+        "session.error", "tool.execute.before", "tool.execute.after", "system.transform",
+    })
+
+    def __init__(self, store: Store | None = None, ingress: EventIngestor | None = None, *,
+                 now: Callable[[], datetime] | None = None):
+        self.store = store or Store()
+        self.now = now or (lambda: datetime.now(UTC))
+        self.ingress = ingress or EventIngestor(self.store, now=self.now)
+
+    @staticmethod
+    def _validate_event(event_name: str, payload: dict):
+        if event_name not in OpenCodeAdapter.EVENTS:
+            raise BridgeError(422, f"unsupported opencode plugin event {event_name!r}")
+        if not isinstance(payload, dict):
+            raise BridgeError(422, "native plugin payload must be an object")
+
+    @staticmethod
+    def _directory(payload: dict) -> str:
+        directory = payload.get("directory")
+        if not isinstance(directory, str) or not os.path.isabs(directory):
+            raise BridgeError(422, "OpenCode directory must be an absolute path")
+        return directory
+
+    @staticmethod
+    def _version(payload: dict) -> str | None:
+        return _bounded(payload.get("clientVersion"), "clientVersion", optional=True)
+
+    @staticmethod
+    def _parent(payload: dict) -> str | None:
+        return _bounded(payload.get("parentSessionID"), "parentSessionID", optional=True)
+
+    @staticmethod
+    def _parent_start_id(session_id: str, *, observed: bool = False) -> str:
+        kind = "session-first-observed" if observed else "session-created"
+        return _event_id(kind, "opencode", session_id)
+
+    @staticmethod
+    def _child_start_id(session_id: str, parent: Execution) -> str:
+        return _event_id(
+            "session-created", "opencode", session_id, parent.native_session_id,
+            parent.handle, parent.run_generation,
+        )
+
+    def _execution_from_start_id(self, event_id: str) -> tuple[Execution, dict] | None:
+        record = self.store.native_event("opencode", event_id)
+        if record is None or not isinstance(record.get("result"), dict):
+            return None
+        result = record["result"]
+        handle = result.get("handle")
+        generation = result.get("run_generation")
+        execution = self.store.get_execution(handle) if isinstance(handle, str) else None
+        if execution is None or execution.run_generation != generation:
+            raise BridgeError(409, "captured OpenCode session generation is unavailable")
+        return execution, result
+
+    def _known_parent(self, session_id: str) -> tuple[Execution, dict] | None:
+        created = self._execution_from_start_id(self._parent_start_id(session_id))
+        observed = self._execution_from_start_id(
+            self._parent_start_id(session_id, observed=True)
+        )
+        if created is not None and observed is not None and created[0].handle != observed[0].handle:
+            raise BridgeError(409, "OpenCode session has ambiguous captured generations")
+        return created or observed
+
+    def _session_execution(self, payload: dict, description: str) -> tuple[Execution, dict]:
+        session_id = _bounded(payload.get("sessionID"), "sessionID")
+        parent_id = self._parent(payload)
+        if parent_id is None:
+            known = self._known_parent(session_id)
+        else:
+            parent = self._known_parent(parent_id)
+            if parent is None:
+                raise BridgeError(409, f"cannot correlate {description} to a captured parent")
+            known = self._execution_from_start_id(self._child_start_id(session_id, parent[0]))
+        if known is None:
+            raise BridgeError(409, f"cannot correlate {description} to a captured run generation")
+        return known
+
+    def _first_observed(self, payload: dict) -> tuple[Execution, dict]:
+        session_id = _bounded(payload.get("sessionID"), "sessionID")
+        known = self._known_parent(session_id)
+        if known is not None:
+            return known
+        lifecycle = self.ingress.ingest_event("opencode", "start", {
+            "native_event_id": self._parent_start_id(session_id, observed=True),
+            "native_session_id": session_id,
+            "subagent_id": None,
+            "checkout": self._directory(payload),
+            "lifecycle_capable": False,
+        })
+        execution = self.store.get_execution(lifecycle["handle"])
+        if execution is None:
+            raise BridgeError(409, "captured OpenCode session generation is unavailable")
+        return execution, lifecycle
+
+    def _session_or_observe(self, payload: dict, description: str) -> tuple[Execution, dict]:
+        try:
+            return self._session_execution(payload, description)
+        except BridgeError as error:
+            if error.code != 409 or self._parent(payload) is not None:
+                raise
+            return self._first_observed(payload)
+
+    def _record(self, event_name: str, execution: Execution, event_id: str, *,
+                native_call_id: str | None = None) -> dict:
+        value = {
+            "native_event_id": event_id,
+            "handle": execution.handle,
+            "run_generation": execution.run_generation,
+        }
+        if native_call_id is not None:
+            value["native_call_id"] = native_call_id
+        return self.ingress.ingest_event("opencode", event_name, value)
+
+    @staticmethod
+    def _identity_output(execution: Execution) -> dict:
+        return {
+            "handle": execution.handle,
+            "lifecycle_capable": execution.lifecycle_capable,
+        }
+
+    def _session_created(self, payload: dict) -> AdapterResult:
+        session_id = _bounded(payload.get("sessionID"), "sessionID")
+        info = payload.get("info")
+        if not isinstance(info, dict):
+            raise BridgeError(422, "session.created info must be an object")
+        if _bounded(info.get("id"), "info.id") != session_id:
+            raise BridgeError(422, "session.created info.id must match sessionID")
+        checkout = info.get("directory")
+        if not isinstance(checkout, str) or not os.path.isabs(checkout):
+            raise BridgeError(422, "session.created info.directory must be an absolute path")
+        version = self._version(payload)
+        parent_id = _bounded(info.get("parentID"), "info.parentID", optional=True)
+
+        if parent_id is None:
+            known = self._known_parent(session_id)
+            if known is not None:
+                execution, lifecycle = known
+                if execution.subagent_id is not None:
+                    raise BridgeError(409, "captured OpenCode session identity changed")
+                return AdapterResult(self._identity_output(execution), lifecycle)
+            start_id = self._parent_start_id(session_id)
+            lifecycle_capable = qualified_client_version("opencode", version)
+            native_session_id = session_id
+            subagent_id = None
+        else:
+            parent = self._known_parent(parent_id)
+            if parent is None or parent[0].state == "ended":
+                raise BridgeError(409, "cannot correlate child session to an active parent")
+            start_id = self._child_start_id(session_id, parent[0])
+            known = self._execution_from_start_id(start_id)
+            if known is not None:
+                execution, lifecycle = known
+                return AdapterResult(self._identity_output(execution), lifecycle)
+            lifecycle_capable = parent[0].lifecycle_capable
+            native_session_id = parent_id
+            subagent_id = session_id
+
+        lifecycle = self.ingress.ingest_event("opencode", "start", {
+            "native_event_id": start_id,
+            "native_session_id": native_session_id,
+            "subagent_id": subagent_id,
+            "checkout": checkout,
+            "lifecycle_capable": lifecycle_capable,
+        })
+        execution = self.store.get_execution(lifecycle["handle"])
+        if execution is None:
+            raise BridgeError(409, "captured OpenCode session generation is unavailable")
+        return AdapterResult(self._identity_output(execution), lifecycle)
+
+    def _activity(self, event_name: str, payload: dict) -> AdapterResult:
+        execution, _ = self._session_or_observe(payload, event_name)
+        event_id = _bounded(payload.get("eventID"), "eventID")
+        normalized = "compaction" if event_name == "session.compacted" else "activity"
+        lifecycle = self._record(
+            normalized, execution,
+            _event_id(event_name, "opencode", payload.get("sessionID"), event_id),
+        )
+        return AdapterResult({}, lifecycle)
+
+    def _stop_candidate(self, event_name: str, payload: dict) -> AdapterResult:
+        execution, _ = self._session_or_observe(payload, event_name)
+        event_id = _bounded(payload.get("eventID"), "eventID")
+        if (self.store.has_active_tool_operations(execution.handle, execution.run_generation)
+                or self.store.active_child_executions("opencode", payload["sessionID"])):
+            return AdapterResult({}, {
+                "status": "deferred_active_work", "handle": execution.handle,
+                "run_generation": execution.run_generation,
+            })
+        lifecycle = self._record(
+            "stop", execution,
+            _event_id(event_name, "opencode", payload.get("sessionID"), event_id),
+        )
+        return AdapterResult({}, lifecycle)
+
+    def _session_error(self, payload: dict) -> AdapterResult:
+        if payload.get("sessionID") is None:
+            return AdapterResult({}, {"status": "ignored_missing_identity"})
+        return self._stop_candidate("session.error", payload)
+
+    def _session_deleted(self, payload: dict) -> AdapterResult:
+        session_id = _bounded(payload.get("sessionID"), "sessionID")
+        info = payload.get("info")
+        if not isinstance(info, dict) or info.get("id") != session_id:
+            raise BridgeError(422, "session.deleted info.id must match sessionID")
+        parent_id = _bounded(info.get("parentID"), "info.parentID", optional=True)
+        lookup = dict(payload)
+        lookup["parentSessionID"] = parent_id
+        execution, _ = self._session_execution(lookup, "session.deleted")
+        event_id = _bounded(payload.get("eventID"), "eventID")
+
+        if parent_id is None:
+            for child in self.store.active_child_executions("opencode", session_id):
+                if child.subagent_id is None:
+                    continue
+                child_start = self._child_start_id(child.subagent_id, execution)
+                captured = self._execution_from_start_id(child_start)
+                if captured is None or captured[0].handle != child.handle:
+                    continue
+                self._record(
+                    "end", child,
+                    _event_id("session.deleted-child", "opencode", session_id,
+                              execution.run_generation, child.subagent_id,
+                              child.run_generation, event_id),
+                )
+        lifecycle = self._record(
+            "end", execution,
+            _event_id("session.deleted", "opencode", session_id,
+                      execution.run_generation, event_id),
+        )
+        return AdapterResult({}, lifecycle)
+
+    @staticmethod
+    def _mcp_tool(tool_name: str) -> str | None:
+        return OPENCODE_MCP_TOOLS.get(tool_name)
+
+    @staticmethod
+    def _tool_start_id(session_id: str, call_id: str, tool_name: str) -> str:
+        return _event_id("tool-start", "opencode", session_id, call_id, tool_name)
+
+    def _tool_before(self, payload: dict) -> AdapterResult:
+        tool_name = _bounded(payload.get("tool"), "tool")
+        mcp_tool = self._mcp_tool(tool_name)
+        args = payload.get("args")
+        command = args.get("command") if tool_name == "bash" and isinstance(args, dict) else None
+        prepared_command = parse_legacy_complete(command) if isinstance(command, str) else None
+        requires_identity = (
+            mcp_tool is not None and mcp_tool not in READ_TOOLS
+        ) or prepared_command is not None
+        session_id = payload.get("sessionID")
+        call_id = payload.get("callID")
+        if not isinstance(session_id, str) or not session_id.strip() or not isinstance(
+            call_id, str
+        ) or not call_id.strip():
+            if requires_identity:
+                raise BridgeError(409, OPENCODE_IDENTITY_ERROR)
+            return AdapterResult({})
+        session_id = _bounded(session_id, "sessionID")
+        call_id = _bounded(call_id, "callID")
+        execution, _ = self._session_or_observe(payload, "tool.execute.before")
+
+        output = {}
+        if mcp_tool is not None and mcp_tool not in READ_TOOLS:
+            normalized = normalize_tool_args(mcp_tool, args)
+            self.store.permit_call(
+                execution.identity, call_id, mcp_tool, normalized, self.now()
+            )
+            output["args"] = normalized_dict(mcp_tool, args)
+        elif prepared_command is not None:
+            prepared = prepare_legacy_complete(
+                execution.identity, call_id, command, store=self.store, now=self.now()
+            )
+            output["args"] = {"command": shlex.join(prepared.rewritten_argv)}
+
+        lifecycle = self._record(
+            "tool_start", execution,
+            self._tool_start_id(session_id, call_id, tool_name),
+            native_call_id=call_id,
+        )
+        return AdapterResult(output, lifecycle)
+
+    def _tool_after(self, payload: dict) -> AdapterResult:
+        tool_name = _bounded(payload.get("tool"), "tool")
+        session_id = _bounded(payload.get("sessionID"), "sessionID")
+        call_id = _bounded(payload.get("callID"), "callID")
+        start_id = self._tool_start_id(session_id, call_id, tool_name)
+        record = self.store.native_event("opencode", start_id)
+        if record is None or not record.get("handle") or not record.get("run_generation"):
+            raise BridgeError(
+                409, "cannot correlate tool.execute.after to the original tool call"
+            )
+        execution = self.store.get_execution(record["handle"])
+        if execution is None or execution.run_generation != record["run_generation"]:
+            raise BridgeError(409, "captured tool.execute.after generation is unavailable")
+        lifecycle = self._record(
+            "tool_success", execution,
+            _event_id("tool-success", "opencode", session_id, call_id, tool_name,
+                      execution.run_generation),
+            native_call_id=call_id,
+        )
+        return AdapterResult({}, lifecycle)
+
+    def _system_transform(self, payload: dict) -> AdapterResult:
+        execution, lifecycle = self._session_or_observe(payload, "system.transform")
+        return AdapterResult(self._identity_output(execution), lifecycle)
+
+    def adapt(self, event_name: str, payload: dict) -> AdapterResult:
+        self._validate_event(event_name, payload)
+        if event_name == "session.created":
+            return self._session_created(payload)
+        if event_name == "session.compacted":
+            return self._activity(event_name, payload)
+        if event_name == "session.idle":
+            return self._stop_candidate(event_name, payload)
+        if event_name == "session.error":
+            return self._session_error(payload)
+        if event_name == "session.deleted":
+            return self._session_deleted(payload)
+        if event_name == "tool.execute.before":
+            return self._tool_before(payload)
+        if event_name == "tool.execute.after":
+            return self._tool_after(payload)
+        if event_name == "system.transform":
+            return self._system_transform(payload)
+        raise BridgeError(422, f"unsupported opencode plugin event {event_name!r}")
+
+
+def adapt_opencode(event_name: str, payload: dict) -> AdapterResult:
+    store = Store()
+    try:
+        executable = Path(__file__).resolve().parents[2] / "bin" / "kanban-work"
+
+        def start_supervisor(handle: str, native_call_id: str):
+            try:
+                subprocess.Popen(
+                    [sys.executable, str(executable), "supervise", handle, native_call_id],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+                )
+            except OSError:
+                return
+
+        ingress = EventIngestor(store, start_supervisor=start_supervisor)
+        return OpenCodeAdapter(store, ingress).adapt(event_name, payload)
     finally:
         store.close()

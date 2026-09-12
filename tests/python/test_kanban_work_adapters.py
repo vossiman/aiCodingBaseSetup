@@ -6,7 +6,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
-from lib.kanban_work.adapters import ClaudeCodexAdapter, CursorAdapter, _client_version
+from lib.kanban_work.adapters import (
+    ClaudeCodexAdapter,
+    CursorAdapter,
+    OpenCodeAdapter,
+    _client_version,
+)
 from lib.kanban_work.events import EventIngestor
 from lib.kanban_work.queue import LifecycleQueue
 from lib.kanban_work.schema import BridgeError, normalize_tool_args
@@ -883,6 +888,240 @@ class CursorAdapterTests(unittest.TestCase):
             self.assertEqual(denied.output["permission"], "deny")
         ordinary = self.pre("Shell", {"command": "git status --short"}, call="ordinary")
         self.assertEqual(ordinary.output["permission"], "allow")
+
+
+class OpenCodeAdapterTests(unittest.TestCase):
+    VERSION = "1.18.30"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.checkout = self.root / "checkout"
+        self.checkout.mkdir()
+        self.state = self.root / "state" / "kanban-work.sqlite3"
+        self.matrix = self.root / "qualified.json"
+        self.matrix.write_text(json.dumps({
+            "clients": {"opencode": {"versions": [self.VERSION]}}
+        }))
+        self.env = mock.patch.dict(os.environ, {
+            "AICODING_KANBAN_QUALIFIED_CLIENTS": str(self.matrix),
+            "KANBAN_URL": "http://127.0.0.1:8765",
+            "KANBAN_TEST_TOKEN": "fixture-only-token",
+            "AICODINGSETUP_SKIP_NETWORK": "1",
+        }, clear=False)
+        self.env.start()
+        self.clock = Clock()
+        self.store = Store(self.state)
+        self.queue = LifecycleQueue(self.store, now=self.clock)
+        self.ingress = EventIngestor(self.store, self.queue, now=self.clock)
+        self.adapter = OpenCodeAdapter(self.store, self.ingress, now=self.clock)
+
+    def tearDown(self):
+        self.store.close()
+        self.env.stop()
+        self.temp.cleanup()
+
+    def info(self, session="ses-parent", *, parent=None):
+        value = {
+            "id": session,
+            "slug": session,
+            "projectID": "global",
+            "directory": str(self.checkout),
+            "title": session,
+            "version": self.VERSION,
+            "time": {"created": 1, "updated": 1},
+        }
+        if parent is not None:
+            value["parentID"] = parent
+        return value
+
+    def created(self, session="ses-parent", *, parent=None, event="evt-created"):
+        return self.adapter.adapt("session.created", {
+            "eventID": event,
+            "sessionID": session,
+            "info": self.info(session, parent=parent),
+            "clientVersion": self.VERSION,
+            "directory": str(self.checkout),
+        })
+
+    def before(self, tool, args, *, session="ses-parent", call="call-7"):
+        return self.adapter.adapt("tool.execute.before", {
+            "tool": tool,
+            "sessionID": session,
+            "callID": call,
+            "args": args,
+            "clientVersion": self.VERSION,
+            "directory": str(self.checkout),
+        })
+
+    def test_created_uses_process_version_and_native_parent_child_identity(self):
+        parent = self.created().lifecycle
+        child = self.created("ses-child", parent="ses-parent", event="evt-child").lifecycle
+        parent_execution = self.store.get_execution(parent["handle"])
+        child_execution = self.store.get_execution(child["handle"])
+        self.assertEqual(parent_execution.native_session_id, "ses-parent")
+        self.assertIsNone(parent_execution.subagent_id)
+        self.assertTrue(parent_execution.lifecycle_capable)
+        self.assertEqual(child_execution.native_session_id, "ses-parent")
+        self.assertEqual(child_execution.subagent_id, "ses-child")
+        self.assertTrue(child_execution.lifecycle_capable)
+
+        unlisted = self.adapter.adapt("session.created", {
+            "eventID": "evt-unlisted", "sessionID": "ses-unlisted",
+            "info": self.info("ses-unlisted"), "clientVersion": "1.18.31",
+            "directory": str(self.checkout),
+        })
+        self.assertFalse(
+            self.store.get_execution(unlisted.lifecycle["handle"]).lifecycle_capable
+        )
+        missing = self.adapter.adapt("session.created", {
+            "eventID": "evt-missing-version", "sessionID": "ses-missing-version",
+            "info": self.info("ses-missing-version"), "clientVersion": None,
+            "directory": str(self.checkout),
+        })
+        self.assertFalse(
+            self.store.get_execution(missing.lifecycle["handle"]).lifecycle_capable
+        )
+
+    def test_compaction_preserves_generation_and_parent_idle_defers_for_child(self):
+        parent = self.created().lifecycle
+        child = self.created("ses-child", parent="ses-parent", event="evt-child").lifecycle
+        compacted = self.adapter.adapt("session.compacted", {
+            "eventID": "evt-compact", "sessionID": "ses-parent",
+            "clientVersion": self.VERSION, "directory": str(self.checkout),
+        })
+        self.assertEqual(compacted.lifecycle["run_generation"], parent["run_generation"])
+        idle = self.adapter.adapt("session.idle", {
+            "eventID": "evt-idle", "sessionID": "ses-parent",
+            "clientVersion": self.VERSION, "directory": str(self.checkout),
+        })
+        self.assertEqual(idle.lifecycle["status"], "deferred_active_work")
+        self.assertNotEqual(self.store.get_execution(parent["handle"]).state, "ended")
+        self.assertNotEqual(self.store.get_execution(child["handle"]).state, "ended")
+
+    def test_exact_flattened_mutation_mints_permit_and_unrelated_mcp_stays_available(self):
+        handle = self.created().lifecycle["handle"]
+        allowed = self.before(
+            "kanban_claim_ticket", {"handle": handle, "ticket": "KANBAN-2"}
+        )
+        self.assertEqual(allowed.output["args"], {
+            "handle": handle, "ticket": "KANBAN-2", "operation_id": None,
+        })
+        self.assertTrue(self.store.has_permit(
+            handle,
+            "claim_ticket",
+            normalize_tool_args("claim_ticket", allowed.output["args"]),
+        ))
+        unrelated = self.before(
+            "kanban_github_search", {"query": "OpenCode hooks"}, call="call-github"
+        )
+        self.assertEqual(unrelated.output, {})
+        self.assertTrue(self.store.tool_operation(handle, "call-github")["active"])
+
+    def test_mutation_requires_exact_identity_while_reads_remain_available(self):
+        handle = self.created().lifecycle["handle"]
+        with self.assertRaisesRegex(BridgeError, "OpenCode lifecycle identity is unavailable"):
+            self.adapter.adapt("tool.execute.before", {
+                "tool": "kanban_claim_ticket", "args": {
+                    "handle": handle, "ticket": "KANBAN-2",
+                }, "clientVersion": self.VERSION, "directory": str(self.checkout),
+            })
+        read = self.adapter.adapt("tool.execute.before", {
+            "tool": "kanban_list_tickets", "args": {},
+            "clientVersion": self.VERSION, "directory": str(self.checkout),
+        })
+        self.assertEqual(read.output, {})
+        self.assertFalse(self.store.has_any_permit())
+
+    def test_success_after_closes_only_its_journaled_original_call(self):
+        parent = self.created().lifecycle
+        self.before("read", {"filePath": "README.md"}, call="call-ok")
+        result = self.adapter.adapt("tool.execute.after", {
+            "tool": "read", "sessionID": "ses-parent", "callID": "call-ok",
+        })
+        self.assertEqual(result.lifecycle["handle"], parent["handle"])
+        self.assertFalse(self.store.tool_operation(parent["handle"], "call-ok")["active"])
+        with self.assertRaisesRegex(BridgeError, "cannot correlate"):
+            self.adapter.adapt("tool.execute.after", {
+                "tool": "bash", "sessionID": "ses-parent", "callID": "call-ok",
+            })
+
+    def test_failed_tool_without_after_remains_active_and_idle_does_not_invent_failure(self):
+        parent = self.created().lifecycle
+        self.before("read", {"filePath": "missing"}, call="failed-call")
+        idle = self.adapter.adapt("session.idle", {
+            "eventID": "evt-idle-failed", "sessionID": "ses-parent",
+            "clientVersion": self.VERSION, "directory": str(self.checkout),
+        })
+        self.assertEqual(idle.lifecycle["status"], "deferred_active_work")
+        self.assertTrue(self.store.tool_operation(parent["handle"], "failed-call")["active"])
+        missing = self.adapter.adapt("session.error", {
+            "eventID": "evt-error", "error": {
+                "name": "UnknownError", "data": {"message": "boom"},
+            }, "clientVersion": self.VERSION, "directory": str(self.checkout),
+        })
+        self.assertEqual(missing.lifecycle["status"], "ignored_missing_identity")
+
+    def test_first_observation_is_journaled_unqualified_and_never_promoted(self):
+        observed = self.adapter.adapt("system.transform", {
+            "sessionID": "ses-resumed", "clientVersion": self.VERSION,
+            "directory": str(self.checkout),
+        })
+        execution = self.store.get_execution(observed.lifecycle["handle"])
+        self.assertFalse(execution.lifecycle_capable)
+        with self.assertRaisesRegex(BridgeError, "lacks qualified lifecycle support"):
+            self.adapter.adapt("tool.execute.before", {
+                "tool": "kanban_claim_ticket", "sessionID": "ses-resumed",
+                "callID": "resumed-call", "args": {
+                    "handle": execution.handle, "ticket": "KANBAN-2",
+                }, "clientVersion": self.VERSION, "directory": str(self.checkout),
+            })
+        later_created = self.created("ses-resumed", event="evt-created-late")
+        self.assertEqual(later_created.lifecycle["handle"], execution.handle)
+        self.assertFalse(self.store.get_execution(execution.handle).lifecycle_capable)
+
+    def test_deleted_ends_exact_children_before_parent_without_latest_lookup(self):
+        parent = self.created().lifecycle
+        child = self.created("ses-child", parent="ses-parent", event="evt-child").lifecycle
+        deleted = self.adapter.adapt("session.deleted", {
+            "eventID": "evt-delete-parent", "sessionID": "ses-parent",
+            "info": self.info(), "clientVersion": self.VERSION,
+            "directory": str(self.checkout),
+        })
+        self.assertEqual(deleted.lifecycle["handle"], parent["handle"])
+        self.assertEqual(self.store.get_execution(child["handle"]).state, "ended")
+        self.assertEqual(self.store.get_execution(parent["handle"]).state, "ended")
+
+    def test_system_transform_returns_only_current_handle_and_capability(self):
+        started = self.created().lifecycle
+        transformed = self.adapter.adapt("system.transform", {
+            "sessionID": "ses-parent", "clientVersion": self.VERSION,
+            "directory": str(self.checkout),
+        })
+        self.assertEqual(transformed.output, {
+            "handle": started["handle"], "lifecycle_capable": True,
+        })
+
+    def test_legacy_completion_rewrites_only_safe_native_bash_command(self):
+        handle = self.created().lifecycle["handle"]
+        self.store.record_bound(handle, "backend-session", "kanban", "worker")
+        self.store.set_claim(handle, CLAIM, "KANBAN-2")
+        native = {"command": "kanban-post --done KANBAN-2 --evidence 'tests pass'"}
+        prepared = self.before("bash", native, call="legacy")
+        self.assertEqual(prepared.output["args"], {
+            "command": (
+                "kanban-post --done KANBAN-2 --evidence 'tests pass' "
+                f"--work-handle {handle}"
+            )
+        })
+        for index, command in enumerate((
+            "KANBAN_WORK_HANDLE=x kanban-post --done KANBAN-2 --evidence ok",
+            "kanban-post --done KANBAN-2 --evidence ok; echo bad",
+        )):
+            with self.assertRaisesRegex(BridgeError, "Kanban MCP complete_ticket"):
+                self.before("bash", {"command": command}, call=f"bad-{index}")
+        ordinary = self.before("bash", {"command": "git status --short"}, call="ordinary")
+        self.assertEqual(ordinary.output, {})
 
 
 if __name__ == "__main__":
