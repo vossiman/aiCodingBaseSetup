@@ -386,6 +386,47 @@ class Store:
         ).fetchone()
         return self._execution(row)
 
+    def executions_for_native(self, harness: str, native_session_id: str,
+                              subagent_id: str | None) -> list[Execution]:
+        """Return generations for one native actor, newest first."""
+        _opaque(harness, "harness")
+        _opaque(native_session_id, "native_session_id")
+        _opaque(subagent_id, "subagent_id", optional=True)
+        rows = self._connection.execute(
+            "SELECT handle,harness,native_session_id,subagent_id,run_generation,checkout,"
+            "lifecycle_capable,state,backend_session_id,label,repo,sequence,cache_trusted,created_at,ended_at "
+            "FROM executions WHERE harness=? AND native_session_id=? AND subagent_id IS ? "
+            "ORDER BY created_at DESC,rowid DESC",
+            (harness, native_session_id, subagent_id),
+        ).fetchall()
+        return [self._execution(row) for row in rows]
+
+    def current_execution(self, harness: str, native_session_id: str,
+                          subagent_id: str | None) -> Execution | None:
+        """Resolve the current generation for a trusted native ingress event."""
+        executions = self.executions_for_native(harness, native_session_id, subagent_id)
+        return next((execution for execution in executions if execution.state != "ended"),
+                    executions[0] if executions else None)
+
+    def active_child_executions(self, harness: str, native_session_id: str) -> list[Execution]:
+        """Return live child actors for one native parent session."""
+        _opaque(harness, "harness")
+        _opaque(native_session_id, "native_session_id")
+        rows = self._connection.execute(
+            "SELECT handle,harness,native_session_id,subagent_id,run_generation,checkout,"
+            "lifecycle_capable,state,backend_session_id,label,repo,sequence,cache_trusted,created_at,ended_at "
+            "FROM executions WHERE harness=? AND native_session_id=? AND subagent_id IS NOT NULL "
+            "AND state!='ended' ORDER BY created_at,rowid",
+            (harness, native_session_id),
+        ).fetchall()
+        return [self._execution(row) for row in rows]
+
+    def has_active_tool_operations(self, handle: str, run_generation: str) -> bool:
+        return self._connection.execute(
+            "SELECT 1 FROM tool_operations WHERE handle=? AND run_generation=? AND active=1 LIMIT 1",
+            (handle, run_generation),
+        ).fetchone() is not None
+
     def start_execution(self, harness: str, native_session_id: str, subagent_id: str | None,
                         run_generation: str, handle: str, checkout: str,
                         lifecycle_capable: bool, *, now: datetime | None = None) -> Execution:

@@ -632,6 +632,7 @@ managed_inventory_overwrite() {
   cat <<EOF
 $HOME/.claude/hooks/custom-statusline.js|overwrite|configs/claude/hooks/custom-statusline.js
 $HOME/.claude/hooks/bw-deny-files.sh|overwrite|configs/claude/hooks/bw-deny-files.sh
+$HOME/.claude/hooks/kanban-work-hook.sh|overwrite|configs/claude/hooks/kanban-work-hook.sh
 $HOME/.pi/agent/extensions/bw-deny-files.ts|overwrite|configs/pi/extensions/bw-deny-files.ts
 $HOME/.claude/hooks/check-archived-docs.sh|overwrite|configs/claude/hooks/check-archived-docs.sh
 $HOME/.claude/hooks/llmwiki-distill.sh|overwrite|configs/claude/hooks/llmwiki-distill.sh

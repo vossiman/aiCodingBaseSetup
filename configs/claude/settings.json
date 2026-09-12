@@ -54,11 +54,26 @@
             "command": "bash \"{{HOME}}/.claude/hooks/bw-deny-files.sh\""
           }
         ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" claude PreToolUse",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" claude Stop",
+            "timeout": 10
+          },
           {
             "type": "command",
             "command": "bash \"{{HOME}}/.claude/hooks/llmwiki-distill.sh\"",
@@ -100,6 +115,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" claude SessionStart",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "bash \"{{HOME}}/.claude/hooks/redact-sessions-pending.sh\"",
             "timeout": 5
           }
@@ -109,6 +129,11 @@
     "UserPromptSubmit": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" claude UserPromptSubmit",
+            "timeout": 10
+          },
           {
             "type": "command",
             "command": "bash \"{{HOME}}/.claude/hooks/agent-working.sh\"",
@@ -138,8 +163,68 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" claude SessionEnd",
+            "timeout": 3
+          },
+          {
+            "type": "command",
             "command": "bash \"{{HOME}}/.claude/hooks/redact-sessions-hook.sh\"",
             "timeout": 90
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" claude PostToolUse",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" claude PostToolUseFailure",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" claude StopFailure",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" claude SubagentStart",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" claude SubagentStop",
+            "timeout": 10
           }
         ]
       }

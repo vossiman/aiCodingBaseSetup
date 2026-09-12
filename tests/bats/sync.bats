@@ -444,6 +444,17 @@ EOF
   done
 }
 
+@test "sync --boot restores the managed Claude and Codex Kanban lifecycle wrappers" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  rm -f "$HOME/.claude/hooks/kanban-work-hook.sh" \
+    "$CODEX_MANAGED_DIR/hooks/kanban-work-hook.sh"
+  AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  [ -x "$HOME/.claude/hooks/kanban-work-hook.sh" ]
+  [ -x "$CODEX_MANAGED_DIR/hooks/kanban-work-hook.sh" ]
+  cmp "$BLUEPRINT_ROOT/configs/claude/hooks/kanban-work-hook.sh" \
+    "$CODEX_MANAGED_DIR/hooks/kanban-work-hook.sh"
+}
+
 @test "sync --boot restores missing dokploy-api and kuma-admin symlinks" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   rm -f "$HOME/.local/bin/dokploy-api" "$HOME/.local/bin/kuma-admin" "$HOME/.local/bin/bugsink-api"

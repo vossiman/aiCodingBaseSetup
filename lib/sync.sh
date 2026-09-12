@@ -1229,7 +1229,7 @@ _sync_provision() {
     else
       rendered=$(sed "s|{{MANAGED_DIR}}|${CODEX_MANAGED_DIR:-/etc/codex}|g" "$req_src")
       [ -f "$req" ] && [ "$(cat "$req" 2>/dev/null)" = "$rendered" ] || rc=1
-      for hook in bw-deny-files.sh redact-sessions-hook.sh redact-sessions-pending.sh \
+      for hook in bw-deny-files.sh kanban-work-hook.sh redact-sessions-hook.sh redact-sessions-pending.sh \
                   memory-hint.sh check-archived-docs.sh agent-working.sh; do
         cmp -s "$root/configs/claude/hooks/$hook" "${CODEX_MANAGED_DIR:-/etc/codex}/hooks/$hook" || rc=1
       done

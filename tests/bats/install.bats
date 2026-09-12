@@ -1736,6 +1736,16 @@ LDD
   done
 }
 
+@test "install.sh deploys the Claude Kanban lifecycle wrapper as managed executable" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  local hook="$HOME/.claude/hooks/kanban-work-hook.sh" hash
+  [ -x "$hook" ]
+  cmp "$BLUEPRINT_ROOT/configs/claude/hooks/kanban-work-hook.sh" "$hook"
+  hash=$(jq -r '.files["'"$hook"'"].deployed_hash' "$AICODING_MANIFEST")
+  [ -n "$hash" ]
+  [ "$hash" != null ]
+}
+
 @test "install.sh symlinks clip-x11-bridge into ~/.local/bin" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   [ -L "$HOME/.local/bin/clip-x11-bridge" ]

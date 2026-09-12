@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from lib.kanban_work import Bridge, BridgeError, EventIngestor, LifecycleQueue, Store  # noqa: E402
+from lib.kanban_work.adapters import adapt_claude_codex  # noqa: E402
 from lib.kanban_work.bridge import MAX_JSON_STDIN, PUBLIC_OPERATIONS  # noqa: E402
 
 
@@ -19,6 +20,10 @@ def emit(ok, *, data=None, code=None, message=None):
     value = {"ok": True, "data": data} if ok else {
         "ok": False, "error": {"code": code, "message": message}
     }
+    print(json.dumps(value, separators=(",", ":")))
+
+
+def emit_hook(value):
     print(json.dumps(value, separators=(",", ":")))
 
 
@@ -52,6 +57,12 @@ def main():
     try:
         if len(sys.argv) == 3 and sys.argv[1] == "--json" and sys.argv[2] in PUBLIC_OPERATIONS:
             data = Bridge().dispatch(sys.argv[2], read_payload())
+        elif (len(sys.argv) == 6 and sys.argv[1:3] == ["hook", "--harness"]
+              and sys.argv[4] == "--event"):
+            result = adapt_claude_codex(sys.argv[3], sys.argv[5], read_payload())
+            emit_hook(result.output)
+            spawn_mode("drain", "2000")
+            return 0
         elif len(sys.argv) == 4 and sys.argv[1] == "hook":
             store = Store()
             try:
@@ -86,6 +97,7 @@ def main():
             raise BridgeError(
                 422,
                 "usage: kanban-work --json bind|lookup|execute|instructions; "
+                "kanban-work hook --harness HARNESS --event EVENT; "
                 "kanban-work hook HARNESS EVENT; kanban-work drain [BUDGET_MS]; "
                 "kanban-work supervise HANDLE NATIVE_CALL_ID",
             )
