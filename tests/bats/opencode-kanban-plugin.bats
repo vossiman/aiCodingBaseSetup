@@ -129,6 +129,11 @@ JS
     map(select(.argv == ["hook","--harness","opencode","--event","session.created"])) | length == 2
   ' "$BRIDGE_CALLS"
   jq -s -e '
+    [.[] | select(.argv[0] == "hook") | .stdin.instanceID] as $instances |
+    ($instances | length == 6) and ($instances | unique | length == 1) and
+    ($instances[0] | type == "string" and length > 0 and length <= 300)
+  ' "$BRIDGE_CALLS"
+  jq -s -e '
     any(.[]; .stdin.info.parentID == "ses-parent" and .stdin.sessionID == "ses-child") and
     any(.[]; .argv[-1] == "session.error" and (.stdin.sessionID? == null))
   ' "$BRIDGE_CALLS"
@@ -180,7 +185,7 @@ JS
     any(.[]; .argv[-1] == "tool.execute.before" and .stdin.sessionID == "ses-parent" and
       (.stdin.callID | startswith("call-$(touch ")) and .stdin.tool == "kanban_claim_ticket") and
     any(.[]; .argv[-1] == "tool.execute.after" and .stdin.sessionID == "ses-parent" and
-      ((.stdin | keys | sort) == ["callID","clientVersion","directory","sessionID","tool"]))
+      ((.stdin | keys | sort) == ["callID","clientVersion","directory","instanceID","sessionID","tool"]))
   ' "$BRIDGE_CALLS"
 }
 
@@ -256,5 +261,38 @@ JS
     any(.[]; .argv[-1] == "tool.execute.before" and .stdin.callID == "failed-call") and
     ([.[] | select(.argv[-1] == "tool.execute.after")] | length == 0) and
     any(.[]; .argv[-1] == "session.error" and (.stdin.sessionID? == null))
+  ' "$BRIDGE_CALLS"
+}
+
+@test "OpenCode plugin instances use distinct stable adapter contexts" {
+  run node --input-type=module <<'JS'
+import { pathToFileURL } from "node:url"
+const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
+const first = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
+const second = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
+for (const hooks of [first, second]) {
+  await hooks.event({ event: {
+    id: "evt-created", type: "session.created", properties: {
+      sessionID: "ses-parent",
+      info: {
+        id: "ses-parent", slug: "parent", projectID: "global",
+        directory: process.env.CHECKOUT, title: "Parent", version: "1.18.30",
+        time: { created: 1, updated: 1 },
+      },
+    },
+  } })
+  await hooks["experimental.chat.system.transform"](
+    { sessionID: "ses-parent", model: {} }, { system: [] },
+  )
+}
+JS
+  [ "$status" -eq 0 ]
+  jq -s -e '
+    [.[] | select(.argv[0] == "hook") | .stdin.instanceID] as $instances |
+    ($instances | length == 4) and ($instances | unique | length == 2)
+  ' "$BRIDGE_CALLS"
+  jq -s -e '
+    [.[] | select(.argv[0] == "hook") | .stdin.instanceID] |
+    group_by(.) | all(.[]; length == 2)
   ' "$BRIDGE_CALLS"
 }

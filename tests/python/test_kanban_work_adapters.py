@@ -892,6 +892,7 @@ class CursorAdapterTests(unittest.TestCase):
 
 class OpenCodeAdapterTests(unittest.TestCase):
     VERSION = "1.18.30"
+    INSTANCE = "plugin-instance-a"
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -935,21 +936,24 @@ class OpenCodeAdapterTests(unittest.TestCase):
             value["parentID"] = parent
         return value
 
-    def created(self, session="ses-parent", *, parent=None, event="evt-created"):
+    def created(self, session="ses-parent", *, parent=None, event="evt-created",
+                instance=None):
         return self.adapter.adapt("session.created", {
             "eventID": event,
             "sessionID": session,
             "info": self.info(session, parent=parent),
+            "instanceID": instance or self.INSTANCE,
             "clientVersion": self.VERSION,
             "directory": str(self.checkout),
         })
 
-    def before(self, tool, args, *, session="ses-parent", call="call-7"):
+    def before(self, tool, args, *, session="ses-parent", call="call-7", instance=None):
         return self.adapter.adapt("tool.execute.before", {
             "tool": tool,
             "sessionID": session,
             "callID": call,
             "args": args,
+            "instanceID": instance or self.INSTANCE,
             "clientVersion": self.VERSION,
             "directory": str(self.checkout),
         })
@@ -969,7 +973,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
         unlisted = self.adapter.adapt("session.created", {
             "eventID": "evt-unlisted", "sessionID": "ses-unlisted",
             "info": self.info("ses-unlisted"), "clientVersion": "1.18.31",
-            "directory": str(self.checkout),
+            "instanceID": self.INSTANCE, "directory": str(self.checkout),
         })
         self.assertFalse(
             self.store.get_execution(unlisted.lifecycle["handle"]).lifecycle_capable
@@ -977,7 +981,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
         missing = self.adapter.adapt("session.created", {
             "eventID": "evt-missing-version", "sessionID": "ses-missing-version",
             "info": self.info("ses-missing-version"), "clientVersion": None,
-            "directory": str(self.checkout),
+            "instanceID": self.INSTANCE, "directory": str(self.checkout),
         })
         self.assertFalse(
             self.store.get_execution(missing.lifecycle["handle"]).lifecycle_capable
@@ -988,12 +992,14 @@ class OpenCodeAdapterTests(unittest.TestCase):
         child = self.created("ses-child", parent="ses-parent", event="evt-child").lifecycle
         compacted = self.adapter.adapt("session.compacted", {
             "eventID": "evt-compact", "sessionID": "ses-parent",
-            "clientVersion": self.VERSION, "directory": str(self.checkout),
+            "instanceID": self.INSTANCE, "clientVersion": self.VERSION,
+            "directory": str(self.checkout),
         })
         self.assertEqual(compacted.lifecycle["run_generation"], parent["run_generation"])
         idle = self.adapter.adapt("session.idle", {
             "eventID": "evt-idle", "sessionID": "ses-parent",
-            "clientVersion": self.VERSION, "directory": str(self.checkout),
+            "instanceID": self.INSTANCE, "clientVersion": self.VERSION,
+            "directory": str(self.checkout),
         })
         self.assertEqual(idle.lifecycle["status"], "deferred_active_work")
         self.assertNotEqual(self.store.get_execution(parent["handle"]).state, "ended")
@@ -1024,11 +1030,13 @@ class OpenCodeAdapterTests(unittest.TestCase):
             self.adapter.adapt("tool.execute.before", {
                 "tool": "kanban_claim_ticket", "args": {
                     "handle": handle, "ticket": "KANBAN-2",
-                }, "clientVersion": self.VERSION, "directory": str(self.checkout),
+                }, "instanceID": self.INSTANCE, "clientVersion": self.VERSION,
+                "directory": str(self.checkout),
             })
         read = self.adapter.adapt("tool.execute.before", {
             "tool": "kanban_list_tickets", "args": {},
-            "clientVersion": self.VERSION, "directory": str(self.checkout),
+            "instanceID": self.INSTANCE, "clientVersion": self.VERSION,
+            "directory": str(self.checkout),
         })
         self.assertEqual(read.output, {})
         self.assertFalse(self.store.has_any_permit())
@@ -1038,12 +1046,14 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.before("read", {"filePath": "README.md"}, call="call-ok")
         result = self.adapter.adapt("tool.execute.after", {
             "tool": "read", "sessionID": "ses-parent", "callID": "call-ok",
+            "instanceID": self.INSTANCE,
         })
         self.assertEqual(result.lifecycle["handle"], parent["handle"])
         self.assertFalse(self.store.tool_operation(parent["handle"], "call-ok")["active"])
         with self.assertRaisesRegex(BridgeError, "cannot correlate"):
             self.adapter.adapt("tool.execute.after", {
                 "tool": "bash", "sessionID": "ses-parent", "callID": "call-ok",
+                "instanceID": self.INSTANCE,
             })
 
     def test_failed_tool_without_after_remains_active_and_idle_does_not_invent_failure(self):
@@ -1051,21 +1061,23 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.before("read", {"filePath": "missing"}, call="failed-call")
         idle = self.adapter.adapt("session.idle", {
             "eventID": "evt-idle-failed", "sessionID": "ses-parent",
-            "clientVersion": self.VERSION, "directory": str(self.checkout),
+            "instanceID": self.INSTANCE, "clientVersion": self.VERSION,
+            "directory": str(self.checkout),
         })
         self.assertEqual(idle.lifecycle["status"], "deferred_active_work")
         self.assertTrue(self.store.tool_operation(parent["handle"], "failed-call")["active"])
         missing = self.adapter.adapt("session.error", {
             "eventID": "evt-error", "error": {
                 "name": "UnknownError", "data": {"message": "boom"},
-            }, "clientVersion": self.VERSION, "directory": str(self.checkout),
+            }, "instanceID": self.INSTANCE, "clientVersion": self.VERSION,
+            "directory": str(self.checkout),
         })
         self.assertEqual(missing.lifecycle["status"], "ignored_missing_identity")
 
     def test_first_observation_is_journaled_unqualified_and_never_promoted(self):
         observed = self.adapter.adapt("system.transform", {
             "sessionID": "ses-resumed", "clientVersion": self.VERSION,
-            "directory": str(self.checkout),
+            "instanceID": self.INSTANCE, "directory": str(self.checkout),
         })
         execution = self.store.get_execution(observed.lifecycle["handle"])
         self.assertFalse(execution.lifecycle_capable)
@@ -1074,7 +1086,8 @@ class OpenCodeAdapterTests(unittest.TestCase):
                 "tool": "kanban_claim_ticket", "sessionID": "ses-resumed",
                 "callID": "resumed-call", "args": {
                     "handle": execution.handle, "ticket": "KANBAN-2",
-                }, "clientVersion": self.VERSION, "directory": str(self.checkout),
+                }, "instanceID": self.INSTANCE, "clientVersion": self.VERSION,
+                "directory": str(self.checkout),
             })
         later_created = self.created("ses-resumed", event="evt-created-late")
         self.assertEqual(later_created.lifecycle["handle"], execution.handle)
@@ -1086,7 +1099,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
         deleted = self.adapter.adapt("session.deleted", {
             "eventID": "evt-delete-parent", "sessionID": "ses-parent",
             "info": self.info(), "clientVersion": self.VERSION,
-            "directory": str(self.checkout),
+            "instanceID": self.INSTANCE, "directory": str(self.checkout),
         })
         self.assertEqual(deleted.lifecycle["handle"], parent["handle"])
         self.assertEqual(self.store.get_execution(child["handle"]).state, "ended")
@@ -1096,7 +1109,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
         started = self.created().lifecycle
         transformed = self.adapter.adapt("system.transform", {
             "sessionID": "ses-parent", "clientVersion": self.VERSION,
-            "directory": str(self.checkout),
+            "instanceID": self.INSTANCE, "directory": str(self.checkout),
         })
         self.assertEqual(transformed.output, {
             "handle": started["handle"], "lifecycle_capable": True,
@@ -1122,6 +1135,83 @@ class OpenCodeAdapterTests(unittest.TestCase):
                 self.before("bash", {"command": command}, call=f"bad-{index}")
         ordinary = self.before("bash", {"command": "git status --short"}, call="ordinary")
         self.assertEqual(ordinary.output, {})
+
+    def test_new_plugin_instance_mints_unqualified_generation_and_late_old_event_stays_old(self):
+        old_instance = "plugin-instance-old"
+        new_instance = "plugin-instance-new"
+        old = self.created(instance=old_instance).lifecycle
+        self.before("read", {"filePath": "old"}, call="old-call", instance=old_instance)
+
+        self.store.close()
+        self.store = Store(self.state)
+        self.queue = LifecycleQueue(self.store, now=self.clock)
+        self.ingress = EventIngestor(self.store, self.queue, now=self.clock)
+        self.adapter = OpenCodeAdapter(self.store, self.ingress, now=self.clock)
+
+        observed = self.adapter.adapt("system.transform", {
+            "sessionID": "ses-parent", "instanceID": new_instance,
+            "clientVersion": self.VERSION, "directory": str(self.checkout),
+        })
+        current = self.store.get_execution(observed.lifecycle["handle"])
+        self.assertNotEqual(current.handle, old["handle"])
+        self.assertNotEqual(current.run_generation, old["run_generation"])
+        self.assertFalse(current.lifecycle_capable)
+
+        new_tool = self.adapter.adapt("tool.execute.before", {
+            "tool": "read", "sessionID": "ses-parent", "callID": "new-call",
+            "args": {"filePath": "new"}, "instanceID": new_instance,
+            "clientVersion": self.VERSION, "directory": str(self.checkout),
+        })
+        self.assertEqual(new_tool.lifecycle["handle"], current.handle)
+        idle = self.adapter.adapt("session.idle", {
+            "eventID": "evt-new-idle", "sessionID": "ses-parent",
+            "instanceID": new_instance, "clientVersion": self.VERSION,
+            "directory": str(self.checkout),
+        })
+        self.assertEqual(idle.lifecycle["status"], "deferred_active_work")
+
+        late = self.adapter.adapt("tool.execute.after", {
+            "tool": "read", "sessionID": "ses-parent", "callID": "old-call",
+            "instanceID": old_instance,
+        })
+        self.assertEqual(late.lifecycle["handle"], old["handle"])
+        self.assertFalse(self.store.tool_operation(old["handle"], "old-call")["active"])
+        self.assertTrue(self.store.tool_operation(current.handle, "new-call")["active"])
+
+        later_created = self.created(instance=new_instance, event="evt-created-new-instance")
+        self.assertEqual(later_created.lifecycle["handle"], current.handle)
+        self.assertFalse(self.store.get_execution(current.handle).lifecycle_capable)
+
+    def test_tool_and_idle_each_fail_closed_when_first_seen_by_new_plugin_instance(self):
+        old_instance = "plugin-instance-old"
+        old_tool = self.created("ses-tool", event="evt-old-tool",
+                                instance=old_instance).lifecycle
+        old_idle = self.created("ses-idle", event="evt-old-idle",
+                                instance=old_instance).lifecycle
+
+        self.store.close()
+        self.store = Store(self.state)
+        self.queue = LifecycleQueue(self.store, now=self.clock)
+        self.ingress = EventIngestor(self.store, self.queue, now=self.clock)
+        self.adapter = OpenCodeAdapter(self.store, self.ingress, now=self.clock)
+
+        tool = self.adapter.adapt("tool.execute.before", {
+            "tool": "read", "sessionID": "ses-tool", "callID": "new-tool",
+            "args": {"filePath": "README.md"}, "instanceID": "plugin-tool-new",
+            "clientVersion": self.VERSION, "directory": str(self.checkout),
+        })
+        tool_execution = self.store.get_execution(tool.lifecycle["handle"])
+        self.assertNotEqual(tool_execution.handle, old_tool["handle"])
+        self.assertFalse(tool_execution.lifecycle_capable)
+
+        idle = self.adapter.adapt("session.idle", {
+            "eventID": "evt-first-idle", "sessionID": "ses-idle",
+            "instanceID": "plugin-idle-new", "clientVersion": self.VERSION,
+            "directory": str(self.checkout),
+        })
+        idle_execution = self.store.get_execution(idle.lifecycle["handle"])
+        self.assertNotEqual(idle_execution.handle, old_idle["handle"])
+        self.assertFalse(idle_execution.lifecycle_capable)
 
 
 if __name__ == "__main__":

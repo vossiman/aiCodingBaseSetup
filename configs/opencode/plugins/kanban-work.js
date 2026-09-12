@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process"
+import { randomUUID } from "node:crypto"
 
 const MAX_OUTPUT = 256 * 1024
 const BRIDGE_TIMEOUT_MS = 5000
@@ -134,6 +135,7 @@ export const KanbanWorkPlugin = async (input) => {
   const bridgeCommand = process.env.AICODING_KANBAN_WORK || "kanban-work"
   const versionCommand = process.env.AICODING_OPENCODE || "opencode"
   const directory = input.directory
+  const instanceID = randomUUID()
   const version = processVersion(versionCommand)
   const parents = new Map()
   let instructions
@@ -141,7 +143,7 @@ export const KanbanWorkPlugin = async (input) => {
   const bridge = (args, payload) => run(bridgeCommand, args, payload)
   const hook = async (event, payload) => bridge(
     ["hook", "--harness", "opencode", "--event", event],
-    { ...payload, clientVersion: await version, directory },
+    { ...payload, instanceID, clientVersion: await version, directory },
   )
   const withParent = (sessionID, payload) => {
     const parentSessionID = parents.get(sessionID)
