@@ -71,9 +71,9 @@ teardown() { rm -rf "$TEST_ROOT"; }
   [ "$_AICODING_INITIAL_CONFIG_DEFERRED" = 1 ]
 }
 
-@test "persistent reconcile blocks an actionable incompatible destination before apply" {
+@test "persistent reconcile blocks ordinary and smart incompatible destinations before apply" {
   classify_managed_files() {
-    BUCKETS["$HOME/.codex/config.toml"]=will_update
+    BUCKETS["$HOME/.codex/config.toml"]=$TEST_BUCKET
     FILE_MODE["$HOME/.codex/config.toml"]=overwrite
     FILE_SOURCE["$HOME/.codex/config.toml"]=configs/codex
   }
@@ -84,10 +84,14 @@ teardown() { rm -rf "$TEST_ROOT"; }
   }
   aicoding_config_is_compatible() { echo codex_update_not_verified; return 1; }
 
-  reconcile_existing_install
-
-  [ "$(cat "$TEST_ROOT/applied-bucket")" = blocked ]
-  [ "$_AICODING_INITIAL_CONFIG_DEFERRED" = 1 ]
+  local TEST_BUCKET
+  for TEST_BUCKET in will_update smart_conflict; do
+    : > "$TEST_ROOT/applied-bucket"
+    _AICODING_INITIAL_CONFIG_DEFERRED=0
+    reconcile_existing_install
+    [ "$(cat "$TEST_ROOT/applied-bucket")" = blocked ]
+    [ "$_AICODING_INITIAL_CONFIG_DEFERRED" = 1 ]
+  done
 }
 
 @test "persistent container and host enrollment prepare exact MCPs before deployment" {

@@ -501,6 +501,9 @@ EOF
 @test "boot records preserved user drift as a conflict without advancing blueprint stamp" {
   local clone="$TMP/conflict-blueprint"
   rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$clone/"
+  # This regression targets the ordinary conservative bucket. Smart-error
+  # fail-open behavior is covered independently below.
+  printf '\nmanaged_inventory_smart() { :; }\n' >> "$clone/lib/blueprint-deploy.sh"
   export AICODING_BLUEPRINT_CLONE="$clone" AICODING_BLUEPRINT_LOCAL=1 SCRIPT_DIR="$clone"
   bash "$clone/install.sh" </dev/null
   local old_commit new_commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -519,6 +522,55 @@ EOF
       and .components.config.reason == "managed_config_conflict"' \
     "$AICODING_STATE_DIR/update-results.json"
   grep -q '# user edit' "$HOME/.tmux.conf"
+}
+
+@test "smart errors outrank compatibility blocks while unattended modes remain fail-open" {
+  local clone="$TMP/mixed-smart-error-blueprint"
+  local codex_dest="$HOME/.codex/config.toml" other_dest="$HOME/.tmux.conf"
+  rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$clone/"
+  cat >> "$clone/lib/blueprint-deploy.sh" <<EOF
+classify_managed_files() {
+  FILE_MODE["$codex_dest"]=toml_merge
+  FILE_SOURCE["$codex_dest"]=configs/codex/config.toml
+  BUCKETS["$codex_dest"]=smart_error
+  SMART_PLAN["$codex_dest"]='{"error":{"code":"fixture_smart_error"}}'
+  FILE_MODE["$other_dest"]=overwrite
+  FILE_SOURCE["$other_dest"]=configs/tmux/tmux.conf
+  BUCKETS["$other_dest"]=will_update
+}
+EOF
+  export AICODING_BLUEPRINT_CLONE="$clone" AICODING_BLUEPRINT_LOCAL=1 _SYNC_REFRESHED=1
+  mkdir -p "$(dirname "$AICODING_MANIFEST")"
+  echo '{"schema_version":1,"files":{},"blueprint_commit":"old"}' > "$AICODING_MANIFEST"
+  _sync_source_update_libraries "$clone"
+  aicoding_config_is_compatible() {
+    [ "$1" = "$codex_dest" ] || { echo fixture_incompatible; return 1; }
+  }
+  _mixed_reconcile() {
+    local rc=0
+    _sync_reconcile "$1" || rc=$?
+    printf 'codex-deferred=%s\n' "${_SYNC_DEFERRED_PROVISION_COMPONENTS[codex]:-0}"
+    return "$rc"
+  }
+
+  local sync_mode
+  for sync_mode in boot first; do
+    run _mixed_reconcile "$sync_mode"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'fixture_smart_error'* ]]
+    [[ "$output" == *'codex-deferred=1'* ]]
+    jq -e '.components.config.state == "failed"
+      and .components.config.reason == "managed_config_apply_failed"' \
+      "$AICODING_STATE_DIR/update-results.json"
+  done
+
+  run _mixed_reconcile yes
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'fixture_smart_error'* ]]
+  [[ "$output" == *'codex-deferred=1'* ]]
+  jq -e '.components.config.state == "failed"
+    and .components.config.reason == "managed_config_apply_failed"' \
+    "$AICODING_STATE_DIR/update-results.json"
 }
 
 @test "reconcile acquires shared writer locks before classifying destination state" {
@@ -1422,7 +1474,7 @@ _kvm_unused_gid() {
   _sync_reconcile() { :; }
   _sync_provision() { :; }
 
-  AICODINGSETUP_SKIP_NETWORK= run aicoding_sync --yes
+  AICODING_BLUEPRINT_LOCAL=0 AICODINGSETUP_SKIP_NETWORK= run aicoding_sync --yes
   [ "$status" -eq 0 ]
   [ "$(cat "$calls")" = "$sha" ]
 }

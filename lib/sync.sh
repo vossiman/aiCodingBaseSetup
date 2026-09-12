@@ -740,18 +740,18 @@ _sync_reconcile() {
     # Still advance the blueprint_commit stamp: the blueprint may have moved
     # without touching any managed file (lib/tests/bin-only changes). Leaving
     # the old commit recorded keeps aicoding-status on "behind" forever.
-    if [ "$blocked_count" -gt 0 ]; then
-      echo "$blocked_count managed config update(s) blocked by tool compatibility"
-      command -v aicoding_result_record >/dev/null 2>&1 \
-        && aicoding_result_record config blocked "$NEW_COMMIT" partial_config_blocked || true
-      _SYNC_PASS_DEFERRED=1
-      return 0
-    elif _sync_has_smart_errors; then
+    if _sync_has_smart_errors; then
       _SYNC_DEFERRED_PROVISION_COMPONENTS[codex]=1
       _SYNC_PASS_DEFERRED=1
       command -v aicoding_result_record >/dev/null 2>&1 \
         && aicoding_result_record config failed "$NEW_COMMIT" managed_config_apply_failed || true
       if [[ "$mode" != boot && "$mode" != first ]]; then return 1; fi
+      return 0
+    elif [ "$blocked_count" -gt 0 ]; then
+      echo "$blocked_count managed config update(s) blocked by tool compatibility"
+      command -v aicoding_result_record >/dev/null 2>&1 \
+        && aicoding_result_record config blocked "$NEW_COMMIT" partial_config_blocked || true
+      _SYNC_PASS_DEFERRED=1
       return 0
     elif [ "$OLD_COMMIT" != "$NEW_COMMIT" ] && [ "$NEW_COMMIT" != unknown ]; then
       manifest_stage_begin || return $?
@@ -823,7 +823,7 @@ _sync_reconcile() {
     done
   fi
 
-  local apply_rc=0
+  local apply_rc=0 smart_error_count=0
   apply_managed_buckets "$buckets" "$mode" || apply_rc=1
   if [ "$apply_rc" -ne 0 ]; then
     for d in "${!APPLY_FAILURES[@]}"; do
@@ -847,7 +847,7 @@ _sync_reconcile() {
     smart_code=$(codex_smart_error_code "$smart_result")
     if [[ -n "$smart_code" ]]; then
       APPLY_FAILURES[$d]=1
-      apply_rc=1
+      smart_error_count=$((smart_error_count + 1))
       _SYNC_DEFERRED_PROVISION_COMPONENTS[codex]=1
     elif (( $(printf '%s' "$smart_result" | jq '.conflicts | length') > 0 )); then
       conflict_count=$((conflict_count + 1))
@@ -911,7 +911,8 @@ _sync_reconcile() {
   # Stamps the new commit and drops aicoding-status's cached `latest`, so the
   # next tick re-fetches instead of comparing against a pre-sync remote SHA
   # (see the helper's comment for why that drop still matters).
-  if [ "$blocked_count" -eq 0 ] && [ "$conflict_count" -eq 0 ] && [ "$apply_rc" -eq 0 ]; then
+  if [ "$blocked_count" -eq 0 ] && [ "$conflict_count" -eq 0 ] \
+      && [ "$smart_error_count" -eq 0 ] && [ "$apply_rc" -eq 0 ]; then
     if ! manifest_stage_set_blueprint "$NEW_COMMIT" "$origin"; then
       apply_rc=1
       _SYNC_DEFERRED_PROVISION_COMPONENTS[claude]=1
@@ -928,7 +929,7 @@ _sync_reconcile() {
   if command -v aicoding_result_record >/dev/null 2>&1; then
     if [ "$commit_rc" -ne 0 ]; then
       aicoding_result_record config failed "$NEW_COMMIT" manifest_write_failed || true
-    elif [ "$apply_rc" -ne 0 ]; then
+    elif [ "$apply_rc" -ne 0 ] || [ "$smart_error_count" -gt 0 ]; then
       aicoding_result_record config failed "$NEW_COMMIT" managed_config_apply_failed || true
     elif [ "$conflict_count" -gt 0 ]; then
       aicoding_result_record config conflict "$NEW_COMMIT" managed_config_conflict || true
@@ -938,8 +939,12 @@ _sync_reconcile() {
       aicoding_result_record config blocked "$NEW_COMMIT" partial_config_blocked || true
     fi
   fi
-  if [ "$blocked_count" -gt 0 ] || [ "$conflict_count" -gt 0 ]; then
+  if [ "$blocked_count" -gt 0 ] || [ "$conflict_count" -gt 0 ] \
+      || [ "$smart_error_count" -gt 0 ]; then
     _SYNC_PASS_DEFERRED=1
+  fi
+  if [ "$smart_error_count" -gt 0 ] && [[ "$mode" != boot && "$mode" != first ]]; then
+    return 1
   fi
   [ "$apply_rc" -eq 0 ] && [ "$commit_rc" -eq 0 ]
 }
@@ -1617,10 +1622,6 @@ aicoding_sync() {
   if [ "$profile" != minimal-pi ]; then
     _sync_reconcile "$mode" || overall_rc=1
   fi
-
-  # 3b. Workspace devcontainer pin — dry-run reports, other modes edit the
-  #     working tree (never commits). Local file ops only, no throttle.
-  _sync_devcontainer_pin "$mode" || true
 
   # 4. Reconcile machine-state integrations, then stamp only when verified.
   if [ "$mode" != dry-run ] && [ "$profile" != minimal-pi ]; then
