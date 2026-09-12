@@ -1746,6 +1746,23 @@ LDD
   [ "$hash" != null ]
 }
 
+@test "install.sh deploys Cursor hooks as managed overwrite with Kanban lifecycle wiring" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  local hooks="$HOME/.cursor/hooks.json" hash mode
+  [ -f "$hooks" ]
+  if grep -q '{{HOME}}' "$hooks"; then false; fi
+  jq -e --arg home "$HOME" '.hooks.preToolUse |
+    any(.command == ("bash \"" + $home + "/.claude/hooks/kanban-work-hook.sh\" cursor preToolUse"))' "$hooks"
+  jq -e '.hooks.preToolUse | any(.failClosed == true)' "$hooks"
+  jq -e '(.hooks.beforeMCPExecution // null) == null and
+    (.hooks.afterMCPExecution // null) == null' "$hooks"
+  hash=$(jq -r '.files["'"$hooks"'"].deployed_hash' "$AICODING_MANIFEST")
+  mode=$(jq -r '.files["'"$hooks"'"].mode' "$AICODING_MANIFEST")
+  [ -n "$hash" ]
+  [ "$hash" != null ]
+  [ "$mode" = overwrite ]
+}
+
 @test "install.sh symlinks clip-x11-bridge into ~/.local/bin" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   [ -L "$HOME/.local/bin/clip-x11-bridge" ]

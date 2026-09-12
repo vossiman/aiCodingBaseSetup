@@ -175,6 +175,12 @@ _source_host_lib() {
   [ -f "$HOME/.config/opencode/opencode.json" ]
   [ -f "$HOME/.cursor/mcp.json" ]
   [ -f "$HOME/.cursor/cli-config.json" ]
+  [ -f "$HOME/.cursor/hooks.json" ]
+  if grep -q '{{HOME}}' "$HOME/.cursor/hooks.json"; then false; fi
+  jq -e --arg home "$HOME" '.hooks.preToolUse |
+    any(.command == ("bash \"" + $home + "/.claude/hooks/kanban-work-hook.sh\" cursor preToolUse"))' \
+    "$HOME/.cursor/hooks.json"
+  [ -x "$HOME/.claude/hooks/kanban-work-hook.sh" ]
   # tmux/ssh-agent wiring stays container-only.
   [ ! -f "$HOME/.tmux.conf" ]
   [ ! -f "$HOME/.bashrc.d/aicoding-ssh-auth-sock.sh" ]

@@ -1,4 +1,4 @@
-"""Claude Code and Codex native hook adapters for Kanban work lifecycles."""
+"""Claude Code, Codex, and Cursor native Kanban lifecycle adapters."""
 
 from __future__ import annotations
 
@@ -36,6 +36,11 @@ CODEX_EVENTS = frozenset({
     "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop",
     "SessionEnd", "SubagentStart", "SubagentStop",
 })
+CURSOR_EVENTS = frozenset({
+    "sessionStart", "beforeSubmitPrompt", "preToolUse", "postToolUse",
+    "postToolUseFailure", "stop", "sessionEnd", "subagentStart",
+    "subagentStop", "preCompact",
+})
 START_SOURCES = {
     "claude": frozenset({"startup", "resume", "clear", "compact", "fork"}),
     "codex": frozenset({"startup", "resume", "clear", "compact"}),
@@ -43,11 +48,12 @@ START_SOURCES = {
 FRESH_SOURCE_EVENTS = {
     "startup": "start", "resume": "resume", "clear": "clear", "fork": "start",
 }
-SHELL_TOOLS = frozenset({"Bash"})
+SHELL_TOOLS = frozenset({"Bash", "Shell"})
 MCP_PREFIX = "mcp__kanban__"
 VERSION_PATTERN = re.compile(r"\b\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?\b")
 CLAUDE_BASH_FIELDS = frozenset({"command", "description", "timeout", "run_in_background"})
 CODEX_BASH_FIELDS = frozenset({"command"})
+CURSOR_SHELL_FIELDS = frozenset({"command", "working_directory"})
 
 
 @dataclass(frozen=True)
@@ -565,5 +571,186 @@ def adapt_claude_codex(harness: str, event_name: str, payload: dict) -> AdapterR
 
         ingress = EventIngestor(store, start_supervisor=start_supervisor)
         return ClaudeCodexAdapter(store, ingress).adapt(harness, event_name, payload)
+    finally:
+        store.close()
+
+
+class CursorAdapter(ClaudeCodexAdapter):
+    """Translate Cursor's native flat hook contract into shared lifecycle events."""
+
+    @staticmethod
+    def _allow(updated_input: dict | None = None) -> dict:
+        value = {"permission": "allow"}
+        if updated_input is not None:
+            value["updated_input"] = updated_input
+        return value
+
+    @staticmethod
+    def _deny(message: str) -> dict:
+        if message == "handle belongs to another native session":
+            message = "handle does not belong to the bound Cursor session"
+        return {"permission": "deny", "agent_message": message, "user_message": message}
+
+    @staticmethod
+    def _validate_event(harness: str, event_name: str, payload: dict):
+        if harness != "cursor":
+            raise BridgeError(422, f"unsupported lifecycle harness {harness!r}")
+        if event_name not in CURSOR_EVENTS:
+            raise BridgeError(422, f"unsupported cursor hook event {event_name!r}")
+        if not isinstance(payload, dict):
+            raise BridgeError(422, "native hook payload must be an object")
+        if payload.get("hook_event_name") != event_name:
+            raise BridgeError(422, "hook_event_name does not match invoked event")
+
+    @staticmethod
+    def _native(payload: dict) -> tuple[str, str | None]:
+        return (
+            _bounded(payload.get("conversation_id"), "conversation_id"),
+            _bounded(payload.get("subagent_id"), "subagent_id", optional=True),
+        )
+
+    @staticmethod
+    def _prompt_identifier(harness: str, payload: dict) -> str:
+        return _bounded(payload.get("generation_id"), "generation_id")
+
+    @staticmethod
+    def _mcp_tool(tool_name: str) -> str | None:
+        prefix = "MCP:"
+        return tool_name[len(prefix):] if tool_name.startswith(prefix) else None
+
+    @staticmethod
+    def _validated_shell_input(harness: str, tool_input: dict) -> dict:
+        if set(tool_input) - CURSOR_SHELL_FIELDS:
+            raise BridgeError(422, DENIAL)
+        if not isinstance(tool_input.get("command"), str):
+            raise BridgeError(422, DENIAL)
+        if ("working_directory" in tool_input
+                and not isinstance(tool_input["working_directory"], str)):
+            raise BridgeError(422, DENIAL)
+        return dict(tool_input)
+
+    def _start_output(self, harness: str, lifecycle: dict) -> AdapterResult:
+        handle = lifecycle["handle"]
+        context = (
+            f"{self.instructions_provider(handle).rstrip()}\n\n"
+            f"Kanban work handle: {handle}"
+        )
+        return AdapterResult({
+            "env": {"KANBAN_WORK_HANDLE": handle},
+            "additional_context": context,
+        }, lifecycle)
+
+    def _session_start(self, harness: str, payload: dict) -> AdapterResult:
+        session_id, agent_id = self._native(payload)
+        if agent_id is not None:
+            raise BridgeError(422, "sessionStart cannot identify a subagent")
+        documented_session = _bounded(payload.get("session_id"), "session_id")
+        if documented_session != session_id:
+            raise BridgeError(422, "session_id must match conversation_id")
+        if type(payload.get("is_background_agent")) is not bool:
+            raise BridgeError(422, "is_background_agent must be a boolean")
+        version = _bounded(payload.get("cursor_version"), "cursor_version")
+        roots = payload.get("workspace_roots")
+        if (not isinstance(roots, list) or len(roots) != 1
+                or not isinstance(roots[0], str) or not os.path.isabs(roots[0])):
+            raise BridgeError(422, "Cursor lifecycle requires exactly one workspace root")
+        checkout = roots[0]
+        start_id = _event_id(
+            "session-start", "cursor", session_id, payload.get("transcript_path")
+        )
+        prior = self.store.native_event("cursor", start_id)
+        if prior is not None and prior["result"] is not None:
+            return self._start_output("cursor", prior["result"])
+        current = self.store.current_execution("cursor", session_id, None)
+        if current is not None and current.state != "ended":
+            raise BridgeError(409, "Cursor conversation already has an active work generation")
+        lifecycle = self.ingress.ingest_event("cursor", "start", {
+            "native_event_id": start_id,
+            "native_session_id": session_id,
+            "subagent_id": None,
+            "checkout": checkout,
+            "lifecycle_capable": qualified_client_version("cursor", version),
+        })
+        return self._start_output("cursor", lifecycle)
+
+    def _child_parent(self, harness: str, session_id: str,
+                      correlation_id: str) -> Execution:
+        prompt_event = self._prompt_event_id("cursor", session_id, None, correlation_id)
+        parent = self._execution_from_record("cursor", prompt_event, "subagentStart")
+        if parent.state == "ended":
+            raise BridgeError(409, "cannot correlate subagentStart to an active parent generation")
+        return parent
+
+    def _subagent_start(self, harness: str, payload: dict) -> AdapterResult:
+        if payload.get("parent_conversation_id") != payload.get("conversation_id"):
+            raise BridgeError(422, "parent_conversation_id must match conversation_id")
+        result = super()._subagent_start("cursor", payload)
+        handle = result.lifecycle["handle"]
+        return AdapterResult({
+            "permission": "allow",
+            "additional_context": (
+                f"{self.instructions_provider(handle).rstrip()}\n\n"
+                f"Kanban work handle: {handle}"
+            ),
+        }, result.lifecycle)
+
+    def _subagent_stop(self, harness: str, payload: dict) -> AdapterResult:
+        # Cursor's documented event has no subagent_id. Summaries, task text,
+        # status and transcript paths are not stable identities, so keep both
+        # child and parent live until an exact native correlation exists.
+        return AdapterResult({}, {"status": "unsupported_child_correlation"})
+
+    def _precompact(self, payload: dict) -> AdapterResult:
+        session_id, agent_id = self._native(payload)
+        execution = self._current("cursor", session_id, agent_id)
+        generation = self._prompt_identifier("cursor", payload)
+        lifecycle = self._record(
+            "cursor", "activity", execution,
+            _event_id("precompact", "cursor", session_id, agent_id, generation,
+                      payload.get("trigger")),
+        )
+        return AdapterResult({}, lifecycle)
+
+    def adapt(self, event_name: str, payload: dict) -> AdapterResult:
+        self._validate_event("cursor", event_name, payload)
+        if event_name == "sessionStart":
+            return self._session_start("cursor", payload)
+        if event_name == "subagentStart":
+            return self._subagent_start("cursor", payload)
+        if event_name == "subagentStop":
+            return self._subagent_stop("cursor", payload)
+        if event_name == "beforeSubmitPrompt":
+            return self._prompt("cursor", payload)
+        if event_name == "preToolUse":
+            return self._tool_start("cursor", payload)
+        if event_name in {"postToolUse", "postToolUseFailure"}:
+            mapped = "PostToolUse" if event_name == "postToolUse" else "PostToolUseFailure"
+            return self._tool_finish("cursor", mapped, payload)
+        if event_name == "preCompact":
+            return self._precompact(payload)
+        if event_name == "stop":
+            return self._stop("cursor", "stop", payload)
+        if event_name == "sessionEnd":
+            return self._session_end("cursor", payload)
+        raise BridgeError(422, f"unsupported cursor hook event {event_name!r}")
+
+
+def adapt_cursor(event_name: str, payload: dict) -> AdapterResult:
+    store = Store()
+    try:
+        executable = Path(__file__).resolve().parents[2] / "bin" / "kanban-work"
+
+        def start_supervisor(handle: str, native_call_id: str):
+            try:
+                subprocess.Popen(
+                    [sys.executable, str(executable), "supervise", handle, native_call_id],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+                )
+            except OSError:
+                return
+
+        ingress = EventIngestor(store, start_supervisor=start_supervisor)
+        return CursorAdapter(store, ingress).adapt(event_name, payload)
     finally:
         store.close()

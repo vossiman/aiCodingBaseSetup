@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from lib.kanban_work import Bridge, BridgeError, EventIngestor, LifecycleQueue, Store  # noqa: E402
-from lib.kanban_work.adapters import adapt_claude_codex  # noqa: E402
+from lib.kanban_work.adapters import adapt_claude_codex, adapt_cursor  # noqa: E402
 from lib.kanban_work.bridge import MAX_JSON_STDIN, PUBLIC_OPERATIONS  # noqa: E402
 
 
@@ -59,7 +59,10 @@ def main():
             data = Bridge().dispatch(sys.argv[2], read_payload())
         elif (len(sys.argv) == 6 and sys.argv[1:3] == ["hook", "--harness"]
               and sys.argv[4] == "--event"):
-            result = adapt_claude_codex(sys.argv[3], sys.argv[5], read_payload())
+            if sys.argv[3] == "cursor":
+                result = adapt_cursor(sys.argv[5], read_payload())
+            else:
+                result = adapt_claude_codex(sys.argv[3], sys.argv[5], read_payload())
             emit_hook(result.output)
             spawn_mode("drain", "2000")
             return 0

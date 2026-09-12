@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
-from lib.kanban_work.adapters import ClaudeCodexAdapter, _client_version
+from lib.kanban_work.adapters import ClaudeCodexAdapter, CursorAdapter, _client_version
 from lib.kanban_work.events import EventIngestor
 from lib.kanban_work.queue import LifecycleQueue
 from lib.kanban_work.schema import BridgeError, normalize_tool_args
@@ -554,6 +554,261 @@ class AdapterTests(unittest.TestCase):
         prompt["prompt"] = "sensitive prompt fixture"
         result = self.adapter.adapt("codex", "UserPromptSubmit", prompt)
         self.assertNotIn("sensitive prompt fixture", json.dumps(result.output))
+
+
+class CursorAdapterTests(unittest.TestCase):
+    VERSION = "2026.09.10-fd3934a"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.checkout = self.root / "checkout"
+        self.checkout.mkdir()
+        self.state = self.root / "state" / "kanban-work.sqlite3"
+        self.matrix = self.root / "qualified.json"
+        self.matrix.write_text(json.dumps({
+            "clients": {"cursor": {"versions": [self.VERSION]}}
+        }))
+        self.env = mock.patch.dict(os.environ, {
+            "AICODING_KANBAN_QUALIFIED_CLIENTS": str(self.matrix),
+            "KANBAN_URL": "http://127.0.0.1:8765",
+            "KANBAN_TEST_TOKEN": "fixture-only-token",
+            "AICODINGSETUP_SKIP_NETWORK": "1",
+        }, clear=False)
+        self.env.start()
+        self.clock = Clock()
+        self.store = Store(self.state)
+        self.queue = LifecycleQueue(self.store, now=self.clock)
+        self.ingress = EventIngestor(self.store, self.queue, now=self.clock)
+        self.adapter = CursorAdapter(
+            self.store, self.ingress, now=self.clock,
+            instructions_provider=lambda handle: f"Kanban workflow\nhandle={handle}",
+        )
+
+    def tearDown(self):
+        self.store.close()
+        self.env.stop()
+        self.temp.cleanup()
+
+    def payload(self, event, *, conversation="conv-a", generation="gen-a", **extra):
+        return {
+            "conversation_id": conversation,
+            "generation_id": generation,
+            "cursor_version": self.VERSION,
+            "hook_event_name": event,
+            "workspace_roots": [str(self.checkout)],
+            "cwd": str(self.checkout),
+            **extra,
+        }
+
+    def start(self, **extra):
+        fields = {
+            "session_id": "conv-a", "is_background_agent": False,
+            "composer_mode": "agent", **extra,
+        }
+        return self.adapter.adapt("sessionStart", self.payload("sessionStart", **fields))
+
+    def prompt(self, generation="gen-a"):
+        return self.adapter.adapt("beforeSubmitPrompt", self.payload(
+            "beforeSubmitPrompt", generation=generation, prompt="fixture prompt",
+            attachments=[],
+        ))
+
+    def pre(self, tool, tool_input, *, call="call-7", generation="gen-a"):
+        return self.adapter.adapt("preToolUse", self.payload(
+            "preToolUse", generation=generation, tool_use_id=call,
+            tool_name=tool, tool_input=tool_input,
+        ))
+
+    def test_session_start_refuses_multi_root_and_returns_native_cursor_context(self):
+        bad = self.payload(
+            "sessionStart", session_id="conv-a", is_background_agent=False,
+            workspace_roots=[str(self.checkout), "/tmp/other"],
+        )
+        with self.assertRaisesRegex(BridgeError, "exactly one workspace root"):
+            self.adapter.adapt("sessionStart", bad)
+
+        result = self.start()
+        self.assertEqual(result.output["env"]["KANBAN_WORK_HANDLE"], result.lifecycle["handle"])
+        self.assertIn("Kanban workflow", result.output["additional_context"])
+        execution = self.store.get_execution(result.lifecycle["handle"])
+        self.assertEqual(execution.native_session_id, "conv-a")
+        self.assertTrue(execution.lifecycle_capable)
+
+    def test_background_session_uses_conversation_as_its_own_native_identity(self):
+        result = self.start(is_background_agent=True)
+        execution = self.store.get_execution(result.lifecycle["handle"])
+        self.assertEqual(execution.native_session_id, "conv-a")
+        self.assertIsNone(execution.subagent_id)
+
+    def test_unlisted_cursor_version_remains_read_only(self):
+        payload = self.payload(
+            "sessionStart", session_id="conv-b", conversation="conv-b",
+            cursor_version="2026.09.11-unlisted", is_background_agent=False,
+        )
+        result = self.adapter.adapt("sessionStart", payload)
+        self.assertFalse(self.store.get_execution(result.lifecycle["handle"]).lifecycle_capable)
+
+    def test_generation_changes_order_prompts_without_retargeting_the_run(self):
+        started = self.start().lifecycle
+        self.prompt("gen-a")
+        self.prompt("gen-b")
+        self.assertEqual(
+            self.store.current_execution("cursor", "conv-a", None).run_generation,
+            started["run_generation"],
+        )
+        self.assertIsNotNone(self.store.native_event(
+            "cursor", self.adapter._prompt_event_id("cursor", "conv-a", None, "gen-a")
+        ))
+        self.assertIsNotNone(self.store.native_event(
+            "cursor", self.adapter._prompt_event_id("cursor", "conv-a", None, "gen-b")
+        ))
+
+    def test_generic_pre_tool_is_only_permit_minter_and_denies_peer_handle(self):
+        handle = self.start().lifecycle["handle"]
+        self.prompt()
+        peer = self.ingress.ingest_event("cursor", "start", {
+            "native_event_id": "peer-start", "native_session_id": "conv-peer",
+            "subagent_id": None, "checkout": str(self.checkout),
+            "lifecycle_capable": True,
+        })
+        denied = self.pre(
+            "MCP:claim_ticket", {"handle": peer["handle"], "ticket": "KANBAN-2"}
+        )
+        self.assertEqual(denied.output["permission"], "deny")
+        self.assertIn("bound Cursor session", denied.output["agent_message"])
+        self.assertFalse(self.store.has_any_permit())
+
+        allowed = self.pre(
+            "MCP:claim_ticket", {"handle": handle, "ticket": "KANBAN-2"}, call="claim-1"
+        )
+        self.assertEqual(allowed.output, {"permission": "allow"})
+        normalized = normalize_tool_args(
+            "claim_ticket", {"handle": handle, "ticket": "KANBAN-2"}
+        )
+        self.assertTrue(self.store.has_permit(handle, "claim_ticket", normalized))
+
+    def test_pre_tool_validates_object_input_and_replay_fails_closed(self):
+        handle = self.start().lifecycle["handle"]
+        self.prompt()
+        malformed = self.pre("MCP:claim_ticket", "not-an-object", call="bad")
+        self.assertEqual(malformed.output["permission"], "deny")
+        first = self.pre("MCP:claim_ticket", {"handle": handle, "ticket": "KANBAN-2"})
+        replay = self.pre("MCP:claim_ticket", {"handle": handle, "ticket": "KANBAN-2"})
+        self.assertEqual(first.output["permission"], "allow")
+        self.assertEqual(replay.output["permission"], "deny")
+
+    def test_matching_generic_post_success_and_failure_close_original_calls(self):
+        handle = self.start().lifecycle["handle"]
+        self.prompt()
+        for event, call, extra in (
+            ("postToolUse", "ok-call", {"tool_output": "{}", "duration": 2}),
+            ("postToolUseFailure", "bad-call", {
+                "error_message": "failed", "failure_type": "error",
+                "duration": 3, "is_interrupt": False,
+            }),
+        ):
+            self.pre("Read", {"path": "README.md"}, call=call)
+            result = self.adapter.adapt(event, self.payload(
+                event, tool_use_id=call, tool_name="Read",
+                tool_input={"path": "README.md"}, **extra,
+            ))
+            self.assertEqual(result.output, {})
+            self.assertFalse(self.store.tool_operation(handle, call)["active"])
+
+    def test_delayed_post_uses_journaled_generation_and_never_latest(self):
+        old = self.start().lifecycle
+        self.prompt("gen-old")
+        self.pre("Read", {"path": "README.md"}, call="delayed", generation="gen-old")
+        self.adapter._record(
+            "cursor", "end", self.store.get_execution(old["handle"]), "end-old"
+        )
+        self.adapter.adapt("sessionStart", self.payload(
+            "sessionStart", conversation="conv-a", generation="gen-new",
+            session_id="conv-a", is_background_agent=False,
+            transcript_path="/tmp/new-transcript",
+        ))
+        result = self.adapter.adapt("postToolUse", self.payload(
+            "postToolUse", generation="gen-old", tool_use_id="delayed",
+            tool_name="Read", tool_input={"path": "README.md"},
+            tool_output="{}", duration=1,
+        ))
+        self.assertEqual(result.lifecycle["handle"], old["handle"])
+
+    def test_precompact_records_activity_while_stop_releases_when_idle(self):
+        handle = self.start().lifecycle["handle"]
+        self.prompt()
+        compact = self.adapter.adapt("preCompact", self.payload(
+            "preCompact", trigger="auto", context_usage_percent=85,
+        ))
+        self.assertEqual(compact.lifecycle["handle"], handle)
+        self.assertNotEqual(self.store.get_execution(handle).state, "ended")
+        stopped = self.adapter.adapt("stop", self.payload(
+            "stop", status="completed", loop_count=0,
+        ))
+        self.assertEqual(stopped.lifecycle["handle"], handle)
+
+    def test_subagent_stop_without_id_neither_invents_child_nor_releases_parent(self):
+        parent = self.start().lifecycle
+        self.prompt()
+        child = self.adapter.adapt("subagentStart", self.payload(
+            "subagentStart", subagent_id="child-1", subagent_type="generalPurpose",
+            task="inspect", parent_conversation_id="conv-a", tool_call_id="task-1",
+            subagent_model="fixture", is_parallel_worker=False,
+        )).lifecycle
+        result = self.adapter.adapt("subagentStop", self.payload(
+            "subagentStop", subagent_type="generalPurpose", status="completed",
+            task="inspect", description="inspect", summary="done", duration_ms=1,
+            message_count=1, tool_call_count=0, loop_count=0, modified_files=[],
+            agent_transcript_path=None,
+        ))
+        self.assertEqual(result.lifecycle["status"], "unsupported_child_correlation")
+        self.assertNotEqual(self.store.get_execution(child["handle"]).state, "ended")
+        self.assertNotEqual(self.store.get_execution(parent["handle"]).state, "ended")
+        stopped = self.adapter.adapt("stop", self.payload(
+            "stop", status="completed", loop_count=0,
+        ))
+        self.assertEqual(stopped.lifecycle["status"], "deferred_active_work")
+
+    def test_session_end_is_fire_and_forget_and_ends_children_before_parent(self):
+        parent = self.start().lifecycle
+        self.prompt()
+        child = self.adapter.adapt("subagentStart", self.payload(
+            "subagentStart", subagent_id="child-end", subagent_type="generalPurpose",
+            task="inspect", parent_conversation_id="conv-a", tool_call_id="task-end",
+            subagent_model="fixture", is_parallel_worker=False,
+        )).lifecycle
+        result = self.adapter.adapt("sessionEnd", self.payload(
+            "sessionEnd", session_id="conv-a", reason="completed", duration_ms=1,
+            is_background_agent=False, final_status="completed",
+        ))
+        self.assertEqual(result.output, {})
+        self.assertEqual(self.store.get_execution(child["handle"]).state, "ended")
+        self.assertEqual(self.store.get_execution(parent["handle"]).state, "ended")
+
+    def test_cursor_legacy_completion_rewrites_only_native_shell_input(self):
+        handle = self.start().lifecycle["handle"]
+        self.store.record_bound(handle, "backend-session", "kanban", "worker")
+        self.store.set_claim(handle, CLAIM, "KANBAN-2")
+        self.prompt()
+        command = "kanban-post --done KANBAN-2 --evidence 'tests pass'"
+        native = {"command": command, "working_directory": str(self.checkout)}
+        result = self.pre("Shell", native, call="legacy")
+        self.assertEqual(result.output["permission"], "allow")
+        self.assertEqual(result.output["updated_input"], {
+            **native,
+            "command": f"kanban-post --done KANBAN-2 --evidence 'tests pass' --work-handle {handle}",
+        })
+        replay = self.pre("Shell", native, call="legacy")
+        self.assertEqual(replay.output["permission"], "deny")
+        for index, bad in enumerate((
+            "KANBAN_WORK_HANDLE=x kanban-post --done KANBAN-2 --evidence ok",
+            "kanban-post --done KANBAN-2 --evidence ok; echo bad",
+        )):
+            denied = self.pre("Shell", {"command": bad}, call=f"bad-{index}")
+            self.assertEqual(denied.output["permission"], "deny")
+        ordinary = self.pre("Shell", {"command": "git status --short"}, call="ordinary")
+        self.assertEqual(ordinary.output["permission"], "allow")
 
 
 if __name__ == "__main__":
