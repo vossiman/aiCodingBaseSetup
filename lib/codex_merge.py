@@ -429,6 +429,15 @@ def plan_merge(
         )
 
     next_acknowledged = _table_node(next_children)
+    if local_text is None:
+        # Semantic planning above still establishes changes and receipt
+        # ownership. Fresh deployment/restoration must retain document-level
+        # comments, key spelling, spacing and order that per-key insertion
+        # into an empty document would discard. Project trust is never seeded.
+        result = deepcopy(incoming)
+        for key in USER_TREES:
+            if key in result:
+                del result[key]
     try:
         rendered = tomlkit.dumps(result)
         tomlkit.parse(rendered)

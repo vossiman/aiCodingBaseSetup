@@ -541,6 +541,7 @@ _sync_print_smart_details() {
 _sync_collect_smart_decisions() {
   local dest plan item path_json path kind answer decisions
   for dest in "${!SMART_PLAN[@]}"; do
+    case "${BUCKETS[$dest]:-}" in smart_update|smart_conflict) ;; *) continue ;; esac
     plan=${SMART_PLAN[$dest]}
     decisions='[]'
     # Keep the plan stream on fd 3 so the nested prompt still reads the

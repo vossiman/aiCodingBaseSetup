@@ -7,8 +7,9 @@
 _AICODING_CODEX_MERGE_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
 _codex_smart_error_json() {
-  jq -nc --arg code "$1" \
-    '{config_changed:false,state_changed:false,conflicts:[],error:{code:$code},unmanaged:false,token:null,changes:[],adoption_notices:[]}'
+  jq -nc --arg code "$1" --arg action "${2:-plan}" \
+    '{config_changed:false,state_changed:false,conflicts:[],error:{code:$code},unmanaged:false,token:null,changes:[],adoption_notices:[]}
+     + if $action == "apply" then {applied:false} else {} end'
 }
 
 _codex_smart_valid_result() {
@@ -55,7 +56,7 @@ _codex_smart_invoke() {
   CODEX_SMART_RESULT=""
   if ! _codex_smart_python_available || \
      [[ ! -f "$_AICODING_CODEX_MERGE_LIB_DIR/codex-merge.py" ]]; then
-    CODEX_SMART_RESULT=$(_codex_smart_error_json runtime_unavailable)
+    CODEX_SMART_RESULT=$(_codex_smart_error_json runtime_unavailable "$action")
     return 0
   fi
 
@@ -63,25 +64,25 @@ _codex_smart_invoke() {
   if [[ "${AICODING_BLUEPRINT_LOCAL:-0}" != 1 && ! -e "$AICODING_BLUEPRINT_CLONE/.git" ]]; then
     . "$_AICODING_CODEX_MERGE_LIB_DIR/codex-provenance.sh"
     if [[ ! -f "$AICODING_BLUEPRINT_CLONE/.aicoding-version" || -L "$AICODING_BLUEPRINT_CLONE/.aicoding-version" ]]; then
-      CODEX_SMART_RESULT=$(_codex_smart_error_json invalid_blueprint_release)
+      CODEX_SMART_RESULT=$(_codex_smart_error_json invalid_blueprint_release "$action")
       return 0
     fi
     release_sha=$(cat "$AICODING_BLUEPRINT_CLONE/.aicoding-version")
     if ! _codex_provenance_prepare "$release_sha"; then
-      CODEX_SMART_RESULT=$(_codex_smart_error_json "$CODEX_PROVENANCE_ERROR")
+      CODEX_SMART_RESULT=$(_codex_smart_error_json "$CODEX_PROVENANCE_ERROR" "$action")
       return 0
     fi
     provenance_git=$CODEX_PROVENANCE_GIT
   fi
 
   rendered=$(mktemp "${TMPDIR:-/tmp}/aicoding-codex-render.XXXXXX") || {
-    CODEX_SMART_RESULT=$(_codex_smart_error_json temporary_file_failed)
+    CODEX_SMART_RESULT=$(_codex_smart_error_json temporary_file_failed "$action")
     return 0
   }
   chmod 0600 "$rendered" 2>/dev/null || true
   if ! _render_managed_source "$template" "$dest" "$rendered" >/dev/null 2>&1; then
     rm -f -- "$rendered"
-    CODEX_SMART_RESULT=$(_codex_smart_error_json source_render_failed)
+    CODEX_SMART_RESULT=$(_codex_smart_error_json source_render_failed "$action")
     return 0
   fi
 
@@ -106,13 +107,13 @@ _codex_smart_invoke() {
   if [[ "$action" == apply && "$decisions" != '[]' ]]; then
     decisions_file=$(mktemp "${TMPDIR:-/tmp}/aicoding-codex-decisions.XXXXXX") || {
       rm -f -- "$rendered"
-      CODEX_SMART_RESULT=$(_codex_smart_error_json temporary_file_failed)
+      CODEX_SMART_RESULT=$(_codex_smart_error_json temporary_file_failed "$action")
       return 0
     }
     chmod 0600 "$decisions_file" 2>/dev/null || true
     if ! printf '%s\n' "$decisions" > "$decisions_file"; then
       rm -f -- "$rendered" "$decisions_file"
-      CODEX_SMART_RESULT=$(_codex_smart_error_json temporary_file_failed)
+      CODEX_SMART_RESULT=$(_codex_smart_error_json temporary_file_failed "$action")
       return 0
     fi
     command+=(--decisions "$decisions_file")
@@ -124,7 +125,7 @@ _codex_smart_invoke() {
   rm -f -- "$rendered"
   [[ -z "$decisions_file" ]] || rm -f -- "$decisions_file"
   if ! printf '%s' "$output" | _codex_smart_valid_result "$action"; then
-    output=$(_codex_smart_error_json engine_protocol_error)
+    output=$(_codex_smart_error_json engine_protocol_error "$action")
   fi
   CODEX_SMART_RESULT=$output
   return 0

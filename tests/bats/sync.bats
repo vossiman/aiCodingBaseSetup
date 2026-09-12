@@ -925,6 +925,20 @@ EOF
   echo "$output" | grep -q '0 smart_conflict'
 }
 
+@test "interactive smart decisions skip compatibility-blocked destinations" {
+  run bash -c '
+    . "$BLUEPRINT_ROOT/lib/sync.sh"
+    declare -A SMART_PLAN SMART_DECISIONS BUCKETS
+    dest="$HOME/.codex/config.toml"
+    SMART_PLAN[$dest]='\''{"conflicts":[{"path":["tui","alternate_screen"]}],"adoption_notices":[]}'\''
+    BUCKETS[$dest]=blocked
+    _sync_collect_smart_decisions <<< blueprint
+    [ "${#SMART_DECISIONS[@]}" -eq 0 ]
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Codex conflict at"* ]]
+}
+
 @test "unattended Codex conflict applies coexisting safe updates and stays pending" {
   _smart_blueprint_copy
   bash "$BP/install.sh" </dev/null

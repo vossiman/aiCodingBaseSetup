@@ -255,6 +255,39 @@ class PureMergeTests(unittest.TestCase):
         self.assertIn('approval_policy = "on-request"', choose_profile.config_text)
         self.assertIn('sandbox_mode = "danger-full-access"', choose_profile.config_text)
 
+    def test_fresh_config_preserves_template_comments_order_and_spacing(self):
+        incoming = (
+            '# Fleet defaults; preferences may be changed locally.\n'
+            '\n# Managed approval policy\n'
+            'approval_policy  =  "never" # unattended updates\n'
+            '\n# Preferred model\nmodel = "gpt-5.6-sol"\n'
+            '\n# MCP connections\n[mcp_servers.sample]\n'
+            'command = "sample"  # stable launcher\n'
+        )
+        plan = plan_merge(None, incoming)
+        self.assertIsNone(plan.error)
+        self.assertEqual(plan.config_text, incoming)
+        self.assertNotIn("model", plan.acknowledged["children"])
+        self.assertIn("approval_policy", plan.acknowledged["children"])
+        self.assertIn({"path": ["model"], "operation": "add"}, plan.changes)
+
+    def test_deleted_config_restores_comments_without_blueprint_trust(self):
+        old = self.baseline('x = 1\n').acknowledged
+        incoming = (
+            '# Current managed settings\nx  = 2\n'
+            '\n# User preference defaults\nmodel = "gpt-5.6-sol"\n'
+            '\n[projects."/blueprint"]\ntrust_level = "trusted"\n'
+        )
+        plan = plan_merge(None, incoming, acknowledged=old)
+        self.assertIsNone(plan.error)
+        self.assertTrue(plan.config_changed)
+        self.assertTrue(plan.config_text.startswith('# Current managed settings\nx  = 2\n'))
+        self.assertIn('# User preference defaults\nmodel = "gpt-5.6-sol"', plan.config_text)
+        self.assertNotIn("projects", plan.config_text)
+        self.assertNotIn("trust_level", plan.config_text)
+        self.assertEqual(set(plan.acknowledged["children"]), {"x"})
+        self.assertEqual(plan.conflicts, [])
+
     def test_missing_config_does_not_seed_blueprint_projects(self):
         incoming = (
             'model = "gpt-5.6-sol"\n\n'

@@ -139,3 +139,43 @@ $PROV_SHA" ]
   [ "$status" -ne 0 ]
   [ "$(stat -c %a /)" = "$original_mode" ]
 }
+@test "Codex adapter early errors preserve plan and apply result protocols" {
+  run bash -c '
+    set -e
+    for scenario in runtime blueprint provenance temporary render protocol decisions; do
+      for action in plan apply; do
+        (
+          . "$BLUEPRINT_ROOT/lib/codex-merge.sh"
+          export AICODING_BLUEPRINT_LOCAL=1 AICODING_BLUEPRINT_CLONE="$PROV_SOURCE"
+          _codex_smart_python_available() { return 0; }
+          _render_managed_source() { return 0; }
+          manifest_get_profile() { echo host; }
+          manifest_get_file() { echo null; }
+          case "$scenario" in
+            runtime) _codex_smart_python_available() { return 1; }; expected=runtime_unavailable ;;
+            blueprint) AICODING_BLUEPRINT_LOCAL=0; AICODING_BLUEPRINT_CLONE="$HOME/missing"; expected=invalid_blueprint_release ;;
+            provenance)
+              AICODING_BLUEPRINT_LOCAL=0; AICODING_BLUEPRINT_CLONE="$HOME/release"
+              mkdir -p "$AICODING_BLUEPRINT_CLONE"
+              printf "%s\n" "$PROV_SHA" > "$AICODING_BLUEPRINT_CLONE/.aicoding-version"
+              expected=revision_unavailable ;;
+            temporary) mktemp() { return 1; }; expected=temporary_file_failed ;;
+            render) _render_managed_source() { return 1; }; expected=source_render_failed ;;
+            protocol) python3() { echo invalid; }; expected=engine_protocol_error ;;
+            decisions)
+              [ "$action" = apply ] || exit 0
+              mktemp() { case "$*" in *decisions*) return 1 ;; *) command mktemp "$@" ;; esac; }
+              expected=temporary_file_failed ;;
+          esac
+          _codex_smart_invoke "$action" "$HOME/config.toml" "$HOME/template.toml" installer "" "[{\"path\":[\"model\"],\"choice\":\"local\"}]"
+          printf "%s" "$CODEX_SMART_RESULT" | _codex_smart_valid_result "$action" || { echo "$scenario/$action: $CODEX_SMART_RESULT"; exit 1; }
+          [ "$(printf "%s" "$CODEX_SMART_RESULT" | jq -r .error.code)" = "$expected" ]
+          if [ "$action" = apply ]; then
+            [ "$(printf "%s" "$CODEX_SMART_RESULT" | jq -r .applied)" = false ]
+          fi
+        )
+      done
+    done
+  '
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
