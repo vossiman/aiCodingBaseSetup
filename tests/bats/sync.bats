@@ -763,6 +763,7 @@ EOF
 
   run aicoding_sync --boot
   [ "$status" -eq 0 ]
+  [[ "$output" == *"blocked by tool compatibility (no changes applied): $HOME/.codex/config.toml"* ]]
   [[ "$output" == *"aicoding-sync: completed with deferrals"* ]]
   [ "$(cat "$HOME/.codex/config.toml")" = "$old_codex" ]
   [ "$(cat "$HOME/.tmux.conf")" != "$old_tmux" ]
@@ -934,6 +935,7 @@ EOF
     SMART_PLAN[ready-config]='\''{"changes":[{"path":["ready_setting"],"operation":"update"}],"conflicts":[{"path":["conflicting_setting"]}],"adoption_notices":[]}'\''
     SMART_PLAN[error-config]='\''{"error":{"code":"invalid_toml"},"changes":[],"conflicts":[],"adoption_notices":[]}'\''
     BUCKETS[blocked-config]=blocked
+    BUCKETS[blocked-other-config]=blocked
     BUCKETS[ready-config]=smart_conflict
     BUCKETS[error-config]=smart_error
     _sync_print_smart_details
@@ -941,6 +943,7 @@ EOF
   [ "$status" -eq 0 ]
   echo "$output"
   [[ "$output" == *"blocked by tool compatibility (no changes applied): blocked-config"* ]]
+  [[ "$output" == *"blocked by tool compatibility (no changes applied): blocked-other-config"* ]]
   [[ "$output" != *"blocked_setting"* ]]
   [[ "$output" == *"safe update: ready-config :: ready_setting"* ]]
   [[ "$output" == *"conflict (kept local): ready-config :: conflicting_setting"* ]]

@@ -507,12 +507,14 @@ _sync_has_smart_errors() {
 # codes are public. Rendered/local TOML and receipt fingerprints stay private.
 _sync_print_smart_details() {
   local dest plan code item path operation
+  # Compatibility can block any managed destination, including non-smart files.
+  while IFS= read -r dest; do
+    [[ -n "$dest" && "${BUCKETS[$dest]}" == blocked ]] || continue
+    printf '      blocked by tool compatibility (no changes applied): %s\n' "$dest"
+  done < <(printf '%s\n' "${!BUCKETS[@]}" | sort)
   while IFS= read -r dest; do
     [[ -n "$dest" ]] || continue
-    if [[ "${BUCKETS[$dest]:-}" == blocked ]]; then
-      printf '      blocked by tool compatibility (no changes applied): %s\n' "$dest"
-      continue
-    fi
+    [[ "${BUCKETS[$dest]:-}" != blocked ]] || continue
     plan=${SMART_PLAN[$dest]:-}
     [[ -n "$plan" ]] || continue
     code=$(codex_smart_error_code "$plan")
