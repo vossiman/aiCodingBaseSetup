@@ -177,6 +177,7 @@ main() {
   ensure_gh_credential_helper
   ensure_gh_stored_auth
   ensure_git_credential_file_fallback
+  _provision_recover_scheduler_locks
   if ! aicoding_shared_locks_acquire_managed_roots; then
     _AICODING_INSTALL_SHARED_LOCKS_READY=0
   fi

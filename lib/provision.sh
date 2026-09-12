@@ -89,9 +89,31 @@ _provision_tool_blocked() {
   return 3
 }
 
+# Recover old scheduler-held writer locks before the installer takes its own.
+# A worker still finishing a pass is a deferral, never an installer abort.
+_provision_recover_scheduler_locks() {
+  [ "${AICODINGSETUP_SKIP_NETWORK:-0}" != 1 ] || return 0
+  if ! declare -F _aicoding_auto_recover_shared_lock_worker >/dev/null 2>&1; then
+    . "$SCRIPT_DIR/lib/auto-update.sh" || return 1
+  fi
+  local recovery_rc=0
+  _aicoding_auto_recover_shared_lock_worker || recovery_rc=$?
+  if [ "$recovery_rc" -ne 0 ] && [ "$recovery_rc" -ne 4 ]; then
+    _AICODING_PREPARATION_DEFERRED=1
+    warn "Legacy updater recovery deferred; shared configuration may remain busy"
+  fi
+  return 0
+}
+
 _provision_ensure_update_components() {
-  declare -F aicoding_update_component >/dev/null 2>&1 && return 0
   local root=${SCRIPT_DIR:-${BLUEPRINT_ROOT:-}}
+  # Shell functions do not survive the installer exec; adapters need their
+  # selector dependency even when another caller already sourced them.
+  if ! declare -F aicoding_select_ci_sha >/dev/null 2>&1; then
+    [ -n "$root" ] && [ -f "$root/lib/ci-selector.sh" ] || return 1
+    . "$root/lib/ci-selector.sh" || return 1
+  fi
+  declare -F aicoding_update_component >/dev/null 2>&1 && return 0
   [ -n "$root" ] && [ -f "$root/lib/update-results.sh" ] && [ -f "$root/lib/update-components.sh" ] || return 1
   . "$root/lib/update-results.sh"
   . "$root/lib/update-components.sh"
