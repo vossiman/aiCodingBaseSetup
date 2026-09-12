@@ -595,3 +595,37 @@ LEGACY
   run flock -n "$HOME/.claude/.aicoding-update.lock" true
   [ "$status" -eq 0 ]
 }
+
+@test "recovery arriving after PID cleanup still waits for the worker lock" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  mkdir -p "$HOME/.claude" "$TEST_ROOT/legacy"
+  cat > "$TEST_ROOT/legacy/aicoding-auto-update" <<'LEGACY'
+#!/usr/bin/env bash
+source "$TEST_ROOT/runtime/lib/auto-update.sh"
+rm() {
+  command rm "$@"
+  case "$*" in *'/worker.pid') sleep 2 ;; esac
+}
+aicoding_auto_update_worker
+LEGACY
+  chmod +x "$TEST_ROOT/legacy/aicoding-auto-update"
+  exec {held_fd}>"$HOME/.claude/.aicoding-update.lock"
+  flock "$held_fd"
+  "$TEST_ROOT/legacy/aicoding-auto-update" --worker </dev/null >/dev/null 2>&1 &
+  local old_worker=$! i
+  exec {held_fd}>&-
+  wait_for_lines 1
+  kill "$old_worker"
+  for ((i=0; i<100; i++)); do
+    [ ! -e "$AICODING_STATE_DIR/auto-update/worker.pid" ] && break
+    sleep 0.02
+  done
+  [ ! -e "$AICODING_STATE_DIR/auto-update/worker.pid" ]
+  kill -0 "$old_worker"
+  run "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  [ "$status" -eq 0 ]
+  wait_for_replacement "$old_worker"
+  run flock -n "$HOME/.claude/.aicoding-update.lock" true
+  [ "$status" -eq 0 ]
+}

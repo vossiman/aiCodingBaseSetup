@@ -44,12 +44,22 @@ _aicoding_auto_close_shared_lock_fds() {
 
 # Caller owns ensure.lock. Never signal a worker while an update is active.
 _aicoding_auto_recover_shared_lock_worker_locked() {
-  local state pid fds sync_fd own_sync_fd=0 rc=0 inherited_target= expected_target=
+  local state pid fds sync_fd own_sync_fd=0 rc=0 inherited_target= expected_target= probe_fd
   state=$(_aicoding_auto_state_dir) || return 1
   pid=$(cat "$state/worker.pid" 2>/dev/null || true)
-  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
+  if [[ ! "$pid" =~ ^[1-9][0-9]*$ ]]; then
+    # A TERM trap removes worker.pid before process exit. Probe the actual
+    # lifetime lock so entry during that cleanup window cannot lose a successor.
+    exec {probe_fd}>"$state/worker.lock" || return 1
+    flock -n "$probe_fd" || rc=$?
+    exec {probe_fd}>&-
+    case "$rc" in 0) return 0 ;; 1) return 3 ;; *) return 1 ;; esac
+  fi
   fds=$(_aicoding_auto_shared_lock_fds "$pid")
   [ -n "$fds" ] || return 0
+  # The scheduler was introduced in d9db8ad with every pass routed through
+  # bin/aicoding-sync, which already held sync.lock for the whole run. Thus
+  # no supported legacy scheduler predates this mutual-exclusion protocol.
   # The installer already owns sync.lock through its refresh exec. Borrow
   # that verified descriptor without unlocking or closing the parent's copy.
   if [ "${AICODING_SYNC_LOCK_PID:-}" = "$$" ] \
