@@ -659,6 +659,10 @@ EOF
 }
 
 _stub_kanban_git_uv() {
+  # The suite-wide guard stays enabled unless a test explicitly installs these
+  # network-free Git/uv doubles. The updater must still honor a test that sets
+  # the guard back to 1 after calling this helper.
+  export AICODINGSETUP_SKIP_NETWORK=0
   cat > "$TMP/stubs/git" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$TMP/git.log"
@@ -757,8 +761,48 @@ EOF
   [ "$(readlink "$AICODING_DATA_DIR/current/mcp-kanban")" = "../versions/mcp-kanban/$revision" ]
   [ -x "$HOME/.local/bin/kanban-mcp" ]
   [ "$("$HOME/.local/bin/kanban-mcp" --version)" = 'kanban-mcp 0.1.0' ]
+  grep -Fq 'PYTHONDONTWRITEBYTECODE=1' \
+    "$AICODING_DATA_DIR/versions/mcp-kanban/$revision/.venv/bin/kanban-mcp"
+  [ -x "$AICODING_DATA_DIR/versions/mcp-kanban/$revision/.venv/bin/kanban-mcp.runtime" ]
   jq -e --arg revision "$revision" '.components["mcp-kanban"].state == "updated"
     and .components["mcp-kanban"].successful_version == $revision' "$AICODING_RESULTS_FILE"
+}
+
+@test "Kanban MCP never trusts a mutable same-revision source cache" {
+  _stub_kanban_git_uv
+  local revision source_cache
+  revision=$(cat "$BLUEPRINT_ROOT/configs/versions/kanban-mcp.rev")
+  source_cache="$AICODING_DATA_DIR/sources/kanban/$revision"
+  mkdir -p "$source_cache"
+  printf '%s\n' "$revision" > "$source_cache/.aicoding-version"
+  printf 'altered same-SHA payload\n' > "$source_cache/pyproject.toml"
+
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+
+  [ "$status" -eq 0 ]
+  grep -Fq 'clone --no-checkout https://github.com/vossiman/kanban.git' "$TMP/git.log"
+  grep -Fq "/sources/kanban/.attempt.$revision." "$TMP/git.log"
+  [ "$(cat "$source_cache/pyproject.toml")" = 'altered same-SHA payload' ]
+  [ "$(cat "$AICODING_DATA_DIR/versions/mcp-kanban/$revision/pyproject.toml")" != \
+    'altered same-SHA payload' ]
+  if find "$AICODING_DATA_DIR/sources/kanban" -maxdepth 1 \
+      -name ".attempt.$revision.*" -print -quit | grep -q .; then
+    false
+  fi
+}
+
+@test "Kanban MCP direct updater blocks offline before git or uv" {
+  _stub_kanban_git_uv
+  export AICODINGSETUP_SKIP_NETWORK=1
+
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+
+  [ "$status" -ne 0 ]
+  [ ! -e "$TMP/git.log" ]
+  [ ! -e "$TMP/uv.log" ]
+  jq -e '.components["mcp-kanban"].state == "blocked"
+    and .components["mcp-kanban"].reason == "offline_exact_package_not_ready"' \
+    "$AICODING_RESULTS_FILE"
 }
 
 @test "Kanban MCP refuses a non-immutable revision before git or uv" {
@@ -833,6 +877,33 @@ EOF
   [ ! -s "$TMP/git.log" ]
   [ ! -s "$TMP/uv.log" ]
   jq -e '.components["mcp-kanban"].reason == "existing_release_invalid"' "$AICODING_RESULTS_FILE"
+}
+
+@test "Kanban MCP rejects retained file and dangling symlink before network work" {
+  _stub_kanban_git_uv
+  _seed_old_kanban_release
+  local revision release kind
+  revision=$(cat "$BLUEPRINT_ROOT/configs/versions/kanban-mcp.rev")
+  release="$AICODING_DATA_DIR/versions/mcp-kanban/$revision"
+  mkdir -p "$(dirname "$release")"
+
+  for kind in file dangling-symlink; do
+    rm -f "$release" "$TMP/git.log" "$TMP/uv.log" "$AICODING_RESULTS_FILE"
+    if [ "$kind" = file ]; then
+      printf 'corrupt\n' > "$release"
+    else
+      ln -s "$TMP/missing-retained-release" "$release"
+    fi
+
+    AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+
+    [ "$status" -ne 0 ]
+    [ ! -e "$TMP/git.log" ]
+    [ ! -e "$TMP/uv.log" ]
+    [ "$(readlink "$AICODING_DATA_DIR/current/mcp-kanban")" = '../versions/mcp-kanban/old' ]
+    jq -e '.components["mcp-kanban"].reason == "existing_release_invalid"' \
+      "$AICODING_RESULTS_FILE"
+  done
 }
 
 @test "unchanged exact MCP release survives npm prefix-derived lock names across passes" {

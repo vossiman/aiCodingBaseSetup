@@ -14,8 +14,26 @@ _aicoding_kanban_pinned_revision() {
 _aicoding_kanban_metadata_version() {
   local release=$1 python="$release/.venv/bin/python"
   [ -x "$python" ] || return 1
-  "$python" -c 'from importlib.metadata import version; print(version("kanban"))' \
+  "$python" -B -c 'from importlib.metadata import version; print(version("kanban"))' \
     </dev/null 2>/dev/null
+}
+
+_aicoding_kanban_make_controller_bytecode_free() {
+  local release=$1 controller runtime
+  controller="$release/.venv/bin/kanban-mcp"
+  runtime="$release/.venv/bin/kanban-mcp.runtime"
+  [ -f "$controller" ] && [ ! -L "$controller" ] \
+    && [ ! -e "$runtime" ] && [ ! -L "$runtime" ] || return 1
+  mv "$controller" "$runtime" || return 1
+  cat > "$controller" <<'EOF' || return 1
+#!/bin/sh
+# Keep the integrity-checked Python release immutable during normal MCP use.
+PYTHONDONTWRITEBYTECODE=1
+export PYTHONDONTWRITEBYTECODE
+directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+exec "$directory/kanban-mcp.runtime" "$@"
+EOF
+  chmod 0755 "$controller"
 }
 
 _aicoding_kanban_controller_valid() {
@@ -95,7 +113,7 @@ aicoding_update_kanban_mcp() {
     return 1
   fi
   release="$AICODING_DATA_DIR/versions/mcp-kanban/$revision"
-  if [ -d "$release" ]; then
+  if [ -e "$release" ] || [ -L "$release" ]; then
     _aicoding_kanban_release_valid "$release" "$revision" || {
       aicoding_result_record mcp-kanban failed "$revision" existing_release_invalid
       return 1
@@ -104,12 +122,21 @@ aicoding_update_kanban_mcp() {
     _aicoding_finish_kanban_mcp_release "$revision" "$release"
     return $?
   fi
+  if [ "${AICODINGSETUP_SKIP_NETWORK:-0}" = 1 ]; then
+    _aicoding_record_deferred mcp-kanban blocked "$revision" offline_exact_package_not_ready
+    return 1
+  fi
   command -v uv >/dev/null 2>&1 || {
     _aicoding_record_deferred mcp-kanban blocked "$revision" "$(_aicoding_missing_runtime_reason uv)"
     return 1
   }
-  source="$AICODING_DATA_DIR/sources/kanban/$revision"
+  # A pin-shaped cache path is not proof that its contents still match the
+  # reviewed commit. Materialize every install attempt into a new destination
+  # and retain it only until the physical release has been committed.
+  source="$AICODING_DATA_DIR/sources/kanban/.attempt.$revision.$$"
+  rm -rf "$source" "${source}.staging.$$"
   _aicoding_stage_git_source https://github.com/vossiman/kanban.git "$revision" "$source" || {
+    rm -rf "$source" "${source}.staging.$$"
     aicoding_result_record mcp-kanban failed "$revision" source_stage_failed
     return 1
   }
@@ -117,11 +144,12 @@ aicoding_update_kanban_mcp() {
   sync_log="$stage/.uv-sync.log"
   rm -rf "$stage"
   mkdir -p "$stage" || {
+    rm -rf "$source"
     aicoding_result_record mcp-kanban failed "$revision" stage_prepare_failed
     return 1
   }
   cp -a "$source/." "$stage/" || {
-    rm -rf "$stage"
+    rm -rf "$source" "$stage"
     aicoding_result_record mcp-kanban failed "$revision" stage_copy_failed
     return 1
   }
@@ -129,7 +157,7 @@ aicoding_update_kanban_mcp() {
       "mcp-kanban: creating relocatable environment (timeout ${AICODING_VENDOR_TIMEOUT}s)" \
       _aicoding_progress_capture "$sync_log" timeout "$AICODING_VENDOR_TIMEOUT" \
       uv venv --relocatable .venv </dev/null); then
-    rm -rf "$stage"
+    rm -rf "$source" "$stage"
     aicoding_result_record mcp-kanban failed "$revision" relocatable_venv_failed
     return 1
   fi
@@ -137,34 +165,45 @@ aicoding_update_kanban_mcp() {
       "mcp-kanban: installing frozen environment (timeout ${AICODING_VENDOR_TIMEOUT}s)" \
       _aicoding_progress_capture "$sync_log" timeout "$AICODING_VENDOR_TIMEOUT" \
       env UV_NO_EDITABLE=1 uv sync --frozen --extra mcp --no-dev </dev/null); then
-    rm -rf "$stage"
+    rm -rf "$source" "$stage"
     aicoding_result_record mcp-kanban failed "$revision" frozen_sync_failed
     return 1
   fi
+  _aicoding_kanban_make_controller_bytecode_free "$stage" || {
+    rm -rf "$source" "$stage"
+    aicoding_result_record mcp-kanban failed "$revision" controller_wrapper_failed
+    return 1
+  }
   rm -f "$sync_log" || {
-    rm -rf "$stage"
+    rm -rf "$source" "$stage"
     aicoding_result_record mcp-kanban failed "$revision" stage_cleanup_failed
     return 1
   }
   _aicoding_kanban_controller_valid "$stage/.venv/bin/kanban-mcp" "$stage" || {
-    rm -rf "$stage"
+    rm -rf "$source" "$stage"
     aicoding_result_record mcp-kanban failed "$revision" staged_controller_invalid
     return 1
   }
   _aicoding_release_integrity_write "$stage" || {
-    rm -rf "$stage"
+    rm -rf "$source" "$stage"
     aicoding_result_record mcp-kanban failed "$revision" stage_integrity_write_failed
     return 1
   }
   if ! mv "$stage" "$release"; then
     rm -rf "$stage"
     if ! _aicoding_kanban_release_valid "$release" "$revision"; then
+      rm -rf "$source"
       aicoding_result_record mcp-kanban failed "$revision" release_commit_failed
       return 1
     fi
   fi
   _aicoding_kanban_release_valid "$release" "$revision" || {
+    rm -rf "$source"
     aicoding_result_record mcp-kanban failed "$revision" committed_release_invalid
+    return 1
+  }
+  rm -rf "$source" || {
+    aicoding_result_record mcp-kanban failed "$revision" source_cleanup_failed
     return 1
   }
   _aicoding_finish_kanban_mcp_release "$revision" "$release"

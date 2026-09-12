@@ -195,6 +195,43 @@ EOF
   fi
 }
 
+@test "relocated pinned Kanban MCP passes the real SDK 2.2 protocol contract" {
+  local source_release=${AICODING_KANBAN_PROTOCOL_RELEASE:-}
+  [ -n "$source_release" ] || skip \
+    "set AICODING_KANBAN_PROTOCOL_RELEASE to a reviewed retained release; offline tests never download it"
+  [ -d "$source_release" ] || {
+    echo "AICODING_KANBAN_PROTOCOL_RELEASE is not a directory: $source_release" >&2
+    false
+  }
+  local revision relocated
+  revision=$(cat "$BLUEPRINT_ROOT/configs/versions/kanban-mcp.rev")
+  _aicoding_kanban_release_valid "$source_release" "$revision" || {
+    echo "supplied protocol release is not an integrity-checked physical tree for the pinned revision" >&2
+    false
+  }
+  relocated="$AICODING_DATA_DIR/versions/mcp-kanban/$revision"
+  mkdir -p "$(dirname "$relocated")"
+  cp -a "$source_release" "$relocated"
+  _aicoding_kanban_release_valid "$relocated" "$revision"
+
+  run "$relocated/.venv/bin/python" -B \
+    "$BLUEPRINT_ROOT/tests/helpers/verify-kanban-mcp-protocol.py" \
+    "$relocated/.venv/bin/kanban-mcp"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'legacy: protocol/read/instructions/isError PASS'* ]]
+  [[ "$output" == *'default-v2: protocol/read/instructions/isError PASS'* ]]
+  _aicoding_release_integrity_valid "$relocated"
+
+  source "$BLUEPRINT_ROOT/lib/update-results.sh"
+  export AICODINGSETUP_SKIP_NETWORK=1
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+  [ "$status" -eq 0 ]
+  [ "$("$HOME/.local/bin/kanban-mcp" --version)" = 'kanban-mcp 0.1.0' ]
+  jq -e '.components["mcp-kanban"].state == "updated"
+    and .components["mcp-kanban"].reason == "installed"' "$AICODING_RESULTS_FILE"
+}
+
 @test "managed agent guidance points to canonical MCP instructions without copied lifecycle commands" {
   local guidance
   for guidance in \
