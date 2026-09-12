@@ -3,6 +3,7 @@ Description=Apply CI-qualified aicoding updates
 
 [Service]
 Type=oneshot
+Environment=AICODING_AUTO_UPDATE_SOURCE=systemd
 WorkingDirectory=%h/.local/state/aicoding/auto-update
 ExecStart=%h/.local/bin/aicoding-auto-update --once
 StandardInput=null

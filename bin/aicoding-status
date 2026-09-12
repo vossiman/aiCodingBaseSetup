@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# aicoding-status — detect whether managed tools are behind their main branch and
-# print a CTA. CTA-ONLY: never applies an update. Network checks are throttled,
-# timeout-bounded, and fail-open.
+# aicoding-status — read-only updater report, with lightweight banner/tmux notices.
+# Never applies an update. Explicit/background notice refreshes use throttled,
+# timeout-bounded network checks; the default report only reads local evidence.
 #
 # INVARIANT: the per-tool JSON cache stores ONLY network-derived facts (the
 # remote `latest` SHA). The installed commit is read fresh from the active
@@ -348,6 +348,7 @@ _print_tmux() {
 }
 
 case "${1:-}" in
+  '')         exec python3 "$(dirname "$(dirname "$(readlink -f "$0")")")/lib/status-report.py" ;;
   --refresh)  _maybe_refresh ;;
   # --refresh-attach: tmux client-attached hook. Force a check past the idle
   # TTL, but keep a short min-interval so reconnect storms (5 attaches in 4
@@ -360,7 +361,9 @@ case "${1:-}" in
   --banner)   _refresh_detached; _print_banner ;;
   --tmux)     _refresh_detached; _print_tmux ;;
   --print)    _print_banner ;;
-  -h|--help)  echo "usage: aicoding-status [--refresh|--banner|--tmux|--print]" ;;
+  -h|--help)  echo "usage: aicoding-status [--refresh|--banner|--tmux|--print]"
+              echo "Without options: read-only scheduler, update outcomes, and installed tool status."
+              echo "Trigger an update: aicoding-auto-update --once" ;;
   *)          echo "usage: aicoding-status [--refresh|--banner|--tmux|--print]" >&2; exit 2 ;;
 esac
 exit 0

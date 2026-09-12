@@ -1248,6 +1248,9 @@ apply_managed_buckets() {
       merge)
         if [[ -f "$src" ]]; then
           _apply_deploy merge "$dest" "$src" || { APPLY_FAILURES[$dest]=1; rc=1; }
+        else
+          APPLY_FAILURES[$dest]=1
+          rc=1
         fi
         ;;
       to_remove)

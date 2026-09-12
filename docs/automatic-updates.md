@@ -66,6 +66,44 @@ Each component records its latest attempt, target, state, reason, and last
 verified successful version. `failed`, `blocked`, and `conflict` attempts do
 not replace that last success. These receipts describe only this consumer.
 They never certify another container that happens to mount the same config.
+Playwright Chromium has a separate `playwright-chromium` result so a later
+browser repair or dependency failure cannot be mistaken for the earlier MCP
+package outcome.
+
+Use `aicoding-status` to read those results alongside scheduler health and
+installed versions. Times are shown in the machine's local timezone. Result
+timestamps describe when the updater observed something; reading status does
+not refresh component availability checks. An old failure is unresolved until
+there is evidence of recovery, even when a newer blueprint is active.
+
+Config results such as `config-cursor` cover multiple managed destinations.
+Reconciliation records recovery only when all relevant destinations have
+compatible prerequisites and verified reconciliation outcomes. A remaining
+conflict, blocked destination, failed apply, or failed manifest write prevents
+that group from being marked recovered. Components not examined in a pass
+retain their previous result. Aggregate `config` or `provision` success does
+not by itself supersede individual blockers.
+
+Updater attempts and completed outcomes live separately in
+`~/.local/state/aicoding/auto-update/`. Manual `--once`, systemd and fallback
+runs record outcomes there. `last-attempt` records when an updater controller
+starts; a concurrent request refused by its run lock preserves that timestamp.
+A controller that discovers a separately running sync still counts as an
+attempt. Busy requests never overwrite the last completed outcome. The legacy
+`last-success` file remains specific to a completed fallback pass without deferrals. An interrupted attempt has no
+successful completion receipt. Status combines process identity and lock
+evidence when reporting activity, and treats an overdue fallback `next-due`
+as pending/retrying rather than proof of a running scheduler.
+
+The reporting files are `last-attempt`, `run.json` with `run.lock`, and
+`last-completed.json`. A fallback worker's `worker.protocol` binds its reporting
+capability to its PID and process start time. Existing workers migrate after
+their next scheduled sync or normal enrollment; replacement waits for active
+sync work to finish and preserves the saved next-due time.
+
+Automatic passes require no recurring install command. To request the next
+check immediately, run `aicoding-auto-update --once`. Status itself never
+enrolls or restarts a scheduler and never installs an update.
 
 ## Shared consumer evidence
 

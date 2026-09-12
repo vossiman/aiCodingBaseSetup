@@ -244,22 +244,23 @@ Two distinct flows after the initial install:
 ### Which one do I run?
 
 Normally neither. `aicoding-auto-update` checks every six hours and catches up
-after restart; the tmux badges from `aicoding-status` show anything that still
-needs an explicit install or rebuild:
+after restart. Run `aicoding-status` for scheduler health, update activity,
+local attempt/completion/next-run times, installed tool versions, and dated
+update results. To request a pass now, run `aicoding-auto-update --once`.
+The tmux badges provide a compact reminder:
 
 | Badge | What moved on blueprint `main` | What happens next |
 |-------|--------------------------------|-------------------|
 | ⬆`sync` | anything sync can deliver: managed configs, MCP/plugin definitions, agent-CLI updates, sync's own code | managed installs wait for the background updater to qualify CI and apply it; legacy installs can run `aicoding-sync` |
 | ⬆`install` | provisioning itself: `install.sh`, `lib/provision*`, `image/` | managed installs report automatic provisioning pending; legacy installs can run `aicoding-install` |
-| ⬆`provision!` | automatic provisioning for the active release is blocked or failed | inspect `~/.local/state/aicoding/update-results.json` |
+| ⬆`provision!` | automatic provisioning for the active release is blocked or failed | run `aicoding-status` for the recorded blockers |
 | ⬆`rebuild` | the base image | rebuild the container from your laptop |
 
 Rule of thumb: **supported agent harnesses, plugins, MCPs, and agent CLIs are
 sync territory.** The updater selects exact versions, stages and validates
 them away from the active installation, then atomically changes a stable
-launcher. Cursor Agent is the current exception: its inspected distribution
-does not expose a safe version-specific staging interface, so automatic passes
-record it as blocked and leave the existing command untouched. **System tools
+launcher. Cursor Agent uses the exact official Linux archive and validates it
+before activation. **System tools
 and image capabilities have a narrower policy.** A supported component update
 may install a required host prerequisite noninteractively. Inside a container,
 a missing image capability is recorded as a deferral and waits for a manual
@@ -344,6 +345,16 @@ and shell startup only dispatches enrollment without foreground network work.
 Container startup also retains uv maintenance and the detached transcript sweep
 through the active runtime startup hook. State and bounded logs live in
 `~/.local/state/aicoding/auto-update/`.
+
+Plain `aicoding-status` reads local state and checks scheduler/process liveness;
+it does not install updates or start/restart the scheduler. A saved PID or an
+overdue scheduled timestamp alone is not evidence that the worker is alive.
+Tool results are cached observations with their own timestamps, not new
+checks for the latest available version. Missing results mean unknown, and
+older failures remain unresolved until a relevant update verifies recovery.
+Managed config recovery requires evidence for every destination sharing that
+config result; an aggregate provisioning success cannot clear a remaining
+config conflict. `--banner` and `--tmux` retain their lightweight notice paths.
 
 Each scheduled pass runs `aicoding-sync --boot` with closed stdin from that
 state directory. Different CLIs have different update paths:
@@ -510,7 +521,7 @@ aiCodingBaseSetup/
 │   ├── aicoding-auto-update       # one-shot, scheduler enrollment, fallback worker
 │   ├── aicoding-install           # select an exact release and re-run its profile
 │   ├── aicoding-sync              # day-2 reconcile + boot sync
-│   ├── aicoding-status            # update-notifier status (banner/tmux/print)
+│   ├── aicoding-status            # readable updater status plus banner/tmux notices
 │   └── aicoding-ssh-agent-watch   # legacy ssh-agent socket watcher
 ├── lib/
 │   ├── blueprint-deploy.sh        # hash, manifest, classify, deploy primitives
