@@ -145,6 +145,29 @@ _source_host_lib() {
     "$HOME/.local/state/aicoding/update-results.json"
 }
 
+@test "persistent host install has both Kanban helpers and immutable MCP before managed config deploys" {
+  export AICODING_PERSISTENT_ENROLLMENT=1
+  run env _AICODINGSETUP_NVS_STRIPPED=1 bash -c '
+    source "$1"
+    aicoding_prepare_installed_config_tools() { :; }
+    aicoding_prepare_exact_mcps() {
+      printf "#!/bin/sh\nexit 0\n" > "$HOME/.local/bin/kanban-mcp"
+      chmod +x "$HOME/.local/bin/kanban-mcp"
+    }
+    install_claude_mcps() { :; }
+    install_claude_plugins() { :; }
+    deploy_all_managed_files() {
+      [ -x "$HOME/.local/bin/kanban-post" ]
+      [ -x "$HOME/.local/bin/kanban-work" ]
+      [ -x "$HOME/.local/bin/kanban-mcp" ]
+      : > "$HOME/kanban-config-ready"
+    }
+    main
+  ' _ "$BLUEPRINT_ROOT/install-host.sh" </dev/null
+  [ "$status" -eq 0 ]
+  [ -f "$HOME/kanban-config-ready" ]
+}
+
 @test "persistent host install propagates an injected preparation failure" {
   export AICODING_PERSISTENT_ENROLLMENT=1
   run env _AICODINGSETUP_NVS_STRIPPED=1 bash -c '

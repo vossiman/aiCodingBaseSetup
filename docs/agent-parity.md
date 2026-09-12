@@ -1,4 +1,4 @@
-# Claude / Codex workflow parity
+# Agent workflow parity
 
 AICODINGBASESETUP-26. Target: equivalent development workflows with native
 integration for each CLI. This does not promise identical model decisions,
@@ -43,6 +43,47 @@ into it themselves. Standard blueprint installs get the shared directory link.
 The managed hooks live under `/etc/codex` so they take effect without a
 per-user `/hooks` trust step. The memory wrapper tags retrieval as
 `hook:claude-code` or `hook:codex`. All reminder paths fail open.
+
+## Kanban work lifecycle
+
+All four clients register the pinned `kanban-mcp` controller. The controller's
+`--instructions` output is the canonical workflow and tool-schema source.
+Python lifecycle adapters entered through `kanban-work hook` call that same
+public instructions operation through the bridge; the external OpenCode plugin
+calls `kanban-work --json instructions`. Setup guidance only points clients to
+that source.
+
+| Client | Native integration | Lifecycle behavior | Enforcement gate |
+|---|---|---|---|
+| Claude Code | SessionStart, PreToolUse, PostToolUse, PostToolUseFailure, Stop, SubagentStop, SessionEnd hooks | Native session and agent identity, tool activity, child-aware stop, final reconciliation | Exact qualified Claude Code version |
+| Codex | Managed SessionStart, PreToolUse, PostToolUse, PostToolUseFailure, Stop, SessionEnd hooks | Native thread and turn generation, tool activity, failed-call reconciliation, final reconciliation | Exact qualified Codex version |
+| Cursor Agent | SessionStart, preToolUse, postToolUse, postToolUseFailure, stop, subagentStop, sessionEnd hooks | Native conversation and generation identity, tool activity, child-stop correlation, final reconciliation | Exact qualified Cursor build string |
+| OpenCode | Local plugin lifecycle and tool hooks | Native session and plugin-instance generation, tool activity, parent/child tracking, idle and deletion reconciliation | Exact qualified OpenCode version |
+
+An exact client version must pass real-client qualification against the
+loopback fake board before it is written to
+`configs/kanban/qualified-clients.json`. Until then, its Kanban read tools work
+and binding or claim mutations return an unsupported-adapter error. Versions
+are matched literally; semantic version ordering and Cursor's dated build
+string do not imply support. Qualification runs with:
+
+```bash
+tools/qualify-kanban-clients --all --output out/kanban-mcp-qualification
+```
+
+The local SQLite registry binds a handle to one native identity and run
+generation, consumes a matching pre-call permit once, renews activity while a
+tool is running, releases unfinished claims on a normal stop, and makes session
+end dominate later activity. It is operational coordination among processes
+running as one user, not an isolation boundary against that user. `kanban-post`
+is the credential-safe recovery CLI and the only reader of `KANBAN_TOKEN`; MCP
+configuration contains no board credential or endpoint.
+
+Native API references: [Claude Code hooks](https://code.claude.com/docs/en/hooks-guide),
+[Codex hooks](https://developers.openai.com/codex/hooks),
+[Cursor Agent hooks](https://cursor.com/docs/hooks), and
+[OpenCode plugins](https://opencode.ai/docs/plugins/). The controller uses the
+[Python MCP SDK 2.2.0](https://github.com/modelcontextprotocol/python-sdk/tree/v2.2.0).
 
 ## Worktree isolation and coordination
 
@@ -106,8 +147,8 @@ Always verify findings and inspect actual changes and test output.
   review workflows are shared; setup advice must target the actual CLI.
 - Permission events and interactive questions differ by harness. Shared skills
   describe the task rather than requiring a Claude-only tool name.
-- OpenCode and Cursor extensions beyond existing shared MCP/skill wiring are
-  outside this Claude/Codex change.
+- Client-specific features beyond the managed lifecycle adapters remain outside
+  this parity scope.
 
 ## Validation
 

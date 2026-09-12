@@ -1236,6 +1236,33 @@ _sync_provision() {
     fi
   fi
 
+  # A receipt alone cannot prove that a Python entry point survived the
+  # staging-to-release move or that a retained release remains intact. Verify
+  # the physical Kanban release and stable launcher before stamping provision.
+  local kanban_pin_file="$(dirname "$blueprint_lib")/configs/versions/kanban-mcp.rev"
+  if [ -f "$kanban_pin_file" ]; then
+    local kanban_revision= kanban_state=
+    if ! _provision_ensure_update_components \
+        || ! kanban_revision=$(_aicoding_kanban_pinned_revision); then
+      rc=1
+    elif ! _aicoding_active_kanban_mcp_valid "$kanban_revision"; then
+      kanban_state=$(jq -r '.components["mcp-kanban"].state // empty' \
+        "$AICODING_RESULTS_FILE" 2>/dev/null) || kanban_state=
+      case "$kanban_state" in
+        current|updated)
+          rc=1
+          command -v aicoding_result_record >/dev/null 2>&1 \
+            && aicoding_result_record mcp-kanban failed "$kanban_revision" \
+              active_controller_invalid || true
+          ;;
+        *)
+          provision_deferred=1
+          _provision_record_blocked mcp-kanban exact_package_not_staged
+          ;;
+      esac
+    fi
+  fi
+
   target=$(_sync_blueprint_version "$(dirname "$blueprint_lib")" || echo unknown)
   [ "$target" != unknown ] || rc=1
   if [ "$rc" -eq 0 ] && [ "$provision_deferred" -eq 0 ]; then

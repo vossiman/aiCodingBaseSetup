@@ -104,13 +104,14 @@ _load_real_compatibility_guard() {
   aicoding_activate_version() { :; }
   source "$BLUEPRINT_ROOT/lib/update-results.sh"
   source "$BLUEPRINT_ROOT/lib/update-components.sh"
+  _aicoding_active_kanban_mcp_valid() { return 0; }
   mkdir -p "$TEST_ROOT/bin"
   export PATH="$TEST_ROOT/bin:/usr/bin:/bin"
 }
 
 _record_exact_mcp_receipts() {
   local component
-  for component in mcp-context7 mcp-playwright; do
+  for component in mcp-context7 mcp-playwright mcp-kanban; do
     aicoding_result_record "$component" current 1.0.0 installed 1.0.0
   done
 }
@@ -147,20 +148,67 @@ EOF
     shared_root:$root,inventory_complete:true,expires_at:$expires,consumers:[{
       id:"known",components:{
         "mcp-context7":{version:"1.0.0",config_compatible:true},
-        "mcp-playwright":{version:"1.0.0",config_compatible:true}
+        "mcp-playwright":{version:"1.0.0",config_compatible:true},
+        "mcp-kanban":{version:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",config_compatible:true}
       }
     }]
   }]}' > "$AICODING_SHARED_CONSUMERS_FILE"
   aicoding_result_record claude current 2.1.50 installed 2.1.50
   _record_exact_mcp_receipts
   local component
-  for component in mcp-registration-claude-context7 mcp-registration-claude-playwright; do
+  for component in mcp-registration-claude-context7 mcp-registration-claude-playwright \
+      mcp-registration-claude-kanban; do
     aicoding_result_record "$component" current 1.0.0 registration_verified 1.0.0
   done
 
   run _aicoding_initial_config_ready "$HOME/.claude/settings.json"
   [ "$status" -ne 0 ]
   grep -q 'claude_shared_consumers_incompatible' "$TEST_ROOT/warnings"
+}
+
+@test "exact MCP config readiness requires the immutable Kanban launcher" {
+  _load_real_compatibility_guard
+  _record_exact_mcp_receipts
+  _aicoding_active_kanban_mcp_valid() { return 1; }
+  run aicoding_exact_mcp_config_ready "$HOME/.codex/config.toml"
+  [ "$status" -ne 0 ]
+
+  _aicoding_active_kanban_mcp_valid() { return 0; }
+  run aicoding_exact_mcp_config_ready "$HOME/.codex/config.toml"
+  [ "$status" -eq 0 ]
+}
+
+@test "managed Kanban MCP entries contain only the local command" {
+  grep -A2 '^\[mcp_servers\.kanban\]$' "$BLUEPRINT_ROOT/configs/codex/config.toml" \
+    | grep -Fxq 'command = "kanban-mcp"'
+  jq -e '.mcpServers.kanban == {"command":"kanban-mcp"}' \
+    "$BLUEPRINT_ROOT/configs/cursor/mcp.json"
+  jq -e '.mcp.kanban == {"type":"local","command":["kanban-mcp"],"enabled":true}' \
+    "$BLUEPRINT_ROOT/configs/opencode/opencode.json"
+  local entry
+  entry=$(sed -n '/^\[mcp_servers\.kanban\]$/,/^\[/p' "$BLUEPRINT_ROOT/configs/codex/config.toml")
+  entry+=$(jq -c '.mcpServers.kanban' "$BLUEPRINT_ROOT/configs/cursor/mcp.json")
+  entry+=$(jq -c '.mcp.kanban' "$BLUEPRINT_ROOT/configs/opencode/opencode.json")
+  if printf '%s' "$entry" | grep -Eqi \
+      'KANBAN_TOKEN|Authorization|secret|/checkout|github\.com|https?://|dataprospectors'; then
+    false
+  fi
+}
+
+@test "managed agent guidance points to canonical MCP instructions without copied lifecycle commands" {
+  local guidance
+  for guidance in \
+      "$BLUEPRINT_ROOT/configs/claude/CLAUDE.md" \
+      "$BLUEPRINT_ROOT/configs/codex/AGENTS.md" \
+      "$BLUEPRINT_ROOT/configs/cursor/skills/aicoding-estate/SKILL.md"; do
+    grep -Fq 'the canonical workflow. Native lifecycle adapters bind' "$guidance"
+    grep -Fq 'credential-safe recovery CLI; it is not a status-transition bypass.' "$guidance"
+    if grep -Eq 'kanban-post --(patch|done|link)|POST[[:space:]]+/api/work|PATCH[[:space:]]+/api/tickets' "$guidance"; then
+      false
+    fi
+  done
+  grep -Fq '["--json", "instructions"]' \
+    "$BLUEPRINT_ROOT/configs/opencode/plugins/kanban-work.js"
 }
 
 @test "all Cursor and Pi managed destinations use the initial compatibility guard" {

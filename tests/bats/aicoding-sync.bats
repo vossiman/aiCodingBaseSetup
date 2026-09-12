@@ -74,9 +74,32 @@ EOF
   source "$AICODING_BLUEPRINT_CLONE/lib/update-results.sh"
   local component
   for component in codex opencode cursor pi claude mcp-context7 mcp-playwright \
-      mcp-registration-claude-context7 mcp-registration-claude-playwright; do
+      mcp-registration-claude-context7 mcp-registration-claude-playwright \
+      mcp-registration-claude-kanban; do
     aicoding_result_record "$component" current 1.0.0 verified 1.0.0
   done
+  source "$AICODING_BLUEPRINT_CLONE/lib/runtime.sh"
+  local revision release
+  revision=$(cat "$AICODING_BLUEPRINT_CLONE/configs/versions/kanban-mcp.rev")
+  release="$AICODING_DATA_DIR/versions/mcp-kanban/$revision"
+  mkdir -p "$release/.venv/bin"
+  printf '%s\n' "$revision" > "$release/.aicoding-version"
+  cat > "$release/.venv/bin/python" <<'EOF'
+#!/bin/sh
+printf '0.1.0\n'
+EOF
+  cat > "$release/.venv/bin/kanban-mcp" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+  --version) printf 'kanban-mcp 0.1.0\n' ;;
+  --instructions) printf 'Canonical work instructions.\n' ;;
+esac
+EOF
+  chmod +x "$release/.venv/bin/python" "$release/.venv/bin/kanban-mcp"
+  source "$AICODING_BLUEPRINT_CLONE/lib/update-components.sh"
+  _aicoding_release_integrity_write "$release"
+  aicoding_activate_version mcp-kanban "$revision" kanban-mcp .venv/bin/kanban-mcp
+  aicoding_result_record mcp-kanban current "$revision" verified "$revision"
 }
 
 @test "aicoding-sync: exits with error when no manifest" {

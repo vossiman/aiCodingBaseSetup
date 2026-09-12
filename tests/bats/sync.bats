@@ -219,6 +219,10 @@ EOF
 @test "unattended provisioning skips Claude work when Claude is not installed" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   _sync_source_update_libraries "$BLUEPRINT_ROOT"
+  local revision
+  revision=$(cat "$BLUEPRINT_ROOT/configs/versions/kanban-mcp.rev")
+  aicoding_result_record mcp-kanban current "$revision" verified "$revision"
+  _aicoding_active_kanban_mcp_valid() { return 0; }
   rm -f "$TMP/stubs/claude"
   PATH="$TMP/stubs:/usr/bin:/bin" run _sync_provision boot
 
@@ -431,6 +435,33 @@ EOF
   [ "$status" -eq 0 ]
   jq -e --arg sha "$sha" '.components.provision.state == "current"
     and .components.provision.successful_version == $sha' "$AICODING_RESULTS_FILE"
+}
+
+@test "provision does not stamp a current Kanban receipt when its retained launcher is invalid" {
+  local clone="$TMP/kanban-invalid-blueprint"
+  local revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  mkdir -p "$clone/lib" "$clone/configs/versions"
+  printf '%s\n' "$revision" > "$clone/.aicoding-version"
+  printf '%s\n' "$revision" > "$clone/configs/versions/kanban-mcp.rev"
+  cat > "$clone/lib/provision.sh" <<'EOF'
+install_mcp_packages() { return 0; }
+install_claude_mcps() { return 0; }
+install_claude_plugins() { return 0; }
+install_codex_plugins() { return 0; }
+remove_deprecated_shims() { return 0; }
+_provision_ensure_update_components() { return 0; }
+_aicoding_kanban_pinned_revision() { cat "$AICODING_BLUEPRINT_CLONE/configs/versions/kanban-mcp.rev"; }
+_aicoding_active_kanban_mcp_valid() { return 1; }
+EOF
+  export AICODING_BLUEPRINT_CLONE="$clone"
+  source "$BLUEPRINT_ROOT/lib/update-results.sh"
+  aicoding_result_record mcp-kanban current "$revision" installed "$revision"
+
+  run _sync_provision boot
+
+  [ "$status" -ne 0 ]
+  jq -e '.components.provision.state == "failed"
+    and .components.provision.reason == "partial_provision_failure"' "$AICODING_RESULTS_FILE"
 }
 
 @test "sync --boot restores missing Kanban helper symlinks" {

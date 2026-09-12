@@ -10,6 +10,8 @@ if ! declare -F aicoding_activate_version >/dev/null 2>&1; then
   unset _aicoding_runtime_root
 fi
 
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/update-kanban.sh"
+
 _aicoding_command_is_linux() {
   local path
   path=$(command -v "$1" 2>/dev/null) || return 1
@@ -40,6 +42,7 @@ aicoding_installed_components() {
   _aicoding_command_is_linux brave-search-mcp-server && printf 'mcp-brave\n'
   _aicoding_mcp_selected context7 && printf 'mcp-context7\n'
   _aicoding_mcp_selected playwright && printf 'mcp-playwright\n'
+  _aicoding_mcp_selected kanban && printf 'mcp-kanban\n'
   if _aicoding_command_is_linux bw || _aicoding_command_is_linux claude-bw \
       || [ -d "${AICODING_VENDOR_DIR:-$AICODING_DATA_DIR/vendor}/bw-AICode/.git" ]; then
     printf 'bw-AICode\n'
@@ -51,7 +54,12 @@ aicoding_installed_components() {
 # MCP config make the component eligible. Absent harnesses stay absent.
 _aicoding_mcp_selected() {
   local name=$1 command_name registration
-  case "$name" in context7) command_name=context7-mcp ;; playwright) command_name=playwright-mcp ;; *) return 1 ;; esac
+  case "$name" in
+    context7) command_name=context7-mcp ;;
+    playwright) command_name=playwright-mcp ;;
+    kanban) command_name=kanban-mcp ;;
+    *) return 1 ;;
+  esac
   _aicoding_command_is_linux "$command_name" && return 0
   if _aicoding_command_is_linux claude; then
     registration=$(timeout "${AICODING_PROBE_TIMEOUT:-15}" claude mcp get "$name" </dev/null 2>/dev/null) || registration=""
@@ -69,6 +77,11 @@ _aicoding_mcp_selected() {
       jq -e '.mcp.playwright // .mcpServers.playwright' "$HOME/.config/opencode/opencode.json" >/dev/null 2>&1 && return 0
       jq -e '.mcpServers.playwright' "$HOME/.cursor/mcp.json" >/dev/null 2>&1 && return 0
       jq -e '.enabledPlugins["playwright@claude-plugins-official"] == true' "$HOME/.claude/settings.json" >/dev/null 2>&1 && return 0
+      ;;
+    kanban)
+      grep -Eq '^\[mcp_servers\.kanban\][[:space:]]*$' "$HOME/.codex/config.toml" 2>/dev/null && return 0
+      jq -e '.mcp.kanban // .mcpServers.kanban' "$HOME/.config/opencode/opencode.json" >/dev/null 2>&1 && return 0
+      jq -e '.mcpServers.kanban' "$HOME/.cursor/mcp.json" >/dev/null 2>&1 && return 0
       ;;
   esac
   return 1
@@ -164,20 +177,22 @@ _aicoding_exact_mcp_config_allows() {
 # Package and Claude registration receipts are independent: another harness
 # may use an activated package even when Claude has a user-owned registration
 # that cannot be migrated. Shared config additionally requires every
-# inventoried consumer to report both packages ready for that destination.
+# inventoried consumer to report every package ready for that destination.
 aicoding_exact_mcp_config_ready() {
   local dest=$1 component
   [ -f "$AICODING_RESULTS_FILE" ] || return 1
-  for component in mcp-context7 mcp-playwright; do
+  for component in mcp-context7 mcp-playwright mcp-kanban; do
     case "$(jq -r --arg c "$component" '.components[$c].state // empty' "$AICODING_RESULTS_FILE" 2>/dev/null)" in
       current|updated) ;;
       *) return 1 ;;
     esac
+    [ "$component" != mcp-kanban ] || _aicoding_active_kanban_mcp_valid || return 1
     _aicoding_shared_consumers_require "$component" "" "$dest" || return 1
   done
   case "$dest" in
     "$HOME/.claude/settings.json")
-      for component in mcp-registration-claude-context7 mcp-registration-claude-playwright; do
+      for component in mcp-registration-claude-context7 mcp-registration-claude-playwright \
+          mcp-registration-claude-kanban; do
         case "$(jq -r --arg c "$component" '.components[$c].state // empty' "$AICODING_RESULTS_FILE" 2>/dev/null)" in
           current|updated) ;;
           *) return 1 ;;
@@ -255,7 +270,11 @@ _aicoding_shared_consumers_allow() {
       and all($r.consumers[];
       (.id | type == "string" and length > 0)
       and (.components[$c].config_compatible == true)
-      and (.components[$c].version | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+"))
+      and (.components[$c].version | type == "string")
+      and (if $c == "mcp-kanban"
+        then (.components[$c].version | test("^[0-9a-f]{40}$"))
+        else (.components[$c].version | test("^[0-9]+\\.[0-9]+\\.[0-9]+"))
+      end)
     ))' "$registry" >/dev/null 2>&1 || return 1
   [ -z "$minimum" ] && return 0
   while IFS= read -r version; do
@@ -1066,6 +1085,7 @@ _aicoding_update_component_impl() {
     mcp-brave) aicoding_update_npm_entry_component mcp-brave brave-search-mcp-server @brave/brave-search-mcp-server ;;
     mcp-context7) aicoding_update_npm_entry_component mcp-context7 context7-mcp @upstash/context7-mcp ;;
     mcp-playwright) aicoding_update_npm_entry_component mcp-playwright playwright-mcp @playwright/mcp ;;
+    mcp-kanban) aicoding_update_kanban_mcp ;;
     *) return 0 ;;
   esac
 }
@@ -1083,6 +1103,7 @@ _aicoding_component_attempt_deferred() {
     ([.components[$c].state]
       + (if $c == "mcp-context7" then [.components["mcp-registration-claude-context7"].state]
          elif $c == "mcp-playwright" then [.components["mcp-registration-claude-playwright"].state]
+         elif $c == "mcp-kanban" then [.components["mcp-registration-claude-kanban"].state]
          else [] end)) as $states
     | any($states[]; . == "blocked" or . == "conflict")
       and (all($states[]; . != "failed"))
