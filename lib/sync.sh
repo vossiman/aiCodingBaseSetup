@@ -679,7 +679,7 @@ _sync_reconcile() {
             case "$component" in
               config-*) _SYNC_DEFERRED_PROVISION_COMPONENTS[${component#config-}]=1 ;;
             esac
-            echo "managed config conflict: $d" >&2 ;;
+            report_managed_conflict "$d" "${BUCKETS[$d]}" ;;
         esac
       done
     fi

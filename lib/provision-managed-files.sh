@@ -359,6 +359,10 @@ reconcile_existing_install() {
   # fresh deployment before any actionable bucket reaches the write engine.
   for _d in "${!BUCKETS[@]}"; do
     case "${BUCKETS[$_d]}" in
+      drifted_and_updating|new_file_existing|to_remove)
+        report_managed_conflict "$_d" "${BUCKETS[$_d]}"
+        _AICODING_INITIAL_CONFIG_DEFERRED=1
+        ;;
       restore|new_file|will_update|will_update_owned|drifted_but_aligned|merge)
         _aicoding_initial_config_ready "$_d" || BUCKETS[$_d]=blocked
         ;;
