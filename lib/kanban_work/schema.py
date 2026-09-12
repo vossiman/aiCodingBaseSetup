@@ -91,14 +91,15 @@ def _enum(value, name: str, choices: frozenset[str]):
     return value
 
 
-def _uuid(value, name: str) -> str:
-    value = _text(value, name)
+def validate_local_handle(value) -> str:
+    """Validate and return a canonical UUID used as a local work handle."""
+    value = _text(value, "handle")
     try:
         parsed = UUID(value)
     except (ValueError, AttributeError):
-        raise BridgeError(422, f"{name} must be a UUID") from None
+        raise BridgeError(422, "handle must be a UUID") from None
     if str(parsed) != value:
-        raise BridgeError(422, f"{name} must use canonical UUID form")
+        raise BridgeError(422, "handle must use canonical UUID form")
     return value.lower()
 
 
@@ -125,7 +126,7 @@ def _validate_fields(fields) -> dict:
 
 
 def _validate(tool: str, values: dict) -> None:
-    _uuid(values["handle"], "handle")
+    validate_local_handle(values["handle"])
     _optional_text(values.get("operation_id"), "operation_id")
     for name in ("ticket", "target", "claim_id"):
         if name in values:

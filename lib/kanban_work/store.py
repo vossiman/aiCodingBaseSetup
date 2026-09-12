@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid5
 
-from .schema import BridgeError, MAX_OPAQUE
+from .schema import BridgeError, MAX_OPAQUE, validate_local_handle
 
 
 PERMIT_TTL = timedelta(seconds=60)
@@ -272,12 +272,7 @@ class Store:
                                   _opaque(native_session_id, "native_session_id"),
                                   _opaque(subagent_id, "subagent_id", optional=True),
                                   _opaque(run_generation, "run_generation"))
-        try:
-            parsed_handle = UUID(handle)
-        except (ValueError, AttributeError):
-            raise BridgeError(422, "handle must be a UUID") from None
-        if str(parsed_handle) != handle:
-            raise BridgeError(422, "handle must use canonical UUID form")
+        validate_local_handle(handle)
         if not isinstance(checkout, str) or not os.path.isabs(checkout):
             raise BridgeError(422, "checkout must be an absolute path")
         if type(lifecycle_capable) is not bool:
@@ -325,7 +320,13 @@ class Store:
                 if not owner[1]:
                     raise BridgeError(409, "native client version lacks qualified lifecycle support")
                 if owner[2] == "ended":
-                    raise BridgeError(409, "native execution has ended")
+                    recorded_end = db.execute(
+                        "SELECT 1 FROM operations WHERE operation_id=? AND handle=? "
+                        "AND run_generation=? AND kind='end_session' AND digest=? AND state!='rejected'",
+                        (operation_id, handle, identity.run_generation, digest),
+                    ).fetchone()
+                    if tool != "end_work_session" or recorded_end is None:
+                        raise BridgeError(409, "native execution has ended")
                 cursor = db.execute(
                     "INSERT INTO permits(handle,identity_key,native_call_id,run_generation,tool,digest,operation_id,created_at) "
                     "VALUES(?,?,?,?,?,?,?,?)",
@@ -614,14 +615,24 @@ class Store:
         _opaque(event.kind, "queue kind")
         with self._immediate() as db:
             generation = db.execute(
-                "SELECT run_generation FROM executions WHERE handle=?", (event.handle,)
+                "SELECT run_generation,state FROM executions WHERE handle=?", (event.handle,)
             ).fetchone()
             if generation is None:
                 raise BridgeError(404, "unknown work handle")
             if generation[0] != event.run_generation:
                 raise BridgeError(409, "queued event belongs to another run generation")
+            if event.kind == "activity" and (
+                generation[1] == "ended" or db.execute(
+                    "SELECT 1 FROM queue WHERE handle=? AND run_generation=? AND kind='end' LIMIT 1",
+                    (event.handle, event.run_generation),
+                ).fetchone() is not None
+            ):
+                return
             if event.kind == "end":
-                db.execute("DELETE FROM queue WHERE handle=? AND kind='activity'", (event.handle,))
+                db.execute(
+                    "DELETE FROM queue WHERE handle=? AND run_generation=? AND kind='activity'",
+                    (event.handle, event.run_generation),
+                )
             count = db.execute("SELECT count(*) FROM queue").fetchone()[0]
             if count >= MAX_QUEUE_ROWS:
                 row = db.execute("SELECT id FROM queue WHERE kind='activity' ORDER BY id LIMIT 1").fetchone()

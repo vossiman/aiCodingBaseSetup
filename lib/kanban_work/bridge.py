@@ -15,6 +15,7 @@ from .schema import (
     TOOL_TO_BRIDGE_OPERATION,
     normalize_tool_args,
     normalized_dict,
+    validate_local_handle,
 )
 from .store import Execution, Store
 
@@ -108,7 +109,7 @@ class Bridge:
 
     def lookup(self, payload: dict) -> dict:
         _shape(payload, required=("handle",))
-        return self.store.lookup(payload["handle"])
+        return self.store.lookup(validate_local_handle(payload["handle"]))
 
     def _repo(self, checkout: str) -> str:
         repo = self.derive_repo(checkout)
@@ -269,12 +270,25 @@ class Bridge:
         if execution is None or execution.state == "minted" or not execution.work_session_id:
             raise BridgeError(409, "bind the native work session before mutating tickets")
         execution = self._ensure_trusted(execution)
-        if execution.state == "ended":
-            raise BridgeError(409, "work session has ended")
         active = self.store.active_claim(handle)
         operation_id = values.pop("operation_id") or permit.operation_id
         existing_operation = self.store.operation(handle, operation_id)
         claim_id = values.get("claim_id")
+        end_claim_id = None
+        if operation == "end_session":
+            end_claim_id = (active or {}).get("id") or (
+                existing_operation or {}
+            ).get("claim_id")
+        if execution.state == "ended":
+            if operation != "end_session" or existing_operation is None:
+                raise BridgeError(409, "work session has ended")
+            previous = self.store.begin_operation(
+                handle, execution.run_generation, operation_id, operation, normalized, end_claim_id
+            )
+            if not previous["existing"]:
+                raise BridgeError(409, "work session has ended")
+        else:
+            previous = None
         if operation in {"checkpoint_work", "release_ticket", "complete_ticket"} and (
             not active or active["id"] != claim_id
         ):
@@ -296,15 +310,20 @@ class Bridge:
         elif operation in TICKET_LIFECYCLE_OPERATIONS:
             known_claim = active or (self.store.claim(handle, claim_id) if claim_id else None)
             ticket_ref = (known_claim or {}).get("ticket_id") or (known_claim or {}).get("ticket")
-        previous = self.store.begin_operation(handle, execution.run_generation, operation_id,
-                                              operation, normalized, claim_id)
+        elif operation == "end_session" and end_claim_id:
+            known_claim = active or self.store.claim(handle, end_claim_id)
+            ticket_ref = (known_claim or {}).get("ticket_id") or (known_claim or {}).get("ticket")
+        if previous is None:
+            previous = self.store.begin_operation(
+                handle, execution.run_generation, operation_id, operation, normalized,
+                end_claim_id if operation == "end_session" else claim_id,
+            )
         if operation in ORDINARY_OPERATIONS and previous["existing"]:
             raise BridgeError(409, "operation was already attempted; read current state before retrying")
         try:
             result = self.transport(operation, values)
             if operation in LIFECYCLE_OPERATIONS:
-                self._refresh(handle, execution.work_session_id,
-                              ticket_ref=ticket_ref if operation in TICKET_LIFECYCLE_OPERATIONS else None)
+                self._refresh(handle, execution.work_session_id, ticket_ref=ticket_ref)
         except BridgeError as error:
             self.store.finish_operation(handle, operation_id,
                                         "ambiguous" if error.code >= 500 else "rejected",
@@ -321,6 +340,7 @@ class Bridge:
         handle = payload.get("handle")
         capable = False
         if handle is not None:
+            handle = validate_local_handle(handle)
             capable = self.store.get_execution(handle)
             if capable is None:
                 raise BridgeError(404, "unknown work handle")

@@ -332,6 +332,29 @@ class StoreTests(unittest.TestCase):
         with self.assertRaisesRegex(BridgeError, "another run generation"):
             self.store.enqueue(QueueEvent(HANDLE, PEER_RUN, "end", "{}", NOW))
 
+    def test_end_queue_intent_suppresses_activity_in_both_arrival_orders(self):
+        self.store.enqueue(QueueEvent(HANDLE, RUN, "activity", '{"sequence":1}', NOW))
+        self.store.enqueue(QueueEvent(HANDLE, RUN, "release", '{"reason":"stopped"}', NOW))
+        self.store.enqueue(QueueEvent(HANDLE, RUN, "end", '{"handoff":"done"}', NOW))
+        rows = self.store._connection.execute(
+            "SELECT kind FROM queue WHERE handle=? ORDER BY id", (HANDLE,)
+        ).fetchall()
+        self.assertEqual(rows, [("release",), ("end",)])
+
+        self.store.enqueue(QueueEvent(HANDLE, RUN, "activity", '{"sequence":2}', NOW))
+        rows = self.store._connection.execute(
+            "SELECT kind FROM queue WHERE handle=? ORDER BY id", (HANDLE,)
+        ).fetchall()
+        self.assertEqual(rows, [("release",), ("end",)])
+
+        self.store.start_execution("codex", "thread-8", None, PEER_RUN, PEER_HANDLE,
+                                   "/tmp/repo", True, now=NOW)
+        self.store.mark_ended(PEER_HANDLE, NOW)
+        self.store.enqueue(QueueEvent(PEER_HANDLE, PEER_RUN, "activity", '{"sequence":1}', NOW))
+        self.assertIsNone(self.store._connection.execute(
+            "SELECT 1 FROM queue WHERE handle=?", (PEER_HANDLE,)
+        ).fetchone())
+
     def test_failed_schema_creation_leaves_no_partial_database_and_retry_recovers(self):
         self.store.close()
         recovery = Path(self.temp.name) / "recovery" / "aicoding" / "kanban-work.sqlite3"
@@ -397,6 +420,21 @@ class BridgeTests(unittest.TestCase):
         self.assertNotIn("handle", sent)
         self.assertEqual(UUID(result["operation_id"]).version, 5)
         self.assertTrue(self.store.get_execution(HANDLE).cache_trusted)
+
+    def test_lookup_and_instructions_reject_noncanonical_handles_with_422(self):
+        for operation, value in (
+            ("lookup", "not-a-uuid"),
+            ("lookup", [HANDLE]),
+            ("instructions", PEER_HANDLE.upper()),
+            ("instructions", {"handle": HANDLE}),
+        ):
+            with self.subTest(operation=operation, value=value):
+                self.transport.calls.clear()
+                with self.assertRaises(BridgeError) as raised:
+                    self.bridge.dispatch(operation, {"handle": value})
+                self.assertEqual(raised.exception.code, 422)
+                self.assertNotIn("sqlite", raised.exception.message.lower())
+                self.assertEqual(self.transport.calls, [])
 
     def test_register_and_rebind_replays_refresh_current_backend_state(self):
         register = {"operation_id": "register-replay"}
@@ -605,14 +643,120 @@ class BridgeTests(unittest.TestCase):
             names = [name for name, _ in self.transport.calls]
             self.assertEqual(names[:3], [operation, "get_session", "get_ticket"], (i, names))
 
-    def test_end_session_injects_backend_identity_and_refreshes_ended_state(self):
+    def test_end_session_refreshes_released_ticket_and_exact_replay_after_end(self):
         self.bind()
+        self.execute("claim_ticket", {"ticket": "AICODINGBASESETUP-2"})
         self.transport.calls.clear()
-        result = self.execute("end_session", {"handoff": "session finished"})
-        self.assertEqual([name for name, _ in self.transport.calls], ["end_session", "get_session"])
+        payload = {"handoff": "session finished", "operation_id": "end-replay"}
+        result = self.execute("end_session", payload)
+        self.assertEqual([name for name, _ in self.transport.calls],
+                         ["end_session", "get_session", "get_ticket"])
         self.assertEqual(self.transport.calls[0][1]["work_session_id"], SESSION)
+        self.assertEqual(self.transport.calls[2][1]["ticket"], "ticket-db-ref")
         self.assertEqual(result["session"]["ended_at"], "2026-09-12T12:01:00Z")
         self.assertEqual(self.store.get_execution(HANDLE).state, "ended")
+        self.assertEqual(self.store.operation(HANDLE, "end-replay")["claim_id"], CLAIM)
+
+        self.transport.calls.clear()
+        replay = self.execute("end_session", payload)
+        self.assertEqual(replay["operation_id"], "end-replay")
+        self.assertEqual([name for name, _ in self.transport.calls],
+                         ["end_session", "get_session", "get_ticket"])
+
+        for changed, call_id in (
+            ({"handoff": "changed", "operation_id": "end-replay"}, "changed-digest"),
+            ({"handoff": "session finished", "operation_id": "another-end"}, "changed-operation"),
+        ):
+            with self.subTest(changed=changed), self.assertRaisesRegex(BridgeError, "ended"):
+                self.permit("end_work_session", changed, call_id)
+
+    def test_each_lifecycle_refresh_failure_replays_exact_operation_and_recovers(self):
+        cases = (
+            ("register", "get_session"),
+            ("rebind", "get_session"),
+            ("claim_ticket", "get_session"),
+            ("claim_ticket", "get_ticket"),
+            ("checkpoint_work", "get_session"),
+            ("checkpoint_work", "get_ticket"),
+            ("release_ticket", "get_session"),
+            ("release_ticket", "get_ticket"),
+            ("complete_ticket", "get_session"),
+            ("complete_ticket", "get_ticket"),
+            ("end_session", "get_session"),
+            ("end_session", "get_ticket"),
+        )
+        for operation, failure in cases:
+            with self.subTest(operation=operation, failure=failure), tempfile.TemporaryDirectory() as td:
+                checkout = Path(td) / "checkout"
+                other = Path(td) / "other"
+                checkout.mkdir()
+                other.mkdir()
+                store = Store(Path(td) / "state" / "kanban-work.sqlite3")
+                identity = NativeIdentity("codex", "thread-7", None, RUN)
+                store.start_execution("codex", "thread-7", None, RUN, HANDLE,
+                                      str(checkout), True, now=NOW)
+                transport = FakeTransport()
+                bridge = Bridge(store, transport, now=lambda: NOW,
+                                derive_repo=lambda path: {
+                                    str(checkout): "aiCodingBaseSetup", str(other): "otherRepo"
+                                }.get(path))
+                call_number = 0
+
+                def invoke(public_operation, body):
+                    nonlocal call_number
+                    call_number += 1
+                    tool = "bind_work_session" if public_operation in {"register", "rebind"} else (
+                        "end_work_session" if public_operation == "end_session" else public_operation
+                    )
+                    normalized = normalize_tool_args(tool, {"handle": HANDLE, **body})
+                    store.permit_call(identity, f"refresh-{call_number}", tool, normalized, NOW)
+                    if public_operation in {"register", "rebind"}:
+                        return bridge.dispatch("bind", {"handle": HANDLE, **body})
+                    return bridge.dispatch("execute", {
+                        "handle": HANDLE, "operation": public_operation, "payload": body,
+                    })
+
+                try:
+                    if operation != "register":
+                        invoke("register", {})
+                    if operation in {"checkpoint_work", "release_ticket", "complete_ticket", "end_session"}:
+                        invoke("claim_ticket", {"ticket": "AICODINGBASESETUP-2"})
+                    operation_id = f"retry-{operation}"
+                    bodies = {
+                        "register": {"operation_id": operation_id},
+                        "rebind": {"checkout": str(other), "label": "other",
+                                   "operation_id": operation_id},
+                        "claim_ticket": {"ticket": "AICODINGBASESETUP-2",
+                                         "operation_id": operation_id},
+                        "checkpoint_work": {"claim_id": CLAIM, "checkpoint": "saved",
+                                            "operation_id": operation_id},
+                        "release_ticket": {"claim_id": CLAIM, "handoff": "ready",
+                                           "reason": "paused", "operation_id": operation_id},
+                        "complete_ticket": {"claim_id": CLAIM, "evidence": "tests pass",
+                                            "references": [], "operation_id": operation_id},
+                        "end_session": {"handoff": "done", "operation_id": operation_id},
+                    }
+                    body = bodies[operation]
+                    transport.fail_next.add(failure)
+                    with self.assertRaisesRegex(BridgeError, "authoritative refresh"):
+                        invoke(operation, body)
+                    self.assertFalse(store.get_execution(HANDLE).cache_trusted)
+
+                    transport.calls.clear()
+                    result = invoke(operation, body)
+                    self.assertEqual(result["operation_id"], operation_id)
+                    self.assertTrue(store.get_execution(HANDLE).cache_trusted)
+                    self.assertEqual(store.operation(HANDLE, operation_id)["state"], "succeeded")
+                    expected = ["end_session" if operation == "end_session" else (
+                        "register_session" if operation == "register" else (
+                            "rebind_session" if operation == "rebind" else operation
+                        )
+                    ), "get_session"]
+                    if operation not in {"register", "rebind"}:
+                        expected.append("get_ticket")
+                    self.assertEqual([name for name, _ in transport.calls][-len(expected):], expected)
+                finally:
+                    store.close()
 
 
 class ExecutableTests(unittest.TestCase):
@@ -653,7 +797,7 @@ printf 'canonical workflow\\n'
         identity = NativeIdentity("codex", "thread-7", None, RUN)
         store.start_execution("codex", "thread-7", None, RUN, HANDLE, str(self.root), True, now=NOW)
         normalized = normalize_tool_args("bind_work_session", {"handle": HANDLE})
-        store.permit_call(identity, "cli-bind", "bind_work_session", normalized, NOW)
+        store.permit_call(identity, "cli-bind", "bind_work_session", normalized, datetime.now(UTC))
         store.close()
 
     def tearDown(self):

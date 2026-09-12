@@ -106,3 +106,78 @@ The 35 Python tests cover:
 - Tasks 3 through 6 still own queue reconstruction/delivery and real native adapters. They must pass each event's captured `run_generation` into the store APIs; they must not infer the latest execution for a native session after resume.
 - No client version is made lifecycle-capable by this task. Unknown, absent, or malformed qualification data remains read-only until the later real-client qualification tasks add reviewed exact versions.
 - `origin/main` is ahead at `c385027` and overlaps installer/provision files. Per controller direction, that change was not integrated during Task 2; it should be reconciled after this scoped review.
+
+## Fix round 1: Important review findings
+
+Addressed all four Important findings from `task-2-review.md` on controller base
+`dc4b5d4de0e6ab8bc565945593e233a683591438`.
+
+### Changes
+
+- End now records the current claim ID on its operation row before transport. That durable claim reference resolves the affected ticket after end has cleared the active claim, so fresh, replayed, and recovery refreshes call both `get_session` and `get_ticket` before changing the cache.
+- An ended execution can mint a fresh one-use permit only for a recorded, non-rejected end operation whose handle, ingress generation, operation ID, operation kind, and normalized digest all match. `Bridge.execute` revalidates the same operation row before replay. Every new or changed post-end operation remains rejected.
+- Queue insertion now discards activity when either the execution is durably ended or an end row already exists for that exact handle and generation. An incoming end deletes earlier activity for the same generation while retaining release rows.
+- `lookup` and the optional `instructions` handle now use the canonical UUID validator before SQLite access, producing a redacted 422 for malformed strings and non-string JSON values.
+- Table-driven tests cover failed session and ticket refreshes and exact replay recovery for register, rebind, claim, checkpoint, release, complete, and end as applicable. End has a separate fresh/successful replay test with an active claim and exact mismatch refusals.
+- The existing cross-process executable fixture now timestamps its 60-second permit at actual setup time. Its previous fixed wall-clock timestamp could expire independently of the behavior under test.
+
+### RED evidence
+
+Command:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v tests.python.test_kanban_work tests.python.test_kanban_work_legacy
+```
+
+Initial result: exit `1`, `38` tests run, with `6` failures and `3` errors. The failures demonstrated the review findings:
+
+```text
+FAILED (failures=6, errors=3)
+```
+
+- fresh end omitted `get_ticket`;
+- replay after authoritative end was rejected;
+- end's injected `get_ticket` failure was not observed because no ticket refresh ran;
+- late activity remained queued after end;
+- malformed public handles returned 404 or leaked raw `sqlite3.ProgrammingError` paths.
+
+The same run exposed the independent fixed-time executable permit fixture described above.
+
+### GREEN evidence
+
+Focused Python command:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v tests.python.test_kanban_work tests.python.test_kanban_work_legacy
+```
+
+Result: exit `0`.
+
+```text
+Ran 38 tests in 0.837s
+OK
+```
+
+Standard Bats wrapper command:
+
+```text
+bash tests/bats/run.sh kanban-work
+```
+
+Result: exit `0`.
+
+```text
+1..1
+ok 1 kanban-work Python contract in 890ms
+```
+
+No shared installer file changed in this fix round, and no focused failure or named integration concern remained. Per the fix brief, the already-green 1129-test full suite was not repeated.
+
+### Fix self-review
+
+- The post-end permit exception is narrower than execution: it only mints a new one-use permit after an exact recorded end match. The bridge independently runs `begin_operation` with the stored generation, digest, kind, and affected claim before transport.
+- The affected ticket comes from the durable claim row referenced by the end operation, never from an old receipt. The authoritative session and ticket snapshots still determine cache state.
+- A refresh failure leaves the operation ambiguous and the cache untrusted. The next exact native retry first reconciles current state, then replays the same backend operation and refreshes again.
+- Activity suppression and end dominance execute inside the existing `BEGIN IMMEDIATE` transaction and compare the ingress generation. Release rows are preserved for Task 3's later critical-intent reconstruction work.
+- Public UUID validation happens before database/helper access for both affected operations.
+- The two Minor findings from the review (nested mutable spec defaults and expired-unconsumed permit cleanup) remain deliberately deferred for final review, as directed.
