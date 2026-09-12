@@ -138,7 +138,7 @@ deploy_all_managed_files() {
 # MANAGED_MCPS / MANAGED_PLUGINS live in lib/provision.sh (sourced below,
 # after the colored loggers are defined) — shared with aicoding-sync so both
 # reconcile the same MCP/plugin set.
-MANAGED_HOOKS=("custom-statusline.js" "bw-deny-files.sh" "check-archived-docs.sh" "llmwiki-distill.sh" "agent-waiting.sh" "memory-hint.sh" "opus-verbosity.sh" "fable-guidance.sh" "redact-sessions-hook.sh" "redact-sessions-pending.sh")
+MANAGED_HOOKS=("agent-working.sh" "custom-statusline.js" "bw-deny-files.sh" "check-archived-docs.sh" "llmwiki-distill.sh" "agent-waiting.sh" "memory-hint.sh" "opus-verbosity.sh" "fable-guidance.sh" "redact-sessions-hook.sh" "redact-sessions-pending.sh")
 # Skills are whatever skills/ ships; the deploy loop above enumerates the
 # same dir. A hand-kept list here only falls behind and then flags a shipped
 # skill as unmanaged (review-by-harness, 2026-09-08).

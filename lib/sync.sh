@@ -477,8 +477,8 @@ _sync_stage_selected_blueprint() {
   else
     local stage="$AICODING_DATA_DIR/source-staging/aicoding.$sha.$$"
     mkdir -p "$(dirname "$stage")"; rm -rf "$stage"
-    timeout "${AICODING_VENDOR_TIMEOUT:-600}" git clone --quiet --no-checkout "$AICODING_BLUEPRINT_REMOTE" "$stage" 2>/dev/null || { rm -rf "$stage"; return 1; }
-    timeout "${AICODING_VENDOR_TIMEOUT:-600}" git -C "$stage" checkout --quiet --detach "$sha" 2>/dev/null || { rm -rf "$stage"; return 1; }
+    aicoding_progress_run "blueprint: downloading source (timeout ${AICODING_VENDOR_TIMEOUT:-600}s)" _aicoding_progress_capture /dev/null timeout "${AICODING_VENDOR_TIMEOUT:-600}" git clone --quiet --no-checkout "$AICODING_BLUEPRINT_REMOTE" "$stage" || { rm -rf "$stage"; return 1; }
+    aicoding_progress_run "blueprint: extracting source (timeout ${AICODING_VENDOR_TIMEOUT:-600}s)" _aicoding_progress_capture /dev/null timeout "${AICODING_VENDOR_TIMEOUT:-600}" git -C "$stage" checkout --quiet --detach "$sha" || { rm -rf "$stage"; return 1; }
     [ "$(git -C "$stage" rev-parse HEAD 2>/dev/null)" = "$sha" ] || { rm -rf "$stage"; return 1; }
     _sync_capture_generated_provenance "$stage" || { rm -rf "$stage"; return 1; }
     rm -rf "$stage/.git"

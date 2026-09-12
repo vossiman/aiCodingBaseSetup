@@ -80,7 +80,7 @@ _aicoding_version_from_command() {
 }
 
 _aicoding_npm_target() {
-  timeout "$AICODING_VENDOR_TIMEOUT" npm view "$1" version --json </dev/null 2>/dev/null \
+  aicoding_progress_run "${AICODING_PROGRESS_COMPONENT:-package}: resolving version (timeout ${AICODING_VENDOR_TIMEOUT}s)" timeout "$AICODING_VENDOR_TIMEOUT" npm view "$1" version --json </dev/null \
     | jq -r 'if type == "array" then last else . end // empty' 2>/dev/null
 }
 
@@ -615,6 +615,10 @@ _aicoding_npm_lock_valid() {
 }
 
 _aicoding_release_tree_digest() {
+  aicoding_progress_run "${AICODING_PROGRESS_COMPONENT:-package}: checking release integrity" _aicoding_release_tree_digest_impl "$@"
+}
+
+_aicoding_release_tree_digest_impl() {
   local root=$1 inventory path relative mode kind value digest
   inventory=$(mktemp "${TMPDIR:-/tmp}/aicoding-release-integrity.XXXXXX") || return 1
   while IFS= read -r -d '' path; do
@@ -776,9 +780,10 @@ aicoding_update_npm_entry_component() {
   if ! HOME="$stage/home" XDG_CONFIG_HOME="$stage/home/.config" \
     XDG_DATA_HOME="$stage/home/.local/share" XDG_CACHE_HOME="$stage/home/.cache" \
     XDG_STATE_HOME="$stage/home/.local/state" NPM_CONFIG_CACHE="$stage/.npm-cache" \
-    timeout "$AICODING_VENDOR_TIMEOUT" npm install --prefix "$stage" --ignore-scripts --omit=dev \
+    aicoding_progress_run "$component: downloading packages (timeout ${AICODING_VENDOR_TIMEOUT}s)" \
+      _aicoding_progress_capture "$install_log" timeout "$AICODING_VENDOR_TIMEOUT" npm install --prefix "$stage" --ignore-scripts --omit=dev \
       --save-exact --engine-strict --no-audit --no-fund \
-      "$package@$target" </dev/null >/dev/null 2>"$install_log"; then
+      "$package@$target" </dev/null; then
     failure_state=failed; failure_reason=stage_install_failed
     if grep -Eq 'EBADENGINE|Unsupported engine' "$install_log" 2>/dev/null; then
       failure_state=blocked; failure_reason=$(_aicoding_missing_runtime_reason node)
@@ -996,6 +1001,14 @@ aicoding_update_bw() {
 }
 
 aicoding_update_component() {
+  local AICODING_PROGRESS_COMPONENT=$1 component_rc=0 started=$SECONDS
+  printf 'INFO: Updating %s\n' "$1" >&2
+  _aicoding_update_component_impl "$@" || component_rc=$?
+  printf 'INFO: %s update attempt finished (%ss, exit %s)\n' "$1" "$((SECONDS - started))" "$component_rc" >&2
+  return "$component_rc"
+}
+
+_aicoding_update_component_impl() {
   case "$1" in
     codex) aicoding_update_npm_component codex codex @openai/codex ;;
     opencode) aicoding_update_npm_component opencode opencode opencode-ai ;;
