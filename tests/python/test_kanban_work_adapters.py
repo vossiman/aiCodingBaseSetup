@@ -534,6 +534,25 @@ class AdapterTests(unittest.TestCase):
         self.assertFalse(self.store.has_any_permit())
         self.assertTrue(self.store.tool_operation(started["handle"], "ordinary")["active"])
 
+    def test_unqualified_codex_leaves_ordinary_legacy_commands_available(self):
+        self.versions["codex"] = "0.0.0"
+        started = self.start("codex")
+        self.assertFalse(self.store.get_execution(started["handle"]).lifecycle_capable)
+        commands = [
+            'kanban-post "follow-up" --repo aiCodingBaseSetup',
+            "kanban-post --comment AICODINGBASESETUP-2 progress",
+            "kanban-post --list-tickets",
+            "kanban-post --selftest",
+        ]
+        for index, command in enumerate(commands):
+            with self.subTest(command=command):
+                result = self.pre(
+                    "codex", "Bash", {"command": command}, call=f"ordinary-{index}"
+                )
+                self.assertEqual(
+                    result.output["hookSpecificOutput"]["permissionDecision"], "allow"
+                )
+
     def test_session_end_without_generation_correlation_fails_closed_after_resume(self):
         self.start("claude")
         self.start("claude", source="resume")
@@ -889,6 +908,21 @@ class CursorAdapterTests(unittest.TestCase):
         ordinary = self.pre("Shell", {"command": "git status --short"}, call="ordinary")
         self.assertEqual(ordinary.output["permission"], "allow")
 
+    def test_unqualified_cursor_leaves_ordinary_legacy_commands_available(self):
+        self.matrix.write_text(json.dumps({"clients": {"cursor": {"versions": []}}}))
+        started = self.start().lifecycle
+        self.assertFalse(self.store.get_execution(started["handle"]).lifecycle_capable)
+        commands = [
+            'kanban-post "follow-up" --repo aiCodingBaseSetup',
+            "kanban-post --comment AICODINGBASESETUP-2 progress",
+            "kanban-post --list-tickets",
+            "kanban-post --selftest",
+        ]
+        for index, command in enumerate(commands):
+            with self.subTest(command=command):
+                result = self.pre("Shell", {"command": command}, call=f"ordinary-{index}")
+                self.assertEqual(result.output["permission"], "allow")
+
 
 class OpenCodeAdapterTests(unittest.TestCase):
     VERSION = "1.18.30"
@@ -1135,6 +1169,21 @@ class OpenCodeAdapterTests(unittest.TestCase):
                 self.before("bash", {"command": command}, call=f"bad-{index}")
         ordinary = self.before("bash", {"command": "git status --short"}, call="ordinary")
         self.assertEqual(ordinary.output, {})
+
+    def test_unqualified_opencode_leaves_ordinary_legacy_commands_available(self):
+        self.matrix.write_text(json.dumps({"clients": {"opencode": {"versions": []}}}))
+        started = self.created().lifecycle
+        self.assertFalse(self.store.get_execution(started["handle"]).lifecycle_capable)
+        commands = [
+            'kanban-post "follow-up" --repo aiCodingBaseSetup',
+            "kanban-post --comment AICODINGBASESETUP-2 progress",
+            "kanban-post --list-tickets",
+            "kanban-post --selftest",
+        ]
+        for index, command in enumerate(commands):
+            with self.subTest(command=command):
+                result = self.before("bash", {"command": command}, call=f"ordinary-{index}")
+                self.assertEqual(result.output, {})
 
     def test_new_plugin_instance_mints_unqualified_generation_and_late_old_event_stays_old(self):
         old_instance = "plugin-instance-old"

@@ -32,9 +32,16 @@ class PreparedLegacyComplete:
 
 def _looks_like(command: str) -> bool:
     stripped = command.lstrip()
-    if re.match(r"^kanban-post(?:\s|$)", stripped) or re.match(r"^(?:\.?\.?/|/).*kanban-post(?:\s|$)", stripped):
-        return True
-    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*\s+kanban-post(?:\s|$)", stripped))
+    command_match = (
+        re.match(r"^kanban-post(?:\s|$)", stripped)
+        or re.match(r"^(?:\.?\.?/|/).*kanban-post(?:\s|$)", stripped)
+        or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*\s+kanban-post(?:\s|$)", stripped)
+    )
+    return bool(
+        command_match
+        and re.search(r"(?:^|\s)--done\b", stripped)
+        and re.search(r"(?:^|\s)--evidence\b", stripped)
+    )
 
 
 def _deny():

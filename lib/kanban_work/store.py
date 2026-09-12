@@ -1178,7 +1178,10 @@ class Store:
             raise BridgeError(404, "unknown work handle")
         claim = self.active_claim(handle)
         if claim:
-            claim = {"id": claim["id"], "ticket": claim["ticket"]}
+            claim = {
+                "id": claim["id"], "ticket": claim["ticket"],
+                **({"ticket_id": claim["ticket_id"]} if claim.get("ticket_id") else {}),
+            }
         return {
             "handle": execution.handle,
             "state": execution.state,

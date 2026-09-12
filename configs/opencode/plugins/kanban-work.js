@@ -120,8 +120,12 @@ function processVersion(command) {
 }
 
 function looksLikeLegacyCompletion(args) {
-  return typeof args?.command === "string" &&
-    /^\s*(?:KANBAN_WORK_HANDLE=\S+\s+)?(?:\.?\.?\/|\/)?kanban-post(?:\s|$)/.test(args.command)
+  if (typeof args?.command !== "string") return false
+  const command = args.command
+  const commandPrefix = /^\s*(?:kanban-post|(?:\.?\.?\/|\/).*kanban-post|[A-Za-z_][A-Za-z0-9_]*=.*\s+kanban-post)(?:\s|$)/
+  return commandPrefix.test(command) &&
+    /(?:^|\s)--done\b/.test(command) &&
+    /(?:^|\s)--evidence\b/.test(command)
 }
 
 function mutateObject(target, replacement, replaceAll) {

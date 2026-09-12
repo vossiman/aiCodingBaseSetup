@@ -24,12 +24,23 @@ class LegacyParserTests(unittest.TestCase):
         self.assertEqual(parsed.evidence, "pytest: 127 passed $HOME")
         self.assertEqual(parsed.references, ("PR-17", "commit abc"))
 
-    def test_unrelated_commands_are_outside_translator(self):
-        self.assertIsNone(parse_legacy_complete("git status --short"))
+    def test_ordinary_legacy_commands_are_outside_completion_translator(self):
+        commands = [
+            'kanban-post "follow-up" --repo aiCodingBaseSetup',
+            "kanban-post --comment AICODINGBASESETUP-2 progress",
+            "kanban-post --list-tickets",
+            "kanban-post --selftest",
+            "FOO=1 kanban-post --list-tickets",
+            "git status --short",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertIsNone(parse_legacy_complete(command))
 
     def test_every_shell_or_grammar_escape_is_denied_actionably(self):
         invalid = [
             "KANBAN_WORK_HANDLE=x kanban-post --done K-1 --evidence ok",
+            "FOO=1 kanban-post --done K-1 --evidence ok",
             "/usr/bin/kanban-post --done K-1 --evidence ok",
             "./kanban-post --done K-1 --evidence ok",
             "kanban-post --evidence ok --done K-1",
@@ -82,6 +93,23 @@ class LegacyTranslatorTests(unittest.TestCase):
             "operation_id": None,
         })
         self.assertEqual(prepared.rewritten_argv[-2:], ["--work-handle", HANDLE])
+        self.assertTrue(self.store.has_permit(
+            HANDLE, "complete_ticket", normalize_tool_args("complete_ticket", prepared.args)
+        ))
+
+    def test_uuid_completion_matches_lookup_identity_and_mints_permit(self):
+        ticket_id = "44444444-4444-4444-8444-444444444444"
+        self.store.set_claim(HANDLE, CLAIM, "KANBAN-2", ticket_id=ticket_id)
+
+        claim = self.store.lookup(HANDLE)["active_claim"]
+        self.assertEqual(claim, {
+            "id": CLAIM, "ticket": "KANBAN-2", "ticket_id": ticket_id,
+        })
+        prepared = prepare_legacy_complete(
+            IDENTITY, "tool-uuid",
+            f"kanban-post --done {ticket_id} --evidence 'pytest: 127 passed'",
+            store=self.store, now=NOW,
+        )
         self.assertTrue(self.store.has_permit(
             HANDLE, "complete_ticket", normalize_tool_args("complete_ticket", prepared.args)
         ))

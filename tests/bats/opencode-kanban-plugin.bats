@@ -208,6 +208,45 @@ JS
   [ ! -e "$BRIDGE_CALLS" ]
 }
 
+@test "OpenCode missing identity leaves ordinary legacy CLI commands available" {
+  run node --input-type=module <<'JS'
+import { pathToFileURL } from "node:url"
+const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
+const hooks = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
+for (const command of [
+  'kanban-post "follow-up" --repo aiCodingBaseSetup',
+  "kanban-post --comment AICODINGBASESETUP-2 progress",
+  "kanban-post --list-tickets",
+  "kanban-post --selftest",
+]) {
+  await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command } })
+}
+JS
+  [ "$status" -eq 0 ]
+  [ ! -e "$BRIDGE_CALLS" ]
+}
+
+@test "OpenCode missing identity recognizes environment-prefixed evidence completion" {
+  run node --input-type=module <<'JS'
+import assert from "node:assert/strict"
+import { pathToFileURL } from "node:url"
+const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
+const hooks = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
+for (const command of [
+  "FOO=1 kanban-post --done KANBAN-2 --evidence ok",
+  "FOO='space here' kanban-post --done KANBAN-2 --evidence ok",
+  "/usr/bin/kanban-post --done KANBAN-2 --evidence ok",
+]) {
+  await assert.rejects(
+    hooks["tool.execute.before"]({ tool: "bash" }, { args: { command } }),
+    /Kanban MCP complete_ticket/,
+  )
+}
+JS
+  [ "$status" -eq 0 ]
+  [ ! -e "$BRIDGE_CALLS" ]
+}
+
 @test "OpenCode shell rewrite is exact while unsafe peer replay and unrelated commands are safe" {
   run node --input-type=module <<'JS'
 import assert from "node:assert/strict"

@@ -96,9 +96,14 @@ payload = json.load(sys.stdin)
 with open(os.environ["KANBAN_FAKE_LOG"], "a") as stream:
     stream.write(json.dumps({"operation": operation, "payload": payload}, sort_keys=True) + "\n")
 if operation == "lookup":
+    claim = {
+        "id": "claim-fixture", "ticket": os.environ.get("KANBAN_FAKE_TICKET", "MYREPO-1")
+    }
+    if os.environ.get("KANBAN_FAKE_TICKET_ID"):
+        claim["ticket_id"] = os.environ["KANBAN_FAKE_TICKET_ID"]
     print(json.dumps({"ok": True, "data": {
         "handle": payload["handle"], "active_claim": {
-            "id": "claim-fixture", "ticket": os.environ.get("KANBAN_FAKE_TICKET", "MYREPO-1")
+            **claim
         }
     }}))
 elif os.environ.get("KANBAN_FAKE_BRIDGE") == "deny":
@@ -439,6 +444,29 @@ EOF
   export KANBAN_WORK_HANDLE="handle-hint"
   export KANBAN_FAKE_TICKET="MYREPO-2"
   run "$KP" --done MYREPO-1 --evidence "tests pass"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not the bound session's current claim"* ]]
+  [ "$(wc -l < "$KANBAN_FAKE_LOG")" -eq 1 ]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "--done evidence accepts the active claim ticket UUID" {
+  _start_api_server myrepo
+  _fake_kanban_work
+  export KANBAN_WORK_HANDLE="handle-hint"
+  export KANBAN_FAKE_TICKET_ID="44444444-4444-4444-8444-444444444444"
+  run "$KP" --done "$KANBAN_FAKE_TICKET_ID" --evidence "tests pass"
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$KANBAN_FAKE_LOG")" -eq 2 ]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "--done evidence rejects a UUID outside the active claim identities" {
+  _start_api_server myrepo
+  _fake_kanban_work
+  export KANBAN_WORK_HANDLE="handle-hint"
+  export KANBAN_FAKE_TICKET_ID="44444444-4444-4444-8444-444444444444"
+  run "$KP" --done "55555555-5555-4555-8555-555555555555" --evidence "tests pass"
   [ "$status" -ne 0 ]
   [[ "$output" == *"not the bound session's current claim"* ]]
   [ "$(wc -l < "$KANBAN_FAKE_LOG")" -eq 1 ]

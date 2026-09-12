@@ -831,7 +831,12 @@ def main() -> int:
                 die("--done --evidence requires a bound native work session; use the Kanban MCP")
             current = run_kanban_work("lookup", {"handle": handle})
             claim = current["data"].get("active_claim")
-            if not isinstance(claim, dict) or str(claim.get("ticket", "")).upper() != a.done.upper():
+            targets = set()
+            if isinstance(claim, dict):
+                targets.add(str(claim.get("ticket", "")).upper())
+                if claim.get("ticket_id"):
+                    targets.add(str(claim["ticket_id"]).upper())
+            if a.done.upper() not in targets:
                 die("--done target is not the bound session's current claim; use the Kanban MCP")
             claim_id = claim.get("id")
             if not isinstance(claim_id, str) or not claim_id:
