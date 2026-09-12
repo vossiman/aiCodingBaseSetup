@@ -486,8 +486,9 @@ aicoding_update_npm_component() {
   if ! HOME="$stage/home" XDG_CONFIG_HOME="$stage/home/.config" \
       XDG_DATA_HOME="$stage/home/.local/share" XDG_CACHE_HOME="$stage/home/.cache" \
       XDG_STATE_HOME="$stage/home/.local/state" NPM_CONFIG_CACHE="$stage/.npm-cache" \
-      timeout "$AICODING_VENDOR_TIMEOUT" npm install --prefix "$stage" --no-audit --no-fund \
-        "$package@$target" </dev/null >/dev/null 2>&1; then
+      aicoding_progress_run "$component: downloading runtime (timeout ${AICODING_VENDOR_TIMEOUT}s)" \
+        _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" npm install --prefix "$stage" --no-audit --no-fund \
+        "$package@$target" </dev/null; then
     rm -rf "$stage"
     aicoding_result_record "$component" failed "$target" stage_install_failed
     return 1

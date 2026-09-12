@@ -13,7 +13,13 @@ setup() {
 #!/bin/bash
 case "$*" in
   *https://cursor.com/install*) printf 'DOWNLOAD_URL="https://downloads.cursor.com/lab/%s/${OS}/${ARCH}/agent-cli-package.tar.gz"\n' "$CURSOR_TEST_VERSION" ;;
-  *https://downloads.cursor.com/lab/*) cat "$TMP/package.tar.gz" ;;
+  *https://downloads.cursor.com/lab/*)
+    dest=
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = -o ]; then dest=$2; shift 2; else shift; fi
+    done
+    [ -n "$dest" ] || exit 9
+    cp "$TMP/package.tar.gz" "$dest" ;;
   *) exit 8 ;;
 esac
 STUB

@@ -2,10 +2,10 @@
 # Run external commands or read-only functions here: the operation executes in
 # a subshell, so callers needing shell-state mutations must call them directly.
 aicoding_progress_run() (
-  local label=$1 owner=$BASHPID ticker started=$SECONDS rc=0 interval
+  local label=$1 owner=$BASHPID ticker operation= started=$SECONDS rc=0 interval
   shift
   interval=${AICODING_PROGRESS_INTERVAL:-15}
-  [[ "$interval" =~ ^[0-9]+([.][0-9]+)?$ ]] && [[ "$interval" != 0 ]] || interval=15
+  [[ "$interval" =~ ^[0-9]+([.][0-9]+)?$ ]] && [[ ! "$interval" =~ ^0+([.]0+)?$ ]] || interval=15
   printf 'INFO: %s — starting\n' "$label" >&2
   (
     # A ticker must never retain installer/update locks. Close its copies,
@@ -32,7 +32,33 @@ aicoding_progress_run() (
   ) </dev/null &
   ticker=$!
   trap 'kill "$ticker" 2>/dev/null || true; wait "$ticker" 2>/dev/null || true' EXIT
-  "$@" || rc=$?
+  # Monitor mode gives this one background job its own process group, including
+  # descendants of shell functions. Disable notifications immediately afterward.
+  # This permits cancellation of the whole operation without signaling callers.
+  _aicoding_progress_cancel() {
+    local code=$1
+    if [ -n "$operation" ]; then
+      kill -TERM -- "-$operation" 2>/dev/null || true
+      sleep 0.1
+      kill -KILL -- "-$operation" 2>/dev/null || true
+      wait "$operation" 2>/dev/null || true
+    fi
+    exit "$code"
+  }
+  trap '_aicoding_progress_cancel 143' TERM
+  trap '_aicoding_progress_cancel 130' INT
+  trap '_aicoding_progress_cancel 129' HUP
+  # GNU timeout otherwise creates a nested process group that escapes the
+  # supervisor. Within this pure-operation subshell it must keep our group.
+  timeout() { command timeout --foreground "$@"; }
+  set -m
+  "$@" & operation=$!
+  set +m
+  wait "$operation" 2>/dev/null || rc=$?
+  # A timed-out shell may leave grandchildren behind even after its direct
+  # process exited; no background work belongs to a completed staging step.
+  kill -TERM -- "-$operation" 2>/dev/null || true
+  kill -KILL -- "-$operation" 2>/dev/null || true
   case "$rc" in
     0) printf 'INFO: %s — completed (%ss)\n' "$label" "$((SECONDS - started))" >&2 ;;
     124|137) printf 'WARN: %s — timed out or terminated (%ss, exit %s)\n' "$label" "$((SECONDS - started))" "$rc" >&2 ;;

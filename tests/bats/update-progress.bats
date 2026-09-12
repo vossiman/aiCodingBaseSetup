@@ -58,3 +58,40 @@ teardown() { rm -rf "$TMP"; }
   [ "$status" -eq 0 ]
   [[ "$output" != *"agent-working.sh"* ]]
 }
+
+@test "cancelling a progress operation stops its descendants before returning" {
+  cat > "$TMP/operation.sh" <<'SCRIPT'
+printf '%s' "$PPID" >"$TMP/wrapper"
+sleep 2
+touch "$TMP/late-write"
+SCRIPT
+  run bash -c '
+    . "$BLUEPRINT_ROOT/lib/update-progress.sh"
+    aicoding_progress_run fixture bash "$TMP/operation.sh" >"$TMP/output" 2>&1 & outer=$!
+    for _ in {1..50}; do [ -s "$TMP/wrapper" ] && break; sleep 0.02; done
+    kill -TERM "$(cat "$TMP/wrapper")"
+    wait "$outer" 2>/dev/null || true
+    sleep 2.1
+    test ! -e "$TMP/late-write"
+  '
+  [ "$status" -eq 0 ]
+}
+
+@test "cancellation also stops commands supervised by nested timeout" {
+  cat > "$TMP/operation.sh" <<'SCRIPT'
+sleep 2
+touch "$TMP/late-write"
+SCRIPT
+  run bash -c '
+    . "$BLUEPRINT_ROOT/lib/update-progress.sh"
+    operation() { printf "%s" "$BASHPID" >"$TMP/job"; timeout 5 bash "$TMP/operation.sh"; }
+    aicoding_progress_run fixture operation >"$TMP/output" 2>&1 & outer=$!
+    for _ in {1..50}; do [ -s "$TMP/job" ] && break; sleep 0.02; done
+    wrapper=$(ps -o ppid= -p "$(cat "$TMP/job")" | tr -d " ")
+    kill -TERM "$wrapper"
+    wait "$outer" 2>/dev/null || true
+    sleep 2.1
+    test ! -e "$TMP/late-write"
+  '
+  [ "$status" -eq 0 ]
+}

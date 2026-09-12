@@ -73,7 +73,7 @@ aicoding_update_cursor() {
   esac
   command -v python3 >/dev/null 2>&1 \
     || { _aicoding_record_deferred cursor blocked "" python_runtime_unavailable; return 1; }
-  target=$(_aicoding_cursor_target) \
+  target=$(aicoding_progress_run "cursor: resolving release (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_cursor_target) \
     || { aicoding_result_record cursor failed "" target_version_unavailable; return 1; }
   final="$AICODING_DATA_DIR/versions/cursor/$target"
   mkdir -p "$AICODING_DATA_DIR/versions/cursor" || return 1
@@ -85,13 +85,13 @@ aicoding_update_cursor() {
     fi
     state=current
   else
-    if ! timeout "$AICODING_VENDOR_TIMEOUT" curl -fsSL --proto '=https' --proto-redir '=https' \
+    if ! aicoding_progress_run "cursor: downloading runtime (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" curl -fsSL --proto '=https' --proto-redir '=https' \
         --max-time "$AICODING_VENDOR_TIMEOUT" \
-        "https://downloads.cursor.com/lab/$target/linux/$arch/agent-cli-package.tar.gz" \
-        </dev/null > "$work/archive.tar.gz" 2>/dev/null; then
+        -o "$work/archive.tar.gz" "https://downloads.cursor.com/lab/$target/linux/$arch/agent-cli-package.tar.gz" \
+        </dev/null; then
       rm -rf "$work"; aicoding_result_record cursor failed "$target" archive_download_failed; return 1
     fi
-    if ! mkdir -p "$work/release" || ! _aicoding_cursor_extract "$work/archive.tar.gz" "$work/release"; then
+    if ! mkdir -p "$work/release" || ! aicoding_progress_run "cursor: extracting runtime (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_cursor_extract "$work/archive.tar.gz" "$work/release"; then
       rm -rf "$work"; aicoding_result_record cursor failed "$target" archive_invalid; return 1
     fi
     if ! _aicoding_cursor_probe "$work/release" "$work/home" "$target"; then
