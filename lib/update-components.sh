@@ -620,29 +620,9 @@ _aicoding_release_tree_digest() {
 }
 
 _aicoding_release_tree_digest_impl() {
-  local root=$1 inventory path relative mode kind value digest
-  inventory=$(mktemp "${TMPDIR:-/tmp}/aicoding-release-integrity.XXXXXX") || return 1
-  while IFS= read -r -d '' path; do
-    relative=${path#"$root/"}
-    [ "$relative" != .aicoding-release-integrity ] || continue
-    mode=$(stat -c '%a' -- "$path" 2>/dev/null) || { rm -f "$inventory"; return 1; }
-    if [ -L "$path" ]; then
-      kind=link; value=$(readlink -- "$path") || { rm -f "$inventory"; return 1; }
-    elif [ -f "$path" ]; then
-      kind=file; value=$(sha256sum -- "$path" | awk '{print $1}') \
-        || { rm -f "$inventory"; return 1; }
-    elif [ -d "$path" ]; then
-      kind=directory; value=
-    else
-      rm -f "$inventory"
-      return 1
-    fi
-    printf '%s\0%s\0%s\0%s\0' "$relative" "$kind" "$mode" "$value" >>"$inventory" \
-      || { rm -f "$inventory"; return 1; }
-  done < <(find "$root" -mindepth 1 -print0 2>/dev/null | sort -z)
-  digest=$(sha256sum "$inventory" | awk '{print $1}') || { rm -f "$inventory"; return 1; }
-  rm -f "$inventory" || return 1
-  printf '%s\n' "$digest"
+  local helper
+  helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-digest.py"
+  timeout "$AICODING_VENDOR_TIMEOUT" python3 "$helper" "$1" </dev/null 2>/dev/null
 }
 
 _aicoding_release_integrity_write() {
