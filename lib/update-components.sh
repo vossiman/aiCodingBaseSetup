@@ -4,6 +4,8 @@
 : "${AICODING_DATA_DIR:=$HOME/.local/share/aicoding}"
 : "${AICODING_VENDOR_TIMEOUT:=600}"
 
+. "$(dirname "${BASH_SOURCE[0]}")/playwright-results.sh"
+
 if ! declare -F aicoding_activate_version >/dev/null 2>&1; then
   _aicoding_runtime_root=${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
   . "$_aicoding_runtime_root/lib/runtime.sh"
@@ -547,6 +549,12 @@ _aicoding_playwright_missing_libs() {
   printf '%s\n' "$out" | awk '/not found/ {print $1}' | sort -u
 }
 
+# Preserve the MCP attempt as well as the independently visible browser result.
+_aicoding_playwright_attempt_record() {
+  _aicoding_playwright_record "$2" "$3" "$4" || true
+  aicoding_result_record "$@"
+}
+
 _aicoding_prepare_playwright_browser() {
   local component=$1 version=$2 release=$3
   local cache="$AICODING_DATA_DIR/browser-cache/mcp-playwright/$version"
@@ -554,24 +562,24 @@ _aicoding_prepare_playwright_browser() {
   local core_cli="$release/node_modules/playwright-core/cli.js" bin missing="" rc=0 node_path
   local runtime_home="$AICODING_STATE_DIR/playwright-stage/$version"
   if ! rm -rf "$runtime_home"; then
-    aicoding_result_record "$component" failed "$version" browser_stage_cleanup_failed
+    _aicoding_playwright_attempt_record "$component" failed "$version" browser_stage_cleanup_failed
     return 1
   fi
   mkdir -p "$cache" "$runtime_home" \
-    || { aicoding_result_record "$component" failed "$version" browser_stage_prepare_failed; return 1; }
+    || { _aicoding_playwright_attempt_record "$component" failed "$version" browser_stage_prepare_failed; return 1; }
   HOME="$runtime_home" XDG_CONFIG_HOME="$runtime_home/.config" \
     XDG_DATA_HOME="$runtime_home/.local/share" XDG_CACHE_HOME="$runtime_home/.cache" \
     PLAYWRIGHT_BROWSERS_PATH="$cache" aicoding_progress_run "playwright: preparing Chromium (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" \
       "$cli" install-browser --no-remove chromium </dev/null \
-    || { rm -rf "$runtime_home"; aicoding_result_record "$component" failed "$version" browser_install_failed; return 1; }
+    || { rm -rf "$runtime_home"; _aicoding_playwright_attempt_record "$component" failed "$version" browser_install_failed; return 1; }
   if ! rm -rf "$runtime_home"; then
-    aicoding_result_record "$component" failed "$version" browser_stage_cleanup_failed
+    _aicoding_playwright_attempt_record "$component" failed "$version" browser_stage_cleanup_failed
     return 1
   fi
   bin=$(_aicoding_playwright_browser_bin "$version") \
-    || { aicoding_result_record "$component" failed "$version" browser_validation_failed; return 1; }
+    || { _aicoding_playwright_attempt_record "$component" failed "$version" browser_validation_failed; return 1; }
   missing=$(_aicoding_playwright_missing_libs "$bin") || rc=$?
-  [ "$rc" -eq 0 ] || { aicoding_result_record "$component" failed "$version" browser_validation_failed; return 1; }
+  [ "$rc" -eq 0 ] || { _aicoding_playwright_attempt_record "$component" failed "$version" browser_validation_failed; return 1; }
   if [ -n "$missing" ]; then
     node_path=$(command -v node 2>/dev/null) || true
     if [ -x "$core_cli" ] && [ -n "$node_path" ]; then
@@ -590,13 +598,16 @@ _aicoding_prepare_playwright_browser() {
     local reason=playwright_system_libs_unavailable
     declare -F _sync_profile >/dev/null 2>&1 && [ "$(_sync_profile)" = container ] \
       && reason=manual_rebuild_required_playwright_system_libs
+    _aicoding_playwright_record blocked "$version" "$reason" || true
     _aicoding_record_deferred "$component" blocked "$version" "$reason"
     return 1
   fi
+  _aicoding_playwright_version "$bin" >/dev/null \
+    || { _aicoding_playwright_attempt_record "$component" failed "$version" browser_version_probe_failed; return 1; }
   if ! printf '%s\n' "$bin" > "$cache/.browser-bin.tmp.$$" \
       || ! mv "$cache/.browser-bin.tmp.$$" "$cache/.browser-bin"; then
     rm -f "$cache/.browser-bin.tmp.$$"
-    aicoding_result_record "$component" failed "$version" browser_marker_commit_failed
+    _aicoding_playwright_attempt_record "$component" failed "$version" browser_marker_commit_failed
     return 1
   fi
 }
@@ -908,7 +919,20 @@ _aicoding_finish_npm_entry_release() {
   [ "$component" != mcp-playwright ] \
     || _aicoding_prepare_playwright_browser "$component" "$target" "$final" || return 1
   _aicoding_activate_vendor_release "$component" "$target" "$command_name" "$relative_bin" \
-    || { aicoding_result_record "$component" failed "$target" activation_failed; return 1; }
+    || {
+      [ "$component" != mcp-playwright ] || _aicoding_playwright_record failed "$target" activation_failed || true
+      aicoding_result_record "$component" failed "$target" activation_failed
+      return 1
+    }
+  if [ "$component" = mcp-playwright ]; then
+    local browser
+    browser=$(_aicoding_playwright_browser_bin "$target") \
+      || { _aicoding_playwright_attempt_record "$component" failed "$target" browser_validation_failed; return 1; }
+    if ! _aicoding_playwright_record updated "$target" browser_ready "$browser"; then
+      aicoding_result_record "$component" failed "$target" browser_validation_failed || true
+      return 1
+    fi
+  fi
   # Activation is a complete package success even if a harness-specific
   # registration migration below is blocked by a user conflict or shared
   # consumer evidence. Keep its receipt truthful and independently usable.
