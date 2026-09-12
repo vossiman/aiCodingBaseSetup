@@ -49,6 +49,7 @@ _codex_smart_invoke() {
   local action=$1 dest=$2 template=$3 context=${4:-installer}
   local expected=${5:-} decisions=${6:-[]}
   local rendered decisions_file="" output="" entry="null"
+  local provenance_git="" release_sha=""
   local -a command
 
   CODEX_SMART_RESULT=""
@@ -56,6 +57,21 @@ _codex_smart_invoke() {
      [[ ! -f "$_AICODING_CODEX_MERGE_LIB_DIR/codex-merge.py" ]]; then
     CODEX_SMART_RESULT=$(_codex_smart_error_json runtime_unavailable)
     return 0
+  fi
+
+  # Prepare public source evidence before rendering any secret-bearing source.
+  if [[ "${AICODING_BLUEPRINT_LOCAL:-0}" != 1 && ! -e "$AICODING_BLUEPRINT_CLONE/.git" ]]; then
+    . "$_AICODING_CODEX_MERGE_LIB_DIR/codex-provenance.sh"
+    if [[ ! -f "$AICODING_BLUEPRINT_CLONE/.aicoding-version" || -L "$AICODING_BLUEPRINT_CLONE/.aicoding-version" ]]; then
+      CODEX_SMART_RESULT=$(_codex_smart_error_json invalid_blueprint_release)
+      return 0
+    fi
+    release_sha=$(cat "$AICODING_BLUEPRINT_CLONE/.aicoding-version")
+    if ! _codex_provenance_prepare "$release_sha"; then
+      CODEX_SMART_RESULT=$(_codex_smart_error_json "$CODEX_PROVENANCE_ERROR")
+      return 0
+    fi
+    provenance_git=$CODEX_PROVENANCE_GIT
   fi
 
   rendered=$(mktemp "${TMPDIR:-/tmp}/aicoding-codex-render.XXXXXX") || {
@@ -73,6 +89,7 @@ _codex_smart_invoke() {
     --source "$rendered" --template "$template" --dest "$dest"
     --clone "$AICODING_BLUEPRINT_CLONE" --profile "$(manifest_get_profile)")
   [[ "${AICODING_BLUEPRINT_LOCAL:-0}" == 1 ]] && command+=(--local)
+  [[ -z "$provenance_git" ]] || command+=(--provenance-git "$provenance_git")
 
   # Any local manifest entry establishes legacy management when no shared
   # receipt exists. The engine then creates a conservative baseline rather

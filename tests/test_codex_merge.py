@@ -1048,5 +1048,159 @@ class ReceiptReplayTests(CliFixture):
         self.assertEqual(self.state_path.read_bytes(), old_receipt)
 
 
+class GitlessProvenanceTests(CliFixture):
+    canonical_origin = "https://github.com/vossiman/aiCodingBaseSetup"
+
+    def prepare_release(self):
+        revision = self._git("rev-parse", "HEAD", cwd=self.clone)
+        cache = self.root / "evidence.git"
+        if not cache.exists():
+            self._git("clone", "--bare", "--no-local", str(self.clone), str(cache), cwd=self.root)
+            self._git("remote", "set-url", "origin", self.canonical_origin, cwd=cache, git_dir=True)
+        else:
+            self._git("fetch", str(self.clone), "+refs/heads/*:refs/heads/*", cwd=cache, git_dir=True)
+        self._git("update-ref", "refs/aicoding/qualified/" + revision, revision, cwd=cache, git_dir=True)
+        # Production cache creation uses umask 077, independently of the
+        # developer shell's ambient group-writable umask.
+        for directory, dirs, files in os.walk(cache):
+            Path(directory).chmod(0o700)
+            for name in files:
+                (Path(directory) / name).chmod(0o600)
+        release = self.root / ("release-" + revision)
+        if not release.exists():
+            (release / self.template_rel).parent.mkdir(parents=True)
+            (release / self.template_rel).write_bytes(self.template.read_bytes())
+            (release / ".aicoding-version").write_text(revision + "\n")
+            self.seal_release(release)
+        return release, cache
+
+    def seal_release(self, release):
+        # Use the published runtime's actual digest implementation, so this
+        # fixture remains compatible with real immutable releases.
+        result = subprocess.run(
+            ["bash", "-c", '. "$1/lib/runtime.sh"; _aicoding_runtime_tree_digest_impl "$2"',
+             "fixture", str(ROOT), str(release)], check=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True)
+        (release / ".aicoding-tree.sha256").write_text(result.stdout)
+
+    def release_cli(self, release, cache, action="apply", *extra):
+        return self.cli(action, "--clone", str(release), "--template",
+                        str(release / self.template_rel), "--provenance-git", str(cache), *extra)
+
+    def test_gitless_release_adopts_then_repeats_offline(self):
+        release, cache = self.prepare_release()
+        completed, payload = self.release_cli(release, cache)
+        self.assertEqual(completed.returncode, 0, payload)
+        self.assertTrue(payload["applied"])
+        before = self.state_path.read_bytes()
+        completed, payload = self.release_cli(release, cache)
+        self.assertEqual(completed.returncode, 0, payload)
+        self.assertFalse(payload["state_changed"])
+        self.assertEqual(self.state_path.read_bytes(), before)
+
+    def test_gitless_newer_accepts_and_older_refuses(self):
+        release, cache = self.prepare_release()
+        completed, payload = self.release_cli(release, cache)
+        self.assertEqual(completed.returncode, 0, payload)
+        self.commit_template('x = "{{ VALUE }}"\ny = 2\n')
+        self.source.write_text("x = 1\ny = 2\n")
+        newer, cache = self.prepare_release()
+        completed, payload = self.release_cli(newer, cache)
+        self.assertEqual(completed.returncode, 0, payload)
+        before = (self.dest.read_bytes(), self.state_path.read_bytes())
+        completed, payload = self.release_cli(release, cache)
+        self.assertEqual(payload["error"], {"code": "older_revision"})
+        self.assertEqual((self.dest.read_bytes(), self.state_path.read_bytes()), before)
+
+    def test_gitless_template_requires_object_proof_even_with_resealed_digest(self):
+        release, cache = self.prepare_release()
+        (release / self.template_rel).write_text("x = 999\n")
+        self.seal_release(release)
+        completed, payload = self.release_cli(release, cache)
+        self.assertEqual(payload["error"], {"code": "invalid_blueprint_release"})
+        self.assertFalse(self.dest.exists())
+        self.assertFalse(self.state_path.exists())
+
+    def test_gitless_tamper_digest_and_absent_qualification_refuse(self):
+        release, cache = self.prepare_release()
+        (release / "tamper").write_text("tampered")
+        completed, payload = self.release_cli(release, cache)
+        self.assertEqual(payload["error"], {"code": "invalid_blueprint_release"})
+        (release / "tamper").unlink()
+        revision = (release / ".aicoding-version").read_text().strip()
+        self._git("update-ref", "-d", "refs/aicoding/qualified/" + revision, cwd=cache, git_dir=True)
+        completed, payload = self.release_cli(release, cache)
+        self.assertEqual(payload["error"], {"code": "revision_unavailable"})
+        self.assertFalse(self.dest.exists())
+
+    def test_gitless_cache_rejects_unsafe_graph_inputs(self):
+        release, cache = self.prepare_release()
+        for relative, content in (("info/grafts", "bad\n"), ("shallow", "bad\n"),
+                                  ("objects/info/alternates", "/missing\n")):
+            with self.subTest(relative=relative):
+                path = cache / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
+                completed, payload = self.release_cli(release, cache)
+                self.assertEqual(payload["error"], {"code": "invalid_provenance_cache"})
+                self.assertFalse(self.dest.exists())
+                path.unlink()
+
+    def test_gitless_cache_rejects_writable_or_corrupt_objects(self):
+        release, cache = self.prepare_release()
+        original_mode = cache.stat().st_mode & 0o777
+        cache.chmod(0o777)
+        completed, payload = self.release_cli(release, cache)
+        self.assertEqual(payload["error"], {"code": "invalid_provenance_cache"})
+        cache.chmod(original_mode)
+        self.assertFalse(self.dest.exists())
+
+    def test_gitless_cache_rejects_corrupt_objects(self):
+        release, cache = self.prepare_release()
+        corrupt = cache / "objects" / "00" / ("0" * 38)
+        corrupt.parent.mkdir(exist_ok=True)
+        corrupt.write_bytes(b"not a git object")
+        completed, payload = self.release_cli(release, cache)
+        self.assertEqual(payload["error"], {"code": "invalid_provenance_cache"})
+        self.assertFalse(self.dest.exists())
+
+    def test_gitless_cache_missing_and_divergent_preserve_state(self):
+        release, cache = self.prepare_release()
+        completed, payload = self.release_cli(release, self.root / "missing")
+        self.assertEqual(payload["error"], {"code": "revision_unavailable"})
+        self.assertFalse(self.dest.exists())
+        original = self._git("rev-parse", "HEAD", cwd=self.clone)
+        self.commit_template('x = "{{ LEFT }}"\n')
+        left, cache = self.prepare_release()
+        completed, payload = self.release_cli(left, cache)
+        self.assertEqual(completed.returncode, 0, payload)
+        before = (self.dest.read_bytes(), self.state_path.read_bytes())
+        self._git("checkout", "-b", "other", original, cwd=self.clone)
+        self.template.write_text('x = "{{ RIGHT }}"\n')
+        self._git("add", str(self.template_rel), cwd=self.clone)
+        self._git("commit", "-m", "right", cwd=self.clone)
+        right, cache = self.prepare_release()
+        completed, payload = self.release_cli(right, cache)
+        self.assertEqual(payload["error"], {"code": "divergent_revision"})
+        self.assertEqual((self.dest.read_bytes(), self.state_path.read_bytes()), before)
+
+    def test_gitless_ignores_inherited_git_object_overrides(self):
+        release, cache = self.prepare_release()
+        with patch.dict(os.environ, {"GIT_DIR": str(self.root / "missing"),
+                             "GIT_OBJECT_DIRECTORY": str(self.root / "missing-objects"),
+                             "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.bare",
+                             "GIT_CONFIG_VALUE_0": "false"}):
+            completed, payload = self.release_cli(release, cache)
+        self.assertEqual(completed.returncode, 0, payload)
+
+    def test_gitless_receipt_from_canonical_ssh_clone_migrates(self):
+        self._git("remote", "set-url", "origin", "git@github.com:vossiman/aiCodingBaseSetup.git", cwd=self.clone)
+        self.initial_apply()
+        release, cache = self.prepare_release()
+        completed, payload = self.release_cli(release, cache)
+        self.assertEqual(completed.returncode, 0, payload)
+        self.assertTrue(payload["applied"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

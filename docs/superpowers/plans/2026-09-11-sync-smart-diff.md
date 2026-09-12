@@ -10,11 +10,13 @@
 
 **Spec:** docs/superpowers/specs/2026-09-11-sync-smart-diff-design.md
 
-**Execution checkpoint (`6ec351f`):** All three implementation tasks and their
-review fixes are complete. At this checkpoint, whole-branch review and an
-independent green full-suite gate are still pending; known test-harness races
-are recorded in the PR validation notes. The checklist below records the
-original task requirements.
+**Current integration:** PR172 is being completed on main `0e7fc1a` after
+Surface rollout verification. The remaining blocker is Gitless release
+provenance (AICODINGBASESETUP-57). Extend the offline engine with an explicit
+Git evidence-cache input, prepare that cache through the shell adapter for
+both enrollment and sync, and test real Gitless host reconciliation. Retain
+all existing preference, conflict, receipt and local-development contracts.
+Require the full guarded suite and fresh Opus 5 high review on the final head.
 
 ## Global constraints
 
@@ -39,11 +41,11 @@ Read the Spec completely. Implement its engine, receipt, provenance, migration, 
 python3 lib/codex-merge.py plan|apply
   --source RENDERED_TOML --template RAW_TEMPLATE --dest DEST
   --clone BLUEPRINT_ROOT --profile host|container
-  [--local] [--tracked] [--allow-adopt]
+  [--local] [--tracked] [--allow-adopt] [--provenance-git BARE_CACHE]
   [--expected PLAN_TOKEN] [--decisions DECISIONS_JSON_FILE]
 ```
 
-No network. Infer repository origin/revision from the clone. --local means an explicit local blueprint invocation; a clean origin/main checkout selected explicitly can restore tracking provenance. A plan returns JSON with config_changed, state_changed, conflicts (array of objects with path arrays), error (null or a value-free diagnostic), unmanaged (boolean), token, changes (path/operation objects), and adoption_notices (profile-key differences only). Same fields for apply plus applied boolean. No raw config values or credential fingerprints on stdout. Exit 0 on valid plan/apply even with preserved conflicts; nonzero on errors. A refused untracked config returns unmanaged:true and no writes. --tracked describes a legacy local manifest entry; an existing valid shared receipt independently establishes management. --allow-adopt permits conservative adoption of a previously untracked file.
+No network in the engine. Infer repository origin/revision from the clone, or verify the Gitless release against the separately prepared canonical Git cache. --local means an explicit local blueprint invocation; a clean origin/main checkout selected explicitly can restore tracking provenance. A plan returns JSON with config_changed, state_changed, conflicts (array of objects with path arrays), error (null or a value-free diagnostic), unmanaged (boolean), token, changes (path/operation objects), and adoption_notices (profile-key differences only). Same fields for apply plus applied boolean. No raw config values or credential fingerprints on stdout. Exit 0 on valid plan/apply even with preserved conflicts; nonzero on errors. A refused untracked config returns unmanaged:true and no writes. --tracked describes a legacy local manifest entry; an existing valid shared receipt independently establishes management. --allow-adopt permits conservative adoption of a previously untracked file.
 
 Decisions file is a JSON array of {path:[segments],choice:"local"|"blueprint"}. Require --expected for nonempty decisions; reject mismatched tokens or unknown/stale decision paths without writes. Decisions may address conflicts or profile-key adoption notices. Apply must replan under the shared lock and recheck both live file and state. Plans do not create directories/files. --source is already rendered in a private temporary file by shell code; never read the secrets store yourself.
 

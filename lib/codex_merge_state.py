@@ -16,6 +16,8 @@ from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 from codex_merge import MergePlan, plan_merge, validate_acknowledged
+from codex_release_provenance import (CANONICAL_ORIGIN, ProvenanceFailure,
+    canonical_origin, git_environment, verify_release)
 
 
 RECEIPT_VERSION = 1
@@ -42,6 +44,7 @@ class Request:
     allow_adopt: bool = False
     expected: Optional[str] = None
     decisions: Sequence[Mapping[str, Any]] = ()
+    provenance_git: Optional[Path] = None
 
 
 @dataclass
@@ -126,14 +129,16 @@ def _decode(raw: bytes, code: str) -> str:
 def _run_git(clone: Path, *arguments: str, check: bool = True) -> subprocess.CompletedProcess:
     try:
         completed = subprocess.run(
-            ["git", "-C", str(clone), *arguments],
+            ["git", "--no-replace-objects", "-c", "protocol.allow=never",
+             "-c", "core.commitGraph=false", "-C", str(clone), *arguments],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
-            env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
+            env=git_environment(),
+            timeout=30,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         raise RequestFailure("git_unavailable")
     if check and completed.returncode != 0:
         raise RequestFailure("invalid_blueprint_clone")
@@ -161,8 +166,16 @@ def _sanitize_origin(origin: str, clone: Path) -> str:
 
 def _discover_provenance(request: Request, template_raw: bytes) -> Dict[str, Any]:
     clone = Path(request.clone)
+    if not request.local and not (clone / ".git").exists():
+        try:
+            revision = verify_release(clone, request.template, template_raw, request.provenance_git)
+        except ProvenanceFailure as failure:
+            raise RequestFailure(str(failure))
+        return {"origin": CANONICAL_ORIGIN, "revision": revision,
+                "template_sha256": "sha256:" + hashlib.sha256(template_raw).hexdigest(),
+                "source_kind": "tracking", "profile": request.profile}
     origin_result = _run_git(clone, "remote", "get-url", "origin")
-    origin = _sanitize_origin(origin_result.stdout, clone)
+    origin = canonical_origin(_sanitize_origin(origin_result.stdout, clone))
     head = _run_git(clone, "rev-parse", "HEAD").stdout.strip().lower()
     if not REVISION_RE.match(head):
         raise RequestFailure("invalid_blueprint_clone")
@@ -260,7 +273,7 @@ def _validate_provenance(
     recorded: Dict[str, Any],
     incoming: Dict[str, Any],
 ) -> None:
-    if recorded["origin"] != incoming["origin"]:
+    if canonical_origin(recorded["origin"]) != canonical_origin(incoming["origin"]):
         raise RequestFailure("origin_mismatch")
     if recorded["profile"] != incoming["profile"]:
         raise RequestFailure(
@@ -280,16 +293,17 @@ def _validate_provenance(
         return
     recorded_revision = recorded.get("revision")
     incoming_revision = incoming.get("revision")
-    if not recorded_revision or not _git_has_commit(request.clone, recorded_revision):
+    evidence = request.provenance_git if not (request.clone / ".git").exists() and not request.local else request.clone
+    if evidence is None or not recorded_revision or not _git_has_commit(evidence, recorded_revision):
         raise RequestFailure("revision_unavailable")
     if not incoming_revision:
         raise RequestFailure("invalid_blueprint_clone")
     if recorded_revision == incoming_revision:
         return
-    newer = _is_ancestor(request.clone, recorded_revision, incoming_revision)
+    newer = _is_ancestor(evidence, recorded_revision, incoming_revision)
     if newer is True:
         return
-    older = _is_ancestor(request.clone, incoming_revision, recorded_revision)
+    older = _is_ancestor(evidence, incoming_revision, recorded_revision)
     if older is True:
         raise RequestFailure("older_revision")
     if newer is None or older is None:

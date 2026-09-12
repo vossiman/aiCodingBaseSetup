@@ -183,6 +183,21 @@ same origin/profile. Reject a provably older revision. If a recorded revision
 is unavailable, ancestry diverges, or profile differs, skip this file with a
 diagnostic; boot never waits for input or guesses.
 
+Gitless managed releases use a separate private bare Git evidence cache,
+not a reconstructed working checkout or a version marker as proof. Shell
+preparation obtains missing objects only from the canonical blueprint
+repository after CI qualification of the selected SHA, with bounded progress
+and network guards. The merge engine stays offline: it verifies release
+integrity, binds the raw Codex template to the selected commit's exact blob,
+and checks recorded-to-incoming ancestry using the cached commit graph.
+Cached evidence permits offline repetition; missing or invalid evidence
+preserves both config and receipt with a fixed diagnostic. Reject Git
+replacement refs, grafts, alternates and shallow history, and isolate Git
+subprocesses from ambient repository/config overrides. The same preparation
+path serves first bootstrap enrollment and later sync, including existing
+Gitless releases. Canonical source identity stays compatible with earlier
+tracking receipts. Explicit local blueprints keep the existing rules below.
+
 Preserve --blueprint as a deliberate development workflow. Record its raw
 template digest and source kind; a dirty working tree is not identified by
 HEAD alone. Explicit local invocations may move between revisions from the

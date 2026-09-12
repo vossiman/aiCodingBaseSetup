@@ -39,6 +39,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--dest", type=Path, required=True)
     parser.add_argument("--clone", type=Path, required=True)
     parser.add_argument("--profile", choices=("host", "container"), required=True)
+    parser.add_argument("--provenance-git", type=Path)
     parser.add_argument("--local", action="store_true")
     parser.add_argument("--tracked", action="store_true")
     parser.add_argument("--allow-adopt", action="store_true")
@@ -85,6 +86,7 @@ def main() -> int:
             allow_adopt=arguments.allow_adopt,
             expected=arguments.expected,
             decisions=decisions,
+            provenance_git=arguments.provenance_git,
         )
         payload, status = execute(request)
     sys.stdout.write(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
