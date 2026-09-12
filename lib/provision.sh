@@ -68,6 +68,16 @@ _provision_record_blocked() {
     && aicoding_result_record "$1" blocked "" "$2" || true
 }
 
+_provision_report_component_attempt() {
+  local component=$1 reason
+  reason=$(jq -r --arg component "$component" '.components[$component].reason // empty' \
+    "$AICODING_RESULTS_FILE" 2>/dev/null) || reason=
+  # Receipts are metadata, but do not echo arbitrary content from a damaged
+  # or user-edited file into installer output.
+  [[ "$reason" =~ ^[a-z0-9_]+$ ]] || reason=update_not_verified
+  warn "$component: $reason"
+}
+
 _provision_tool_blocked() {
   _AICODING_GUARDED_PROVISION_DEFERRED=1
   _provision_record_blocked "$@"
@@ -158,6 +168,7 @@ aicoding_prepare_exact_mcps() {
       AICODING_MCP_REGISTRATION_DISABLE=1 aicoding_update_component "$component" || component_rc=$?
     fi
     if [ "$component_rc" -ne 0 ]; then
+      _provision_report_component_attempt "$component"
       if _aicoding_component_attempt_deferred "$component"; then
         _AICODING_PREPARATION_DEFERRED=1
       else
@@ -180,6 +191,7 @@ aicoding_prepare_installed_config_tools() {
       AICODING_COMPONENT_ATTEMPT_DISPOSITION=
       aicoding_update_component "$component" || component_rc=$?
       if [ "$component_rc" -ne 0 ]; then
+        _provision_report_component_attempt "$component"
         if _aicoding_component_attempt_deferred "$component"; then
           _AICODING_PREPARATION_DEFERRED=1
         else
@@ -249,6 +261,7 @@ install_mcp_packages() {
       AICODING_COMPONENT_ATTEMPT_DISPOSITION=
       aicoding_update_component "$component" || component_rc=$?
       if [ "$component_rc" -ne 0 ]; then
+        _provision_report_component_attempt "$component"
         if _aicoding_component_attempt_deferred "$component"; then
           _AICODING_PREPARATION_DEFERRED=1
         else

@@ -690,6 +690,17 @@ EOF
     "$AICODING_STATE_DIR/update-results.json"
 }
 
+@test "failed MCP package enumeration is a failure rather than a successful or deferred install" {
+  _stub_exact_mcp_npm
+  find() { return 1; }
+  run aicoding_update_component mcp-context7
+  [ "$status" -ne 0 ]
+  [ ! -e "$AICODING_DATA_DIR/current/mcp-context7" ]
+  jq -e '.components["mcp-context7"].state == "failed"
+    and .components["mcp-context7"].reason == "package_inventory_unavailable"' \
+    "$AICODING_STATE_DIR/update-results.json"
+}
+
 @test "corrupt retained MCP release is rejected against the fresh exact stage" {
   _stub_exact_mcp_npm
   run aicoding_update_component mcp-context7
