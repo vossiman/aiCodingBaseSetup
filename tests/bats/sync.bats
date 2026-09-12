@@ -1680,25 +1680,25 @@ _kvm_unused_gid() {
   [ "$status" -eq 0 ]
   [[ "$output" != *"managed config conflict: $dest"* ]]
   [ "$(sha256sum "$dest")" = "$before" ]
-  [ "$(compute_managed_hash "$dest")" = "$(manifest_get_file "$dest" | jq -r .deployed_hash)" ]
+  jq -e --arg dest "$dest" '.files[$dest].mode == "toml_merge" and (.files[$dest] | has("deployed_hash") | not)' "$AICODING_MANIFEST"
+  [ -f "$HOME/.codex/.aicoding-sync/config-state.json" ]
 }
 
-@test "host enrollment reports preserved Codex drift without leaking config values" {
+@test "host enrollment silently preserves Codex comment edits without leaking values" {
   bash "$BLUEPRINT_ROOT/install-host.sh" </dev/null
   local dest="$HOME/.codex/config.toml" before
   printf '\n# synthetic-private-value-9284\n' >> "$dest"
   before=$(sha256sum "$dest")
   run bash "$BLUEPRINT_ROOT/install-host.sh"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"managed config conflict: $dest"* ]]
-  [[ "$output" == *"Completed with deferrals"* ]]
-  [[ "$output" == *"local content changed since its recorded deployment"* ]]
+  [[ "$output" != *"managed config conflict: $dest"* ]]
+  [[ "$output" != *"local content changed since its recorded deployment"* ]]
   [[ "$output" != *"synthetic-private-value-9284"* ]]
   [ "$(sha256sum "$dest")" = "$before" ]
   _sync_source_update_libraries "$BLUEPRINT_ROOT"
   run _sync_reconcile boot
   [ "$status" -eq 0 ]
-  [[ "$output" == *"local content changed since its recorded deployment"* ]]
+  [[ "$output" != *"local content changed since its recorded deployment"* ]]
   [[ "$output" != *"synthetic-private-value-9284"* ]]
   [ "$(sha256sum "$dest")" = "$before" ]
 }
