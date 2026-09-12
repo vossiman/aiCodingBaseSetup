@@ -707,6 +707,7 @@ EOF
   run bash "$BP/install.sh" </dev/null
   [ "$status" -eq 0 ]
   echo "$output" | grep -qE '^NOTE: [0-9]+ drifted file\(s\), [0-9]+ file\(s\) to review'
+  [[ "$output" == *"INSTALL OK  blueprint"* ]]
 }
 
 @test "install.sh: ERR trap announces step name on failure" {

@@ -206,3 +206,9 @@ EOF
   [ "$status" -eq 2 ]
   [[ "$output" == *"required workflow missing or invalid"* ]]
 }
+
+@test "missing selector component returns a policy error under nounset" {
+  run bash -uc '. "$BLUEPRINT_ROOT/lib/ci-selector.sh"; aicoding_select_ci_sha'
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"unknown component"* ]]
+}

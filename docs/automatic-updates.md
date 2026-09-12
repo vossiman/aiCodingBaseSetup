@@ -35,9 +35,26 @@ Source releases carry `.aicoding-version` and a retained-tree digest. Exact npm
 components retain the dependency tree and validate package metadata,
 entrypoints and integrity data. Codex also requires the matching
 `codex-code-mode-host`; Playwright retains a package-version-specific browser
-cache and verifies its runtime libraries. Cursor Agent remains installed but
-is not automatically updated because the inspected upstream interface cannot
-safely stage a requested exact version without touching the active install.
+cache and verifies its runtime libraries. Cursor Agent reads the official
+installer as data to select an exact Linux x64/arm64 archive. It validates
+archive paths and types, probes the version under a temporary HOME, and only
+then activates the managed launchers. HTTPS authenticates the vendor download;
+the locally recorded digest detects later changes, not publisher authenticity.
+Unavailable platforms or failed verification preserve the existing installation.
+
+Slow selection, download and integrity operations report their phase and elapsed
+time on stderr. Downloads and package hashing are timeout-bounded. Cancelling a
+supervised operation stops its process group, including nested timeout commands.
+Package hashing streams file contents and keeps existing integrity receipts valid.
+
+Firecrawl staging keeps npm lifecycle scripts disabled. The audited tldjs2.3.2
+exception requires exact registry provenance and matching hook/data hashes:
+its optional postinstall only refreshes rules that are already bundled. Changed
+hooks or versions require another audit.
+
+Enrollment reports preserved configuration conflicts immediately. Tool-config
+conflicts mark dependent provisioning deferred; ordinary local edits such as
+tmux preferences remain preserved without blocking tool provisioning.
 
 Local result receipts are stored at:
 

@@ -57,8 +57,10 @@ aicoding_progress_run() (
   wait "$operation" 2>/dev/null || rc=$?
   # A timed-out shell may leave grandchildren behind even after its direct
   # process exited; no background work belongs to a completed staging step.
-  kill -TERM -- "-$operation" 2>/dev/null || true
-  kill -KILL -- "-$operation" 2>/dev/null || true
+  if [ "$rc" -ne 0 ]; then
+    kill -TERM -- "-$operation" 2>/dev/null || true
+    kill -KILL -- "-$operation" 2>/dev/null || true
+  fi
   case "$rc" in
     0) printf 'INFO: %s — completed (%ss)\n' "$label" "$((SECONDS - started))" >&2 ;;
     124|137) printf 'WARN: %s — timed out or terminated (%ss, exit %s)\n' "$label" "$((SECONDS - started))" "$rc" >&2 ;;
@@ -72,4 +74,8 @@ aicoding_progress_run() (
 _aicoding_progress_capture() {
   local log=$1; shift
   "$@" >/dev/null 2>"$log"
+}
+
+_aicoding_progress_quiet_stderr() {
+  "$@" 2>/dev/null
 }

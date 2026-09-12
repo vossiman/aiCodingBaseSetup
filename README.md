@@ -337,7 +337,7 @@ state directory. Different CLIs have different update paths:
 |-----|-------------|---------------------|
 | Claude Code | exact requested version through the official installer in isolated staging, then validated immutable activation | ✅ |
 | opencode | exact npm version in an isolated prefix, validated before immutable activation | ✅ |
-| Cursor Agent | no safe exact-version staging interface is currently available; retain the installed version and record `blocked/versioned_staging_unavailable` | ❌ blocked |
+| Cursor Agent | exact Linux x64/arm64 archive selected from the official installer, safely extracted and version-probed before immutable activation | ✅ |
 | OpenAI Codex | exact npm version plus matching `codex-code-mode-host`, validated before immutable activation | ✅ |
 
 Firecrawl, Brave, Context7 and Playwright MCP servers use the same exact npm

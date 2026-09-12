@@ -84,7 +84,7 @@ _aicoding_ci_run_qualified() {
 }
 
 aicoding_select_ci_sha() {
-  aicoding_progress_run "$1: selecting CI-qualified release" _aicoding_select_ci_sha_impl "$@"
+  aicoding_progress_run "${1:-unknown}: selecting CI-qualified release" _aicoding_select_ci_sha_impl "$@"
 }
 
 _aicoding_select_ci_sha_impl() (

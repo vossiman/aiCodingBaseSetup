@@ -361,7 +361,10 @@ reconcile_existing_install() {
     case "${BUCKETS[$_d]}" in
       drifted_and_updating|new_file_existing|to_remove)
         report_managed_conflict "$_d" "${BUCKETS[$_d]}"
-        _AICODING_INITIAL_CONFIG_DEFERRED=1
+        _provision_ensure_update_components || return 1
+        case "$(_aicoding_config_component "$_d")" in
+          config-*) _AICODING_INITIAL_CONFIG_DEFERRED=1 ;;
+        esac
         ;;
       restore|new_file|will_update|will_update_owned|drifted_but_aligned|merge)
         _aicoding_initial_config_ready "$_d" || BUCKETS[$_d]=blocked

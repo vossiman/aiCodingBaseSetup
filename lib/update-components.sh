@@ -80,7 +80,7 @@ _aicoding_version_from_command() {
 }
 
 _aicoding_npm_target() {
-  aicoding_progress_run "${AICODING_PROGRESS_COMPONENT:-package}: resolving version (timeout ${AICODING_VENDOR_TIMEOUT}s)" timeout "$AICODING_VENDOR_TIMEOUT" npm view "$1" version --json </dev/null \
+  aicoding_progress_run "${AICODING_PROGRESS_COMPONENT:-package}: resolving version (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_quiet_stderr timeout "$AICODING_VENDOR_TIMEOUT" npm view "$1" version --json </dev/null \
     | jq -r 'if type == "array" then last else . end // empty' 2>/dev/null
 }
 
@@ -425,8 +425,8 @@ _aicoding_stage_git_source() {
     return 0
   fi
   rm -rf "$stage"; mkdir -p "$(dirname "$final")"
-  timeout "$AICODING_VENDOR_TIMEOUT" git clone --no-checkout "$remote" "$stage" >/dev/null 2>&1 || { rm -rf "$stage"; return 1; }
-  timeout "$AICODING_VENDOR_TIMEOUT" git -C "$stage" checkout --detach "$sha" >/dev/null 2>&1 || { rm -rf "$stage"; return 1; }
+  aicoding_progress_run "${AICODING_PROGRESS_COMPONENT:-source}: downloading source (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" git clone --no-checkout "$remote" "$stage" || { rm -rf "$stage"; return 1; }
+  aicoding_progress_run "${AICODING_PROGRESS_COMPONENT:-source}: extracting source (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" git -C "$stage" checkout --detach "$sha" || { rm -rf "$stage"; return 1; }
   [ "$(git -C "$stage" rev-parse HEAD 2>/dev/null)" = "$sha" ] || { rm -rf "$stage"; return 1; }
   rm -rf "$stage/.git"
   printf '%s\n' "$sha" > "$stage/.aicoding-version"
@@ -558,8 +558,8 @@ _aicoding_prepare_playwright_browser() {
     || { aicoding_result_record "$component" failed "$version" browser_stage_prepare_failed; return 1; }
   HOME="$runtime_home" XDG_CONFIG_HOME="$runtime_home/.config" \
     XDG_DATA_HOME="$runtime_home/.local/share" XDG_CACHE_HOME="$runtime_home/.cache" \
-    PLAYWRIGHT_BROWSERS_PATH="$cache" timeout "$AICODING_VENDOR_TIMEOUT" \
-      "$cli" install-browser --no-remove chromium </dev/null >/dev/null 2>&1 \
+    PLAYWRIGHT_BROWSERS_PATH="$cache" aicoding_progress_run "playwright: preparing Chromium (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" \
+      "$cli" install-browser --no-remove chromium </dev/null \
     || { rm -rf "$runtime_home"; aicoding_result_record "$component" failed "$version" browser_install_failed; return 1; }
   if ! rm -rf "$runtime_home"; then
     aicoding_result_record "$component" failed "$version" browser_stage_cleanup_failed
@@ -573,12 +573,12 @@ _aicoding_prepare_playwright_browser() {
     node_path=$(command -v node 2>/dev/null) || true
     if [ -x "$core_cli" ] && [ -n "$node_path" ]; then
       if [ "$(id -u)" -eq 0 ]; then
-        PLAYWRIGHT_BROWSERS_PATH="$cache" timeout "$AICODING_VENDOR_TIMEOUT" \
-          "$node_path" "$core_cli" install-deps chromium </dev/null >/dev/null 2>&1 || true
+        PLAYWRIGHT_BROWSERS_PATH="$cache" aicoding_progress_run "playwright: preparing system libraries (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" \
+          "$node_path" "$core_cli" install-deps chromium </dev/null || true
       elif command -v sudo >/dev/null 2>&1 \
           && timeout "${AICODING_PROBE_TIMEOUT:-15}" sudo -n true </dev/null >/dev/null 2>&1; then
-        timeout "$AICODING_VENDOR_TIMEOUT" sudo -n env PLAYWRIGHT_BROWSERS_PATH="$cache" \
-          "$node_path" "$core_cli" install-deps chromium </dev/null >/dev/null 2>&1 || true
+        aicoding_progress_run "playwright: preparing system libraries (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" sudo -n env PLAYWRIGHT_BROWSERS_PATH="$cache" \
+          "$node_path" "$core_cli" install-deps chromium </dev/null || true
       fi
       missing=$(_aicoding_playwright_missing_libs "$bin") || rc=$?
     fi
@@ -923,7 +923,7 @@ aicoding_update_claude() {
   if ! HOME="$staged_home" CLAUDE_CONFIG_DIR="$staged_home/.claude" \
       XDG_CONFIG_HOME="$staged_home/.config" XDG_DATA_HOME="$staged_home/.local/share" \
       XDG_CACHE_HOME="$staged_home/.cache" XDG_STATE_HOME="$staged_home/.local/state" \
-      timeout "$AICODING_VENDOR_TIMEOUT" bash "$installer" "$target" </dev/null >/dev/null 2>&1; then
+      aicoding_progress_run "claude: staging runtime (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" bash "$installer" "$target" </dev/null; then
     rm -rf "$stage"; aicoding_result_record claude failed "$target" stage_install_failed; return 1
   fi
   staged_bin="$staged_home/.local/share/claude/versions/$target"
@@ -995,14 +995,14 @@ aicoding_update_bw() {
   else
     command -v go >/dev/null 2>&1 \
       || { _aicoding_record_deferred bw-AICode blocked "$sha" "$(_aicoding_missing_runtime_reason go)"; return 1; }
-    (cd "$source" && timeout "$AICODING_VENDOR_TIMEOUT" go test ./... </dev/null >/dev/null 2>&1) \
+    (cd "$source" && aicoding_progress_run "bw-AICode: testing runtime (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" go test ./... </dev/null) \
       || { aicoding_result_record bw-AICode failed "$sha" tests_failed; return 1; }
     stage="$AICODING_DATA_DIR/versions/bw-AICode/.staging.$sha.$$"
     rm -rf "$stage"; mkdir -p "$stage/bin" || return 1
     cp -a "$source/claude-bw.sh" "$source/opencode-bw.sh" "$source/pi-bw.sh" \
       "$source/.aicoding-version" "$stage/" \
       || { rm -rf "$stage"; aicoding_result_record bw-AICode failed "$sha" stage_copy_failed; return 1; }
-    (cd "$source" && timeout "$AICODING_VENDOR_TIMEOUT" go build -o "$stage/bin/bw-docker-guard" ./cmd/bw-docker-guard </dev/null) \
+    (cd "$source" && aicoding_progress_run "bw-AICode: building runtime (timeout ${AICODING_VENDOR_TIMEOUT}s)" timeout "$AICODING_VENDOR_TIMEOUT" go build -o "$stage/bin/bw-docker-guard" ./cmd/bw-docker-guard </dev/null) \
       || { rm -rf "$stage"; aicoding_result_record bw-AICode failed "$sha" build_failed; return 1; }
     [ -x "$stage/bin/bw-docker-guard" ] \
       || { rm -rf "$stage"; aicoding_result_record bw-AICode failed "$sha" staged_validation_failed; return 1; }
