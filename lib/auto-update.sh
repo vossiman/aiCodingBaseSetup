@@ -54,6 +54,19 @@ _aicoding_auto_worker_protocol_current() {
   [ "$ticks" = "$actual_ticks" ]
 }
 
+# Protocol identity alone does not prove mutual exclusion when a lock file
+# was removed and recreated while the process kept its old inode open.
+_aicoding_auto_worker_has_current_lock() {
+  local state=$1 pid=$2 expected path target
+  [ -e "$state/worker.lock" ] || return 1
+  expected=$(readlink -f "$state/worker.lock" 2>/dev/null) || return 1
+  for path in /proc/"$pid"/fd/[0-9]*; do
+    target=$(readlink "$path" 2>/dev/null) || continue
+    [ "$target" != "$expected" ] || return 0
+  done
+  return 1
+}
+
 # Legacy workers pass their lifetime lock into sync children. Detached
 # enrollment must not retain it while waiting for that worker to exit.
 _aicoding_auto_close_scheduler_lock_fds() {
@@ -72,14 +85,20 @@ _aicoding_auto_close_scheduler_lock_fds() {
 
 # Invoked by the newly selected scheduled sync while the old shell may still
 # own worker.lock. Queue migration in the new release, without making sync
-# wait for itself to release sync.lock or creating a previously absent scheduler.
+# wait for itself to release sync.lock. A saved worker PID also permits recovery
+# after a crash; state with no worker PID never enrolls through this hook.
 aicoding_auto_upgrade_worker_after_sync() {
   [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ] || return 0
+  # A oneshot service would kill detached children when its cgroup exits.
+  # Any legacy fallback still upgrades through its own next scheduled pass.
+  [ "${AICODING_AUTO_UPDATE_SOURCE:-}" != systemd ] || return 0
+  _aicoding_auto_in_systemd_service && return 0
   local root=$1 state pid self
   state=$(_aicoding_auto_state_dir) || return 1
   pid=$(cat "$state/worker.pid" 2>/dev/null || true)
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
-  _aicoding_auto_worker_protocol_current "$state" "$pid" && return 0
+  if _aicoding_auto_worker_protocol_current "$state" "$pid" \
+      && _aicoding_auto_worker_has_current_lock "$state" "$pid"; then return 0; fi
   self="$root/bin/aicoding-auto-update"
   [ -x "$self" ] || return 1
   _aicoding_auto_rotate_log "$state/enroll.log"
@@ -101,7 +120,8 @@ _aicoding_auto_recover_shared_lock_worker_locked() {
     case "$rc" in 0) return 0 ;; 1) return 3 ;; *) return 1 ;; esac
   fi
   fds=$(_aicoding_auto_shared_lock_fds "$pid")
-  if [ -z "$fds" ] && _aicoding_auto_worker_protocol_current "$state" "$pid"; then
+  if [ -z "$fds" ] && _aicoding_auto_worker_protocol_current "$state" "$pid" \
+      && _aicoding_auto_worker_has_current_lock "$state" "$pid"; then
     return 0
   fi
   # The scheduler was introduced in d9db8ad with every pass routed through
@@ -176,8 +196,6 @@ aicoding_auto_update_once() {
   local state run_fd started completed pid ticks source=manual outcome rc=0
   state=$(_aicoding_auto_state_dir) || return 1
   mkdir -p "$state" || return 1
-  started=$(date +%s) || return 1
-  _aicoding_auto_atomic_number "$state/last-attempt" "$started" || return 1
   AICODING_AUTO_UPDATE_PERFORMED=0
   AICODING_AUTO_UPDATE_DEFERRED=0
   exec {run_fd}>"$state/run.lock" || return 1
@@ -186,6 +204,10 @@ aicoding_auto_update_once() {
     exec {run_fd}>&-
     return 0
   fi
+  # A request rejected by the controller lock never began an attempt.
+  started=$(date +%s) || { exec {run_fd}>&-; return 1; }
+  _aicoding_auto_atomic_number "$state/last-attempt" "$started" \
+    || { exec {run_fd}>&-; return 1; }
   case "${AICODING_AUTO_UPDATE_SOURCE:-}" in
     systemd|fallback) source=$AICODING_AUTO_UPDATE_SOURCE ;;
     *) _aicoding_auto_in_systemd_service && source=systemd ;;
@@ -320,7 +342,7 @@ _aicoding_auto_start_worker() {
 }
 
 _aicoding_auto_stop_worker() {
-  local state pid argument arguments= i path target expected owns_lock=0
+  local state pid argument arguments= i path target expected owns_lock=0 deleted_lock=0 replacement_fd=
   state=$(_aicoding_auto_state_dir) || return 1
   pid=$(cat "$state/worker.pid" 2>/dev/null || true)
   if [[ ! "$pid" =~ ^[1-9][0-9]*$ ]]; then
@@ -344,22 +366,40 @@ _aicoding_auto_stop_worker() {
     for path in /proc/"$pid"/fd/[0-9]*; do
       target=$(readlink "$path" 2>/dev/null) || continue
       if [ "$target" = "$expected" ]; then owns_lock=1; break; fi
+      [ "$target" != "$expected (deleted)" ] || deleted_lock=1
     done
+  fi
+  if [ "$owns_lock" -ne 1 ] && [ "$deleted_lock" -eq 1 ]; then
+    # A deleted path spelling is not ownership proof. The state receipt must
+    # bind this exact process, and no replacement lock owner may be hidden by
+    # stopping the retired-inode worker before enabling a different backend.
+    _aicoding_auto_worker_protocol_current "$state" "$pid" || {
+      echo 'aicoding-auto-update: deleted worker lock ownership cannot be verified; transition deferred' >&2
+      return 1
+    }
+    exec {replacement_fd}>"$state/worker.lock" || return 1
+    if ! flock -n "$replacement_fd"; then
+      exec {replacement_fd}>&-
+      return 3
+    fi
+    owns_lock=1
   fi
   if [ "$owns_lock" -ne 1 ]; then
     [ "$(cat "$state/worker.pid" 2>/dev/null || true)" != "$pid" ] || rm -f -- "$state/worker.pid"
     return 0
   fi
-  kill "$pid" 2>/dev/null || return 0
+  kill "$pid" 2>/dev/null || { [ -z "$replacement_fd" ] || exec {replacement_fd}>&-; return 0; }
   for ((i=0; i<20; i++)); do
     # Removing the PID file is not process exit: the TERM trap may still
     # own worker.lock and inherited descriptors until the shell exits.
     if ! kill -0 "$pid" 2>/dev/null; then
       [ "$(cat "$state/worker.pid" 2>/dev/null || true)" != "$pid" ] || rm -f -- "$state/worker.pid"
+      [ -z "$replacement_fd" ] || exec {replacement_fd}>&-
       return 0
     fi
     sleep 0.1
   done
+  [ -z "$replacement_fd" ] || exec {replacement_fd}>&-
   return 3
 }
 

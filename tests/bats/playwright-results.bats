@@ -166,3 +166,14 @@ BROWSER
   jq -e '.components["mcp-playwright"].state == "updated"' "$AICODING_RESULTS_FILE"
   [ -L "$AICODING_DATA_DIR/current/mcp-playwright" ]
 }
+
+@test "Chrome for Testing branded output records its actual browser version" {
+  cat > "$cache/chromium-123/chrome-linux64/chrome" <<'BROWSER'
+#!/bin/sh
+echo 'Google Chrome for Testing 143.0.7499.4'
+BROWSER
+  _aicoding_finish_npm_entry_release mcp-playwright "$target" "$release" playwright-mcp bin/playwright-mcp
+  jq -e '.components["playwright-chromium"] | .state == "updated" and .successful_version == "143.0.7499.4" and .reason == "browser_ready"' "$AICODING_RESULTS_FILE"
+  ensure_playwright_browsers
+  jq -e '.components["playwright-chromium"] | .state == "current" and .successful_version == "143.0.7499.4" and .reason == "browser_ready"' "$AICODING_RESULTS_FILE"
+}

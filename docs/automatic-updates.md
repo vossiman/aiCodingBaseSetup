@@ -86,9 +86,11 @@ not by itself supersede individual blockers.
 
 Updater attempts and completed outcomes live separately in
 `~/.local/state/aicoding/auto-update/`. Manual `--once`, systemd and fallback
-runs record outcomes there; a busy request does not overwrite the last
-completed outcome. The legacy `last-success` file remains specific to a
-completed fallback pass without deferrals. An interrupted attempt has no
+runs record outcomes there. `last-attempt` records when an updater controller
+starts; a concurrent request refused by its run lock preserves that timestamp.
+A controller that discovers a separately running sync still counts as an
+attempt. Busy requests never overwrite the last completed outcome. The legacy
+`last-success` file remains specific to a completed fallback pass without deferrals. An interrupted attempt has no
 successful completion receipt. Status combines process identity and lock
 evidence when reporting activity, and treats an overdue fallback `next-due`
 as pending/retrying rather than proof of a running scheduler.

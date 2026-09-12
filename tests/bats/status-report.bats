@@ -6,6 +6,9 @@ setup() {
   export HOME="$TMP/home" AICODING_STATE_DIR="$TMP/state" AICODING_DATA_DIR="$TMP/data"
   export AICODING_RESULTS_FILE="$TMP/state/update-results.json"
   export TZ=Europe/Vienna
+  # importlib-based clock/lock tests must not write lib/__pycache__ into the
+  # shared checkout while parallel host-installer tests tar that source tree.
+  export PYTHONDONTWRITEBYTECODE=1
   BIN="$BLUEPRINT_ROOT/bin/aicoding-status"
   AUTO="$AICODING_STATE_DIR/auto-update"
   mkdir -p "$HOME" "$AUTO" "$TMP/stubs"
@@ -414,4 +417,32 @@ with path.open() as unrelated_open_description:
     assert not module.owns_lock(os.getpid(), path)
 PY
   [ "$status" -eq 0 ]
+}
+
+@test "browser version display preserves Playwright Chrome for Testing branding" {
+  local cache="$AICODING_DATA_DIR/browser-cache/mcp-playwright/0.0.80"
+  mkdir -p "$cache" "$AICODING_DATA_DIR/current" "$AICODING_DATA_DIR/versions/mcp-playwright/0.0.80"
+  ln -s ../versions/mcp-playwright/0.0.80 "$AICODING_DATA_DIR/current/mcp-playwright"
+  printf '#!/bin/sh\nprintf "Google Chrome for Testing 147.0.7718.0\\n"\n' > "$cache/chrome"
+  chmod +x "$cache/chrome"
+  printf '%s\n' "$cache/chrome" > "$cache/.browser-bin"
+  run "$BIN"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Playwright Chromium: Google Chrome for Testing 147.0.7718.0"* ]]
+}
+
+@test "status helper imports never write bytecode into their source tree" {
+  mkdir -p "$TMP/import-source"
+  cp "$BLUEPRINT_ROOT/lib/status-report.py" "$TMP/import-source/status-report.py"
+  run python3 - "$TMP/import-source/status-report.py" <<'PY'
+import importlib.util
+from pathlib import Path
+import sys
+source = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location('status_report', source)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert sorted(path.name for path in source.parent.iterdir()) == ['status-report.py']
+PY
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
 }

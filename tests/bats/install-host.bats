@@ -485,7 +485,7 @@ EOF
 @test "host profile gets an on-request codex sandbox" {
   export AICODINGSETUP_SKIP_NETWORK=1
   run bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
   run grep -E '^approval_policy = "on-request"$' "$HOME/.codex/config.toml"
   [ "$status" -eq 0 ]
   run grep -E '^sandbox_mode = "workspace-write"$' "$HOME/.codex/config.toml"

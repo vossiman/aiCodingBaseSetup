@@ -5,7 +5,7 @@
 _aicoding_playwright_version() {
   local output
   output=$(timeout "${AICODING_PROBE_TIMEOUT:-15}" "$1" --version </dev/null 2>/dev/null) || return 1
-  if [[ "$output" =~ ^(Chromium|Google\ Chrome|Chrome\ Headless\ Shell)[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+) ]]; then
+  if [[ "$output" =~ ^(Chromium|Google\ Chrome|Google\ Chrome\ for\ Testing|Chrome\ Headless\ Shell)[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+) ]]; then
     printf '%s\n' "${BASH_REMATCH[2]}"
   else
     printf '%s\n' unknown
