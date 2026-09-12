@@ -122,15 +122,18 @@ aicoding_config_is_compatible() {
         || { echo opencode_config_probe_failed; return 1; }
       ;;
     "$HOME/.cursor/mcp.json"|"$HOME/.cursor/cli-config.json"|"$HOME/.cursor/hooks.json")
+      # Discovery intentionally leaves absent and Windows-side CLIs alone.
+      # Explain that condition before asking for a receipt no adapter could
+      # have produced for this host.
+      if _aicoding_command_is_linux agent; then command_name=agent
+      elif _aicoding_command_is_linux cursor-agent; then command_name=cursor-agent
+      else echo cursor_not_installed; return 1; fi
       _aicoding_update_receipt_allows cursor || { echo cursor_update_not_verified; return 1; }
       if [ "$dest" = "$HOME/.cursor/mcp.json" ]; then
         _aicoding_exact_mcp_config_allows "$dest" \
           || { echo mcp_exact_version_staging_unavailable; return 1; }
       fi
       _aicoding_shared_consumers_allow cursor "" "$HOME/.cursor" || { echo cursor_shared_consumers_incompatible; return 1; }
-      if _aicoding_command_is_linux agent; then command_name=agent
-      elif _aicoding_command_is_linux cursor-agent; then command_name=cursor-agent
-      else echo cursor_not_installed; return 1; fi
       timeout "${AICODING_PROBE_TIMEOUT:-15}" "$command_name" --version </dev/null >/dev/null 2>&1 \
         || { echo cursor_config_probe_failed; return 1; }
       ;;
@@ -777,6 +780,24 @@ aicoding_update_npm_entry_component() {
   [[ "$target" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] \
     || { aicoding_result_record "$component" failed "" target_version_unavailable; return 1; }
   final="$AICODING_DATA_DIR/versions/$component/$target"
+  # The first validated dependency lock for an exact top-level version is
+  # immutable. Verify and reuse it before downloading another resolution that
+  # would only be discarded. Still repair activation, browser and registration.
+  if [ -d "$final" ]; then
+    if ! _aicoding_npm_entry_release_valid "$final" "$component" "$command_name" "$package" "$target" \
+        || ! _aicoding_release_integrity_valid "$final"; then
+      aicoding_result_record "$component" failed "$target" existing_release_invalid
+      return 1
+    fi
+    entry=$(jq -r --arg n "$command_name" \
+      'if (.bin|type)=="string" then .bin else .bin[$n] // empty end' \
+      "$final/node_modules/$package/package.json") || return 1
+    relative_bin="node_modules/$package/$entry"
+    [ "$component" != mcp-playwright ] || relative_bin=bin/playwright-mcp
+    printf 'INFO: %s: reusing verified release %s\n' "$component" "$target" >&2
+    _aicoding_finish_npm_entry_release "$component" "$target" "$final" "$command_name" "$relative_bin"
+    return $?
+  fi
   stage="$AICODING_DATA_DIR/versions/$component/.staging.$target.$$"
   package_dir="$stage/node_modules/$package"
   install_log="$stage/.npm-install.log"
@@ -879,6 +900,11 @@ aicoding_update_npm_entry_component() {
       && _aicoding_release_integrity_valid "$final" \
       || { aicoding_result_record "$component" failed "$target" committed_release_invalid; return 1; }
   fi
+  _aicoding_finish_npm_entry_release "$component" "$target" "$final" "$command_name" "$relative_bin"
+}
+
+_aicoding_finish_npm_entry_release() {
+  local component=$1 target=$2 final=$3 command_name=$4 relative_bin=$5
   [ "$component" != mcp-playwright ] \
     || _aicoding_prepare_playwright_browser "$component" "$target" "$final" || return 1
   _aicoding_activate_vendor_release "$component" "$target" "$command_name" "$relative_bin" \
