@@ -93,6 +93,11 @@ main() {
     esac
   done
 
+  if [[ "${AICODING_PERSISTENT_ENROLLMENT:-0}" == 1 && "${ENV_TYPE:-}" == wsl ]]; then
+    err "Container enrollment cannot run directly in WSL; use --profile host"
+    return 1
+  fi
+
   header "AI Coding Base Setup"
 
   seed_github_known_host
@@ -182,7 +187,8 @@ main() {
   ensure_agents_skills_symlink
   ensure_codex_managed_hooks
   install_tmux_plugins
-  install_bubblewrap
+  install_bubblewrap \
+    || { warn "bw-AICode provisioning failed"; persistent_provision_failed=1; }
   install_infra_audit
   check_playwright
   ensure_lfs_autopull_safe

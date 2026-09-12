@@ -233,7 +233,8 @@ main() {
   manifest_set_profile host
 
   ensure_codex_managed_hooks
-  install_bubblewrap
+  install_bubblewrap \
+    || { warn "bw-AICode provisioning failed"; persistent_provision_failed=1; }
   ensure_homelab_wiki
   ensure_aicoding_auto_update
 
