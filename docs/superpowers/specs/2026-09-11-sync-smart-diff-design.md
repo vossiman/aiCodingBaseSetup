@@ -190,7 +190,10 @@ repository after CI qualification of the selected SHA, with bounded progress
 and network guards. The merge engine stays offline: it verifies release
 integrity, binds the raw Codex template to the selected commit's exact blob,
 and checks recorded-to-incoming ancestry using the cached commit graph.
-Cached evidence permits offline repetition; missing or invalid evidence
+Before storing evidence, an existing machine-owned state directory is made
+private (0700) using descriptor-based ownership and symlink checks. No foreign
+state directory or symlink target is chmodded. Cached evidence permits offline
+repetition; missing or invalid evidence
 preserves both config and receipt with a fixed diagnostic. Reject Git
 replacement refs, grafts, alternates and shallow history, and isolate Git
 subprocesses from ambient repository/config overrides. The same preparation

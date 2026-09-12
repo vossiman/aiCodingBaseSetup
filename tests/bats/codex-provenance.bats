@@ -87,13 +87,12 @@ seed_cache() (
   [[ "$output" == *revision_unavailable* ]]
   [ ! -e "$HOME/rendered" ]
 }
-@test "provenance rejects writable cache parent and injected config includes" {
+@test "provenance migrates owned state permissions and rejects injected config includes" {
   seed_cache
-  chmod 0777 "$AICODING_STATE_DIR"
+  chmod 0775 "$AICODING_STATE_DIR"
   run bash -c '. "$BLUEPRINT_ROOT/lib/codex-provenance.sh"; _codex_provenance_prepare "$PROV_SHA"; rc=$?; echo "$CODEX_PROVENANCE_ERROR"; exit "$rc"'
-  [ "$status" -ne 0 ]
-  [[ "$output" == *invalid_provenance_cache* ]]
-  chmod 0700 "$AICODING_STATE_DIR"
+  [ "$status" -eq 0 ]
+  [ "$(stat -c %a "$AICODING_STATE_DIR")" = 700 ]
   git --git-dir="$AICODING_STATE_DIR/code-provenance/aicoding.git" config include.path /nonexistent
   run bash -c '. "$BLUEPRINT_ROOT/lib/codex-provenance.sh"; _codex_provenance_prepare "$PROV_SHA"; rc=$?; echo "$CODEX_PROVENANCE_ERROR"; exit "$rc"'
   [ "$status" -ne 0 ]
@@ -122,4 +121,21 @@ SH
 --no-tags
 https://github.com/vossiman/aiCodingBaseSetup
 $PROV_SHA" ]
+}
+
+@test "provenance refuses symlink state without changing target permissions" {
+  seed_cache
+  mv "$AICODING_STATE_DIR" "$PROV_TMP/moved-state"
+  chmod 0775 "$PROV_TMP/moved-state"
+  ln -s "$PROV_TMP/moved-state" "$AICODING_STATE_DIR"
+  run bash -c '. "$BLUEPRINT_ROOT/lib/codex-provenance.sh"; _codex_provenance_prepare "$PROV_SHA"'
+  [ "$status" -ne 0 ]
+  [ "$(stat -c %a "$PROV_TMP/moved-state")" = 775 ]
+}
+@test "provenance refuses a foreign-owned state directory without chmod" {
+  [ "$(id -u)" != 0 ] || skip 'root has no foreign-owned fixture'
+  original_mode=$(stat -c %a /)
+  run bash -c '. "$BLUEPRINT_ROOT/lib/codex-provenance.sh"; AICODING_STATE_DIR=/ _codex_provenance_prepare "$PROV_SHA"'
+  [ "$status" -ne 0 ]
+  [ "$(stat -c %a /)" = "$original_mode" ]
 }

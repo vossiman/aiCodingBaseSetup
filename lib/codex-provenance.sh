@@ -10,6 +10,37 @@ _codex_provenance_git() (
     -c transfer.fsckObjects=true -c fetch.fsckObjects=true "$@"
 )
 
+# Older installers created machine-owned state with the caller's umask (often
+# 002). Privatize that directory before it contains provenance evidence. Walk
+# through directory descriptors with O_NOFOLLOW, then chmod the verified owned
+# descriptor: neither a foreign directory nor a symlink target is modified.
+_codex_provenance_private_state() {
+  python3 - "$1" <<'PYTHON'
+import os, pathlib, stat, sys
+fd=None
+try:
+    p=pathlib.Path(sys.argv[1]).absolute()
+    flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC
+    fd=os.open('/', flags)
+    for part in p.parts[1:]:
+        try:
+            child=os.open(part, flags, dir_fd=fd)
+        except FileNotFoundError:
+            sys.exit(0) # Missing state will be created privately by the caller.
+        os.close(fd)
+        fd=child
+    info=os.fstat(fd)
+    if info.st_uid != os.getuid() or not stat.S_ISDIR(info.st_mode):
+        raise ValueError()
+    if stat.S_IMODE(info.st_mode) != 0o700:
+        os.fchmod(fd, 0o700)
+except (OSError, ValueError):
+    sys.exit(1)
+finally:
+    if fd is not None: os.close(fd)
+PYTHON
+}
+
 # Reject links along the requested path and mutable/shared cache contents.
 # Ordinary ancestors (e.g. /tmp) need not be private; the evidence directory is.
 _codex_provenance_paths_safe() {
@@ -63,6 +94,7 @@ _codex_provenance_cached() {
 _codex_provenance_prepare_impl() (
   umask 077
   local sha=$1 parent=$2 cache="$2/aicoding.git" lock_fd stage="" rc
+  _codex_provenance_private_state "${parent%/*}" || return 3
   _codex_provenance_paths_safe "$parent" || return 3
   if [ -e "$cache" ]; then
     _codex_provenance_cache_safe "$cache" || return 3
