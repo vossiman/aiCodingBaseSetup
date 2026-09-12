@@ -12,15 +12,17 @@ _aicoding_playwright_version() {
   fi
 }
 
+# Optional fifth argument is version evidence from this same staging attempt,
+# carried across activation so committing a receipt does not run a second probe.
 _aicoding_playwright_record() {
-  local state=$1 target=${2:-} reason=$3 bin=${4:-} version= last=${AICODING_COMPONENT_LAST_RESULT:-} rc=0
+  local state=$1 target=${2:-} reason=$3 bin=${4:-} version=${5:-} last=${AICODING_COMPONENT_LAST_RESULT:-} rc=0
   if ! declare -F aicoding_result_record >/dev/null 2>&1; then
     . "$(dirname "${BASH_SOURCE[0]}")/update-results.sh" || return 1
   fi
   [ -z "$target" ] || target="mcp-playwright@$target"
   case "$state" in
     current|updated)
-      if ! version=$(_aicoding_playwright_version "$bin"); then
+      if [ -z "$version" ] && ! version=$(_aicoding_playwright_version "$bin"); then
         state=failed
         reason=browser_version_probe_failed
         rc=1

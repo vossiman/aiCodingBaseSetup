@@ -63,7 +63,8 @@ _aicoding_auto_close_scheduler_lock_fds() {
     [ "$fd" -gt 2 ] 2>/dev/null || continue
     target=$(readlink "$path" 2>/dev/null) || continue
     case "$target" in
-      */auto-update/worker.lock|*/auto-update/run.lock)
+      */auto-update/worker.lock|*/auto-update/run.lock|\
+      */auto-update/worker.lock\ \(deleted\)|*/auto-update/run.lock\ \(deleted\))
         exec {fd}>&- || return 1 ;;
     esac
   done
@@ -157,6 +158,20 @@ _aicoding_auto_process_start_ticks() {
   printf '%s\n' "${fields[19]}"
 }
 
+# INVOCATION_ID is inherited by any command launched under a systemd service,
+# including manual updates from hosted CI or terminals. Older installed units
+# lack our explicit source marker, so recognize only this unit's cgroup.
+_aicoding_auto_in_systemd_service() {
+  local file=${1:-/proc/$BASHPID/cgroup} hierarchy controllers path
+  [ -r "$file" ] || return 1
+  while IFS=: read -r hierarchy controllers path; do
+    case "$path/" in
+      */aicoding-auto-update.service/*) return 0 ;;
+    esac
+  done < "$file"
+  return 1
+}
+
 aicoding_auto_update_once() {
   local state run_fd started completed pid ticks source=manual outcome rc=0
   state=$(_aicoding_auto_state_dir) || return 1
@@ -171,8 +186,10 @@ aicoding_auto_update_once() {
     exec {run_fd}>&-
     return 0
   fi
-  [ -z "${INVOCATION_ID:-}" ] || source=systemd
-  [ "${AICODING_AUTO_UPDATE_SOURCE:-}" != fallback ] || source=fallback
+  case "${AICODING_AUTO_UPDATE_SOURCE:-}" in
+    systemd|fallback) source=$AICODING_AUTO_UPDATE_SOURCE ;;
+    *) _aicoding_auto_in_systemd_service && source=systemd ;;
+  esac
   pid=$BASHPID
   ticks=$(_aicoding_auto_process_start_ticks "$pid") || ticks=0
   if ! _aicoding_auto_atomic_number "$state/run.json" \

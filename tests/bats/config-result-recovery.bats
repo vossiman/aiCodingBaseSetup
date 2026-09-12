@@ -83,7 +83,7 @@ classify_managed_files() {
   BUCKETS["$HOME/.cursor/mcp.json"]=up_to_date
 }
 manifest_stage_begin() { :; }
-manifest_stage_set_blueprint() { :; }
+manifest_stage_set_blueprint() { printf '%s\n' "$1" > "$AICODING_MANIFEST.stamp"; }
 manifest_stage_commit() { [ "${FAIL_MANIFEST:-0}" = 0 ]; }
 blueprint_origin() { echo fixture; }
 STUB
@@ -149,4 +149,19 @@ STUB
   _sync_record_config_results "$target" merge
   jq -e '.components["config-claude"].state == "failed"' "$AICODING_RESULTS_FILE"
   [ ! -e "$first" ]
+}
+
+@test "unverified no-op recovery preserves old evidence without deferring or suppressing the blueprint stamp" {
+  _recovery_blueprint
+  export BLOCK_DEST="$second"
+  aicoding_result_record config-claude failed old managed_config_apply_failed
+  local before
+  before=$(jq -c '.components["config-claude"]' "$AICODING_RESULTS_FILE")
+  _SYNC_PASS_DEFERRED=0
+  _sync_reconcile boot
+  [ "$(cat "$AICODING_MANIFEST.stamp")" = "$target" ]
+  [ "$_SYNC_PASS_DEFERRED" = 0 ]
+  [ "${_SYNC_DEFERRED_PROVISION_COMPONENTS[claude]:-0}" = 0 ]
+  [ "$(jq -c '.components["config-claude"]' "$AICODING_RESULTS_FILE")" = "$before" ]
+  jq -e '.components.config.state == "current"' "$AICODING_RESULTS_FILE"
 }

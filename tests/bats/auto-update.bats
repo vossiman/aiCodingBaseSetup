@@ -9,7 +9,8 @@ setup() {
   export AICODING_AUTO_UPDATE_INTERVAL=1
   export AICODING_AUTO_UPDATE_MIN_BACKOFF=1
   export AICODING_AUTO_UPDATE_MAX_BACKOFF=2
-  export PATH="$TEST_ROOT/bin:$PATH"
+  # A removed fixture must never fall through to live agent/update launchers.
+  export PATH="$TEST_ROOT/bin:/usr/bin:/bin"
   mkdir -p "$HOME/.local/bin" "$TEST_ROOT/bin" "$AICODING_STATE_DIR"
   mkdir -p "$TEST_ROOT/runtime/bin" "$TEST_ROOT/runtime/lib" "$TEST_ROOT/runtime/configs/systemd"
   cp "$BLUEPRINT_ROOT/bin/aicoding-auto-update" "$TEST_ROOT/runtime/bin/"
@@ -44,6 +45,87 @@ EOF
   : > "$AICODING_TEST_TTLS"
 }
 
+# Enrollment and fallback workers are separate detached process groups; the
+# current worker.pid cannot enumerate enrollment still waiting to create one.
+# Freeze every exact fixture process and its descendants before termination so
+# competing enrollment cannot create a replacement behind teardown's snapshot.
+_stop_fixture_processes() {
+  python3 - "$TEST_ROOT" <<'PY_CLEANUP'
+import os
+from pathlib import Path
+import signal
+import sys
+import time
+
+root = os.fsencode(sys.argv[1])
+excluded = {os.getpid(), os.getppid()}
+known = {}
+
+def snapshot():
+    rows = {}
+    starts = {}
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid in excluded:
+            continue
+        try:
+            args = (entry / 'cmdline').read_bytes().split(b'\0')
+            stat = (entry / 'stat').read_text().rsplit(')', 1)[1].split()
+            if stat[0] == 'Z':
+                continue
+            starts[pid] = stat[19]
+            rows[pid] = (int(stat[1]), int(stat[2]), any(
+                arg == root or arg.startswith(root + b'/') for arg in args))
+        except (OSError, IndexError, ValueError):
+            continue
+    selected = {pid for pid, (_, _, match) in rows.items()
+                if match or known.get(pid) == starts[pid]}
+    groups = {group for pid, (_, group, _) in rows.items() if pid in selected and group == pid}
+    while True:
+        children = {pid for pid, (parent, group, _) in rows.items()
+                    if parent in selected or group in groups}
+        if children <= selected:
+            # Retain descendants by process identity even after their parent
+            # exits and the kernel reparents them outside the fixture tree.
+            known.update({pid: starts[pid] for pid in selected})
+            return selected
+        selected |= children
+
+def send(pids, sig):
+    for pid in pids:
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+
+quiet = 0
+for attempt in range(30):
+    pids = snapshot()
+    if not pids:
+        quiet += 1
+        if quiet == 2:
+            break
+        time.sleep(.05)
+        continue
+    quiet = 0
+    send(pids, signal.SIGSTOP)
+    # Catch children forked immediately before the original parents froze.
+    pids |= snapshot()
+    send(pids, signal.SIGSTOP)
+    send(pids, signal.SIGTERM)
+    send(pids, signal.SIGCONT)
+    time.sleep(.1)
+    # Reidentify survivors before escalation; never signal a recycled PID
+    # merely because it appeared in the preceding snapshot.
+    send(snapshot(), signal.SIGKILL)
+    time.sleep(.02)
+else:
+    raise SystemExit('fixture process cleanup did not converge; preserving runtime')
+PY_CLEANUP
+}
+
 teardown() {
   touch "$TEST_ROOT/release"
   if [ -f "$TEST_ROOT/once.pid" ]; then
@@ -53,9 +135,8 @@ teardown() {
   if [ -f "$TEST_ROOT/detached.pid" ]; then
     kill "$(cat "$TEST_ROOT/detached.pid")" 2>/dev/null || true
   fi
-  if [ -f "$AICODING_STATE_DIR/auto-update/worker.pid" ]; then
-    kill "$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")" 2>/dev/null || true
-  fi
+  _stop_fixture_processes || return 1
+  wait 2>/dev/null || true
   rm -rf "$TEST_ROOT"
 }
 
@@ -702,6 +783,10 @@ LEGACY
 }
 
 @test "systemd once records completed deferral then failure honestly" {
+  local source_setting
+  source_setting=$(sed -n 's/^Environment=//p' "$TEST_ROOT/runtime/configs/systemd/aicoding-auto-update.service")
+  [ "$source_setting" = AICODING_AUTO_UPDATE_SOURCE=systemd ]
+  export "$source_setting"
   export INVOCATION_ID=synthetic AICODING_TEST_DEFERRED=1
   run "$TEST_ROOT/aicoding-auto-update" --once
   [ "$status" -eq 0 ]
@@ -934,4 +1019,59 @@ LEGACY
   [ "$status" -eq 0 ]
   kill -0 "$other_worker"
   [ ! -e "$AICODING_STATE_DIR/auto-update/worker.pid" ]
+}
+
+@test "fixture cleanup drains delayed enrollment before removing its runtime" {
+  false_systemd_shim
+  cat > "$TEST_ROOT/bin/systemctl" <<'SYSTEMCTL'
+#!/usr/bin/env bash
+sleep 0.2
+exit 1
+SYSTEMCTL
+  chmod +x "$TEST_ROOT/bin/systemctl"
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  _stop_fixture_processes
+  sleep 0.3
+  local observed
+  observed=$(ps -eo args=)
+  if [[ "$observed" == *"$TEST_ROOT/runtime/bin/aicoding-auto-update"* ]]; then false; fi
+}
+
+@test "manual once inside an unrelated systemd service stays manual" {
+  export INVOCATION_ID=unrelated-ci-runner-service
+  run "$TEST_ROOT/aicoding-auto-update" --once
+  [ "$status" -eq 0 ]
+  jq -e '.source == "manual"' "$AICODING_STATE_DIR/auto-update/last-completed.json"
+}
+
+@test "legacy service source detection is scoped to the updater unit cgroup" {
+  source "$TEST_ROOT/runtime/lib/auto-update.sh"
+  printf '0::/user.slice/user-1000.slice/user@1000.service/app.slice/aicoding-auto-update.service\n' > "$TEST_ROOT/cgroup"
+  run _aicoding_auto_in_systemd_service "$TEST_ROOT/cgroup"
+  [ "$status" -eq 0 ]
+  printf '0::/system.slice/actions-runner.service\n' > "$TEST_ROOT/cgroup"
+  run _aicoding_auto_in_systemd_service "$TEST_ROOT/cgroup"
+  [ "$status" -eq 1 ]
+}
+
+@test "detached scheduler cleanup closes inherited unlinked scheduler lock descriptors" {
+  mkdir -p "$AICODING_STATE_DIR/auto-update"
+  exec {worker_fd}>"$AICODING_STATE_DIR/auto-update/worker.lock"
+  exec {run_fd}>"$AICODING_STATE_DIR/auto-update/run.lock"
+  flock "$worker_fd"
+  flock "$run_fd"
+  rm "$AICODING_STATE_DIR/auto-update/worker.lock" "$AICODING_STATE_DIR/auto-update/run.lock"
+  # The replacement inode is independent: the deleted lock does not block it.
+  # It must nevertheless not leak into a newly detached scheduler's lifetime.
+  run flock -n "$AICODING_STATE_DIR/auto-update/worker.lock" true
+  [ "$status" -eq 0 ]
+  run bash -c '
+    source "$TEST_ROOT/runtime/lib/auto-update.sh"
+    _aicoding_auto_close_scheduler_lock_fds
+    [ ! -e "/proc/$BASHPID/fd/$1" ] && [ ! -e "/proc/$BASHPID/fd/$2" ]
+  ' _ "$worker_fd" "$run_fd"
+  exec {worker_fd}>&-
+  exec {run_fd}>&-
+  [ "$status" -eq 0 ]
 }

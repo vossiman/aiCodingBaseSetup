@@ -139,3 +139,30 @@ teardown() { rm -rf "$TMP"; }
   [ "$status" -eq 0 ]
   jq -e '.components["playwright-chromium"] | .state == "failed" and .reason == "browser_version_probe_failed" and .successful_version == null' "$AICODING_RESULTS_FILE"
 }
+
+@test "Chromium activates with its staged version evidence and probes the executable only once" {
+  cat > "$cache/chromium-123/chrome-linux64/chrome" <<'BROWSER'
+#!/bin/sh
+printf 'probe\n' >> "$HOME/browser-probes"
+[ ! -e "$HOME/after-browser-activation" ] || exit 1
+echo 'Chromium 132.0.6834.83'
+BROWSER
+  _aicoding_activate_vendor_release() {
+    touch "$HOME/after-browser-activation"
+    ln -sfn "../versions/mcp-playwright/$2" "$AICODING_DATA_DIR/current/mcp-playwright"
+  }
+  _aicoding_finish_npm_entry_release mcp-playwright "$target" "$release" playwright-mcp bin/playwright-mcp
+  [ "$(wc -l < "$HOME/browser-probes")" -eq 1 ]
+  jq -e '.components["mcp-playwright"].state == "updated" and .components["playwright-chromium"].state == "updated" and .components["playwright-chromium"].successful_version == "132.0.6834.83"' "$AICODING_RESULTS_FILE"
+}
+
+@test "browser receipt persistence failure does not misreport an activated MCP package as failed" {
+  eval "$(declare -f aicoding_result_record | sed '1s/aicoding_result_record/_fixture_result_record/')"
+  aicoding_result_record() {
+    [[ "$1" != playwright-chromium ]] || return 1
+    _fixture_result_record "$@"
+  }
+  _aicoding_finish_npm_entry_release mcp-playwright "$target" "$release" playwright-mcp bin/playwright-mcp
+  jq -e '.components["mcp-playwright"].state == "updated"' "$AICODING_RESULTS_FILE"
+  [ -L "$AICODING_DATA_DIR/current/mcp-playwright" ]
+}

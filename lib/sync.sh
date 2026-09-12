@@ -596,6 +596,7 @@ _sync_record_config_results() {
   [ "$target" != unknown ] || return 0
   # Severity wins across destinations: verified < unexamined < blocked < conflict < failed.
   local -A ranks=()
+  declare -gA _SYNC_RECOVERY_UNVERIFIED
   for d in "${!BUCKETS[@]}"; do
     component=$(_aicoding_config_component "$d")
     case "$component" in config-*) ;; *) continue ;; esac
@@ -605,6 +606,8 @@ _sync_record_config_results() {
       rank=5
     elif [[ "$bucket" == blocked ]]; then
       rank=3
+    elif [[ "${_SYNC_RECOVERY_UNVERIFIED[$d]:-0}" == 1 ]]; then
+      rank=2
     elif [[ "$bucket" == smart_update || "$bucket" == smart_conflict \
         || ( "${FILE_MODE[$d]:-}" == toml_merge && "$bucket" != up_to_date && "$bucket" != smart_retired ) ]]; then
       result=${SMART_APPLY_RESULT[$d]:-}
@@ -658,7 +661,7 @@ _sync_record_config_results() {
 # remain fail-open so unattended maintenance continues.
 _sync_reconcile() {
   local mode=$1
-  declare -gA _SYNC_DEFERRED_PROVISION_COMPONENTS=()
+  declare -gA _SYNC_DEFERRED_PROVISION_COMPONENTS=() _SYNC_RECOVERY_UNVERIFIED=()
   # Clear prior classifications before any early return. The caller uses this
   # snapshot to distinguish actual smart errors from ordinary reconcile
   # failures that must still abort before maintenance.
@@ -758,6 +761,13 @@ _sync_reconcile() {
         *) continue ;;
       esac
       if ! reason=$(aicoding_config_is_compatible "$d"); then
+        if [[ "${BUCKETS[$d]}" == up_to_date ]]; then
+          # No update is pending here. Retain the old receipt without renewing
+          # its timestamp or downgrading an unconfirmed failure to a new block.
+          # Recovery uncertainty must not gate the stamp or invent deferrals.
+          _SYNC_RECOVERY_UNVERIFIED[$d]=1
+          continue
+        fi
         BUCKETS[$d]=blocked
         blocked_count=$((blocked_count + 1))
         component=$(_aicoding_config_component "$d")

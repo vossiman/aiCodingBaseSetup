@@ -366,3 +366,52 @@ for span, expected in (("1y 1month 15min", "2024-01-01 01:15:00 CET"),
 PY
   [ "$status" -eq 0 ]
 }
+
+@test "status observes free and held locks without ever acquiring flock" {
+  start_holder worker
+  touch "$AUTO/free.lock"
+  run python3 - "$BLUEPRINT_ROOT/lib/status-report.py" "$AUTO" "$HOLDER" <<'PY'
+import fcntl
+import importlib.util
+from pathlib import Path
+import sys
+
+def forbidden_flock(*args):
+    raise AssertionError('status attempted to acquire an updater lock')
+
+fcntl.flock = forbidden_flock
+spec = importlib.util.spec_from_file_location('status_report', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+state = Path(sys.argv[2])
+# start_holder acquires via the short-lived `flock FD` utility and then execs
+# Python with the descriptor retained. Force /proc/locks omission to exercise
+# Linux's inherited PID-0 lock case on every runner, including other kernels.
+original_read = module.read
+module.read = lambda path: '' if path == Path('/proc/locks') else original_read(path)
+assert not module.lock_held(state / 'free.lock')
+assert module.lock_held(state / 'worker.lock')
+assert module.owns_lock(sys.argv[3], state / 'worker.lock')
+module.main()
+PY
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"detached fallback worker — alive"* ]]
+}
+
+@test "having another process locked inode open does not prove lock ownership" {
+  start_holder worker
+  run python3 - "$BLUEPRINT_ROOT/lib/status-report.py" "$AUTO/worker.lock" <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+import sys
+spec = importlib.util.spec_from_file_location('status_report', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+path = Path(sys.argv[2])
+with path.open() as unrelated_open_description:
+    assert module.lock_held(path)
+    assert not module.owns_lock(os.getpid(), path)
+PY
+  [ "$status" -eq 0 ]
+}

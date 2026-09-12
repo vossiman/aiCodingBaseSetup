@@ -556,7 +556,9 @@ _aicoding_playwright_attempt_record() {
 }
 
 _aicoding_prepare_playwright_browser() {
-  local component=$1 version=$2 release=$3
+  local component=$1 version=$2 release=$3 browser_version
+  _AICODING_PLAYWRIGHT_STAGED_BIN=
+  _AICODING_PLAYWRIGHT_STAGED_VERSION=
   local cache="$AICODING_DATA_DIR/browser-cache/mcp-playwright/$version"
   local cli="$release/node_modules/@playwright/mcp/cli.js"
   local core_cli="$release/node_modules/playwright-core/cli.js" bin missing="" rc=0 node_path
@@ -602,7 +604,7 @@ _aicoding_prepare_playwright_browser() {
     _aicoding_record_deferred "$component" blocked "$version" "$reason"
     return 1
   fi
-  _aicoding_playwright_version "$bin" >/dev/null \
+  browser_version=$(_aicoding_playwright_version "$bin") \
     || { _aicoding_playwright_attempt_record "$component" failed "$version" browser_version_probe_failed; return 1; }
   if ! printf '%s\n' "$bin" > "$cache/.browser-bin.tmp.$$" \
       || ! mv "$cache/.browser-bin.tmp.$$" "$cache/.browser-bin"; then
@@ -610,6 +612,8 @@ _aicoding_prepare_playwright_browser() {
     _aicoding_playwright_attempt_record "$component" failed "$version" browser_marker_commit_failed
     return 1
   fi
+  _AICODING_PLAYWRIGHT_STAGED_BIN=$bin
+  _AICODING_PLAYWRIGHT_STAGED_VERSION=$browser_version
 }
 
 _aicoding_entry_min_node() {
@@ -925,13 +929,8 @@ _aicoding_finish_npm_entry_release() {
       return 1
     }
   if [ "$component" = mcp-playwright ]; then
-    local browser
-    browser=$(_aicoding_playwright_browser_bin "$target") \
-      || { _aicoding_playwright_attempt_record "$component" failed "$target" browser_validation_failed; return 1; }
-    if ! _aicoding_playwright_record updated "$target" browser_ready "$browser"; then
-      aicoding_result_record "$component" failed "$target" browser_validation_failed || true
-      return 1
-    fi
+    _aicoding_playwright_record updated "$target" browser_ready \
+      "$_AICODING_PLAYWRIGHT_STAGED_BIN" "$_AICODING_PLAYWRIGHT_STAGED_VERSION" || true
   fi
   # Activation is a complete package success even if a harness-specific
   # registration migration below is blocked by a user conflict or shared

@@ -2,7 +2,6 @@
 """Read-only local status. Never import updater code or execute MCP servers."""
 import concurrent.futures
 import datetime
-import fcntl
 import json
 import math
 import os
@@ -18,6 +17,7 @@ STATE = Path(os.environ.get("AICODING_STATE_DIR", HOME / ".local/state/aicoding"
 DATA = Path(os.environ.get("AICODING_DATA_DIR", HOME / ".local/share/aicoding"))
 AUTO = STATE / "auto-update"
 NOW = time.time()
+LOCK_OBSERVATIONS = {}
 
 
 def read(path):
@@ -86,17 +86,70 @@ def command(args):
         return ""
 
 
-def lock_held(path):
-    # Open existing locks read-only: observing status must not create state.
+def flock_matches(line, stat):
+    # Waiting requests ("->") are not acquired locks. Linux uses hexadecimal
+    # device numbers and a decimal inode in both /proc/locks and fdinfo.
+    fields = line.split()
+    if len(fields) < 8 or fields[1:3] != ["FLOCK", "ADVISORY"]:
+        return False
     try:
-        with path.open("r") as handle:
-            try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return False
-            except BlockingIOError:
-                return True
+        major, minor, inode = fields[5].split(":")
+        return (int(major, 16), int(minor, 16), int(inode)) == (
+            os.major(stat.st_dev), os.minor(stat.st_dev), stat.st_ino)
+    except (ValueError, IndexError):
+        return False
+
+
+def lock_held(path):
+    # Never probe by acquiring a lock: even a momentary exclusive flock could
+    # make an actual updater's nonblocking acquisition skip its scheduled run.
+    try:
+        expected = path.stat()
     except OSError:
         return False
+    key = (expected.st_dev, expected.st_ino)
+    if key in LOCK_OBSERVATIONS:
+        return LOCK_OBSERVATIONS[key]
+    # Inspect all status lock inodes together, so free run/sync locks do not
+    # each require another process walk. These are observations for this report.
+    candidates = {key: expected}
+    for candidate in (AUTO / "run.lock", AUTO / "worker.lock", STATE / "sync.lock"):
+        try:
+            stat = candidate.stat()
+            candidates[(stat.st_dev, stat.st_ino)] = stat
+        except OSError:
+            continue
+    entries = read(Path("/proc/locks")).splitlines()
+    observed = {identity: any(flock_matches(line, stat) for line in entries)
+                for identity, stat in candidates.items()}
+    # A shell's `flock FD` utility exits while the shell retains its open file
+    # description. Linux can omit this PID-0 lock from /proc/locks, but the
+    # owning descriptor's fdinfo still exposes it. Only read fdinfo after its
+    # descriptor inode matches one of our scheduler/update locks.
+    try:
+        processes = list(Path("/proc").iterdir())
+    except OSError:
+        processes = []
+    for proc in processes:
+        if not proc.name.isdigit():
+            continue
+        try:
+            descriptors = list((proc / "fd").iterdir())
+        except OSError:
+            continue
+        for fd in descriptors:
+            try:
+                stat = fd.stat()
+            except OSError:
+                continue
+            identity = (stat.st_dev, stat.st_ino)
+            if identity not in candidates or observed[identity]:
+                continue
+            info = read(proc / "fdinfo" / fd.name)
+            observed[identity] = any(flock_matches(line[5:].strip(), stat)
+                                     for line in info.splitlines() if line.startswith("lock:"))
+    LOCK_OBSERVATIONS.update(observed)
+    return observed[key]
 
 
 def process(pid, ticks=None):
@@ -115,7 +168,12 @@ def owns_lock(pid, path):
             try:
                 actual = fd.stat()
                 if (actual.st_dev, actual.st_ino) == (expected.st_dev, expected.st_ino):
-                    return lock_held(path)
+                    # fdinfo associates the lock with this open file
+                    # description, unlike merely having the same inode open.
+                    info = read(Path(f"/proc/{pid}/fdinfo/{fd.name}"))
+                    if any(flock_matches(line[5:].strip(), expected)
+                           for line in info.splitlines() if line.startswith("lock:")):
+                        return True
             except OSError:
                 continue
     except OSError:
