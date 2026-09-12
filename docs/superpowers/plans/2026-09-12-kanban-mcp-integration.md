@@ -131,6 +131,8 @@ NORMALIZED_TOOL_ARGS = {
 }
 ```
 
+`release_ticket.reason` is optional and defaults to `paused` in both the MCP schema and shared permit normalizer. The sample handoff remains required; `link_tickets.kind` remains required.
+
 Read tools (`list_repos`, `list_tickets`, `get_ticket`, `my_work`) do not need a permit. `my_work` resolves the handle locally and calls `get_session`; it does not accept a backend session ID from the model.
 
 ### Native API references to recheck at implementation time
