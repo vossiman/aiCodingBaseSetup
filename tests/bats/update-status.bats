@@ -284,6 +284,112 @@ _mk_clone() {  # fixture: commit A (stamp point), then commit B touching $1
   export AICODING_UPDATE_TESTONLY_CLONE="$CLONE"
 }
 
+_activate_gitless_aicoding() {
+  local sha=$1 source="$TMP/source-$sha"
+  export AICODING_DATA_DIR="$HOME/.local/share/aicoding"
+  mkdir -p "$source/lib"
+  printf '%s\n' "$sha" > "$source/.aicoding-version"
+  printf '# fixture provisioning bytes\n' > "$source/lib/provision-system.sh"
+  # Exercise the production staging/activation implementation rather than
+  # manufacturing current/aicoding directly.
+  . "$BLUEPRINT_ROOT/lib/runtime.sh"
+  aicoding_stage_source aicoding "$source" "$sha"
+  aicoding_activate_version aicoding "$sha"
+  [ ! -e "$AICODING_DATA_DIR/versions/aicoding/$sha/.git" ]
+}
+
+@test "Gitless active release drives sync and blocked provision status without a clone" {
+  local old=1111111111111111111111111111111111111111
+  local active=2222222222222222222222222222222222222222
+  unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE \
+    AICODING_UPDATE_TESTONLY_INSTALLED_FILE
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  export AICODING_RESULTS_FILE="$TMP/results.json"
+  _activate_gitless_aicoding "$active"
+  jq -n --arg old "$old" '{blueprint_commit:$old,provision_commit:$old,profile:"container"}' \
+    > "$AICODING_MANIFEST"
+  mkdir -p "$AICODING_UPDATE_STATE"
+  jq -n --arg active "$active" '{tool:"aicoding",latest:$active}' \
+    > "$AICODING_UPDATE_STATE/aicoding.json"
+  jq -n --arg active "$active" \
+    '{schema:1,components:{provision:{state:"blocked",reason:"manual_rebuild_required",target_version:$active}}}' \
+    > "$AICODING_RESULTS_FILE"
+
+  run "$BIN" --banner
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"automatic provisioning blocked"* ]]
+  [[ "$output" != *"aicoding behind main"* ]]
+  [[ "$output" != *"run: aicoding-install"* ]]
+
+  jq -n --arg active "$active" \
+    '{schema:1,components:{provision:{state:"current",reason:"verified",target_version:$active,successful_version:$active}}}' \
+    > "$AICODING_RESULTS_FILE"
+  run "$BIN" --banner
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "managed banner leaves newer main and pending provisioning to the background updater" {
+  local active=2525252525252525252525252525252525252525
+  local newer=2626262626262626262626262626262626262626
+  unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE \
+    AICODING_UPDATE_TESTONLY_INSTALLED_FILE
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  export AICODING_RESULTS_FILE="$TMP/missing-results.json"
+  _activate_gitless_aicoding "$active"
+  jq -n '{profile:"container"}' > "$AICODING_MANIFEST"
+  mkdir -p "$AICODING_UPDATE_STATE"
+  jq -n --arg newer "$newer" '{tool:"aicoding",latest:$newer}' \
+    > "$AICODING_UPDATE_STATE/aicoding.json"
+
+  run "$BIN" --banner
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"newer aicoding main observed"* ]]
+  [[ "$output" == *"background updater will check CI"* ]]
+  [[ "$output" == *"automatic provisioning pending"* ]]
+  [[ "$output" != *"run:"* ]]
+}
+
+@test "Gitless status honors the common state root for cache manifest and receipts" {
+  local active=2424242424242424242424242424242424242424
+  unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE \
+    AICODING_UPDATE_TESTONLY_INSTALLED_FILE AICODING_UPDATE_STATE \
+    AICODING_MANIFEST AICODING_RESULTS_FILE
+  export AICODING_STATE_DIR="$TMP/custom-state"
+  _activate_gitless_aicoding "$active"
+  mkdir -p "$AICODING_STATE_DIR/updates"
+  jq -n --arg active "$active" '{blueprint_commit:$active,provision_commit:$active,profile:"container"}' \
+    > "$AICODING_STATE_DIR/manifest.json"
+  jq -n --arg active "$active" '{tool:"aicoding",latest:$active}' \
+    > "$AICODING_STATE_DIR/updates/aicoding.json"
+  jq -n --arg active "$active" \
+    '{schema:1,components:{provision:{state:"blocked",reason:"manual_rebuild_required",target_version:$active}}}' \
+    > "$AICODING_STATE_DIR/update-results.json"
+
+  run "$BIN" --banner
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"automatic provisioning blocked"* ]]
+  [[ "$output" != *"run: aicoding-install"* ]]
+}
+
+@test "Gitless minimal Pi status does not invent install or image work" {
+  local active=2323232323232323232323232323232323232323
+  unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE \
+    AICODING_UPDATE_TESTONLY_INSTALLED_FILE
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  _activate_gitless_aicoding "$active"
+  jq -n --arg active "$active" '{blueprint_commit:$active,profile:"minimal-pi"}' \
+    > "$AICODING_MANIFEST"
+  mkdir -p "$AICODING_UPDATE_STATE"
+  jq -n --arg active "$active" '{tool:"aicoding",latest:$active}' \
+    > "$AICODING_UPDATE_STATE/aicoding.json"
+  jq -n '{latest_tag:"2099-01-01"}' > "$AICODING_UPDATE_STATE/image.json"
+
+  run "$BIN" --banner
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 @test "provision drift: provisioning path touched since stamp -> ⬆install badge" {
   export AICODING_MANIFEST="$TMP/manifest.json"
   _mk_clone lib/provision-system.sh
@@ -292,6 +398,28 @@ _mk_clone() {  # fixture: commit A (stamp point), then commit B touching $1
   [[ "$output" == *"⬆install"* ]]
   run "$BIN" --banner
   echo "$output" | grep -q "run: aicoding-install"
+}
+
+@test "failed automatic provisioning reports its receipt without obsolete install advice" {
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  export AICODING_RESULTS_FILE="$TMP/results.json"
+  _mk_clone lib/provision-system.sh
+  jq -n --arg s "$A_SHA" '{provision_commit:$s}' > "$AICODING_MANIFEST"
+  jq -n '{schema:1,components:{provision:{state:"blocked",reason:"partial_provision_failure",target:"target"}}}' > "$AICODING_RESULTS_FILE"
+  run "$BIN" --banner
+  [[ "$output" == *"automatic provisioning blocked"* ]]
+  [[ "$output" != *"run: aicoding-install"* ]]
+}
+
+@test "successful provisioning receipt suppresses stale legacy provision stamp" {
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  export AICODING_RESULTS_FILE="$TMP/results.json"
+  _mk_clone lib/provision-system.sh
+  local head; head=$(git -C "$CLONE" rev-parse HEAD)
+  jq -n --arg s "$A_SHA" '{provision_commit:$s}' > "$AICODING_MANIFEST"
+  jq -n --arg h "$head" '{schema:1,components:{provision:{state:"current",reason:"verified",successful_version:$h}}}' > "$AICODING_RESULTS_FILE"
+  run "$BIN" --banner
+  [[ "$output" != *"provisioning behind"* ]]
 }
 
 @test "host provision drift tracks install-host.sh instead of install.sh" {

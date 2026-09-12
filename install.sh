@@ -82,7 +82,10 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then check_prerequisites; fi
 . "$SCRIPT_DIR/lib/provision-integrations.sh"
 
 main() {
-  local force_reinstall=0
+  local force_reinstall=0 persistent_provision_failed=0
+  local _AICODING_INITIAL_CONFIG_DEFERRED=0 _AICODING_PREPARATION_DEFERRED=0
+  local _AICODING_GUARDED_PROVISION_DEFERRED=0
+  local _AICODING_INSTALL_SHARED_LOCKS_READY=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --force-reinstall) force_reinstall=1; shift ;;
@@ -112,15 +115,33 @@ main() {
   ensure_gh_credential_helper
   ensure_gh_stored_auth
   ensure_git_credential_file_fallback
+  # Hold writer locks before any tool-owned mutation or managed-file mode
+  # detection. A busy shared root is handled per destination as a deferral so
+  # confirmed-local setup can continue.
+  if ! aicoding_shared_locks_acquire_managed_roots; then
+    _AICODING_INSTALL_SHARED_LOCKS_READY=0
+  fi
   report_unmanaged
-  install_mcp_packages
-  install_claude_mcps
+  install_mcp_packages \
+    || { warn "MCP package preparation failed"; persistent_provision_failed=1; }
+  if [[ "${AICODING_PERSISTENT_ENROLLMENT:-0}" == 1 ]]; then
+    aicoding_prepare_installed_config_tools </dev/null \
+      || { warn "Tool update failed; dependent config will remain unchanged"; persistent_provision_failed=1; }
+    aicoding_prepare_exact_mcps --register-claude </dev/null \
+      || { warn "Exact MCP preparation failed; dependent config will remain unchanged"; persistent_provision_failed=1; }
+    export AICODING_REQUIRE_UPDATE_RECEIPT=1
+  fi
+  install_claude_mcps \
+    || { warn "Claude MCP provisioning failed"; persistent_provision_failed=1; }
   ensure_claude_onboarding_state
-  install_claude_plugins
-  install_codex_plugins
+  install_claude_plugins \
+    || { warn "Claude plugin provisioning failed"; persistent_provision_failed=1; }
+  install_codex_plugins \
+    || { warn "Codex plugin provisioning failed"; persistent_provision_failed=1; }
   install_aicoding_sync_symlink
   install_aicoding_install_symlink
   install_update_status_symlink
+  install_aicoding_auto_update_symlink
   install_agent_notify_symlink
   install_dvw_probe_symlink
   install_clip_shim_symlinks
@@ -165,10 +186,33 @@ main() {
   install_infra_audit
   check_playwright
   ensure_lfs_autopull_safe
+  ensure_aicoding_auto_update
 
   # Provisioning completed — stamp the commit for the ⬆install staleness check.
   # Fail-open: a non-repo blueprint (curl bootstrap) just skips the stamp.
-  manifest_stamp_provision "$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
+  if [[ "$persistent_provision_failed" == 1 ]]; then
+    command -v aicoding_result_record >/dev/null 2>&1 \
+      && aicoding_result_record provision failed "$(_aicoding_managed_source_version "$SCRIPT_DIR")" partial_provision_failure || true
+    header "Incomplete"
+    warn "Required provisioning is incomplete; a scheduled pass will retry"
+    return 1
+  elif [[ "${_AICODING_INITIAL_CONFIG_DEFERRED:-0}" == 1 \
+      || "${_AICODING_GUARDED_PROVISION_DEFERRED:-0}" == 1 \
+      || ( "${AICODING_PERSISTENT_ENROLLMENT:-0}" == 1 \
+        && "${_AICODING_PREPARATION_DEFERRED:-0}" == 1 ) ]]; then
+    command -v aicoding_result_record >/dev/null 2>&1 \
+      && aicoding_result_record provision blocked "$(_aicoding_managed_source_version "$SCRIPT_DIR")" preparation_deferred || true
+    if [[ "${AICODING_PERSISTENT_ENROLLMENT:-0}" == 1 ]]; then
+      header "Enrolled with deferrals"
+      info "Runtime enrollment succeeded; unavailable capabilities and dependent config were deferred"
+    else
+      header "Completed with deferrals"
+      info "Unavailable capabilities and dependent config were deferred"
+    fi
+    return 0
+  else
+    manifest_stamp_provision "$(_aicoding_managed_source_version "$SCRIPT_DIR")"
+  fi
 
   header "Done!"
   info "Mode: $mode"

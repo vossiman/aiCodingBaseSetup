@@ -6,6 +6,7 @@ setup() {
   export HOME="$TMPDIR"
   export AICODING_MANIFEST="$TMPDIR/.aicodingsetup/manifest.json"
   export AICODINGSETUP_NONINTERACTIVE=1
+  export CODEX_MANAGED_DIR="$TMPDIR/etc-codex"
   export AICODING_TMUX_COMMIT_FILE="$TMPDIR/tmux-commit"
   export BASHRC_BLOCK_START_LIT='# >>> aicoding managed block — do not edit between markers >>>'
   export BASHRC_BLOCK_END_LIT='# <<< aicoding managed block <<<'
@@ -20,13 +21,28 @@ setup() {
   #    version calls) when present on PATH.
   # NOT stubbed here: codex / agent / cursor-agent — dedicated ensure_codex /
   # ensure_cursor_agent tests set up their own present/absent scenarios for those.
-  for cmd in apt-get sudo curl npm npx bash-build-tmux claude opencode; do
+  for cmd in apt-get sudo curl npm npx bash-build-tmux opencode; do
     cat > "$TMPDIR/stubs/$cmd" <<'STUB'
 #!/bin/sh
 exit 0
 STUB
     chmod +x "$TMPDIR/stubs/$cmd"
   done
+  cat > "$TMPDIR/stubs/sudo" <<'STUB'
+#!/bin/sh
+[ "${1:-}" != -n ] || shift
+exec "$@"
+STUB
+  chmod +x "$TMPDIR/stubs/sudo"
+  cat > "$TMPDIR/stubs/claude" <<'STUB'
+#!/bin/sh
+case "$*" in
+  --version) echo '2.1.0' ;;
+  "mcp get logfire") printf '  URL: https://logfire-eu.pydantic.dev/mcp\n' ;;
+esac
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/claude"
   # The real test host may have any tmux build. Keep installer tests offline
   # by presenting the exact pinned build through the test-owned marker.
   cat > "$TMPDIR/stubs/tmux" <<'STUB'
@@ -37,6 +53,7 @@ fi
 exit 0
 STUB
   chmod +x "$TMPDIR/stubs/tmux"
+  ln -s "$(command -v node)" "$TMPDIR/stubs/node"
   printf '%s\n' '13c10f672c7a6bc64b2d4829ae550d8d6caf61fe' > "$AICODING_TMUX_COMMIT_FILE"
 }
 
@@ -69,6 +86,361 @@ blueprint_copy() {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   run jq 'has("profile")' "$AICODING_MANIFEST"
   [ "$output" = "false" ]
+}
+
+@test "persistent install reports expected preparation deferrals without failing enrollment or stamping provision" {
+  export AICODING_PERSISTENT_ENROLLMENT=1
+  run env _AICODINGSETUP_NVS_STRIPPED=1 bash -c '
+    source "$1"
+    aicoding_prepare_installed_config_tools() {
+      _AICODING_PREPARATION_DEFERRED=1
+      _provision_record_blocked provision-claude claude_shared_consumers_incompatible
+    }
+    aicoding_prepare_exact_mcps() {
+      _AICODING_PREPARATION_DEFERRED=1
+      _provision_record_blocked mcp-context7 manual_rebuild_required_node
+      _provision_record_blocked mcp-playwright manual_rebuild_required_playwright_system_libs
+    }
+    main
+  ' _ "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"=== Enrolled with deferrals ==="* ]]
+  [[ "$output" != *"=== Done! ==="* ]]
+  jq -e '(.provision_commit // null) == null' "$AICODING_MANIFEST"
+  jq -e '.components.provision.state == "blocked"
+    and .components.provision.reason == "preparation_deferred"' \
+    "$HOME/.local/state/aicoding/update-results.json"
+}
+
+@test "persistent install propagates an injected preparation failure" {
+  export AICODING_PERSISTENT_ENROLLMENT=1
+  run env _AICODINGSETUP_NVS_STRIPPED=1 bash -c '
+    source "$1"
+    aicoding_prepare_installed_config_tools() {
+      aicoding_result_record claude failed 2.1.51 stage_install_failed
+      return 1
+    }
+    aicoding_prepare_exact_mcps() { return 0; }
+    main
+  ' _ "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"=== Incomplete ==="* ]]
+  jq -e '.components.provision.state == "failed"
+    and .components.provision.reason == "partial_provision_failure"' \
+    "$HOME/.local/state/aicoding/update-results.json"
+}
+
+@test "direct first-deploy preserves shared config without consumer evidence and does not stamp success" {
+  local shared_root="$TMPDIR/shared-codex"
+  mkdir -p "$shared_root"
+  ln -s "$shared_root" "$HOME/.codex"
+  printf 'user-owned = true\n' > "$shared_root/config.toml"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/missing-consumers.json"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
+
+  [ "$status" -eq 0 ]
+  [ "$(cat "$shared_root/config.toml")" = "user-owned = true" ]
+  [[ "$output" == *"=== Completed with deferrals ==="* ]]
+  [[ "$output" != *"=== Done! ==="* ]]
+  jq -e '(.provision_commit // null) == null' "$AICODING_MANIFEST"
+}
+
+@test "direct adopt does not create missing config below a shared root without evidence" {
+  local shared_root="$TMPDIR/shared-codex"
+  mkdir -p "$shared_root"
+  ln -s "$shared_root" "$HOME/.codex"
+  printf 'existing local file\n' > "$HOME/.tmux.conf"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/missing-consumers.json"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+
+  [ "$status" -eq 0 ]
+  [ ! -e "$shared_root/config.toml" ]
+  [[ "$output" == *"=== Completed with deferrals ==="* ]]
+  [[ "$output" != *"=== Done! ==="* ]]
+  jq -e '(.provision_commit // null) == null' "$AICODING_MANIFEST"
+}
+
+@test "direct reconcile does not restore config into a shared root without evidence" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  rm -rf "$HOME/.codex"
+  local shared_root="$TMPDIR/shared-codex" tmp_manifest
+  mkdir -p "$shared_root"
+  ln -s "$shared_root" "$HOME/.codex"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/missing-consumers.json"
+  tmp_manifest=$(mktemp)
+  jq 'del(.provision_commit)' "$AICODING_MANIFEST" > "$tmp_manifest"
+  mv "$tmp_manifest" "$AICODING_MANIFEST"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+
+  [ "$status" -eq 0 ]
+  [ ! -e "$shared_root/config.toml" ]
+  [[ "$output" == *"=== Completed with deferrals ==="* ]]
+  [[ "$output" != *"=== Done! ==="* ]]
+  jq -e '(.provision_commit // null) == null' "$AICODING_MANIFEST"
+}
+
+@test "direct first-deploy still writes a missing confirmed-local config root" {
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/missing-consumers.json"
+  [ ! -e "$HOME/.codex" ]
+
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+
+  [ "$status" -eq 0 ]
+  [ -f "$HOME/.codex/config.toml" ]
+  [[ "$output" == *"=== Done! ==="* ]]
+}
+
+@test "direct first-deploy treats an unclassifiable existing config root as guarded" {
+  mkdir -p "$HOME/.codex"
+  printf 'user-owned = true\n' > "$HOME/.codex/config.toml"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/missing-consumers.json"
+  cat > "$TMPDIR/stubs/findmnt" <<'STUB'
+#!/bin/sh
+exit 1
+STUB
+  chmod +x "$TMPDIR/stubs/findmnt"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
+
+  [ "$status" -eq 0 ]
+  [ "$(cat "$HOME/.codex/config.toml")" = "user-owned = true" ]
+  [[ "$output" == *"=== Completed with deferrals ==="* ]]
+  [[ "$output" != *"=== Done! ==="* ]]
+  jq -e '(.provision_commit // null) == null' "$AICODING_MANIFEST"
+}
+
+@test "direct first-deploy uses a shared config root when complete evidence is present" {
+  local shared_root="$TMPDIR/shared-codex" expires results
+  mkdir -p "$shared_root" "$HOME/.local/state/aicoding"
+  ln -s "$shared_root" "$HOME/.codex"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/consumers.json"
+  expires=$(( $(date +%s) + 3600 ))
+  jq -n --arg root "$shared_root" --argjson expires "$expires" \
+    '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
+      consumers:[{id:"known",components:{
+        codex:{version:"0.200.0",config_compatible:true},
+        "mcp-context7":{version:"1.0.0",config_compatible:true},
+        "mcp-playwright":{version:"1.0.0",config_compatible:true}
+      }}]}]}' > "$AICODING_SHARED_CONSUMERS_FILE"
+  results="$HOME/.local/state/aicoding/update-results.json"
+  jq -n '{schema:1,components:{
+    codex:{state:"current"},
+    "mcp-context7":{state:"current"},
+    "mcp-playwright":{state:"current"}
+  }}' > "$results"
+  cat > "$TMPDIR/stubs/codex" <<'STUB'
+#!/bin/sh
+[ "$*" != --version ] || printf 'codex-cli 0.200.0\n'
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/codex"
+
+  run bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
+
+  [ "$status" -eq 0 ]
+  [ -f "$shared_root/config.toml" ]
+  grep -q '^approval_policy = "never"$' "$shared_root/config.toml"
+}
+
+@test "legacy Claude provisioning defers shared mutation without consumer evidence" {
+  local shared_root="$TMPDIR/shared-claude"
+  mkdir -p "$shared_root"
+  ln -s "$shared_root" "$HOME/.claude"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/missing-consumers.json"
+  export AICODING_RESULTS_FILE="$TMPDIR/results.json"
+  cat > "$TMPDIR/stubs/claude" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$TMPDIR/claude-calls"
+[ "$*" != --version ] || printf '2.1.0\n'
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/claude"
+  export _AICODINGSETUP_NVS_STRIPPED=1
+  source "$BLUEPRINT_ROOT/install.sh"
+  _provision_ensure_update_components
+  aicoding_result_record claude current 2.1.0 verified 2.1.0
+
+  run install_claude_plugins
+
+  [ "$status" -eq 0 ]
+  if grep -q '^plugin ' "$TMPDIR/claude-calls" 2>/dev/null; then false; fi
+  jq -e '.components["provision-claude"].state == "blocked"
+    and .components["provision-claude"].reason == "claude_shared_consumers_incompatible"' \
+    "$AICODING_RESULTS_FILE"
+}
+
+@test "legacy guarded Codex provisioning defers on writer lock contention" {
+  local shared_root="$TMPDIR/shared-codex" expires
+  mkdir -p "$shared_root"
+  ln -s "$shared_root" "$HOME/.codex"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/consumers.json"
+  export AICODING_RESULTS_FILE="$TMPDIR/results.json"
+  expires=$(( $(date +%s) + 3600 ))
+  jq -n --arg root "$shared_root" --argjson expires "$expires" \
+    '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
+      consumers:[{id:"known",components:{codex:{version:"0.200.0",config_compatible:true}}}]}]}' \
+    > "$AICODING_SHARED_CONSUMERS_FILE"
+  cat > "$TMPDIR/stubs/codex" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$TMPDIR/codex-calls"
+[ "$*" != --version ] || printf 'codex-cli 0.200.0\n'
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/codex"
+  export AICODINGSETUP_SKIP_NETWORK=
+  export _AICODINGSETUP_NVS_STRIPPED=1
+  source "$BLUEPRINT_ROOT/install.sh"
+  _provision_ensure_update_components
+  aicoding_result_record codex current 0.200.0 verified 0.200.0
+  aicoding_shared_locks_acquire() { return 1; }
+
+  run install_codex_plugins
+
+  [ "$status" -eq 0 ]
+  if grep -q '^plugin ' "$TMPDIR/codex-calls" 2>/dev/null; then false; fi
+  jq -e '.components["provision-codex"].state == "blocked"
+    and .components["provision-codex"].reason == "codex_shared_config_busy"' \
+    "$AICODING_RESULTS_FILE"
+}
+
+@test "shared legacy Codex provisioning requires a receipt even with complete consumer evidence" {
+  local shared_root="$TMPDIR/shared-codex" expires
+  mkdir -p "$shared_root"
+  ln -s "$shared_root" "$HOME/.codex"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/consumers.json"
+  export AICODING_RESULTS_FILE="$TMPDIR/results.json"
+  expires=$(( $(date +%s) + 3600 ))
+  jq -n --arg root "$shared_root" --argjson expires "$expires" \
+    '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
+      consumers:[{id:"known",components:{codex:{version:"0.200.0",config_compatible:true}}}]}]}' \
+    > "$AICODING_SHARED_CONSUMERS_FILE"
+  cat > "$TMPDIR/stubs/codex" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$TMPDIR/codex-calls"
+[ "$*" != --version ] || printf 'codex-cli 0.200.0\n'
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/codex"
+  export AICODINGSETUP_SKIP_NETWORK=
+  export _AICODINGSETUP_NVS_STRIPPED=1
+  source "$BLUEPRINT_ROOT/install.sh"
+  _provision_ensure_update_components
+
+  run install_codex_plugins
+
+  [ "$status" -eq 0 ]
+  if grep -q '^plugin ' "$TMPDIR/codex-calls" 2>/dev/null; then false; fi
+  jq -e '.components["provision-codex"].state == "blocked"
+    and .components["provision-codex"].reason == "codex_update_not_verified"' \
+    "$AICODING_RESULTS_FILE"
+}
+
+@test "persistent and sync tool readiness require receipts on a confirmed-local root" {
+  mkdir -p "$HOME/.codex"
+  export AICODING_RESULTS_FILE="$TMPDIR/results.json"
+  cat > "$TMPDIR/stubs/codex" <<'STUB'
+#!/bin/sh
+[ "$*" != --version ] || printf 'codex-cli 0.200.0\n'
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/codex"
+  export _AICODINGSETUP_NVS_STRIPPED=1
+  source "$BLUEPRINT_ROOT/install.sh"
+  _provision_ensure_update_components
+
+  export AICODING_PERSISTENT_ENROLLMENT=1
+  unset AICODING_SYNC_MODE AICODING_REQUIRE_UPDATE_RECEIPT
+  run _provision_tool_ready codex codex 0.148.0 "$HOME/.codex"
+  [ "$status" -eq 3 ]
+  jq -e '.components["provision-codex"].reason == "codex_update_not_verified"' "$AICODING_RESULTS_FILE"
+
+  rm -f "$AICODING_RESULTS_FILE"
+  export AICODING_PERSISTENT_ENROLLMENT=0 AICODING_SYNC_MODE=boot
+  unset AICODING_REQUIRE_UPDATE_RECEIPT
+  run _provision_tool_ready codex codex 0.148.0 "$HOME/.codex"
+  [ "$status" -eq 3 ]
+  jq -e '.components["provision-codex"].reason == "codex_update_not_verified"' "$AICODING_RESULTS_FILE"
+}
+
+@test "a shared guard does not make later confirmed-local legacy provisioning strict" {
+  local shared_root="$TMPDIR/shared-claude" expires
+  mkdir -p "$shared_root"
+  ln -s "$shared_root" "$HOME/.claude"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/consumers.json"
+  export AICODING_RESULTS_FILE="$TMPDIR/results.json"
+  expires=$(( $(date +%s) + 3600 ))
+  jq -n --arg root "$shared_root" --argjson expires "$expires" \
+    '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
+      consumers:[{id:"known",components:{claude:{version:"2.1.0",config_compatible:true}}}]}]}' \
+    > "$AICODING_SHARED_CONSUMERS_FILE"
+  cat > "$TMPDIR/stubs/claude" <<'STUB'
+#!/bin/sh
+[ "$*" != --version ] || printf '2.1.0\n'
+exit 0
+STUB
+  cat > "$TMPDIR/stubs/codex" <<'STUB'
+#!/bin/sh
+case "$*" in
+  --version) printf 'codex-cli 0.200.0\n'; exit 0 ;;
+  "plugin add"*) exit 1 ;;
+esac
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/claude" "$TMPDIR/stubs/codex"
+  export AICODINGSETUP_SKIP_NETWORK=
+  export _AICODINGSETUP_NVS_STRIPPED=1
+  source "$BLUEPRINT_ROOT/install.sh"
+  _provision_ensure_update_components
+  aicoding_result_record claude current 2.1.0 verified 2.1.0
+  _provision_tool_ready claude claude "" "$HOME/.claude"
+  [ "${_AICODING_PROVISION_GUARDED:-0}" -eq 1 ]
+
+  run install_codex_plugins
+
+  [ "$status" -eq 0 ]
+}
+
+@test "genuine failure in guarded legacy Codex provisioning is truthful" {
+  local shared_root="$TMPDIR/shared-codex" expires
+  mkdir -p "$shared_root"
+  ln -s "$shared_root" "$HOME/.codex"
+  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/consumers.json"
+  export AICODING_RESULTS_FILE="$TMPDIR/results.json"
+  expires=$(( $(date +%s) + 3600 ))
+  jq -n --arg root "$shared_root" --argjson expires "$expires" \
+    '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
+      consumers:[{id:"known",components:{codex:{version:"0.200.0",config_compatible:true}}}]}]}' \
+    > "$AICODING_SHARED_CONSUMERS_FILE"
+  cat > "$TMPDIR/stubs/codex" <<'STUB'
+#!/bin/sh
+case "$*" in
+  --version) printf 'codex-cli 0.200.0\n'; exit 0 ;;
+  "plugin add"*) exit 1 ;;
+esac
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/codex"
+  export AICODINGSETUP_SKIP_NETWORK=
+  export _AICODINGSETUP_NVS_STRIPPED=1
+  source "$BLUEPRINT_ROOT/install.sh"
+  _provision_ensure_update_components
+  aicoding_result_record codex current 0.200.0 verified 0.200.0
+
+  run install_codex_plugins
+
+  [ "$status" -ne 0 ]
 }
 
 @test "install.sh mode: adopt when managed files exist but no manifest" {
@@ -1103,193 +1475,197 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# ensure_playwright_browsers — system-library provisioning.
-#
-# `npx playwright install chromium` downloads browser binaries only; the shared
-# libraries they link against (libatk, libgbm, libasound, …) are not in the
-# universal devcontainer image. These tests pin the two halves: the browser
-# download and the system-dep install are decided independently, so a container
-# that already has the browser cached still gets its libs.
+# Exact Playwright MCP browser provisioning.
 # ---------------------------------------------------------------------------
 
-# Fake an installed chromium plus recording stubs for npx/sudo/ldd.
-# $1: what the ldd stub reports — "missing" or "resolved".
+# Create an immutable exact package release and version-specific browser cache.
+# $1: ldd result — missing, resolved, or unreadable.
 _playwright_fixture() {
-  local libs="$1"
+  local libs="$1" version=0.0.80
   export AICODINGSETUP_SKIP_NETWORK=
+  export AICODING_DATA_DIR="$TMPDIR/aicoding-data"
   export PLAYWRIGHT_TEST_REVISION=1234
-  export PLAYWRIGHT_BROWSERS_PATH="$TMPDIR/ms-playwright"
-  mkdir -p "$PLAYWRIGHT_BROWSERS_PATH/chromium-1234/chrome-linux64"
-  printf '#!/bin/sh\nexit 0\n' > "$PLAYWRIGHT_BROWSERS_PATH/chromium-1234/chrome-linux64/chrome"
-  chmod +x "$PLAYWRIGHT_BROWSERS_PATH/chromium-1234/chrome-linux64/chrome"
-
-  cat > "$TMPDIR/stubs/npx" <<NPX
+  local release="$AICODING_DATA_DIR/versions/mcp-playwright/$version"
+  local cache="$AICODING_DATA_DIR/browser-cache/mcp-playwright/$version"
+  mkdir -p "$release/node_modules/@playwright/mcp" "$release/node_modules/playwright-core" \
+    "$AICODING_DATA_DIR/current" "$cache/chromium-1234/chrome-linux64"
+  ln -s ../versions/mcp-playwright/$version "$AICODING_DATA_DIR/current/mcp-playwright"
+  cat > "$release/node_modules/@playwright/mcp/cli.js" <<'CLI'
 #!/bin/sh
-echo "\$@" >> '$TMPDIR/npx-calls'
-case "\$*" in
-  '-y @playwright/mcp@latest install-browser --dry-run chromium')
-    [ -z "\${PLAYWRIGHT_TEST_RESOLVE_FAIL:-}" ] || exit 38
-    echo "Chrome for Testing (playwright chromium v\$PLAYWRIGHT_TEST_REVISION)"
-    echo "  Install location:    \$PLAYWRIGHT_BROWSERS_PATH/chromium-\$PLAYWRIGHT_TEST_REVISION"
-    echo "FFmpeg"
-    echo "  Install location:    \$PLAYWRIGHT_BROWSERS_PATH/ffmpeg-1011"
-    ;;
-  '-y @playwright/mcp@latest install-browser --no-remove chromium')
-    [ -z "\${PLAYWRIGHT_TEST_INSTALL_FAIL:-}" ] || exit 37
-    bin="\$PLAYWRIGHT_BROWSERS_PATH/chromium-\$PLAYWRIGHT_TEST_REVISION/chrome-linux64/chrome"
-    mkdir -p "\$(dirname "\$bin")"
-    printf '#!/bin/sh\\nexit 0\\n' > "\$bin"
-    chmod +x "\$bin"
-    ;;
-esac
-exit 0
-NPX
-  # \$SUDO must not swallow the recorded call — pass through to the real command.
-  printf '#!/bin/sh\nexec "$@"\n' > "$TMPDIR/stubs/sudo"
-  if [ "$libs" = "unreadable" ]; then
-    # ldd exits NON-ZERO on a truncated/partially-extracted download. install.sh
-    # runs under `set -euo pipefail`, so this must not fail a pipeline.
+echo "mcp $*" >> "$HOME/playwright-exact-calls"
+[ -z "${PLAYWRIGHT_TEST_INSTALL_FAIL:-}" ] || exit 37
+if [ "$1" = install-browser ]; then
+  [ -z "${PLAYWRIGHT_TEST_NO_BROWSER:-}" ] || exit 0
+  bin="$PLAYWRIGHT_BROWSERS_PATH/chromium-$PLAYWRIGHT_TEST_REVISION/chrome-linux64/chrome"
+  mkdir -p "$(dirname "$bin")"
+  printf '#!/bin/sh\nexit 0\n' > "$bin"
+  chmod +x "$bin"
+fi
+CLI
+  cat > "$release/node_modules/playwright-core/cli.js" <<'CLI'
+const fs = require('fs');
+fs.appendFileSync(process.env.HOME + '/playwright-exact-calls', 'core ' + process.argv.slice(2).join(' ') + '\n');
+CLI
+  chmod +x "$release/node_modules/@playwright/mcp/cli.js" "$release/node_modules/playwright-core/cli.js"
+  local bin="$cache/chromium-1234/chrome-linux64/chrome"
+  printf '#!/bin/sh\nexit 0\n' > "$bin"
+  chmod +x "$bin"
+  printf '%s\n' "$bin" > "$cache/.browser-bin"
+
+  cat > "$TMPDIR/stubs/sudo" <<'SUDO'
+#!/bin/sh
+[ "${1:-}" != -n ] || shift
+exec "$@"
+SUDO
+  if [ "$libs" = unreadable ]; then
     cat > "$TMPDIR/stubs/ldd" <<'LDD'
 #!/bin/sh
 echo "$*" >> "$HOME/ldd-calls"
-echo "	not a dynamic executable" >&2
 exit 1
 LDD
-  elif [ "$libs" = "missing" ]; then
+  elif [ "$libs" = missing ]; then
     cat > "$TMPDIR/stubs/ldd" <<'LDD'
 #!/bin/sh
 echo "$*" >> "$HOME/ldd-calls"
-echo "	libatk-1.0.so.0 => not found"
-echo "	libgbm.so.1 => not found"
+echo 'libatk-1.0.so.0 => not found'
 LDD
   else
     cat > "$TMPDIR/stubs/ldd" <<'LDD'
 #!/bin/sh
 echo "$*" >> "$HOME/ldd-calls"
-echo "	libgbm.so.1 => /lib/x86_64-linux-gnu/libgbm.so.1"
+echo 'libgbm.so.1 => /lib/libgbm.so.1'
 LDD
   fi
-  chmod +x "$TMPDIR/stubs/npx" "$TMPDIR/stubs/sudo" "$TMPDIR/stubs/ldd"
+  chmod +x "$TMPDIR/stubs/sudo" "$TMPDIR/stubs/ldd"
 }
 
-@test "ensure_playwright_browsers: installs system deps when the cached chromium has unresolved libs" {
+@test "ensure_playwright_browsers uses only the exact active package and dependency CLI" {
   _playwright_fixture missing
   _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
   [ "$status" -eq 0 ]
-  # The MCP installer reconciles its revision; system deps still get checked.
-  grep -q "install-deps chromium" "$TMPDIR/npx-calls"
-  grep -q -- '^-y @playwright/mcp@latest install-browser --no-remove chromium$' "$TMPDIR/npx-calls"
+  grep -q '^mcp install-browser --no-remove chromium$' "$HOME/playwright-exact-calls"
+  grep -q '^core install-deps chromium$' "$HOME/playwright-exact-calls"
+  [ ! -e "$TMPDIR/npx-calls" ]
 }
 
-@test "ensure_playwright_browsers: warns with the manual command when install-deps does not fix the libs" {
-  _playwright_fixture missing   # ldd keeps reporting "not found" after the install
-  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
-  [ "$status" -eq 0 ]
-  echo "$output" | grep -q "libatk-1.0.so.0"
-  echo "$output" | grep -q "playwright-core install-deps chromium"
-}
-
-@test "ensure_playwright_browsers: no install-deps when the chromium libs already resolve" {
+@test "ensure_playwright_browsers skips system installation when exact Chromium resolves" {
   _playwright_fixture resolved
   _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
   [ "$status" -eq 0 ]
-  [ ! -f "$TMPDIR/npx-calls" ] || ! grep -q "install-deps" "$TMPDIR/npx-calls"
+  grep -q '^mcp install-browser --no-remove chromium$' "$HOME/playwright-exact-calls"
+  if grep -q '^core ' "$HOME/playwright-exact-calls"; then false; fi
 }
 
-@test "ensure_playwright_browsers: downloads chromium when the cache is empty" {
-  _playwright_fixture missing
-  rm -rf "$PLAYWRIGHT_BROWSERS_PATH"
-  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
-  [ "$status" -eq 0 ]
-  [ -x "$PLAYWRIGHT_BROWSERS_PATH/chromium-1234/chrome-linux64/chrome" ]
-  grep -q -- '^-y @playwright/mcp@latest install-browser --no-remove chromium$' "$TMPDIR/npx-calls"
-}
-
-@test "ensure_playwright_browsers: repairs an obsolete nonempty cache and checks the required revision" {
+@test "ensure_playwright_browsers retains another package version's browser cache" {
   _playwright_fixture resolved
+  mkdir -p "$AICODING_DATA_DIR/browser-cache/mcp-playwright/0.0.79/chromium-old"
+  rm -rf "$AICODING_DATA_DIR/browser-cache/mcp-playwright/0.0.80/chromium-1234"
+  rm -f "$AICODING_DATA_DIR/browser-cache/mcp-playwright/0.0.80/.browser-bin"
   export PLAYWRIGHT_TEST_REVISION=1243
   _run_install_fn_strict "$(_isolated_path)" ensure_playwright_browsers
   [ "$status" -eq 0 ]
-  [ -x "$PLAYWRIGHT_BROWSERS_PATH/chromium-1243/chrome-linux64/chrome" ]
-  [ -x "$PLAYWRIGHT_BROWSERS_PATH/chromium-1234/chrome-linux64/chrome" ]
-  grep -q '/chromium-1243/chrome-linux64/chrome$' "$HOME/ldd-calls"
-  if grep -q '/chromium-1234/' "$HOME/ldd-calls"; then false; fi
+  [ -x "$AICODING_DATA_DIR/browser-cache/mcp-playwright/0.0.80/chromium-1243/chrome-linux64/chrome" ]
+  [ -d "$AICODING_DATA_DIR/browser-cache/mcp-playwright/0.0.79/chromium-old" ]
+  grep -q '/0.0.80/chromium-1243/' "$AICODING_DATA_DIR/browser-cache/mcp-playwright/0.0.80/.browser-bin"
 }
 
-@test "ensure_playwright_browsers: download failure warns under sync shell options without accepting an old browser" {
+@test "ensure_playwright_browsers does not accept a failed exact browser install" {
   _playwright_fixture resolved
-  export PLAYWRIGHT_TEST_REVISION=1243 PLAYWRIGHT_TEST_INSTALL_FAIL=1
+  export PLAYWRIGHT_TEST_INSTALL_FAIL=1
+  rm -f "$AICODING_DATA_DIR/browser-cache/mcp-playwright/0.0.80/.browser-bin" "$HOME/ldd-calls"
   _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
   [ "$status" -eq 0 ]
   [[ "$output" == *"browser install failed"* ]]
   [ ! -e "$HOME/ldd-calls" ]
-  [ ! -e "$PLAYWRIGHT_BROWSERS_PATH/chromium-1243" ]
 }
 
-@test "ensure_playwright_browsers: respects the offline provisioning guard" {
-  _playwright_fixture resolved
-  export AICODINGSETUP_SKIP_NETWORK=1
-  _run_install_fn_strict "$(_isolated_path)" ensure_playwright_browsers
-  [ "$status" -eq 0 ]
-  [ ! -e "$TMPDIR/npx-calls" ]
-}
-
-@test "check_playwright: an obsolete cached revision does not pass the health check" {
-  _playwright_fixture resolved
-  export PLAYWRIGHT_TEST_REVISION=1243
-  _run_install_fn_strict "$(_isolated_path)" check_playwright
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"required by Playwright MCP is unavailable"* ]]
-  [[ "$output" != *"OK:"* ]]
-  [ ! -e "$HOME/ldd-calls" ]
-}
-
-@test "check_playwright: respects the offline provisioning guard" {
-  _playwright_fixture resolved
-  export AICODINGSETUP_SKIP_NETWORK=1
-  _run_install_fn_strict "$(_isolated_path)" check_playwright
-  [ "$status" -eq 0 ]
-  [ ! -e "$TMPDIR/npx-calls" ]
-}
-
-@test "check_playwright: failure to resolve the required browser does not pass the health check" {
-  _playwright_fixture resolved
-  export PLAYWRIGHT_TEST_RESOLVE_FAIL=1
-  _run_install_fn_strict "$(_isolated_path)" check_playwright
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"required by Playwright MCP is unavailable"* ]]
-  [[ "$output" != *"OK:"* ]]
-}
-
-@test "check_playwright: reports missing system libraries instead of a bare OK" {
+@test "scheduled Playwright provisioning reports unresolved system libraries" {
   _playwright_fixture missing
-  _run_install_fn "$(_isolated_path)" check_playwright
-  [ "$status" -eq 0 ]
-  echo "$output" | grep -q "libatk-1.0.so.0"
+  export AICODING_SYNC_MODE=boot
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"still missing"* ]]
 }
 
-# A truncated / partially-extracted chromium makes `ldd` exit non-zero ("not a
-# dynamic executable"). install.sh runs under `set -euo pipefail`, so piping
-# ldd straight into awk|sort aborted the whole provisioning run instead of
-# warning — and install-deps cannot fix a bad download anyway, so the CTA has
-# to be a re-download.
-
-@test "ensure_playwright_browsers: survives an ldd failure instead of aborting the run" {
+@test "scheduled Playwright provisioning defers an unreadable browser" {
   _playwright_fixture unreadable
+  export AICODING_SYNC_MODE=boot
+
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"Could not inspect"* ]]
+}
+
+@test "scheduled Playwright provisioning skips an unselected package" {
+  export AICODINGSETUP_SKIP_NETWORK=
+  export AICODING_DATA_DIR="$TMPDIR/aicoding-data"
+  mkdir -p "$AICODING_DATA_DIR/current"
+
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"CLI is unavailable"* ]]
+}
+
+@test "scheduled Playwright provisioning defers a dangling selected package" {
+  export AICODINGSETUP_SKIP_NETWORK= AICODING_SYNC_MODE=boot
+  export AICODING_DATA_DIR="$TMPDIR/aicoding-data"
+  mkdir -p "$AICODING_DATA_DIR/current"
+  ln -s ../versions/mcp-playwright/missing "$AICODING_DATA_DIR/current/mcp-playwright"
+
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"CLI is unavailable"* ]]
+}
+
+@test "scheduled Playwright browser installation failure remains a failure" {
+  _playwright_fixture resolved
+  export AICODING_SYNC_MODE=boot PLAYWRIGHT_TEST_INSTALL_FAIL=1
+
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"browser install failed"* ]]
+}
+
+@test "scheduled Playwright browser validation failure remains a failure" {
+  _playwright_fixture resolved
+  export AICODING_SYNC_MODE=boot PLAYWRIGHT_TEST_NO_BROWSER=1 PLAYWRIGHT_TEST_REVISION=missing
+  rm -rf "$AICODING_DATA_DIR/browser-cache/mcp-playwright/0.0.80"/chromium-* \
+    "$AICODING_DATA_DIR/browser-cache/mcp-playwright/0.0.80/.browser-bin"
+
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"browser did not validate"* ]]
+}
+
+@test "ensure_playwright_browsers respects the offline provisioning guard" {
+  _playwright_fixture resolved
+  export AICODINGSETUP_SKIP_NETWORK=1
   _run_install_fn_strict "$(_isolated_path)" ensure_playwright_browsers
   [ "$status" -eq 0 ]
-  echo "$output" | grep -qi "ldd"
-  # install-deps cannot repair a truncated download — must not be attempted.
-  [ ! -f "$TMPDIR/npx-calls" ] || ! grep -q "install-deps" "$TMPDIR/npx-calls"
-  # The actionable fix is re-downloading the browser.
-  echo "$output" | grep -q "@playwright/mcp@latest install-browser --force chromium"
+  [ ! -e "$HOME/playwright-exact-calls" ]
 }
 
-@test "check_playwright: survives an ldd failure instead of aborting the run" {
+@test "check_playwright validates only the active version's retained marker" {
+  _playwright_fixture resolved
+  _run_install_fn_strict "$(_isolated_path)" check_playwright
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Chromium revision is installed"* ]]
+  rm "$AICODING_DATA_DIR/browser-cache/mcp-playwright/0.0.80/.browser-bin"
+  _run_install_fn_strict "$(_isolated_path)" check_playwright
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"required by Playwright MCP is unavailable"* ]]
+}
+
+@test "Playwright health check reports an unreadable exact browser" {
   _playwright_fixture unreadable
   _run_install_fn_strict "$(_isolated_path)" check_playwright
   [ "$status" -eq 0 ]
-  echo "$output" | grep -qi "ldd"
+  [[ "$output" == *"ldd failed"* ]]
 }
 
 @test "install stamps provision_commit in the container-local manifest" {
@@ -1299,8 +1675,8 @@ LDD
   run bash -c '. "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"; manifest_stamp_provision deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
   [ "$status" -eq 0 ]
   [ "$(jq -r .provision_commit "$AICODING_MANIFEST")" = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" ]
-  # install.sh wires it: the call site exists and derives the sha from the blueprint checkout
-  grep -q 'manifest_stamp_provision "$(git -C "$SCRIPT_DIR" rev-parse HEAD' "$BLUEPRINT_ROOT/install.sh"
+  # The source helper accepts both immutable Gitless releases and checkouts.
+  grep -qF 'manifest_stamp_provision "$(_aicoding_managed_source_version "$SCRIPT_DIR")"' "$BLUEPRINT_ROOT/install.sh"
   rm -rf "$TMP"
 }
 
@@ -1480,7 +1856,7 @@ EOF
   export AICODING_UPDATE_STATE="$TMPDIR/state/updates"
   run env AICODING_BLUEPRINT_CLONE="$BP" \
     bash -c ". \"$BP/lib/sync.sh\"; aicoding_sync --yes"
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
   # The probes are still verbatim afterwards: sync did not re-substitute.
   grep -qF '{{BRAVE_API_KEY}}' "$HOME/.claude/CLAUDE.md"
   grep -qF '{{BRAVE_API_KEY}}' "$HOME/.claude/skills/cloudflare-browser/SKILL.md"

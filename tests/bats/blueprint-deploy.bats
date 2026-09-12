@@ -116,6 +116,16 @@ EOF
   [ -f "$AICODING_MANIFEST" ]
 }
 
+@test "manifest_stage_commit reports a manifest write failure" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  manifest_stage_begin
+  write_manifest() { return 17; }
+
+  run manifest_stage_commit
+
+  [ "$status" -eq 17 ]
+}
+
 @test "manifest_get_file: returns per-file entry as JSON" {
   cp "$BLUEPRINT_ROOT/tests/bats/fixtures/sample-manifest.json" "$AICODING_MANIFEST"
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
@@ -272,6 +282,46 @@ EOF
   [ -n "$bak" ]
   grep -q "personal codex config" "$bak"
   jq -e '.files["'"$HOME"'/.codex/config.toml"]' "$AICODING_MANIFEST"
+}
+
+@test "apply_managed_buckets: reports a failed write and continues unrelated paths" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs"
+  printf 'first\n' > "$AICODING_BLUEPRINT_CLONE/configs/first"
+  printf 'second\n' > "$AICODING_BLUEPRINT_CLONE/configs/second"
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE
+  BUCKETS[$TMPDIR/first]=new_file
+  FILE_MODE[$TMPDIR/first]=overwrite
+  FILE_SOURCE[$TMPDIR/first]=configs/first
+  BUCKETS[$TMPDIR/second]=new_file
+  FILE_MODE[$TMPDIR/second]=overwrite
+  FILE_SOURCE[$TMPDIR/second]=configs/second
+  _apply_deploy() {
+    [ "$2" != "$TMPDIR/first" ] || return 23
+    printf 'applied\n' > "$2"
+  }
+
+  run apply_managed_buckets "new_file"
+
+  [ "$status" -ne 0 ]
+  [ -f "$TMPDIR/second" ]
+}
+
+@test "deploy helpers do not stage manifest entries after failed writes" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  printf 'source\n' > "$TMPDIR/source"
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  manifest_stage_begin
+  _write_atomic() { return 24; }
+
+  run deploy_overwrite_file "$TMPDIR/source" "$TMPDIR/dest" configs/source
+  [ "$status" -eq 24 ]
+
+  _json_merge_into() { return 25; }
+  run deploy_merge_file "$TMPDIR/source" "$TMPDIR/merge" configs/source
+  [ "$status" -eq 25 ]
 }
 
 @test "apply_managed_buckets: no backup when disk already matches incoming content" {
@@ -882,6 +932,78 @@ EOF
   run managed_inventory_overwrite
   [ "$status" -eq 0 ]
   echo "$output" | grep -qF "$HOME/.claude/hooks/bw-deny-files.sh|overwrite|configs/claude/hooks/bw-deny-files.sh"
+}
+
+@test "shared destination lock lives in the shared root and excludes a second writer" {
+  mkdir -p "$HOME/.claude"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  aicoding_shared_locks_acquire "$HOME/.claude/hooks/x.sh"
+  [ -f "$HOME/.claude/.aicoding-update.lock" ]
+  run bash -c '. "$1/lib/blueprint-deploy.sh"; aicoding_shared_locks_acquire "$HOME/.claude/settings.json"' _ "$BLUEPRINT_ROOT"
+  [ "$status" -ne 0 ]
+}
+
+@test "OpenCode config writers with separate runtime data contend on the config root" {
+  mkdir -p "$HOME/.config/opencode" "$TMPDIR/other-home/.config"
+  ln -s "$HOME/.config/opencode" "$TMPDIR/other-home/.config/opencode"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  aicoding_shared_locks_acquire "$HOME/.config/opencode/opencode.json"
+  [ -f "$HOME/.config/opencode/.aicoding-update.lock" ]
+  run bash -c 'export HOME="$2"; . "$1/lib/blueprint-deploy.sh"; aicoding_shared_locks_acquire "$HOME/.config/opencode/opencode.json"' \
+    _ "$BLUEPRINT_ROOT" "$TMPDIR/other-home"
+  [ "$status" -ne 0 ]
+}
+
+@test "managed root locks cover both OpenCode config and runtime data" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  aicoding_shared_locks_acquire_managed_roots
+  local root
+  for root in "$HOME/.config/opencode" "$HOME/.local/share/opencode"; do
+    [ -f "$root/.aicoding-update.lock" ]
+    run bash -c '. "$1/lib/blueprint-deploy.sh"; aicoding_shared_locks_acquire "$2/resource"' \
+      _ "$BLUEPRINT_ROOT" "$root"
+    [ "$status" -ne 0 ]
+  done
+}
+
+@test "owned hook restoration requires historical generated provenance" {
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
+  git init -q -b main "$AICODING_BLUEPRINT_CLONE"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs/claude/hooks" "$HOME/.claude/hooks"
+  local source_path=configs/claude/hooks/example.sh dest="$HOME/.claude/hooks/example.sh"
+  printf '#!/bin/sh\necho old\n' > "$AICODING_BLUEPRINT_CLONE/$source_path"
+  git -C "$AICODING_BLUEPRINT_CLONE" add .
+  git -C "$AICODING_BLUEPRINT_CLONE" -c user.email=t@t -c user.name=t commit -qm old
+  cp "$AICODING_BLUEPRINT_CLONE/$source_path" "$dest"
+  printf '#!/bin/sh\necho new\n' > "$AICODING_BLUEPRINT_CLONE/$source_path"
+  git -C "$AICODING_BLUEPRINT_CLONE" -c user.email=t@t -c user.name=t commit -qam new
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+
+  run owned_file_has_generated_provenance "$dest" "$source_path"
+  [ "$status" -eq 0 ]
+  printf '#!/bin/sh\necho user edit\n' > "$dest"
+  run owned_file_has_generated_provenance "$dest" "$source_path"
+  [ "$status" -ne 0 ]
+}
+
+@test "owned hook provenance works after Git metadata is removed" {
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/release"
+  local source_path=configs/claude/hooks/example.sh
+  local dest="$HOME/.claude/hooks/example.sh"
+  mkdir -p "$AICODING_BLUEPRINT_CLONE/.aicoding-generated-provenance/$source_path" \
+    "$(dirname "$dest")"
+  printf '#!/bin/sh\necho old\n' \
+    > "$AICODING_BLUEPRINT_CLONE/.aicoding-generated-provenance/$source_path/old"
+  printf '#!/bin/sh\necho old\n' > "$dest"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+
+  run owned_file_has_generated_provenance "$dest" "$source_path"
+  [ "$status" -eq 0 ]
+
+  printf '#!/bin/sh\necho edited\n' > "$dest"
+  run owned_file_has_generated_provenance "$dest" "$source_path"
+  [ "$status" -ne 0 ]
 }
 
 @test "managed_inventory_merge: includes cursor mcp.json" {

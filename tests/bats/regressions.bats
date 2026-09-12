@@ -14,16 +14,38 @@ setup() {
   export AICODING_MANIFEST="$TMPDIR/.aicodingsetup/manifest.json"
   export AICODING_BLUEPRINT_CLONE="$TMPDIR/aicoding"
   export AICODINGSETUP_NONINTERACTIVE=1
+  export CODEX_MANAGED_DIR="$TMPDIR/etc-codex"
   # Stub apt/curl/etc.
   export PATH="$TMPDIR/stubs:$PATH"
   mkdir -p "$TMPDIR/stubs"
-  for cmd in apt-get sudo curl npm npx bash-build-tmux claude opencode codex cursor-agent; do
+  for cmd in apt-get sudo curl npm npx bash-build-tmux opencode codex cursor-agent; do
     cat > "$TMPDIR/stubs/$cmd" <<'STUB'
 #!/bin/sh
 exit 0
 STUB
     chmod +x "$TMPDIR/stubs/$cmd"
   done
+  cat > "$TMPDIR/stubs/sudo" <<'STUB'
+#!/bin/sh
+[ "${1:-}" != -n ] || shift
+exec "$@"
+STUB
+  chmod +x "$TMPDIR/stubs/sudo"
+  cat > "$TMPDIR/stubs/claude" <<'STUB'
+#!/bin/sh
+case "$*" in
+  '--version') echo '2.1.50 (Claude Code)' ;;
+  'mcp get logfire')
+    [ -f "$HOME/.fixture-logfire-added" ] || exit 1
+    echo 'URL: https://logfire-eu.pydantic.dev/mcp'
+    ;;
+  'mcp add --transport http -s user logfire https://logfire-eu.pydantic.dev/mcp')
+    : > "$HOME/.fixture-logfire-added"
+    ;;
+  'mcp get context7'|'mcp get playwright') exit 1 ;;
+esac
+STUB
+  chmod +x "$TMPDIR/stubs/claude"
   mkdir -p "$AICODING_BLUEPRINT_CLONE"
   rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$AICODING_BLUEPRINT_CLONE/"
   (cd "$AICODING_BLUEPRINT_CLONE" && git init -q && git add -A && \
@@ -36,6 +58,18 @@ STUB
 teardown() {
   cd /
   rm -rf "$TMPDIR"
+}
+
+seed_verified_claude_config_dependencies() {
+  export AICODING_STATE_DIR="$HOME/.local/state/aicoding"
+  export AICODING_RESULTS_FILE="$AICODING_STATE_DIR/update-results.json"
+  source "$AICODING_BLUEPRINT_CLONE/lib/update-results.sh"
+  aicoding_result_record claude current 2.1.50 verified 2.1.50
+  local component
+  for component in mcp-context7 mcp-playwright \
+      mcp-registration-claude-context7 mcp-registration-claude-playwright; do
+    aicoding_result_record "$component" current 1.0.0 verified 1.0.0
+  done
 }
 
 # Bug 1 regression: ~/.bashrc must survive aicoding-sync --yes.
@@ -60,9 +94,9 @@ teardown() {
   echo "# user-added line below the managed block" >> "$HOME/.bashrc"
 
   # Run aicoding-sync --yes twice (idempotency check).
-  run "$HOME/.local/bin/aicoding-sync" --yes
+  run "$HOME/.local/bin/aicoding-sync" --yes --blueprint "$AICODING_BLUEPRINT_CLONE"
   [ "$status" -eq 0 ]
-  run "$HOME/.local/bin/aicoding-sync" --yes
+  run "$HOME/.local/bin/aicoding-sync" --yes --blueprint "$AICODING_BLUEPRINT_CLONE"
   [ "$status" -eq 0 ]
 
   # File must still exist with the marker block intact.
@@ -94,6 +128,7 @@ teardown() {
 @test "regression: aicoding-sync preserves placeholder substitutions" {
   bash "$AICODING_BLUEPRINT_CLONE/install.sh" </dev/null
   [ -f "$HOME/.claude/settings.json" ]
+  seed_verified_claude_config_dependencies
 
   # install.sh's deploy substituted {{HOME}} -> $HOME — settings.json on
   # disk has no literal placeholders.
@@ -113,7 +148,7 @@ teardown() {
   (cd "$AICODING_BLUEPRINT_CLONE" && git add -A && \
     git -c user.email=t@t -c user.name=t commit -q -m advance)
 
-  run "$HOME/.local/bin/aicoding-sync" --yes
+  run "$HOME/.local/bin/aicoding-sync" --yes --blueprint "$AICODING_BLUEPRINT_CLONE"
   [ "$status" -eq 0 ]
 
   # settings.json must still have substituted values — NO literal {{HOME}}.
@@ -152,7 +187,7 @@ teardown() {
   # Sanity: ~/.bashrc is present and marker block is intact pre-update.
   [ -f "$HOME/.bashrc" ]
 
-  run "$HOME/.local/bin/aicoding-sync" --yes
+  run "$HOME/.local/bin/aicoding-sync" --yes --blueprint "$AICODING_BLUEPRINT_CLONE"
   [ "$status" -eq 0 ]
 
   # Orphan removed, manifest entry gone.
@@ -176,7 +211,7 @@ teardown() {
   [ ! -e "$HOME/.bashrc.d/aicoding-env.sh" ]
 
   # aicoding-sync should classify as restore, deploy without trying to diff.
-  run "$HOME/.local/bin/aicoding-sync" --yes
+  run "$HOME/.local/bin/aicoding-sync" --yes --blueprint "$AICODING_BLUEPRINT_CLONE"
   [ "$status" -eq 0 ]
 
   # File is restored.

@@ -80,3 +80,27 @@ teardown() { rm -rf "$TEST_DIR"; }
   [[ "$output" == *'user-owned'* ]]
   [ "$(cat "$HOME/.codex/skills/superpowers/mine")" = keep ]
 }
+
+@test "persistent enrollment defers a user-owned Superpowers directory" {
+  export AICODINGSETUP_SKIP_NETWORK=0 AICODING_PERSISTENT_ENROLLMENT=1
+  mkdir -p "$HOME/.codex/skills/superpowers"
+  echo keep > "$HOME/.codex/skills/superpowers/mine"
+
+  install_codex_plugins
+
+  [ "${_AICODING_PREPARATION_DEFERRED:-0}" -eq 1 ]
+  [ "$(cat "$HOME/.codex/skills/superpowers/mine")" = keep ]
+}
+
+@test "scheduled provisioning reports a user-owned Superpowers directory as deferred" {
+  export AICODINGSETUP_SKIP_NETWORK=0 AICODING_SYNC_MODE=boot
+  _provision_tool_ready() { return 0; }
+  mkdir -p "$HOME/.codex/skills/superpowers"
+  echo keep > "$HOME/.codex/skills/superpowers/mine"
+
+  run install_codex_plugins
+
+  [ "$status" -eq 3 ]
+  [[ "$output" == *'user-owned'* ]]
+  [ "$(cat "$HOME/.codex/skills/superpowers/mine")" = keep ]
+}

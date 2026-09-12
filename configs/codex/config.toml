@@ -74,12 +74,11 @@ command = "brave-search-mcp-server"
 env = { BRAVE_API_KEY = "{{BRAVE_API_KEY}}" }
 
 [mcp_servers.context7]
-command = "npx"
-args = ["-y", "@upstash/context7-mcp"]
+command = "context7-mcp"
 
 [mcp_servers.playwright]
-command = "npx"
-args = ["@playwright/mcp@latest", "--browser", "chromium"]
+command = "playwright-mcp"
+args = ["--browser", "chromium"]
 
 # memory-router — central memory-lanes retrieval router on vossisrv (the
 # memory_search tool). Streamable HTTP; the bearer token is substituted at

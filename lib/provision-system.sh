@@ -495,21 +495,25 @@ ensure_tmux() {
   ok "tmux $(tmux -V 2>/dev/null | awk '{print $2}') (master ${tmux_commit:0:7}) built and installed to /usr/local/bin/tmux"
 }
 
-# Ask the MCP's own installer which revision it needs. An arbitrary cached
-# chromium (or the separately released `playwright` npm package) can be older
-# than the MCP's playwright-core dependency and must not pass this check.
+# Resolve the browser cache for the exact currently selected MCP package.
+# Each package version has a separate retained cache.
 playwright_chromium_bin() {
-  local plan dir bin
-  command -v npx &>/dev/null || return 1
-  plan="$(npx -y @playwright/mcp@latest install-browser --dry-run chromium 2>/dev/null)" || return 1
-  dir="$(printf '%s\n' "$plan" | sed -n 's/^[[:space:]]*Install location:[[:space:]]*//p' \
-    | awk '/\/chromium-[^/]+$/ {print; exit}')"
-  [[ -n "$dir" ]] || return 1
-  for bin in "$dir"/chrome-linux*/chrome \
-      "$dir"/chrome-mac*/"Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" \
-      "$dir"/chrome-mac*/Chromium.app/Contents/MacOS/Chromium; do
-    if [[ -x "$bin" ]]; then printf '%s' "$bin"; return 0; fi
-  done
+  local current version root bin
+  current=$(readlink -f "${AICODING_DATA_DIR:-$HOME/.local/share/aicoding}/current/mcp-playwright" 2>/dev/null) || return 1
+  case "$current" in "${AICODING_DATA_DIR:-$HOME/.local/share/aicoding}/versions/mcp-playwright/"*) ;; *) return 1 ;; esac
+  version=${current##*/}
+  root="${AICODING_DATA_DIR:-$HOME/.local/share/aicoding}/browser-cache/mcp-playwright/$version"
+  bin=$(cat "$root/.browser-bin" 2>/dev/null || true)
+  case "$bin" in "$root"/*) [[ -x "$bin" ]] && { printf '%s' "$bin"; return 0; } ;; esac
+  return 1
+}
+
+_playwright_discover_chromium_bin() {
+  local version=$1 root bin
+  root="${AICODING_DATA_DIR:-$HOME/.local/share/aicoding}/browser-cache/mcp-playwright/$version"
+  while IFS= read -r bin; do
+    [[ -x "$bin" ]] && { printf '%s' "$bin"; return 0; }
+  done < <(find "$root" -type f \( -name chrome -o -name headless_shell \) -perm -u+x 2>/dev/null | sort)
   return 1
 }
 
@@ -542,37 +546,56 @@ playwright_missing_libs() {
 # browser cache is already populated (restored volume, earlier provision) still
 # needs its libs checked.
 ensure_playwright_system_deps() {
-  local bin missing
+  local bin missing current current_link core_cli node_path
   bin="$(playwright_chromium_bin)" || {
     warn "The Chromium revision required by Playwright MCP is unavailable"
-    info "Run: npx -y @playwright/mcp@latest install-browser chromium"
-    return 0
+    info "Run: playwright-mcp install-browser --no-remove chromium"
+    _provision_deferred; return $?
   }
   local rc=0
   missing="$(playwright_missing_libs "$bin")" || rc=$?
   if [[ $rc -ne 0 ]]; then
     # install-deps cannot repair a bad download — the fix is re-fetching it.
     warn "Could not inspect $bin — ldd failed (truncated or partial download?)"
-    info "Run: npx -y @playwright/mcp@latest install-browser --force chromium"
-    return 0
+    info "Run: playwright-mcp install-browser --no-remove chromium"
+    _provision_deferred; return $?
   fi
   if [[ -z "$missing" ]]; then
     ok "Playwright system libraries present"
     return 0
   fi
   info "Installing Playwright system libraries (missing: $(tr '\n' ' ' <<<"$missing"))"
-  # install-deps needs root; `env PATH=` because npx is usually nvm-managed and
-  # sudo's secure_path would not find it.
-  (set -o pipefail; $SUDO env PATH="$PATH" npx -y --package=@playwright/mcp@latest \
-    -c 'playwright-core install-deps chromium' 2>&1 | tail -5) \
-    || warn "playwright install-deps failed"
+  current_link="${AICODING_DATA_DIR:-$HOME/.local/share/aicoding}/current/mcp-playwright"
+  if [[ ! -L "$current_link" ]] \
+      || ! current=$(readlink -f "$current_link" 2>/dev/null) \
+      || [[ ! -d "$current" ]]; then
+    warn "Exact Playwright MCP release is unavailable"
+    _provision_deferred; return $?
+  fi
+  core_cli="$current/node_modules/playwright-core/cli.js"
+  node_path=$(command -v node 2>/dev/null) || true
+  if [[ ! -x "$core_cli" || -z "$node_path" ]]; then
+    warn "Exact Playwright dependency installer is unavailable"
+  elif [[ $(id -u) -eq 0 ]]; then
+    timeout "${AICODING_VENDOR_TIMEOUT:-600}" "$node_path" "$core_cli" install-deps chromium </dev/null >/dev/null 2>&1 \
+      || warn "playwright install-deps failed"
+  elif [[ -n "${AICODING_SYNC_MODE:-}" ]]; then
+    timeout "${AICODING_VENDOR_TIMEOUT:-600}" ${SUDO:-sudo} -n env PATH="$PATH" \
+      "$node_path" "$core_cli" install-deps chromium </dev/null >/dev/null 2>&1 \
+      || warn "playwright install-deps failed"
+  else
+    timeout "${AICODING_VENDOR_TIMEOUT:-600}" ${SUDO:-sudo} env PATH="$PATH" \
+      "$node_path" "$core_cli" install-deps chromium </dev/null >/dev/null 2>&1 \
+      || warn "playwright install-deps failed"
+  fi
   missing="$(playwright_missing_libs "$bin")" || {
     warn "Could not recheck Playwright system libraries — ldd failed"
-    return 0
+    _provision_deferred; return $?
   }
   if [[ -n "$missing" ]]; then
     warn "Playwright system libraries still missing: $(tr '\n' ' ' <<<"$missing")"
-    info "Run: sudo npx -y --package=@playwright/mcp@latest -c 'playwright-core install-deps chromium'"
+    info "Rebuild the container or run the exact staged playwright-core install-deps command"
+    _provision_deferred; return $?
   else
     ok "Playwright system libraries installed"
   fi
@@ -580,15 +603,26 @@ ensure_playwright_system_deps() {
 
 ensure_playwright_browsers() {
   [[ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ]] || return 0
-  command -v npx &>/dev/null || return 0
-  info "Ensuring Playwright MCP's Chromium revision is installed"
-  # The installer checks its exact revision and skips an existing download.
-  # Keep older revisions: another active MCP session may still be using one.
-  # Explicit pipefail also catches failures when called by fail-open sync.
-  if ! (set -o pipefail; npx -y @playwright/mcp@latest install-browser --no-remove chromium 2>&1 | tail -5); then
-    warn "Playwright MCP browser install failed"
-    return 0
+  local data=${AICODING_DATA_DIR:-$HOME/.local/share/aicoding} current link version cache cli
+  link="$data/current/mcp-playwright"
+  [[ -L "$link" ]] || return 0
+  if ! current=$(readlink -f "$link" 2>/dev/null) || [[ ! -d "$current" ]]; then
+    warn "Exact Playwright MCP CLI is unavailable"
+    _provision_deferred; return $?
   fi
+  version=${current##*/}; cache="$data/browser-cache/mcp-playwright/$version"
+  cli="$current/node_modules/@playwright/mcp/cli.js"
+  [[ -x "$cli" ]] || { warn "Exact Playwright MCP CLI is unavailable"; _provision_deferred; return $?; }
+  info "Ensuring exact Playwright MCP Chromium is installed"
+  if ! PLAYWRIGHT_BROWSERS_PATH="$cache" timeout "${AICODING_VENDOR_TIMEOUT:-600}" \
+      "$cli" install-browser --no-remove chromium </dev/null >/dev/null 2>&1; then
+    warn "Playwright MCP browser install failed"
+    _provision_soft_failure; return $?
+  fi
+  local bin
+  bin=$(_playwright_discover_chromium_bin "$version") \
+    || { warn "Exact Playwright browser did not validate"; _provision_soft_failure; return $?; }
+  printf '%s\n' "$bin" > "$cache/.browser-bin.tmp.$$" && mv "$cache/.browser-bin.tmp.$$" "$cache/.browser-bin"
   ensure_playwright_system_deps
 }
 

@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for CI-qualified aicoding updates every six hours
+
+[Timer]
+# OnBootSec provides startup catch-up for this monotonic timer.
+OnBootSec=2min
+OnUnitActiveSec=6h
+Unit=aicoding-auto-update.service
+
+[Install]
+WantedBy=timers.target

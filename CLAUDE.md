@@ -10,8 +10,11 @@ long as people and agents follow it.
 
 - **Dev / parent submodule** — editable checkout (e.g. `devMachine` →
   `devpod/aicoding`), pinned to a SHA.
-- **Runtime** — containers clone/sync from GitHub `main` into `/tmp/aicoding`
-  (`postCreate`, `aicoding-install`, `aicoding-sync` refresh).
+- **Runtime** — verified bootstrap and update commands select an exact
+  CI-qualified `main` commit, stage it under
+  `~/.local/share/aicoding/versions/`, then atomically activate stable
+  `~/.local/bin/aicoding-*` launchers. Startup only ensures the persistent
+  six-hour scheduler; it does no foreground network work.
 - **Local iteration** — pass `--blueprint /path/to/checkout` to
   `aicoding-sync` or `aicoding-install`. The selected working tree is used
   verbatim, including uncommitted edits; local mode never fetches or resets it.

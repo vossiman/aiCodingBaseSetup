@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 #
 # The canonical devcontainer.json (spec #2: devcontainer dedup). aicoding owns
-# the one true devcontainer.json — clone-based provisioning + generic mounts.
+# the one true devcontainer.json — verified bootstrap provisioning + generic mounts.
 # Host state lives under ~/devpod/<name>; DevPod resolves ${localEnv:HOME} on
 # the host at provision time, so the same file is portable across hosts.
 
@@ -74,16 +74,35 @@ DEVCONTAINER="$BLUEPRINT_ROOT/devcontainer.json"
   [[ "$image" =~ @sha256:[0-9a-f]{64}$ ]]
 }
 
-@test "devcontainer.json: provisions by cloning aiCodingBaseSetup (clone-based, not submodule)" {
+@test "devcontainer.json: provisions through the embedded reviewed verifier" {
   local post_create
   post_create=$(jq -r '.postCreateCommand' "$DEVCONTAINER")
-  [[ "$post_create" == *"git clone"* ]]
-  [[ "$post_create" == *"aiCodingBaseSetup"* ]]
-  [[ "$post_create" == *"install.sh"* ]]
+  [[ "$post_create" == *"mktemp -d"* ]]
+  [[ "$post_create" == *"base64 -d"* ]]
+  [[ "$post_create" == *"--profile container"* ]]
+  [[ "$post_create" != *"raw.githubusercontent.com"* ]]
+  [[ "$post_create" != *"git clone"* ]]
 }
 
 @test "devcontainer.json: sets the workspace-name hostname via runArgs" {
   run jq -r '.runArgs | join(" ")' "$DEVCONTAINER"
   [ "$status" -eq 0 ]
   [ "$output" = '--hostname ${containerWorkspaceFolderBasename}' ]
+}
+
+@test "devcontainer startup calls the physical runtime hook and tolerates missing enrollment" {
+  local scratch command
+  scratch=$(mktemp -d)
+  command=$(jq -r '.postStartCommand' "$DEVCONTAINER")
+  run env HOME="$scratch" AICODING_DATA_DIR="$scratch/data" bash -c "$command"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not enrolled"* ]]
+  mkdir -p "$scratch/data/versions/aicoding/fixture" "$scratch/data/current"
+  printf 'printf "%%s\\n" "$0" > "$HOME/startup-path"\n' \
+    > "$scratch/data/versions/aicoding/fixture/on-start.sh"
+  ln -s ../versions/aicoding/fixture "$scratch/data/current/aicoding"
+  run env HOME="$scratch" AICODING_DATA_DIR="$scratch/data" bash -c "$command"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$scratch/startup-path")" = "$scratch/data/versions/aicoding/fixture/on-start.sh" ]
+  rm -rf "$scratch"
 }

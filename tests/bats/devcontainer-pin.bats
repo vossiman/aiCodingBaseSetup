@@ -75,6 +75,6 @@ teardown() { cd /; rm -rf "$TMP"; }
   [ "$(jq -r .image "$TMP/ws/.devcontainer/devcontainer.json")" = "$OLD_PIN" ]
 }
 
-@test "pin sync: aicoding_sync wires it in (call present in every non-return path)" {
-  grep -q '_sync_devcontainer_pin "\$mode"' "$BLUEPRINT_ROOT/lib/sync.sh"
+@test "scheduled sync never mutates a workspace image pin" {
+  if grep -q '_sync_devcontainer_pin "\$mode"' "$BLUEPRINT_ROOT/lib/sync.sh"; then false; fi
 }

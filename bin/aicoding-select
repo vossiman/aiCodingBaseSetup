@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -uo pipefail
+SCRIPT_REAL=$(readlink -f "$0")
+SCRIPT_DIR=$(dirname "$(dirname "$SCRIPT_REAL")")
+if [ "$#" -ne 1 ]; then
+  echo 'usage: aicoding-select aicoding|dvw|bw-AICode' >&2
+  exit 2
+fi
+. "$SCRIPT_DIR/lib/ci-selector.sh"
+aicoding_select_ci_sha "$1"

@@ -1,0 +1,8 @@
+[Unit]
+Description=Apply CI-qualified aicoding updates
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.local/state/aicoding/auto-update
+ExecStart=%h/.local/bin/aicoding-auto-update --once
+StandardInput=null
