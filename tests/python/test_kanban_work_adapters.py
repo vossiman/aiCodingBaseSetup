@@ -77,38 +77,51 @@ class AdapterTests(unittest.TestCase):
         }
 
     @staticmethod
-    def prompt_payload(session="native-a", turn="turn-1", agent=None):
+    def prompt_payload(harness="claude", session="native-a", turn="turn-1", agent=None):
         payload = {
             "session_id": session,
             "hook_event_name": "UserPromptSubmit",
             "prompt": "work",
-            "prompt_id": turn,
-            "turn_id": turn,
             "cwd": "/tmp/repo",
         }
+        payload["turn_id" if harness == "codex" else "prompt_id"] = turn
         if agent:
             payload["agent_id"] = agent
         return payload
 
     @staticmethod
-    def tool_payload(tool, args, *, session="native-a", turn="turn-1",
+    def tool_payload(tool, args, *, harness="claude", session="native-a", turn="turn-1",
                      call="call-7", agent=None, event="PreToolUse"):
         payload = {
             "session_id": session,
-            "turn_id": turn,
-            "prompt_id": turn,
             "hook_event_name": event,
             "tool_use_id": call,
             "tool_name": tool,
             "tool_input": args,
             "cwd": "/tmp/repo",
         }
+        payload["turn_id" if harness == "codex" else "prompt_id"] = turn
         if agent:
             payload["agent_id"] = agent
         if event == "PostToolUse":
             payload["tool_response"] = {}
         if event == "PostToolUseFailure":
             payload.update(error="failed", is_interrupt=False, duration_ms=12)
+        return payload
+
+    @staticmethod
+    def subagent_payload(harness, event, *, session="native-a", turn="turn-1",
+                         agent="agent-1"):
+        payload = {
+            "session_id": session,
+            "hook_event_name": event,
+            "agent_id": agent,
+            "agent_type": "Task",
+            "cwd": "/tmp/repo",
+        }
+        payload["turn_id" if harness == "codex" else "prompt_id"] = turn
+        if event == "SubagentStop":
+            payload["stop_hook_active"] = False
         return payload
 
     def start(self, harness="claude", session="native-a", source="startup", **extra):
@@ -123,12 +136,14 @@ class AdapterTests(unittest.TestCase):
 
     def prompt(self, harness="claude", session="native-a", turn="turn-1", agent=None):
         return self.adapter.adapt(
-            harness, "UserPromptSubmit", self.prompt_payload(session, turn, agent)
+            harness, "UserPromptSubmit",
+            self.prompt_payload(harness, session, turn, agent),
         )
 
     def pre(self, harness, tool, args, **parts):
         return self.adapter.adapt(
-            harness, "PreToolUse", self.tool_payload(tool, args, **parts)
+            harness, "PreToolUse",
+            self.tool_payload(tool, args, harness=harness, **parts),
         )
 
     def test_claude_start_sources_mint_fresh_generations_but_compact_preserves_current(self):
@@ -151,7 +166,8 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(BridgeError, "unsupported codex hook event"):
             self.adapter.adapt(
                 "codex", "PostToolUseFailure",
-                self.tool_payload("Bash", {"command": "false"}, event="PostToolUseFailure"),
+                self.tool_payload("Bash", {"command": "false"}, harness="codex",
+                                  event="PostToolUseFailure"),
             )
 
     def test_version_probe_is_bounded_closed_stdin_and_credential_free(self):
@@ -232,6 +248,7 @@ class AdapterTests(unittest.TestCase):
         base = self.tool_payload(
             "mcp__kanban__claim_ticket",
             {"handle": started["handle"], "ticket": "KANBAN-2"},
+            harness="codex",
         )
         cases = [
             {key: value for key, value in base.items() if key != "session_id"},
@@ -243,9 +260,17 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(
                 result.output["hookSpecificOutput"]["permissionDecision"], "deny"
             )
-        shell = self.tool_payload("Bash", {"command": ["not", "text"]})
+        shell = self.tool_payload("Bash", {"command": ["not", "text"]}, harness="codex")
         result = self.adapter.adapt("codex", "PreToolUse", shell)
-        self.assertEqual(result.output["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertEqual(result.output["hookSpecificOutput"]["permissionDecision"], "allow")
+
+    def test_read_and_unrelated_tools_allow_without_prompt_correlation(self):
+        self.start("codex")
+        read = self.pre("codex", "mcp__kanban__list_tickets", {})
+        unrelated = self.pre("codex", "Bash", {"command": "git status --short"})
+        self.assertEqual(read.output["hookSpecificOutput"]["permissionDecision"], "allow")
+        self.assertEqual(unrelated.output["hookSpecificOutput"]["permissionDecision"], "allow")
+        self.assertFalse(self.store.has_any_permit())
 
     def test_delayed_post_after_resume_closes_only_captured_old_generation(self):
         old = self.start("codex")
@@ -256,7 +281,7 @@ class AdapterTests(unittest.TestCase):
         current = self.start("codex", source="resume")
         post = self.tool_payload(
             "Bash", {"command": "sleep 1"}, turn="turn-old", call="long-1",
-            event="PostToolUse",
+            event="PostToolUse", harness="codex",
         )
         result = self.adapter.adapt("codex", "PostToolUse", post)
         self.assertEqual(result.lifecycle["handle"], old["handle"])
@@ -267,14 +292,15 @@ class AdapterTests(unittest.TestCase):
         started = self.start("codex")
         self.prompt("codex")
         self.pre("codex", "Bash", {"command": "long command"}, call="unified-1")
-        stop = {**self.prompt_payload(), "hook_event_name": "Stop",
+        stop = {**self.prompt_payload("codex"), "hook_event_name": "Stop",
                 "stop_hook_active": False, "last_assistant_message": "waiting"}
         held = self.adapter.adapt("codex", "Stop", stop)
         self.assertEqual(held.lifecycle["status"], "deferred_active_work")
         self.assertTrue(self.store.tool_operation(started["handle"], "unified-1")["active"])
 
         self.adapter.adapt("codex", "PostToolUse", self.tool_payload(
-            "Bash", {"command": "long command"}, call="unified-1", event="PostToolUse"
+            "Bash", {"command": "long command"}, harness="codex",
+            call="unified-1", event="PostToolUse"
         ))
         self.assertFalse(self.store.tool_operation(started["handle"], "unified-1")["active"])
         released = self.adapter.adapt("codex", "Stop", {**stop, "last_assistant_message": "done"})
@@ -296,49 +322,134 @@ class AdapterTests(unittest.TestCase):
 
     def test_child_stop_ends_child_without_releasing_parent(self):
         parent = self.start("claude")
-        child_result = self.adapter.adapt("claude", "SubagentStart", {
-            "session_id": "native-a", "hook_event_name": "SubagentStart",
-            "agent_id": "agent-1", "agent_type": "Task", "cwd": "/tmp/repo",
-        })
+        self.prompt(turn="child-turn")
+        child_result = self.adapter.adapt(
+            "claude", "SubagentStart",
+            self.subagent_payload("claude", "SubagentStart", turn="child-turn"),
+        )
         self.assertIn("Kanban workflow", child_result.output[
             "hookSpecificOutput"]["additionalContext"])
         child_start = child_result.lifecycle
         child = child_start["handle"]
         self.assertNotEqual(child, parent["handle"])
 
-        result = self.adapter.adapt("claude", "SubagentStop", {
-            "session_id": "native-a", "hook_event_name": "SubagentStop",
-            "agent_id": "agent-1", "agent_type": "Task", "stop_hook_active": False,
-        })
+        result = self.adapter.adapt(
+            "claude", "SubagentStop",
+            self.subagent_payload("claude", "SubagentStop", turn="child-turn"),
+        )
         self.assertEqual(result.lifecycle["handle"], child)
         self.assertEqual(self.store.get_execution(child).state, "ended")
         self.assertNotEqual(self.store.get_execution(parent["handle"]).state, "ended")
 
     def test_same_child_id_after_parent_resume_gets_a_fresh_child_generation(self):
         self.start("claude")
-        first = self.adapter.adapt("claude", "SubagentStart", {
-            "session_id": "native-a", "hook_event_name": "SubagentStart",
-            "agent_id": "agent-1", "agent_type": "Task", "cwd": "/tmp/repo",
-        }).lifecycle
+        self.prompt(turn="old-turn")
+        first = self.adapter.adapt(
+            "claude", "SubagentStart",
+            self.subagent_payload("claude", "SubagentStart", turn="old-turn"),
+        ).lifecycle
         self.start("claude", source="resume")
-        second = self.adapter.adapt("claude", "SubagentStart", {
-            "session_id": "native-a", "hook_event_name": "SubagentStart",
-            "agent_id": "agent-1", "agent_type": "Task", "cwd": "/tmp/repo",
-        }).lifecycle
+        self.prompt(turn="new-turn")
+        second = self.adapter.adapt(
+            "claude", "SubagentStart",
+            self.subagent_payload("claude", "SubagentStart", turn="new-turn"),
+        ).lifecycle
         self.assertNotEqual(first["handle"], second["handle"])
         self.assertNotEqual(first["run_generation"], second["run_generation"])
 
     def test_parent_stop_waits_for_live_child(self):
         self.start("claude")
         self.prompt()
-        self.adapter.adapt("claude", "SubagentStart", {
-            "session_id": "native-a", "hook_event_name": "SubagentStart",
-            "agent_id": "agent-1", "agent_type": "Task", "cwd": "/tmp/repo",
-        })
+        self.adapter.adapt(
+            "claude", "SubagentStart",
+            self.subagent_payload("claude", "SubagentStart"),
+        )
         result = self.adapter.adapt("claude", "Stop", {
             **self.prompt_payload(), "hook_event_name": "Stop",
         })
         self.assertEqual(result.lifecycle["status"], "deferred_active_work")
+
+    def test_codex_child_tools_correlate_with_child_turn_not_parent_turn(self):
+        self.start("codex")
+        self.prompt("codex", turn="parent-turn")
+        child = self.adapter.adapt(
+            "codex", "SubagentStart",
+            self.subagent_payload("codex", "SubagentStart", turn="child-turn"),
+        ).lifecycle
+        read = self.pre(
+            "codex", "mcp__kanban__list_tickets", {}, agent="agent-1", turn="child-turn",
+        )
+        args = {"handle": child["handle"], "ticket": "KANBAN-2"}
+        mutation = self.pre(
+            "codex", "mcp__kanban__claim_ticket", args,
+            agent="agent-1", turn="child-turn", call="child-claim",
+        )
+        self.assertEqual(read.output["hookSpecificOutput"]["permissionDecision"], "allow")
+        self.assertEqual(mutation.output["hookSpecificOutput"]["permissionDecision"], "allow")
+        self.assertTrue(self.store.has_permit(
+            child["handle"], "claim_ticket", normalize_tool_args("claim_ticket", args)
+        ))
+
+    def test_delayed_child_start_after_codex_resume_cannot_select_latest_parent(self):
+        self.start("codex")
+        self.prompt("codex", turn="parent-old")
+        self.start("codex", source="resume")
+        self.prompt("codex", turn="parent-new")
+        with self.assertRaisesRegex(BridgeError, "cannot correlate SubagentStart"):
+            self.adapter.adapt(
+                "codex", "SubagentStart",
+                self.subagent_payload("codex", "SubagentStart", turn="child-old",
+                                      agent="delayed-child"),
+            )
+        self.assertEqual(
+            self.store.executions_for_native("codex", "native-a", "delayed-child"), []
+        )
+
+    def test_delayed_claude_child_stop_cannot_end_new_generation_child(self):
+        self.start("claude")
+        self.prompt(turn="old-turn")
+        old = self.adapter.adapt(
+            "claude", "SubagentStart",
+            self.subagent_payload("claude", "SubagentStart", turn="old-turn"),
+        ).lifecycle
+        self.start("claude", source="resume")
+        self.prompt(turn="new-turn")
+        new = self.adapter.adapt(
+            "claude", "SubagentStart",
+            self.subagent_payload("claude", "SubagentStart", turn="new-turn"),
+        ).lifecycle
+        delayed = self.adapter.adapt(
+            "claude", "SubagentStop",
+            self.subagent_payload("claude", "SubagentStop", turn="old-turn"),
+        )
+        self.assertEqual(delayed.lifecycle["status"], "dropped_old_generation")
+        self.assertEqual(self.store.get_execution(old["handle"]).state, "ended")
+        self.assertNotEqual(self.store.get_execution(new["handle"]).state, "ended")
+
+    def test_unambiguous_session_end_journals_children_before_parent(self):
+        parent = self.start("claude", session="final-parent")
+        self.prompt(session="final-parent", turn="final-turn")
+        child = self.adapter.adapt(
+            "claude", "SubagentStart",
+            self.subagent_payload("claude", "SubagentStart", session="final-parent",
+                                  turn="final-turn"),
+        ).lifecycle
+        self.store.record_bound(parent["handle"], "backend-parent", "kanban", "parent")
+        self.store.record_bound(child["handle"], "backend-child", "kanban", "child")
+        self.adapter.adapt("claude", "SessionEnd", {
+            "session_id": "final-parent", "hook_event_name": "SessionEnd",
+            "reason": "completed", "cwd": "/tmp/repo",
+            "transcript_path": "/tmp/final-parent.jsonl",
+        })
+        self.assertEqual(self.store.get_execution(child["handle"]).state, "ended")
+        self.assertEqual(self.store.get_execution(parent["handle"]).state, "ended")
+        self.assertEqual([row.kind for row in self.queue.pending(child["handle"])],
+                         ["end_session"])
+        self.assertEqual([row.kind for row in self.queue.pending(parent["handle"])],
+                         ["end_session"])
+        self.assertEqual(
+            self.store.active_child_executions("claude", "final-parent"), []
+        )
 
     def test_legacy_completion_rewrites_only_safe_argv_and_mints_same_permit(self):
         started = self.start("claude")
@@ -347,17 +458,55 @@ class AdapterTests(unittest.TestCase):
         self.store.set_claim(handle, CLAIM, "KANBAN-2")
         self.prompt()
         command = "kanban-post --done KANBAN-2 --evidence 'tests pass' --reference PR-17"
-        result = self.pre("claude", "Bash", {"command": command}, call="legacy-1")
+        native_input = {
+            "command": command,
+            "description": "Complete the claimed ticket",
+            "timeout": 120000,
+            "run_in_background": False,
+        }
+        result = self.pre("claude", "Bash", native_input, call="legacy-1")
         output = result.output["hookSpecificOutput"]
         self.assertEqual(output["permissionDecision"], "allow")
         self.assertEqual(output["updatedInput"], {
-            "command": f"kanban-post --done KANBAN-2 --evidence 'tests pass' --reference PR-17 --work-handle {handle}"
+            **native_input,
+            "command": f"kanban-post --done KANBAN-2 --evidence 'tests pass' --reference PR-17 --work-handle {handle}",
         })
         normalized = normalize_tool_args("complete_ticket", {
             "handle": handle, "claim_id": CLAIM, "evidence": "tests pass",
             "references": ["PR-17"], "operation_id": None,
         })
         self.assertTrue(self.store.has_permit(handle, "complete_ticket", normalized))
+
+    def test_completion_like_shell_rejects_unverified_harness_input_fields(self):
+        started = self.start("codex")
+        self.store.record_bound(started["handle"], "backend-session", "kanban", "worker")
+        self.store.set_claim(started["handle"], CLAIM, "KANBAN-2")
+        command = "kanban-post --done KANBAN-2 --evidence ok"
+        invalid = [
+            {"command": command, "description": "not in Codex 0.154.0 PreToolUse"},
+            {"command": command, "unknown": True},
+        ]
+        for index, tool_input in enumerate(invalid):
+            with self.subTest(tool_input=tool_input):
+                result = self.pre("codex", "Bash", tool_input, call=f"schema-{index}")
+                self.assertEqual(
+                    result.output["hookSpecificOutput"]["permissionDecision"], "deny"
+                )
+                self.assertIn("Use the Kanban MCP complete_ticket tool",
+                              result.output["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_claude_completion_rejects_null_timeout_in_replacement_input(self):
+        started = self.start("claude")
+        self.store.record_bound(started["handle"], "backend-session", "kanban", "worker")
+        self.store.set_claim(started["handle"], CLAIM, "KANBAN-2")
+        self.prompt("claude")
+        result = self.pre("claude", "Bash", {
+            "command": "kanban-post --done KANBAN-2 --evidence ok",
+            "timeout": None,
+        }, call="null-timeout")
+        self.assertEqual(result.output["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("Use the Kanban MCP complete_ticket tool",
+                      result.output["hookSpecificOutput"]["permissionDecisionReason"])
 
     def test_completion_like_shell_rejections_are_actionable_and_unrelated_commands_pass(self):
         started = self.start("codex")
@@ -401,7 +550,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_hook_outputs_never_echo_prompt_or_tool_response_text(self):
         self.start("codex")
-        prompt = self.prompt_payload()
+        prompt = self.prompt_payload("codex")
         prompt["prompt"] = "sensitive prompt fixture"
         result = self.adapter.adapt("codex", "UserPromptSubmit", prompt)
         self.assertNotIn("sensitive prompt fixture", json.dumps(result.output))

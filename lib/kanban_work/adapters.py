@@ -16,7 +16,7 @@ from typing import Callable
 
 from .bridge import Bridge
 from .events import EventIngestor
-from .legacy import parse_legacy_complete, prepare_legacy_complete
+from .legacy import DENIAL, parse_legacy_complete, prepare_legacy_complete
 from .schema import (
     BridgeError,
     READ_TOOLS,
@@ -46,6 +46,8 @@ FRESH_SOURCE_EVENTS = {
 SHELL_TOOLS = frozenset({"Bash"})
 MCP_PREFIX = "mcp__kanban__"
 VERSION_PATTERN = re.compile(r"\b\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?\b")
+CLAUDE_BASH_FIELDS = frozenset({"command", "description", "timeout", "run_in_background"})
+CODEX_BASH_FIELDS = frozenset({"command"})
 
 
 @dataclass(frozen=True)
@@ -155,10 +157,7 @@ class ClaudeCodexAdapter:
     @staticmethod
     def _prompt_identifier(harness: str, payload: dict) -> str:
         name = "turn_id" if harness == "codex" else "prompt_id"
-        value = payload.get(name)
-        if value is None and harness == "claude":
-            value = payload.get("turn_id")
-        return _bounded(value, name)
+        return _bounded(payload.get(name), name)
 
     def _prompt_event_id(self, harness: str, session_id: str,
                          agent_id: str | None, prompt_id: str) -> str:
@@ -180,6 +179,87 @@ class ClaudeCodexAdapter:
         prompt_id = self._prompt_identifier(harness, payload)
         event_id = self._prompt_event_id(harness, session_id, agent_id, prompt_id)
         return self._execution_from_record(harness, event_id, description), prompt_id
+
+    def _child_start_event_id(self, harness: str, session_id: str, agent_id: str,
+                              correlation_id: str, parent_generation: str) -> str:
+        return _event_id(
+            "subagent-start", harness, session_id, agent_id,
+            correlation_id, parent_generation,
+        )
+
+    def _child_from_start(self, harness: str, session_id: str, agent_id: str,
+                          correlation_id: str, description: str) -> Execution:
+        matches = []
+        for parent in self.store.executions_for_native(harness, session_id, None):
+            event_id = self._child_start_event_id(
+                harness, session_id, agent_id, correlation_id, parent.run_generation
+            )
+            record = self.store.native_event(harness, event_id)
+            if record is not None:
+                matches.append(record)
+        if len(matches) != 1:
+            raise BridgeError(
+                409, f"cannot correlate {description} to an original child generation"
+            )
+        result = matches[0]["result"]
+        if not isinstance(result, dict):
+            raise BridgeError(409, f"captured {description} child start is incomplete")
+        handle = result.get("handle")
+        generation = result.get("run_generation")
+        execution = self.store.get_execution(handle) if isinstance(handle, str) else None
+        if execution is None or execution.run_generation != generation:
+            raise BridgeError(409, f"captured {description} child generation is unavailable")
+        return execution
+
+    def _child_parent(self, harness: str, session_id: str,
+                      correlation_id: str) -> Execution:
+        if harness == "claude":
+            prompt_event = self._prompt_event_id(harness, session_id, None, correlation_id)
+            parent = self._execution_from_record(harness, prompt_event, "SubagentStart")
+        else:
+            parents = self.store.executions_for_native(harness, session_id, None)
+            if len(parents) != 1:
+                raise BridgeError(
+                    409, "cannot correlate SubagentStart to one Codex parent generation"
+                )
+            parent = parents[0]
+        if parent.state == "ended":
+            raise BridgeError(409, "cannot correlate SubagentStart to an active parent generation")
+        return parent
+
+    def _execution_for_tool(self, harness: str, payload: dict) -> Execution:
+        session_id, agent_id = self._native(payload)
+        correlation_id = self._prompt_identifier(harness, payload)
+        if agent_id is None:
+            prompt_event = self._prompt_event_id(
+                harness, session_id, None, correlation_id
+            )
+            return self._execution_from_record(harness, prompt_event, "PreToolUse")
+        execution = self._child_from_start(
+            harness, session_id, agent_id, correlation_id, "PreToolUse"
+        )
+        if execution.state == "ended":
+            raise BridgeError(409, "captured PreToolUse child generation has ended")
+        return execution
+
+    @staticmethod
+    def _validated_shell_input(harness: str, tool_input: dict) -> dict:
+        allowed = CLAUDE_BASH_FIELDS if harness == "claude" else CODEX_BASH_FIELDS
+        if set(tool_input) - allowed:
+            raise BridgeError(422, DENIAL)
+        if not isinstance(tool_input.get("command"), str):
+            raise BridgeError(422, DENIAL)
+        if harness == "claude":
+            if "description" in tool_input and not isinstance(tool_input["description"], str):
+                raise BridgeError(422, DENIAL)
+            if "timeout" in tool_input:
+                timeout = tool_input["timeout"]
+                if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+                    raise BridgeError(422, DENIAL)
+            if ("run_in_background" in tool_input
+                    and not isinstance(tool_input["run_in_background"], bool)):
+                raise BridgeError(422, DENIAL)
+        return dict(tool_input)
 
     def _write_claude_hint(self, handle: str):
         path = os.environ.get("CLAUDE_ENV_FILE")
@@ -255,16 +335,20 @@ class ClaudeCodexAdapter:
         session_id, agent_id = self._native(payload)
         if agent_id is None:
             raise BridgeError(422, "SubagentStart requires agent_id")
-        parent = self._current(harness, session_id, None)
+        correlation_id = self._prompt_identifier(harness, payload)
+        parent = self._child_parent(harness, session_id, correlation_id)
         checkout = payload.get("cwd", parent.checkout)
         if not isinstance(checkout, str) or not os.path.isabs(checkout):
             raise BridgeError(422, "cwd must be an absolute path")
-        event_id = _event_id(
-            "subagent-start", harness, session_id, agent_id, parent.run_generation
+        event_id = self._child_start_event_id(
+            harness, session_id, agent_id, correlation_id, parent.run_generation
         )
         prior = self.store.native_event(harness, event_id)
         if prior is not None and prior["result"] is not None:
             lifecycle = prior["result"]
+            prior_execution = self.store.get_execution(lifecycle["handle"])
+            if prior_execution is None or prior_execution.state == "ended":
+                raise BridgeError(409, "captured SubagentStart generation has ended")
         else:
             current = self.store.current_execution(harness, session_id, agent_id)
             if current is not None and current.state != "ended":
@@ -293,10 +377,19 @@ class ClaudeCodexAdapter:
         session_id, agent_id = self._native(payload)
         if agent_id is None:
             raise BridgeError(422, "SubagentStop requires agent_id")
-        child = self._current(harness, session_id, agent_id)
+        correlation_id = self._prompt_identifier(harness, payload)
+        child = self._child_from_start(
+            harness, session_id, agent_id, correlation_id, "SubagentStop"
+        )
+        if child.state == "ended":
+            return AdapterResult({}, {
+                "status": "dropped_old_generation", "handle": child.handle,
+                "run_generation": child.run_generation,
+            })
         lifecycle = self._record(
             harness, "end", child,
-            _event_id("subagent-stop", harness, session_id, agent_id, child.run_generation),
+            _event_id("subagent-stop", harness, session_id, agent_id,
+                      correlation_id, child.run_generation),
         )
         return AdapterResult({}, lifecycle)
 
@@ -316,38 +409,53 @@ class ClaudeCodexAdapter:
 
     def _tool_start(self, harness: str, payload: dict) -> AdapterResult:
         try:
-            session_id, agent_id = self._native(payload)
-            native_call_id = _bounded(payload.get("tool_use_id"), "tool_use_id")
             tool_name = _bounded(payload.get("tool_name"), "tool_name")
             tool_input = payload.get("tool_input")
-            if not isinstance(tool_input, dict):
-                raise BridgeError(422, "tool_input must be an object")
-            prompt_id = self._prompt_identifier(harness, payload)
-            prompt_event = self._prompt_event_id(harness, session_id, agent_id, prompt_id)
-            execution = self._execution_from_record(harness, prompt_event, "PreToolUse")
             mcp_tool = self._mcp_tool(tool_name)
             updated = None
+            prepared_command = None
+            verified_shell_input = None
             if mcp_tool is not None:
                 if mcp_tool in READ_TOOLS:
                     pass
                 elif mcp_tool in TOOL_SPECS:
-                    normalized = normalize_tool_args(mcp_tool, tool_input)
-                    self.store.permit_call(
-                        execution.identity, native_call_id, mcp_tool, normalized, self.now()
-                    )
+                    if not isinstance(tool_input, dict):
+                        raise BridgeError(422, "tool_input must be an object")
                 else:
                     raise BridgeError(422, "unknown Kanban MCP tool")
-            elif tool_name in SHELL_TOOLS:
+            elif tool_name in SHELL_TOOLS and isinstance(tool_input, dict):
                 command = tool_input.get("command")
-                if not isinstance(command, str):
-                    raise BridgeError(422, "native shell command is not verifiable")
-                parsed = parse_legacy_complete(command)
-                if parsed is not None:
-                    prepared = prepare_legacy_complete(
-                        execution.identity, native_call_id, command,
-                        store=self.store, now=self.now(),
-                    )
-                    updated = {"command": shlex.join(prepared.rewritten_argv)}
+                if isinstance(command, str):
+                    prepared_command = parse_legacy_complete(command)
+                    if prepared_command is not None:
+                        verified_shell_input = self._validated_shell_input(harness, tool_input)
+
+            requires_correlation = (
+                mcp_tool is not None and mcp_tool not in READ_TOOLS
+            ) or prepared_command is not None
+            try:
+                session_id, agent_id = self._native(payload)
+                native_call_id = _bounded(payload.get("tool_use_id"), "tool_use_id")
+                execution = self._execution_for_tool(harness, payload)
+            except BridgeError:
+                if requires_correlation:
+                    raise
+                return AdapterResult(self._allow())
+
+            if mcp_tool is not None and mcp_tool not in READ_TOOLS:
+                normalized = normalize_tool_args(mcp_tool, tool_input)
+                self.store.permit_call(
+                    execution.identity, native_call_id, mcp_tool, normalized, self.now()
+                )
+            elif prepared_command is not None:
+                prepared = prepare_legacy_complete(
+                    execution.identity, native_call_id, tool_input["command"],
+                    store=self.store, now=self.now(),
+                )
+                updated = {
+                    **verified_shell_input,
+                    "command": shlex.join(prepared.rewritten_argv),
+                }
             lifecycle = self._record(
                 harness, "tool_start", execution,
                 _event_id("tool-start", harness, session_id, agent_id, native_call_id),
@@ -405,6 +513,13 @@ class ClaudeCodexAdapter:
                 409, "cannot correlate SessionEnd after a generation boundary; bounded expiry applies"
             )
         execution = executions[0]
+        for child in self.store.active_child_executions(harness, session_id):
+            self._record(
+                harness, "end", child,
+                _event_id("session-end-child", harness, session_id, child.subagent_id,
+                          child.run_generation, payload.get("reason"),
+                          payload.get("transcript_path")),
+            )
         lifecycle = self._record(
             harness, "end", execution,
             _event_id("session-end", harness, session_id, agent_id,
