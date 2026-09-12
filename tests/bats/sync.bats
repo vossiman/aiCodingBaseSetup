@@ -925,7 +925,7 @@ EOF
   echo "$output" | grep -q '0 smart_conflict'
 }
 
-@test "smart preview omits compatibility-blocked plans but retains actionable details and errors" {
+@test "smart preview labels compatibility-blocked destinations without showing their plans" {
   run bash -c '
     . "$BLUEPRINT_ROOT/lib/sync.sh"
     . "$BLUEPRINT_ROOT/lib/codex-merge.sh"
@@ -940,7 +940,8 @@ EOF
   '
   [ "$status" -eq 0 ]
   echo "$output"
-  [[ "$output" != *"blocked-config"* ]]
+  [[ "$output" == *"blocked by tool compatibility (no changes applied): blocked-config"* ]]
+  [[ "$output" != *"blocked_setting"* ]]
   [[ "$output" == *"safe update: ready-config :: ready_setting"* ]]
   [[ "$output" == *"conflict (kept local): ready-config :: conflicting_setting"* ]]
   [[ "$output" == *"ERROR: Codex config merge failed for error-config (invalid_toml)"* ]]
