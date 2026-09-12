@@ -616,7 +616,7 @@ _aicoding_npm_lock_valid() {
 }
 
 _aicoding_release_tree_digest() {
-  aicoding_progress_run "${AICODING_PROGRESS_COMPONENT:-package}: checking release integrity" _aicoding_release_tree_digest_impl "$@"
+  aicoding_progress_run "${AICODING_PROGRESS_COMPONENT:-package}: checking release integrity (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_release_tree_digest_impl "$@"
 }
 
 _aicoding_release_tree_digest_impl() {

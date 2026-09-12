@@ -410,7 +410,7 @@ reconcile_existing_install() {
 # _print_install_summary — emit the fixed-format summary line plus an
 # optional NOTE follow-up. Counters default to 0 when not set by the mode.
 _print_install_summary() {
-  local commit_short
+  local commit_short outcome=${1:-OK}
   commit_short=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
   local n_new=${_RECONCILE_NEW:-0}
   local n_restored=${_RECONCILE_RESTORED:-0}
@@ -418,8 +418,8 @@ _print_install_summary() {
   local n_merged=${_RECONCILE_MERGED:-0}
   local n_drifted=${_RECONCILE_DRIFTED:-0}
   local n_to_review=${_RECONCILE_TO_REVIEW:-0}
-  printf 'INSTALL OK  blueprint %s  new %d  restored %d  updated %d  merged %d  drifted %d  to_review %d\n' \
-    "$commit_short" "$n_new" "$n_restored" "$n_updated" "$n_merged" "$n_drifted" "$n_to_review"
+  printf 'INSTALL %s  blueprint %s  new %d  restored %d  updated %d  merged %d  drifted %d  to_review %d\n' \
+    "$outcome" "$commit_short" "$n_new" "$n_restored" "$n_updated" "$n_merged" "$n_drifted" "$n_to_review"
   if (( n_drifted > 0 || n_to_review > 0 )); then
     printf 'NOTE: %d drifted file(s), %d file(s) to review. Run aicoding-sync to address.\n' \
       "$n_drifted" "$n_to_review"

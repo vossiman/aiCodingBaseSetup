@@ -253,11 +253,12 @@ main() {
       && aicoding_result_record provision blocked "$(_aicoding_managed_source_version "$SCRIPT_DIR")" preparation_deferred || true
     if [[ "${AICODING_PERSISTENT_ENROLLMENT:-0}" == 1 ]]; then
       header "Enrolled with deferrals"
-      info "Runtime enrollment succeeded; unavailable capabilities and dependent config were deferred"
+      info "Runtime enrollment succeeded; some tool or configuration changes were deferred"
     else
       header "Completed with deferrals"
-      info "Unavailable capabilities and dependent config were deferred"
+      info "Some tool or configuration changes were deferred"
     fi
+    _print_install_summary DEFERRED
     return 0
   else
     manifest_stamp_provision "$(_aicoding_managed_source_version "$SCRIPT_DIR")"
