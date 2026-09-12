@@ -93,7 +93,7 @@ main() {
     esac
   done
 
-  if [[ "${AICODING_PERSISTENT_ENROLLMENT:-0}" == 1 && "${ENV_TYPE:-}" == wsl ]]; then
+  if [[ "${ENV_TYPE:-}" == wsl ]]; then
     err "Container enrollment cannot run directly in WSL; use --profile host"
     return 1
   fi

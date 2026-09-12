@@ -69,9 +69,14 @@ _provision_record_blocked() {
 }
 
 _provision_report_component_attempt() {
-  local component=$1 reason
-  reason=$(jq -r --arg component "$component" '.components[$component].reason // empty' \
-    "$AICODING_RESULTS_FILE" 2>/dev/null) || reason=
+  local component=$1 reason= receipt=${AICODING_COMPONENT_LAST_RESULT:-}
+  case "$receipt" in
+    "$component"|"mcp-registration-claude-${component#mcp-}")
+      reason=$(jq -r --arg component "$receipt" '.components[$component]
+        | select(.state == "failed" or .state == "blocked" or .state == "conflict")
+        | .reason // empty' "$AICODING_RESULTS_FILE" 2>/dev/null) || reason=
+      ;;
+  esac
   # Receipts are metadata, but do not echo arbitrary content from a damaged
   # or user-edited file into installer output.
   [[ "$reason" =~ ^[a-z0-9_]+$ ]] || reason=update_not_verified
@@ -106,6 +111,7 @@ _provision_reconcile_exact_mcp() {
   case "$state" in current|updated) ;; *) _provision_record_blocked "$component" exact_package_not_staged; return 3 ;; esac
   local registration_rc=0
   AICODING_COMPONENT_ATTEMPT_DISPOSITION=
+  AICODING_COMPONENT_LAST_RESULT=
   AICODING_REQUIRE_UPDATE_RECEIPT=$require_receipt \
     _aicoding_reconcile_claude_mcp_registration "$name" "$component" "$version" "$launcher" "$@" \
     || registration_rc=$?
@@ -162,6 +168,7 @@ aicoding_prepare_exact_mcps() {
   for component in mcp-context7 mcp-playwright; do
     component_rc=0
     AICODING_COMPONENT_ATTEMPT_DISPOSITION=
+    AICODING_COMPONENT_LAST_RESULT=
     if [ "$register_claude" -eq 1 ]; then
       AICODING_MCP_REGISTRATION_FORCE=1 aicoding_update_component "$component" || component_rc=$?
     else
@@ -189,6 +196,7 @@ aicoding_prepare_installed_config_tools() {
     case "$component" in claude|codex|opencode|pi)
       component_rc=0
       AICODING_COMPONENT_ATTEMPT_DISPOSITION=
+      AICODING_COMPONENT_LAST_RESULT=
       aicoding_update_component "$component" || component_rc=$?
       if [ "$component_rc" -ne 0 ]; then
         _provision_report_component_attempt "$component"
@@ -259,6 +267,7 @@ install_mcp_packages() {
     for component in mcp-firecrawl mcp-brave; do
       component_rc=0
       AICODING_COMPONENT_ATTEMPT_DISPOSITION=
+      AICODING_COMPONENT_LAST_RESULT=
       aicoding_update_component "$component" || component_rc=$?
       if [ "$component_rc" -ne 0 ]; then
         _provision_report_component_attempt "$component"

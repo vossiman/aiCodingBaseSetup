@@ -48,7 +48,7 @@ teardown() { rm -rf "$AUDIT_TMP"; }
   printf '{}\n' > "$AUDIT_ROOT/node_modules/published/package.json"
   find() { return 1; }
   run _aicoding_npm_tree_ignores_scripts_safely "$AUDIT_ROOT"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 2 ]
 }
 
 @test "early lifecycle deferral does not trigger installer ERR through a broken pipe" {
@@ -73,4 +73,32 @@ PY
   '
   [ "$status" -eq 0 ]
   [ ! -s "$AUDIT_TMP/trap" ]
+}
+
+@test "failed MCP registration reports its fresh registration reason" {
+  source "$BLUEPRINT_ROOT/lib/update-results.sh"
+  source "$BLUEPRINT_ROOT/lib/provision.sh"
+  export AICODINGSETUP_SKIP_NETWORK= AICODING_PERSISTENT_ENROLLMENT=1
+  aicoding_update_component() {
+    [ "$1" = mcp-context7 ] || return 0
+    aicoding_result_record "$1" updated 4.1.0 installed 4.1.0
+    aicoding_result_record mcp-registration-claude-context7 failed 4.1.0 registration_migration_failed
+    return 1
+  }
+  run install_mcp_packages
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'mcp-context7: registration_migration_failed'* ]]
+  [[ "$output" != *'mcp-context7: installed'* ]]
+}
+
+@test "unrecorded MCP failure never prints a prior attempt reason" {
+  source "$BLUEPRINT_ROOT/lib/update-results.sh"
+  source "$BLUEPRINT_ROOT/lib/provision.sh"
+  export AICODINGSETUP_SKIP_NETWORK= AICODING_PERSISTENT_ENROLLMENT=1
+  aicoding_result_record mcp-firecrawl failed 3.24.0 old_failure
+  aicoding_update_component() { [ "$1" != mcp-firecrawl ]; }
+  run install_mcp_packages
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'mcp-firecrawl: update_not_verified'* ]]
+  [[ "$output" != *old_failure* ]]
 }

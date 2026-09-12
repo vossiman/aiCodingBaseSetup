@@ -6,7 +6,6 @@ setup() {
   export HOME="$TMP/home" SCRIPT_DIR="$BLUEPRINT_ROOT"
   export AICODING_STATE_DIR="$TMP/state" AICODING_DATA_DIR="$TMP/data"
   export AICODING_VENDOR_DIR="$TMP/vendor" AICODING_PERSISTENT_ENROLLMENT=1
-  export AICODINGSETUP_SKIP_NETWORK=0
   mkdir -p "$HOME/.local/bin" "$TMP/stubs" "$AICODING_VENDOR_DIR/bw-AICode/.git"
   export PATH="$HOME/.local/bin:$TMP/stubs:/usr/bin:/bin"
   . "$BLUEPRINT_ROOT/lib/provision.sh"
@@ -49,7 +48,7 @@ teardown() { rm -rf "$TMP"; }
 
 @test "persistent provisioning preserves managed launchers and never executes legacy installer" {
   aicoding_update_bw
-  run install_bubblewrap
+  AICODINGSETUP_SKIP_NETWORK=0 run install_bubblewrap
   [ "$status" -eq 0 ]
   [ ! -e "$TMP/legacy-called" ]
   local name
@@ -63,7 +62,7 @@ teardown() { rm -rf "$TMP"; }
 
 @test "persistent provisioning propagates managed build failure without reporting installed" {
   export FAIL_BUILD=1
-  run install_bubblewrap
+  AICODINGSETUP_SKIP_NETWORK=0 run install_bubblewrap
   [ "$status" -ne 0 ]
   [[ "$output" != *'OK: bw-AICode installed'* ]]
   [ ! -e "$TMP/legacy-called" ]
@@ -72,7 +71,7 @@ teardown() { rm -rf "$TMP"; }
 
 @test "persistent provisioning records unavailable source as a deferral" {
   aicoding_select_ci_sha() { return 1; }
-  install_bubblewrap
+  AICODINGSETUP_SKIP_NETWORK=0 install_bubblewrap
   [ "${_AICODING_PREPARATION_DEFERRED:-0}" = 1 ]
   [ ! -e "$TMP/legacy-called" ]
   jq -e '.components["bw-AICode"].state == "blocked"' "$AICODING_RESULTS_FILE"
@@ -81,7 +80,7 @@ teardown() { rm -rf "$TMP"; }
 @test "stale blocked bw receipt cannot hide a new unclassified failure" {
   _aicoding_record_deferred bw-AICode blocked '' ci_selection_unavailable
   aicoding_update_bw() { return 42; }
-  run install_bubblewrap
+  AICODINGSETUP_SKIP_NETWORK=0 run install_bubblewrap
   [ "$status" -ne 0 ]
   [ ! -e "$TMP/legacy-called" ]
 }
@@ -115,7 +114,7 @@ teardown() { rm -rf "$TMP"; }
 @test "local blueprint provisioning retains existing managed bw ownership" {
   aicoding_update_bw
   unset AICODING_PERSISTENT_ENROLLMENT
-  run install_bubblewrap
+  AICODINGSETUP_SKIP_NETWORK=0 run install_bubblewrap
   [ "$status" -eq 0 ]
   [ ! -e "$TMP/legacy-called" ]
   [ ! -L "$HOME/.local/bin/claude-bw" ]
@@ -126,7 +125,7 @@ teardown() { rm -rf "$TMP"; }
 @test "unenrolled local provisioning retains the legacy installer route" {
   unset AICODING_PERSISTENT_ENROLLMENT
   printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/claude-bw"
-  run install_bubblewrap
+  AICODINGSETUP_SKIP_NETWORK=0 run install_bubblewrap
   [ "$status" -eq 0 ]
   [ -e "$TMP/legacy-called" ]
 }
@@ -135,7 +134,21 @@ teardown() { rm -rf "$TMP"; }
   aicoding_update_bw
   unset AICODING_PERSISTENT_ENROLLMENT
   aicoding_select_ci_sha() { return 1; }
-  install_bubblewrap
+  AICODINGSETUP_SKIP_NETWORK=0 install_bubblewrap
   [ "${_AICODING_GUARDED_PROVISION_DEFERRED:-0}" = 1 ]
   [ ! -e "$TMP/legacy-called" ]
+}
+
+@test "local blueprint container installer rejects direct WSL before provisioning mutations" {
+  run bash -c '
+    export _AICODINGSETUP_NVS_STRIPPED=1
+    . "$SCRIPT_DIR/install.sh"
+    unset AICODING_PERSISTENT_ENROLLMENT
+    ENV_TYPE=wsl
+    seed_github_known_host() { touch "$TMP/provision-mutated"; return 42; }
+    main
+  '
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'use --profile host'* ]]
+  [ ! -e "$TMP/provision-mutated" ]
 }
