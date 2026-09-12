@@ -8,6 +8,15 @@
 
 _aicoding_auto_positive_integer() { [[ "$1" =~ ^[1-9][0-9]*$ ]]; }
 
+_aicoding_auto_validate_recovery_timeout() {
+  if ! _aicoding_auto_positive_integer "$AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT" \
+      || [ "${#AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT}" -gt 4 ] \
+      || [ "$AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT" -gt 3600 ]; then
+    echo 'aicoding-auto-update: recovery timeout must be 1..3600 seconds' >&2
+    return 2
+  fi
+}
+
 _aicoding_auto_state_dir() { printf '%s/auto-update\n' "$AICODING_STATE_DIR"; }
 
 # Detached scheduler processes cannot inherit the installer's writer locks:
@@ -33,16 +42,36 @@ _aicoding_auto_close_shared_lock_fds() {
   done < <(_aicoding_auto_shared_lock_fds "$$")
 }
 
-# Caller owns ensure.lock. Return 3 only when a known worker is still exiting.
+# Caller owns ensure.lock. Never signal a worker while an update is active.
 _aicoding_auto_recover_shared_lock_worker_locked() {
-  local state pid fds
+  local state pid fds sync_fd own_sync_fd=0 rc=0 inherited_target= expected_target=
   state=$(_aicoding_auto_state_dir) || return 1
   pid=$(cat "$state/worker.pid" 2>/dev/null || true)
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
   fds=$(_aicoding_auto_shared_lock_fds "$pid")
   [ -n "$fds" ] || return 0
-  # The stop helper verifies worker identity before signaling any process.
-  _aicoding_auto_stop_worker
+  # The installer already owns sync.lock through its refresh exec. Borrow
+  # that verified descriptor without unlocking or closing the parent's copy.
+  if [ "${AICODING_SYNC_LOCK_PID:-}" = "$$" ] \
+      && [[ "${AICODING_SYNC_LOCK_FD:-}" =~ ^[0-9]+$ ]]; then
+    inherited_target=$(readlink "/proc/$BASHPID/fd/$AICODING_SYNC_LOCK_FD" 2>/dev/null) || true
+    expected_target=$(readlink -f "$AICODING_STATE_DIR/sync.lock" 2>/dev/null) || true
+  fi
+  if [ -n "$inherited_target" ] && [ "$inherited_target" = "$expected_target" ]; then
+    sync_fd=$AICODING_SYNC_LOCK_FD
+  else
+    exec {sync_fd}>"$AICODING_STATE_DIR/sync.lock" || return 1
+    own_sync_fd=1
+  fi
+  if flock -n "$sync_fd"; then
+    # No active sync can start while this lock is held. Only now send TERM;
+    # a recovery deadline therefore cannot strand a TERM-pending busy worker.
+    _aicoding_auto_stop_worker || rc=$?
+  else
+    rc=3
+  fi
+  if [ "$own_sync_fd" -eq 1 ]; then exec {sync_fd}>&-; fi
+  return "$rc"
 }
 
 _aicoding_auto_recover_shared_lock_worker() (
@@ -50,7 +79,7 @@ _aicoding_auto_recover_shared_lock_worker() (
   state=$(_aicoding_auto_state_dir) || return 1
   mkdir -p "$state" || return 1
   exec {ensure_fd}>"$state/ensure.lock" || return 1
-  flock -n "$ensure_fd" || return 3
+  flock -n "$ensure_fd" || return 4
   _aicoding_auto_recover_shared_lock_worker_locked
 )
 
@@ -176,7 +205,8 @@ _aicoding_auto_stop_worker() {
   esac
   kill "$pid" 2>/dev/null || return 0
   for ((i=0; i<20; i++)); do
-    [ -e "$state/worker.pid" ] || return 0
+    # Removing the PID file is not process exit: the TERM trap may still
+    # own worker.lock and inherited descriptors until the shell exits.
     if ! kill -0 "$pid" 2>/dev/null; then
       [ "$(cat "$state/worker.pid" 2>/dev/null || true)" != "$pid" ] || rm -f -- "$state/worker.pid"
       return 0
@@ -187,12 +217,7 @@ _aicoding_auto_stop_worker() {
 }
 
 aicoding_auto_update_enroll() {
-  if ! _aicoding_auto_positive_integer "$AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT" \
-      || [ "${#AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT}" -gt 4 ] \
-      || [ "$AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT" -gt 3600 ]; then
-    echo 'aicoding-auto-update: recovery timeout must be 1..3600 seconds' >&2
-    return 2
-  fi
+  _aicoding_auto_validate_recovery_timeout || return $?
   local state ensure_fd
   state=$(_aicoding_auto_state_dir) || return 1
   mkdir -p "$state" || return 1
@@ -202,9 +227,8 @@ aicoding_auto_update_enroll() {
     exec {ensure_fd}>&-
     return 0
   }
-  # This is the detached enrollment process. A TERM-pending legacy worker
-  # may still be finishing a foreground update; wait before starting its
-  # successor so the successor cannot exit against the old worker's lock.
+  # Wait in the detached process until the update lock is available. On a
+  # deadline, an in-flight worker remains unsignalled and keeps scheduling.
   local recovery_rc recovery_wait_reported=0
   local recovery_deadline=$((SECONDS + AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT))
   while :; do
@@ -251,8 +275,12 @@ aicoding_auto_update_ensure() {
     echo 'aicoding-auto-update: interval must be a positive integer' >&2
     return 2
   }
-  _aicoding_auto_recover_shared_lock_worker \
-    || echo "aicoding-auto-update: legacy worker recovery deferred; detached enrollment will retry" >&2
+  _aicoding_auto_validate_recovery_timeout || return $?
+  local recovery_rc=0
+  _aicoding_auto_recover_shared_lock_worker || recovery_rc=$?
+  if [ "$recovery_rc" -ne 0 ] && [ "$recovery_rc" -ne 4 ]; then
+    echo "aicoding-auto-update: legacy worker recovery deferred; detached enrollment will retry" >&2
+  fi
   local state log self
   state=$(_aicoding_auto_state_dir) || return 1
   mkdir -p "$state" || return 1

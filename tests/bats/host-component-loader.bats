@@ -43,3 +43,12 @@ teardown() { rm -rf "$TEST_ROOT"; }
     [ "$status" -eq 42 ]
   done
 }
+
+@test "competing scheduler enrollment alone does not mark provisioning deferred" {
+  source "$BLUEPRINT_ROOT/lib/provision.sh"
+  export AICODINGSETUP_SKIP_NETWORK=0
+  _aicoding_auto_recover_shared_lock_worker() { return 4; }
+  _AICODING_PREPARATION_DEFERRED=0
+  _provision_recover_scheduler_locks
+  [ "$_AICODING_PREPARATION_DEFERRED" -eq 0 ]
+}

@@ -96,7 +96,9 @@ _provision_recover_scheduler_locks() {
   if ! declare -F _aicoding_auto_recover_shared_lock_worker >/dev/null 2>&1; then
     . "$SCRIPT_DIR/lib/auto-update.sh" || return 1
   fi
-  if ! _aicoding_auto_recover_shared_lock_worker; then
+  local recovery_rc=0
+  _aicoding_auto_recover_shared_lock_worker || recovery_rc=$?
+  if [ "$recovery_rc" -ne 0 ] && [ "$recovery_rc" -ne 4 ]; then
     _AICODING_PREPARATION_DEFERRED=1
     warn "Legacy updater recovery deferred; shared configuration may remain busy"
   fi

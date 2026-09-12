@@ -57,6 +57,27 @@ wait_for_lines() {
     [ "$(wc -l < "$AICODING_TEST_ATTEMPTS")" -ge "$wanted" ] && return 0
     sleep 0.1
   done
+  local log pid
+  for log in "$AICODING_STATE_DIR/auto-update/enroll.log" "$AICODING_STATE_DIR/auto-update/worker.log"; do
+    if [ -f "$log" ]; then printf '%s\n' "$log"; cat "$log"; fi
+  done
+  if [ -f "$AICODING_STATE_DIR/auto-update/worker.pid" ]; then
+    pid=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")
+    ps -p "$pid" -o pid,ppid,stat,comm || true
+    ls -l "/proc/$pid/fd" 2>/dev/null || true
+  fi
+  return 1
+}
+
+wait_for_replacement() {
+  local old_worker=$1 pid i
+  for ((i=0; i<150; i++)); do
+    pid=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid" 2>/dev/null || true)
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && [ "$pid" != "$old_worker" ] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.1
+  done
   return 1
 }
 
@@ -453,11 +474,12 @@ LEGACY
   exec {held_fd}>"$HOME/.claude/.aicoding-update.lock"
   flock "$held_fd"
   AICODING_TEST_SLOW_LEGACY=1 "$TEST_ROOT/legacy/aicoding-auto-update" --worker </dev/null >/dev/null 2>&1 &
+  local old_worker=$!
   exec {held_fd}>&-
   wait_for_lines 1
   run "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
   [ "$status" -eq 0 ]
-  wait_for_lines 2 150
+  wait_for_replacement "$old_worker"
   run flock -n "$HOME/.claude/.aicoding-update.lock" true
   [ "$status" -eq 0 ]
 }
@@ -474,12 +496,102 @@ LEGACY
   [[ "$output" == *'recovery timed out'* ]]
 }
 
-@test "shared lock recovery reports competing enrollment as deferred" {
+@test "shared lock recovery distinguishes competing enrollment from worker deferral" {
   source "$TEST_ROOT/runtime/lib/auto-update.sh"
   mkdir -p "$AICODING_STATE_DIR/auto-update"
   exec {held_fd}>"$AICODING_STATE_DIR/auto-update/ensure.lock"
   flock "$held_fd"
   run _aicoding_auto_recover_shared_lock_worker
-  [ "$status" -eq 3 ]
+  [ "$status" -eq 4 ]
   exec {held_fd}>&-
+}
+
+@test "recovery deadline leaves an in-flight legacy scheduler alive" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600 AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT=1
+  mkdir -p "$HOME/.claude" "$TEST_ROOT/legacy"
+  printf '\nif [ "${AICODING_TEST_SLOW_LEGACY:-0}" = 1 ]; then sleep 8; touch "$TEST_ROOT/legacy-finished"; fi\n' >> "$TEST_ROOT/bin/aicoding-sync"
+  cat > "$TEST_ROOT/legacy/aicoding-auto-update" <<'LEGACY'
+#!/usr/bin/env bash
+source "$TEST_ROOT/runtime/lib/auto-update.sh"
+aicoding_auto_update_worker
+LEGACY
+  chmod +x "$TEST_ROOT/legacy/aicoding-auto-update"
+  exec {held_fd}>"$HOME/.claude/.aicoding-update.lock"
+  flock "$held_fd"
+  AICODING_TEST_SLOW_LEGACY=1 "$TEST_ROOT/legacy/aicoding-auto-update" --worker </dev/null >/dev/null 2>&1 &
+  local old_worker=$! i
+  exec {held_fd}>&-
+  wait_for_lines 1
+  run "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  [ "$status" -eq 0 ]
+  for ((i=0; i<150; i++)); do
+    [ -f "$TEST_ROOT/legacy-finished" ] && break
+    sleep 0.1
+  done
+  [ -f "$TEST_ROOT/legacy-finished" ]
+  sleep 0.2
+  kill -0 "$old_worker"
+  [ "$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")" = "$old_worker" ]
+}
+
+@test "ensure rejects invalid recovery timeout before queuing enrollment" {
+  export AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT=oops
+  run "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  [ "$status" -eq 2 ]
+  [ ! -f "$AICODING_STATE_DIR/auto-update/enroll.log" ]
+}
+
+@test "installer-owned update lock permits idle legacy recovery without releasing its lock" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  mkdir -p "$HOME/.claude" "$TEST_ROOT/legacy"
+  cat > "$TEST_ROOT/legacy/aicoding-auto-update" <<'LEGACY'
+#!/usr/bin/env bash
+source "$TEST_ROOT/runtime/lib/auto-update.sh"
+aicoding_auto_update_worker
+LEGACY
+  chmod +x "$TEST_ROOT/legacy/aicoding-auto-update"
+  exec {held_fd}>"$HOME/.claude/.aicoding-update.lock"
+  flock "$held_fd"
+  "$TEST_ROOT/legacy/aicoding-auto-update" --worker </dev/null >/dev/null 2>&1 &
+  exec {held_fd}>&-
+  wait_for_lines 1
+  exec {AICODING_SYNC_LOCK_FD}>"$AICODING_STATE_DIR/sync.lock"
+  flock -w 2 "$AICODING_SYNC_LOCK_FD"
+  export AICODING_SYNC_LOCK_FD AICODING_SYNC_LOCK_PID=$$
+  source "$TEST_ROOT/runtime/lib/auto-update.sh"
+  _aicoding_auto_recover_shared_lock_worker
+  run flock -n "$HOME/.claude/.aicoding-update.lock" true
+  [ "$status" -eq 0 ]
+  run flock -n "$AICODING_STATE_DIR/sync.lock" true
+  [ "$status" -ne 0 ]
+  exec {AICODING_SYNC_LOCK_FD}>&-
+}
+
+@test "worker replacement waits for process exit after PID file cleanup" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  mkdir -p "$HOME/.claude" "$TEST_ROOT/legacy"
+  cat > "$TEST_ROOT/legacy/aicoding-auto-update" <<'LEGACY'
+#!/usr/bin/env bash
+source "$TEST_ROOT/runtime/lib/auto-update.sh"
+rm() {
+  command rm "$@"
+  case "$*" in *'/worker.pid') sleep 0.5 ;; esac
+}
+aicoding_auto_update_worker
+LEGACY
+  chmod +x "$TEST_ROOT/legacy/aicoding-auto-update"
+  exec {held_fd}>"$HOME/.claude/.aicoding-update.lock"
+  flock "$held_fd"
+  "$TEST_ROOT/legacy/aicoding-auto-update" --worker </dev/null >/dev/null 2>&1 &
+  local old_worker=$!
+  exec {held_fd}>&-
+  wait_for_lines 1
+  run "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  [ "$status" -eq 0 ]
+  wait_for_replacement "$old_worker"
+  run flock -n "$HOME/.claude/.aicoding-update.lock" true
+  [ "$status" -eq 0 ]
 }
