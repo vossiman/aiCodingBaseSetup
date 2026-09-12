@@ -688,6 +688,16 @@ class CursorAdapterTests(unittest.TestCase):
         )
         self.assertTrue(self.store.has_permit(handle, "claim_ticket", normalized))
 
+    def test_generic_pre_tool_leaves_unrelated_mcp_tools_available(self):
+        handle = self.start().lifecycle["handle"]
+        self.prompt()
+        result = self.pre(
+            "MCP:github_search", {"query": "cursor hooks"}, call="github-read"
+        )
+        self.assertEqual(result.output, {"permission": "allow"})
+        self.assertFalse(self.store.has_any_permit())
+        self.assertTrue(self.store.tool_operation(handle, "github-read")["active"])
+
     def test_pre_tool_validates_object_input_and_replay_fails_closed(self):
         handle = self.start().lifecycle["handle"]
         self.prompt()
@@ -785,6 +795,70 @@ class CursorAdapterTests(unittest.TestCase):
         self.assertEqual(result.output, {})
         self.assertEqual(self.store.get_execution(child["handle"]).state, "ended")
         self.assertEqual(self.store.get_execution(parent["handle"]).state, "ended")
+
+    def test_session_end_selects_new_generation_after_retained_old_generation(self):
+        old = self.start().lifecycle
+        self.prompt("gen-a")
+        self.adapter._record(
+            "cursor", "end", self.store.get_execution(old["handle"]), "end-old"
+        )
+        new = self.adapter.adapt("sessionStart", self.payload(
+            "sessionStart", generation="gen-new", session_id="conv-a",
+            is_background_agent=False, composer_mode="agent",
+            transcript_path="/tmp/new-generation",
+        )).lifecycle
+        self.prompt("gen-new")
+        child = self.adapter.adapt("subagentStart", self.payload(
+            "subagentStart", generation="gen-new", subagent_id="child-new",
+            subagent_type="generalPurpose", task="inspect",
+            parent_conversation_id="conv-a", tool_call_id="task-new",
+            subagent_model="fixture", is_parallel_worker=False,
+        )).lifecycle
+
+        result = self.adapter.adapt("sessionEnd", self.payload(
+            "sessionEnd", generation="gen-new", session_id="conv-a",
+            reason="completed", duration_ms=1, is_background_agent=False,
+            final_status="completed",
+        ))
+        self.assertEqual(result.lifecycle["handle"], new["handle"])
+        self.assertEqual(self.store.get_execution(child["handle"]).state, "ended")
+        self.assertEqual(self.store.get_execution(new["handle"]).state, "ended")
+
+    def test_late_old_session_end_cannot_retarget_new_generation(self):
+        old = self.start().lifecycle
+        self.prompt("gen-a")
+        old_child = self.adapter.adapt("subagentStart", self.payload(
+            "subagentStart", generation="gen-a", subagent_id="child-old",
+            subagent_type="generalPurpose", task="old work",
+            parent_conversation_id="conv-a", tool_call_id="task-old",
+            subagent_model="fixture", is_parallel_worker=False,
+        )).lifecycle
+        self.adapter._record(
+            "cursor", "end", self.store.get_execution(old["handle"]), "end-old"
+        )
+        new = self.adapter.adapt("sessionStart", self.payload(
+            "sessionStart", generation="gen-new", session_id="conv-a",
+            is_background_agent=False, composer_mode="agent",
+            transcript_path="/tmp/new-generation",
+        )).lifecycle
+        self.prompt("gen-new")
+        new_child = self.adapter.adapt("subagentStart", self.payload(
+            "subagentStart", generation="gen-new", subagent_id="child-new",
+            subagent_type="generalPurpose", task="new work",
+            parent_conversation_id="conv-a", tool_call_id="task-new",
+            subagent_model="fixture", is_parallel_worker=False,
+        )).lifecycle
+
+        result = self.adapter.adapt("sessionEnd", self.payload(
+            "sessionEnd", generation="gen-a", session_id="conv-a",
+            reason="completed", duration_ms=1, is_background_agent=False,
+            final_status="completed",
+        ))
+        self.assertEqual(result.lifecycle["status"], "dropped_old_generation")
+        self.assertEqual(result.lifecycle["handle"], old["handle"])
+        self.assertEqual(self.store.get_execution(old_child["handle"]).state, "ended")
+        self.assertNotEqual(self.store.get_execution(new_child["handle"]).state, "ended")
+        self.assertNotEqual(self.store.get_execution(new["handle"]).state, "ended")
 
     def test_cursor_legacy_completion_rewrites_only_native_shell_input(self):
         handle = self.start().lifecycle["handle"]

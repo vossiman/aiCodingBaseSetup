@@ -1763,6 +1763,25 @@ LDD
   [ "$mode" = overwrite ]
 }
 
+@test "install.sh reconcile updates managed Cursor hooks and preserves personal MCP servers" {
+  blueprint_copy
+  mkdir -p "$HOME/.cursor"
+  cat > "$HOME/.cursor/mcp.json" <<'EOF'
+{"mcpServers":{"personal":{"command":"personal-mcp","args":["--safe"]}}}
+EOF
+  bash "$BP/install.sh" --force-reinstall </dev/null
+  jq -e '.mcpServers.personal.command == "personal-mcp"' "$HOME/.cursor/mcp.json"
+
+  jq '.hooks.preCompact[0].timeout = 17' "$BP/configs/cursor/hooks.json" \
+    > "$BP/configs/cursor/hooks.json.new"
+  mv "$BP/configs/cursor/hooks.json.new" "$BP/configs/cursor/hooks.json"
+  run bash "$BP/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "Mode: reconcile"
+  jq -e '.hooks.preCompact[0].timeout == 17' "$HOME/.cursor/hooks.json"
+  jq -e '.mcpServers.personal.command == "personal-mcp"' "$HOME/.cursor/mcp.json"
+}
+
 @test "install.sh symlinks clip-x11-bridge into ~/.local/bin" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   [ -L "$HOME/.local/bin/clip-x11-bridge" ]

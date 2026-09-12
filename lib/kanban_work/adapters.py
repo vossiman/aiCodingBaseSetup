@@ -54,6 +54,9 @@ VERSION_PATTERN = re.compile(r"\b\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?\b")
 CLAUDE_BASH_FIELDS = frozenset({"command", "description", "timeout", "run_in_background"})
 CODEX_BASH_FIELDS = frozenset({"command"})
 CURSOR_SHELL_FIELDS = frozenset({"command", "working_directory"})
+CURSOR_MCP_TOOLS = frozenset(
+    f"MCP:{name}" for name in frozenset(TOOL_SPECS) | READ_TOOLS
+)
 
 
 @dataclass(frozen=True)
@@ -616,7 +619,7 @@ class CursorAdapter(ClaudeCodexAdapter):
     @staticmethod
     def _mcp_tool(tool_name: str) -> str | None:
         prefix = "MCP:"
-        return tool_name[len(prefix):] if tool_name.startswith(prefix) else None
+        return tool_name[len(prefix):] if tool_name in CURSOR_MCP_TOOLS else None
 
     @staticmethod
     def _validated_shell_input(harness: str, tool_input: dict) -> dict:
@@ -650,6 +653,7 @@ class CursorAdapter(ClaudeCodexAdapter):
         if type(payload.get("is_background_agent")) is not bool:
             raise BridgeError(422, "is_background_agent must be a boolean")
         version = _bounded(payload.get("cursor_version"), "cursor_version")
+        generation = self._prompt_identifier("cursor", payload)
         roots = payload.get("workspace_roots")
         if (not isinstance(roots, list) or len(roots) != 1
                 or not isinstance(roots[0], str) or not os.path.isabs(roots[0])):
@@ -660,7 +664,15 @@ class CursorAdapter(ClaudeCodexAdapter):
         )
         prior = self.store.native_event("cursor", start_id)
         if prior is not None and prior["result"] is not None:
-            return self._start_output("cursor", prior["result"])
+            lifecycle = prior["result"]
+            execution = self.store.get_execution(lifecycle["handle"])
+            if execution is None:
+                raise BridgeError(409, "captured sessionStart generation is unavailable")
+            self._record(
+                "cursor", "activity", execution,
+                self._prompt_event_id("cursor", session_id, None, generation),
+            )
+            return self._start_output("cursor", lifecycle)
         current = self.store.current_execution("cursor", session_id, None)
         if current is not None and current.state != "ended":
             raise BridgeError(409, "Cursor conversation already has an active work generation")
@@ -671,6 +683,13 @@ class CursorAdapter(ClaudeCodexAdapter):
             "checkout": checkout,
             "lifecycle_capable": qualified_client_version("cursor", version),
         })
+        execution = self.store.get_execution(lifecycle["handle"])
+        if execution is None:
+            raise BridgeError(409, "captured sessionStart generation is unavailable")
+        self._record(
+            "cursor", "activity", execution,
+            self._prompt_event_id("cursor", session_id, None, generation),
+        )
         return self._start_output("cursor", lifecycle)
 
     def _child_parent(self, harness: str, session_id: str,
@@ -708,6 +727,44 @@ class CursorAdapter(ClaudeCodexAdapter):
             "cursor", "activity", execution,
             _event_id("precompact", "cursor", session_id, agent_id, generation,
                       payload.get("trigger")),
+        )
+        return AdapterResult({}, lifecycle)
+
+    def _session_end(self, harness: str, payload: dict) -> AdapterResult:
+        session_id, agent_id = self._native(payload)
+        if agent_id is not None:
+            raise BridgeError(422, "sessionEnd cannot identify a subagent")
+        documented_session = _bounded(payload.get("session_id"), "session_id")
+        if documented_session != session_id:
+            raise BridgeError(422, "session_id must match conversation_id")
+        generation = self._prompt_identifier("cursor", payload)
+        prompt_event = self._prompt_event_id("cursor", session_id, None, generation)
+        execution = self._execution_from_record("cursor", prompt_event, "sessionEnd")
+        for child in self.store.active_child_executions("cursor", session_id):
+            if child.subagent_id is None:
+                continue
+            child_start = self._child_start_event_id(
+                "cursor", session_id, child.subagent_id, generation,
+                execution.run_generation,
+            )
+            if self.store.native_event("cursor", child_start) is None:
+                continue
+            self._record(
+                "cursor", "end", child,
+                _event_id("session-end-child", "cursor", session_id, generation,
+                          child.subagent_id, child.run_generation,
+                          payload.get("reason"), payload.get("transcript_path")),
+            )
+        if execution.state == "ended":
+            return AdapterResult({}, {
+                "status": "dropped_old_generation", "handle": execution.handle,
+                "run_generation": execution.run_generation,
+            })
+        lifecycle = self._record(
+            "cursor", "end", execution,
+            _event_id("session-end", "cursor", session_id, generation,
+                      execution.run_generation, payload.get("reason"),
+                      payload.get("transcript_path")),
         )
         return AdapterResult({}, lifecycle)
 
