@@ -4,7 +4,7 @@
 
 **Goal:** Install the reviewed Kanban MCP at a pinned revision and give Claude Code, Codex, Cursor, and OpenCode credential-safe, native-session-bound claim lifecycle management.
 
-**Architecture:** `kanban-mcp` remains owned by the Kanban repository and reaches the board only by spawning the setup-owned `kanban-post --json OP` transport without a shell. A new setup-owned `kanban-work` bridge stores native session bindings, one-use pre-call permits, claim state, and a bounded lifecycle queue in a user-only SQLite registry; the MCP calls its public JSON operations while native hooks and the OpenCode plugin feed it trusted client event payloads. Each client stays read-only for claims until its real installed binary proves identity, instruction, activity, stop, end, resume, shared-process, long-tool, and subagent behavior against a loopback fake board.
+**Architecture:** `kanban-mcp` remains owned by the Kanban repository and reaches the board only by spawning the setup-owned `kanban-post --json OP` transport without a shell. A new setup-owned `kanban-work` bridge stores native session bindings, one-use pre-call permits, claim state, and a bounded lifecycle queue in a user-only SQLite registry; the MCP calls its public JSON operations while native hooks and the OpenCode plugin feed it trusted client event payloads. Each client stays read-only for claims until its real installed binary proves identity, instruction, activity, stop, end, generation boundaries, shared-process, long-tool, failure reconciliation, and parent/child behavior against a loopback fake board.
 
 **Tech Stack:** Python 3 standard library (`argparse`, `hashlib`, `json`, `sqlite3`, `subprocess`, `urllib`), Bash lifecycle wrappers, OpenCode JavaScript plugin, managed Claude/Codex/Cursor/OpenCode configuration, Bats, `unittest`, `uv`, and the Kanban package's locked official Python MCP SDK.
 
@@ -29,12 +29,14 @@
 - A normal turn stop releases unfinished work to Todo. Compaction, auto-continuation, a subagent stop, or a parent yielding while a verified tool/subagent remains active must not stop the parent. Session end must reconcile remaining work; end dominates later queued activity.
 - The registry is identifiers and operational state, not an adversarial security boundary against another process running as the same local user. Documentation must not claim stronger isolation.
 - All four installed clients must qualify before enforcement. A missing native field or unreliable event leaves board reads available but causes `bind`/claim mutations to return a clear unsupported-adapter error and blocks rollout.
+- Adapters implement only fields and events emitted by the pinned native client. Fixtures may exercise documented candidate shapes but cannot fabricate missing identity or lifecycle metadata into qualification evidence. Codex failed-call reconciliation, Cursor child-stop correlation/local lifecycle coverage, and OpenCode failed-call, resumed-session, and background-child behavior remain explicit real-client gates.
 - Use the current official client surfaces as the implementation baseline: Claude Code hooks, Codex managed hooks, Cursor hooks, and an OpenCode local plugin. Recheck the installed versions and official docs during implementation because these APIs are versioned. The Kanban package uses official `mcp>=2.2.0,<3`, locked to 2.2.0, and `from mcp.server import MCPServer`; do not plan against the retired FastMCP interface.
 - Planning-time installed versions were Claude Code 2.1.268, Codex 0.154.0, Cursor Agent `2026.09.10-fd3934a`, and OpenCode 1.18.30. Record only exact versions that pass in `configs/kanban/qualified-clients.json`; any unlisted version is read-only until separately qualified. Do not infer lifecycle support from semantic ordering or Cursor's dated build string.
 - Qualification obtains each real client's exact version first, writes a temporary candidate matrix, and supplies that path through `AICODING_KANBAN_QUALIFIED_CLIENTS` only while `KANBAN_URL` is loopback and `KANBAN_TEST_TOKEN` is set. There is no qualification bypass flag; only an exact candidate version can become lifecycle-capable during a qualification run.
 - The pinned controller must print exactly `kanban-mcp <installed metadata version>\n` for `kanban-mcp --version`; the immutable updater rejects any other shape.
 - Gate every network call and detached process in install/sync tests behind `AICODINGSETUP_SKIP_NETWORK=1`; add every new agent CLI or external executable to all real-install test stubs in the same commit.
 - Run the repository suite only with `bash tests/bats/run.sh`. Do not use bare `bats`, and do not write tests into the real blueprint checkout.
+- Python unit tests must be reached by the standard Bats suite: Task 1 adds its module runner in kanban-post.bats; Task 2 creates kanban-work.bats running unittest discovery for `test_kanban_work*.py`, which also covers later queue/adapter modules. Use PYTHONDONTWRITEBYTECODE=1 and isolated fixtures; do not leave generated caches in the checkout.
 
 ## Frozen interfaces
 
@@ -137,7 +139,6 @@ Read tools (`list_repos`, `list_tickets`, `get_ticket`, `my_work`) do not need a
 - Codex managed lifecycle hooks in `requirements.toml`: <https://github.com/openai/codex/blob/main/docs/config.md#lifecycle-hooks>
 - Cursor common hook schema, fail-closed MCP interception, session/subagent events, and generation IDs: <https://docs.cursor.com/en/hooks>
 - OpenCode plugin events: <https://opencode.ai/docs/plugins/>
-- OpenCode per-call MCP `_meta.sessionID`: <https://opencode.ai/v2/docs/mcp-servers#context>
 - Official Python MCP SDK tag used by the Kanban lock: <https://github.com/modelcontextprotocol/python-sdk/tree/v2.2.0>
 
 Docs and config presence are inputs to qualification, not evidence that an installed binary emitted the required payload. Capture actual payload fixtures from each installed client with fake board credentials, reduce them to the fields needed by the adapter, and keep enforcement blocked if the observed event contract is insufficient.
@@ -278,6 +279,7 @@ git commit -m "feat(kanban): add structured credential-safe transport"
 - Create: `lib/kanban_work/legacy.py`
 - Create: `tests/python/test_kanban_work.py`
 - Create: `tests/python/test_kanban_work_legacy.py`
+- Create: `tests/bats/kanban-work.bats`
 - Modify: `install.sh`
 - Modify: `install-host.sh`
 - Modify: `lib/provision-integrations.sh`
@@ -418,7 +420,7 @@ Expected: PASS, including parallel test execution without writing to the real bl
 - [ ] **Step 9: Commit the bridge**
 
 ```bash
-git add bin/kanban-work lib/kanban_work tests/python/test_kanban_work.py \
+git add bin/kanban-work lib/kanban_work tests/bats/kanban-work.bats tests/python/test_kanban_work.py \
   tests/python/test_kanban_work_legacy.py \
   install.sh install-host.sh lib/provision-integrations.sh lib/sync.sh \
   tests/bats/install.bats tests/bats/install-host.bats tests/bats/sync.bats
@@ -529,7 +531,9 @@ git commit -m "feat(kanban): queue bounded lifecycle activity"
 
 - [ ] **Step 1: Add shared payload fixtures and failing adapter tests**
 
-Feed exact fixtures for `SessionStart` (`startup`, `resume`, `compact`), `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `SessionEnd`, `SubagentStart`, and `SubagentStop`. Assert stdout is valid client hook JSON, stdin text never becomes a shell argument, and wrong session/handle/digest denies the MCP call. Point `AICODING_KANBAN_QUALIFIED_CLIENTS` at a temporary exact-version matrix with loopback `KANBAN_URL` and `KANBAN_TEST_TOKEN`; missing token, non-loopback URL, and mismatched versions remain read-only.
+For Claude, feed exact fixtures for `SessionStart` sources `startup`, `resume`, `clear`, `compact`, and `fork`, plus `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `SessionEnd`, `SubagentStart`, and `SubagentStop`. Assert `compact` preserves the run generation, while resume/clear/fork use the frozen fresh-generation rule and delayed prior-generation events cannot act. A Claude Stop fixture with nonempty `background_tasks` or `session_crons` must not release the parent.
+
+For Codex 0.154.0, fixture only its native `SessionStart` sources `startup`, `resume`, `clear`, and `compact`, plus `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SessionEnd`, `SubagentStart`, and `SubagentStop`; do not configure or fabricate `PostToolUseFailure`. Assert stdout is valid client hook JSON, stdin text never becomes a shell argument, and wrong session/handle/digest denies the MCP call. Point `AICODING_KANBAN_QUALIFIED_CLIENTS` at a temporary exact-version matrix with loopback `KANBAN_URL` and `KANBAN_TEST_TOKEN`; missing token, non-loopback URL, and mismatched versions remain read-only.
 
 ```bash
 @test "Claude pre-tool permit binds actual session to normalized MCP args" {
@@ -554,7 +558,7 @@ Feed exact fixtures for `SessionStart` (`startup`, `resume`, `compact`), `UserPr
 }
 ```
 
-Repeat the actual-caller fixture through the Codex managed command and test delayed old-generation events after resume, two sessions in one checkout, a yielded long tool, normal stop, end, and missing required native IDs.
+Repeat the actual-caller fixture through the Codex managed command and test delayed old-generation events after resume, two sessions in one checkout, normal stop, end, and missing required native IDs. Model a long unified-exec call with one original `PreToolUse.tool_use_id`, no separate event for later polls, and the original call's eventual `PostToolUse`; keep supervision open until that matching post. For a failed call with no post event, retain the unresolved operation until bounded expiry or a conservatively qualified Stop/SessionEnd reconciliation. If real qualification cannot prove that reconciliation avoids releasing active work, Codex remains read-only.
 
 For both clients, feed a native pre-shell-tool event containing exactly `kanban-post --done KANBAN-2 --evidence 'tests pass' --reference PR-17`. Assert the adapter resolves the actual native caller and current claim, mints the same normalized `complete_ticket` permit used by MCP, and returns the client-specific updated command with only the internal handle appended. Assert peer/environment-only identity, replay, compound syntax, expansion, unknown flags, and a completion-like command whose client schema cannot be verified are denied with `Use the Kanban MCP complete_ticket tool`; unrelated shell commands remain unchanged and mint no permit.
 
@@ -582,11 +586,11 @@ For the native shell tool only, pass the verified native identity, native call I
 
 - [ ] **Step 4: Wire Claude events without disturbing existing hooks**
 
-Add `kanban-work-hook.sh` entries to existing arrays and create missing `PostToolUse`, `PostToolUseFailure`, `SubagentStart`, and `SubagentStop` arrays. The Kanban Stop/SessionEnd hook persists locally before asynchronous transcript work. Match Kanban pre-calls with `mcp__kanban__.*` and the native shell tool so the narrow legacy completion can be translated before execution; generic tool activity hooks may match all tools because the bridge is a no-op without a current claim.
+Add `kanban-work-hook.sh` entries to existing Claude arrays and create missing `PostToolUse`, `PostToolUseFailure`, `StopFailure`, `SubagentStart`, and `SubagentStop` arrays. The Kanban Stop/SessionEnd hook persists locally before asynchronous transcript work. Match Kanban pre-calls with `mcp__kanban__.*` and the native shell tool so the narrow legacy completion can be translated before execution; generic tool activity hooks may match all tools because the bridge is a no-op without a current claim.
 
 - [ ] **Step 5: Wire Codex as managed hooks**
 
-Add the same events to `configs/codex/requirements.toml`, render the wrapper into `${CODEX_MANAGED_DIR}/hooks`, and extend sync verification. Preserve the three-second SessionEnd cap: the hook only persists queue intent and returns; any delivery is detached and bounded. Do not enable `allow_managed_hooks_only` or disable user hooks.
+Add Codex 0.154.0's actual event set to `configs/codex/requirements.toml`; omit `PostToolUseFailure` and Claude-only fields/events. Match an operation's close by its original `PostToolUse.tool_use_id`, including a long unified-exec completed through later polling. At Stop/SessionEnd, reconcile unresolved calls conservatively only after qualification proves no live tool/child remains; otherwise leave the installed version read-only and let bounded expiry handle the claim. Render the wrapper into `${CODEX_MANAGED_DIR}/hooks` and extend sync verification. Preserve the three-second SessionEnd cap: the hook only persists queue intent and returns; any delivery is detached and bounded. Do not enable `allow_managed_hooks_only` or disable user hooks.
 
 - [ ] **Step 6: Run adapter and managed-install tests**
 
@@ -617,26 +621,26 @@ git commit -m "feat(kanban): bind Claude and Codex lifecycles"
 - Modify: `tests/python/test_kanban_work_adapters.py`
 
 **Interfaces:**
-- Consumes: Cursor common fields (`conversation_id`, `generation_id`, `workspace_roots`) and event-specific fields from `sessionStart`, `beforeSubmitPrompt`, `preToolUse`, `postToolUse`, `postToolUseFailure`, `beforeMCPExecution`, `afterMCPExecution`, `stop`, `sessionEnd`, `subagentStart`, `subagentStop`, and `preCompact`; the shared normalizer and legacy translator.
-- Produces: `adapt_cursor(event_name, payload) -> AdapterResult` in the shared Python adapter module, the same registry/permit/activity semantics with Cursor JSON outputs, `failClosed: true` on Kanban MCP pre-execution validation, and exact legacy completion translation on the native shell pre-tool event.
+- Consumes: Cursor common fields (`conversation_id`, `generation_id`, `cursor_version`, `workspace_roots`) and event-specific fields from `sessionStart`, `beforeSubmitPrompt`, generic `preToolUse`, `postToolUse`, `postToolUseFailure`, `stop`, `sessionEnd`, `subagentStart`, `subagentStop`, and `preCompact`; the shared normalizer and legacy translator.
+- Produces: `adapt_cursor(event_name, payload) -> AdapterResult` in the shared Python adapter module, the same registry/permit/activity semantics with Cursor JSON outputs, generic `preToolUse` as the sole permit minter with `failClosed: true`, and exact legacy completion translation on that native pre-tool event.
 
 - [ ] **Step 1: Write failing Cursor payload tests**
 
-Fixture tests must include multi-root refusal, sessionStart handle/instructions, stable conversation plus changing prompt generation, beforeMCP `tool_input` JSON-string decoding, `mcp_server_name == "kanban"`, fail-closed mismatch, stop versus preCompact, fire-and-forget SessionEnd, background agent identity, and subagent IDs. Use a loopback-only temporary exact-version matrix and prove an unlisted `cursor_version` remains read-only.
+Fixture tests must include multi-root refusal, sessionStart handle/instructions, stable conversation plus changing prompt generation, generic pre-tool object input and `tool_use_id`, a qualified candidate `MCP:claim_ticket` name, fail-closed mismatch, matching generic post success/failure, stop versus preCompact, fire-and-forget SessionEnd, background agent identity at start, and a documented `subagentStop` without `subagent_id`. Use a loopback-only temporary exact-version matrix and prove an unlisted `cursor_version` remains read-only. The fixture name is only a candidate: installed-client qualification must capture the exact emitted MCP tool name before the version can be listed.
 
 ```bash
-@test "Cursor denies a peer handle before Kanban MCP execution" {
+@test "Cursor generic preToolUse denies a peer handle before Kanban MCP execution" {
   start_cursor_session conv-a gen-a "$CHECKOUT"
   payload=$(jq -nc --arg h "$PEER_HANDLE" '{
-    conversation_id:"conv-a",generation_id:"gen-a",hook_event_name:"beforeMCPExecution",
-    mcp_server_name:"kanban",tool_name:"claim_ticket",
-    tool_input:({handle:$h,ticket:"KANBAN-2"}|tojson),workspace_roots:["'"$CHECKOUT"'"]}')
-  run_cursor_hook beforeMCPExecution "$payload"
+    conversation_id:"conv-a",generation_id:"gen-a",hook_event_name:"preToolUse",
+    tool_use_id:"call-7",tool_name:"MCP:claim_ticket",
+    tool_input:{handle:$h,ticket:"KANBAN-2"},workspace_roots:["'"$CHECKOUT"'"]}')
+  run_cursor_hook preToolUse "$payload"
   jq -e '.permission == "deny" and (.agent_message|contains("bound Cursor session"))' <<<"$output"
 }
 ```
 
-Add `preToolUse` shell fixtures for accepted exact legacy completion, reconstructed updated command, peer/environment-hint denial, replay, compound syntax, and unrelated shell pass-through. When both generic pre-tool and `beforeMCPExecution` fire for the same Kanban MCP native call ID, assert only one permit exists and its digest is unchanged.
+Add `preToolUse` shell fixtures for accepted exact legacy completion, reconstructed updated command, peer/environment-hint denial, replay, compound syntax, and unrelated shell pass-through. Assert a mutating MCP pre-event creates exactly one permit and no `beforeMCPExecution`/`afterMCPExecution` Kanban hook is configured. Track a child from `subagentStart`, then feed the documented stop shape without an ID and assert the adapter neither invents a correlation nor releases the parent; that installed version stays read-only unless real capture proves a reliable correlation.
 
 - [ ] **Step 2: Run the Cursor tests and verify they fail**
 
@@ -646,9 +650,9 @@ Expected: FAIL because only transcript hooks are configured.
 
 - [ ] **Step 3: Add Cursor event entries and output mapping**
 
-Extend `lib/kanban_work/adapters.py` with Cursor's distinct parser and output mapping; invoke it through the shared wrapper with `cursor` and the exact event name. Use Cursor's common `conversation_id` as `native_session_id`, exact `cursor_version` for qualification, and `generation_id` as native event ordering data while the bridge's fresh UUID remains the run generation. `sessionStart` returns `env.KANBAN_WORK_HANDLE` and `additional_context`. `beforeMCPExecution` returns `permission=deny` on absent/mismatched identity or invalid params and is configured `failClosed: true`; unrelated MCP servers return allow. De-duplicate a generic and MCP-specific pre-event by the native call ID before permit insertion.
+Extend `lib/kanban_work/adapters.py` with Cursor's distinct parser and output mapping; invoke it through the shared wrapper with `cursor` and the exact event name. Use Cursor's common `conversation_id` as `native_session_id`, exact `cursor_version` for qualification, and `generation_id` as native event ordering data while the bridge's fresh UUID remains the run generation. `sessionStart` returns `env.KANBAN_WORK_HANDLE` and `additional_context`. Configure generic `preToolUse` with `failClosed: true`; it identifies MCP calls from the exact observed tool name, uses `tool_use_id` as the native call ID, validates object `tool_input`, and is the sole permit minter. Do not configure Kanban `beforeMCPExecution` or `afterMCPExecution`; generic post success/failure closes the original call.
 
-On Cursor's native shell `preToolUse`, pass the actual conversation/subagent/generation identity, native call ID, and exact command field to the shared Task 2 translator. Emit Cursor's documented updated-input shape only from the returned safe argv. Deny completion-like invalid/ambiguous forms with the MCP instruction, and leave unrelated shell input unchanged. `preCompact` records activity only. `stop` releases the parent only after verified tool/subagent work has ended.
+On Cursor's native shell `preToolUse`, pass the actual conversation/subagent/generation identity, native call ID, and exact command field to the shared Task 2 translator. Emit Cursor's documented updated-input shape only from the returned safe argv. Deny completion-like invalid/ambiguous forms with the MCP instruction, and leave unrelated shell input unchanged. `preCompact` records activity only. Never synthesize a child ID from `subagentStop` summaries/status. `stop` releases the parent only after verified tool/subagent work has ended; if real events cannot correlate child completion or prove the local lifecycle surface, qualification fails closed. Do not claim coverage for Cursor cloud agents from these user hooks.
 
 - [ ] **Step 4: Verify managed merge/preservation**
 
@@ -684,12 +688,12 @@ git commit -m "feat(kanban): bind Cursor agent lifecycles"
 - Modify: `tests/python/test_kanban_work_adapters.py`
 
 **Interfaces:**
-- Consumes: OpenCode plugin `event`, `tool.execute.before`, `tool.execute.after`, and `experimental.chat.system.transform`; MCP `params._meta.sessionID` when supplied by installed OpenCode; the shared Python adapter/legacy translator through `kanban-work hook`.
-- Produces: native session/subagent registration, canonical instruction injection, actual-caller permit checks before Kanban tools or an exact legacy completion, tool activity, idle release, deleted/end reconciliation, and an explicitly unqualified state when the installed version omits required identity/events.
+- Consumes: OpenCode plugin `event`, `tool.execute.before` input `{tool,sessionID,callID}` with mutable `output.args`, successful `tool.execute.after`, and `experimental.chat.system.transform`; the shared Python adapter/legacy translator through `kanban-work hook`.
+- Produces: native session/child-session registration, canonical instruction injection, before-hook native-identity permits for flattened Kanban MCP tool names or an exact legacy completion, successful tool activity, conservative idle/error reconciliation, deleted/end reconciliation, and an explicitly unqualified state when the installed version omits required lifecycle evidence.
 
 - [ ] **Step 1: Write failing plugin tests with a fake `kanban-work`**
 
-Run the plugin under the installed Bun/Node runtime with captured event fixtures. Assert exact argv/stdin, no shell interpolation, sessionID-to-handle mapping, session.created, session.idle, session.deleted, session.error, parent/child session separation, tool before/after, `_meta.sessionID`, and system-prompt injection by in-place array mutation.
+Run the plugin under the installed Bun/Node runtime with captured event fixtures. Assert exact argv/stdin, no shell interpolation, sessionID-to-handle mapping, `session.created`, `session.compacted`, `session.idle`, `session.deleted`, `session.error`, child `info.parentID`, parent idle while a child remains active, flattened MCP tool names such as `kanban_claim_ticket`, tool before/successful-after, and system-prompt injection by in-place array mutation. The fixtures must use only fields present in the pinned native contract.
 
 ```javascript
 const output = { system: ["base"] }
@@ -701,7 +705,7 @@ assert.match(output.system.join("\n"), /Kanban work session handle:/)
 assert.match(output.system.join("\n"), /Claim a ticket before implementation/)
 ```
 
-Test missing `_meta.sessionID` and a tool event without session context: reads remain available, while a mutation raises the bridge's unsupported-adapter message before the fake transport sees a call. Use a loopback-only temporary exact-version matrix. Add native shell fixtures proving exact legacy completion rewrites safely, while compound syntax, a peer/environment handle, replay, or missing session context throws the MCP guidance before execution; unrelated shell commands remain unchanged.
+Test `tool.execute.before` without `sessionID` or `callID`: reads remain available, while a mutation raises the bridge's unsupported-adapter message before the fake transport sees a call. Do not add an MCP `_meta` or nonexistent plugin-version fixture. Use a loopback-only temporary exact-version matrix. Add native shell fixtures proving exact legacy completion rewrites safely, while compound syntax, a peer/environment handle, replay, or missing session context throws the MCP guidance before execution; unrelated shell commands remain unchanged. Also fixture a failed tool with no after hook, `session.error` without a session ID, and first observation of an existing session; none may fabricate close/resume identity or qualify the client by themselves.
 
 - [ ] **Step 2: Run the plugin tests and verify they fail**
 
@@ -711,9 +715,9 @@ Expected: FAIL because the plugin is absent.
 
 - [ ] **Step 3: Implement the dependency-free local plugin**
 
-Use `child_process.spawn`/`execFile` with argument arrays and JSON stdin, never Bun shell interpolation. Cache canonical instruction text once per plugin instance. Supply the exact plugin context `app.version` to session ingress for qualified-matrix matching. Map OpenCode's session events to bridge hook ingress. In `tool.execute.before`, recognize Kanban MCP tool names, obtain the actual `sessionID` from hook input/context, normalize the model arguments through `kanban-work hook`, and deny/throw before execution when validation fails.
+Use `child_process.spawn`/`execFile` with argument arrays and JSON stdin, never Bun shell interpolation. Cache canonical instruction text once per plugin instance. Obtain the process candidate version with a bounded two-second, closed-stdin `opencode --version`; do not use nonexistent `app.version` or assume a stored session creation version represents the resumed process. Map OpenCode's session events to bridge hook ingress. Track child sessions separately from `session.created.info.parentID`. In `tool.execute.before`, recognize exact flattened Kanban MCP tool names (`kanban_<tool>`, after OpenCode's native sanitization), bind the permit to actual `sessionID` and `callID`, normalize `output.args` through `kanban-work hook`, and throw before execution when validation fails. No MCP `_meta` is required or expected.
 
-For the native shell tool, send actual session/subagent context, native call ID, and the exact command field to the shared Python adapter. If the Task 2 translator returns a prepared legacy completion, mutate `output.args.command` only from its safe reconstructed argv. Throw the MCP guidance for completion-like rejected forms and do nothing for unrelated shell commands. In `experimental.chat.system.transform`, mutate `output.system` in place and include only the current session's handle/capability text.
+For the native shell tool, send actual session/child context, `callID`, and the exact command field to the shared Python adapter. If the Task 2 translator returns a prepared legacy completion, mutate `output.args.command` only from its safe reconstructed argv. Throw the MCP guidance for completion-like rejected forms and do nothing for unrelated shell commands. `tool.execute.after` closes only successful calls. On idle/error, reconcile an unresolved call conservatively only if real qualification proves it is no longer running; parent idle cannot release while a tracked child or tool is active. Missing after-on-failure and indistinguishable first-observed/resumed sessions remain qualification gates, so the installed version stays read-only unless those cases are safely demonstrated. In `experimental.chat.system.transform`, mutate `output.system` in place and include only the current session's handle/capability text when `sessionID` is present.
 
 ```javascript
 function bridge(args, payload) {
@@ -895,8 +899,9 @@ Test the harness with fake client executables that emit the expected hook/MCP tr
 ```python
 REQUIRED_SCENARIOS = {
     "instructions", "bind", "mutating_identity_check", "activity", "turn_stop",
-    "session_end", "resume_generation", "two_sessions_one_checkout",
-    "shared_mcp_process", "long_tool", "subagent", "crash_expiry",
+    "session_end", "generation_boundaries", "two_sessions_one_checkout",
+    "shared_mcp_process", "long_tool", "failure_reconciliation",
+    "parent_child", "crash_expiry",
 }
 
 def test_report_cannot_pass_with_fixture_only_evidence(self):
@@ -931,12 +936,19 @@ For Claude Code, Codex, Cursor, and OpenCode, prove:
 4. Claim -> native prompt/tool activity renews only the current fenced claim.
 5. Claim -> Stop/session idle releases to Todo with checkpoint or stopped-without-checkpoint handoff.
 6. Claim -> SessionEnd/session deleted reconciles and ends the generation.
-7. Resume mints a new generation and delayed old events cannot release/complete new work.
+7. Every native generation boundary the client exposes is handled correctly and delayed old events cannot release/complete new work; absence of a required boundary is reported rather than synthesized.
 8. Long tool supervision stops on completion and at the two-hour cap.
-9. Parent and native subagent have separate handles/claims; subagent stop does not release parent.
+9. Parent and native child work have separate handles/claims; child completion targets only the child, and parent stop/idle while a tracked child remains active does not release the parent.
 10. Killing the client leaves no renewal; fake-clock expiry returns the ticket to Todo. An old worker cannot close the replacement claim.
 
 Use unique test ticket keys and assert the fake board received no unexpected route. Do not ask a model to reveal hook payloads or credentials; capture them only in the temporary adapter qualification log with native IDs replaced by stable hashes in the final report.
+
+Apply these exact client gates rather than filling gaps in captured fixtures:
+
+- Claude must prove `startup|resume|clear|compact|fork`, same-generation compact, fresh safe generation boundaries, `PostToolUseFailure`, background-task-aware Stop, and child `agent_id` correlation.
+- Codex 0.154.0 must prove that a long unified-exec closes on the original call ID's `PostToolUse`; it has no `PostToolUseFailure`. A failed call with no post event must reach a safe bounded Stop/SessionEnd/expiry path or Codex remains unsupported.
+- Cursor must prove generic `preToolUse` supplies the exact emitted MCP tool name and call ID and is the sole fail-closed permit minter. Its documented `subagentStop` lacks `subagent_id`; inability to correlate the real event, or absence of required local lifecycle events, leaves Cursor unsupported. These results do not qualify Cursor cloud agents.
+- OpenCode must prove flattened names such as `kanban_claim_ticket`, actual `tool.execute.before` `sessionID`/`callID`, bounded `opencode --version`, successful-after correlation, failed-call reconciliation, existing/resumed-session generation safety, and parent idle while `info.parentID` child work continues. Do not expect MCP `_meta` or plugin `app.version`; any unresolved gap leaves OpenCode unsupported.
 
 - [ ] **Step 6: Make qualification status explicit and enforcement-gating**
 
@@ -1042,3 +1054,14 @@ Implement in this cross-repository order: Kanban Tasks 1-4, setup Tasks 1-6, Kan
 | Critical-only queue saturation | Persist latest release/end intent on claim/execution state; cap queue indexes at 1024 and reconstruct missing critical delivery after capacity opens. | Adds durable intent columns and reconstruction logic so the finite queue never loses the latest critical state. | Task 3 |
 | Replay/cache freshness | Refresh authoritative session and affected ticket after every lifecycle receipt before cache mutation; failed refresh marks cache untrusted and fails closed. | Adds backend reads and retry state, preventing an idempotent old receipt from reviving stale ownership. | Tasks 2, 3 |
 | Bridge installation | Install and verify `kanban-work` from container, host, and sync flows; verify host/client readiness includes the later pinned MCP. | Adds host wiring/tests so Cursor and OpenCode cannot be configured with a missing bridge. | Tasks 2, 6, 7 |
+
+## Native contract corrections
+
+These corrections are based on the pinned installed versions' documented/source-backed candidate contracts. They shape fixtures and fail-closed gates; only real loopback client runs can qualify a version.
+
+| Client | Correction | Rationale and cost |
+| --- | --- | --- |
+| Claude Code 2.1.268 | Add clear/fork start fixtures, keep compact in-generation, retain native failure and child IDs, and block parent release for reported background work. | Adds fixture branches and state checks while using fields the client actually emits. |
+| Codex 0.154.0 | Remove `PostToolUseFailure`; close long unified exec by the original call ID's eventual post, with bounded conservative failure reconciliation as a qualification gate. | Avoids an invented event at the cost of unresolved-call tracking and possible read-only qualification. |
+| Cursor Agent 2026.09.10-fd3934a | Use generic fail-closed `preToolUse` as the sole MCP permit minter and generic post events for close; never invent a child ID at stop. | Removes duplicate interception and adds a real child-correlation/local-surface qualification gate. |
+| OpenCode 1.18.30 | Use wrapper `sessionID`/`callID`, flattened MCP names, child `info.parentID`, and bounded CLI version lookup; remove MCP metadata/plugin-version assumptions. | Adds explicit idle/failure/resume/active-child gates and may leave the version read-only when native events cannot prove safe reconciliation. |
