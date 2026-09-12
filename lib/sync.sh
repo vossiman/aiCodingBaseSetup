@@ -509,6 +509,7 @@ _sync_print_smart_details() {
   local dest plan code item path operation
   while IFS= read -r dest; do
     [[ -n "$dest" ]] || continue
+    [[ "${BUCKETS[$dest]:-}" != blocked ]] || continue
     plan=${SMART_PLAN[$dest]:-}
     [[ -n "$plan" ]] || continue
     code=$(codex_smart_error_code "$plan")

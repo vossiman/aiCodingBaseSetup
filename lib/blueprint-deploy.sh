@@ -884,8 +884,8 @@ _strip_absent_secret_servers() {
       ;;
     codex)
       # Drop the [mcp_servers.memory-router] section (header through the
-      # line before the next [section] or EOF). The explanatory comment
-      # above it stays — harmless, and cheaper than tracking prose.
+      # line before the next [section] or EOF). Its explanatory comments
+      # live inside the section so they disappear with the server.
       awk '
         /^\[/ { skip = ($0 == "[mcp_servers.memory-router]") }
         !skip { print }

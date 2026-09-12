@@ -925,6 +925,27 @@ EOF
   echo "$output" | grep -q '0 smart_conflict'
 }
 
+@test "smart preview omits compatibility-blocked plans but retains actionable details and errors" {
+  run bash -c '
+    . "$BLUEPRINT_ROOT/lib/sync.sh"
+    . "$BLUEPRINT_ROOT/lib/codex-merge.sh"
+    declare -A SMART_PLAN BUCKETS
+    SMART_PLAN[blocked-config]='\''{"changes":[{"path":["blocked_setting"],"operation":"update"}],"conflicts":[],"adoption_notices":[]}'\''
+    SMART_PLAN[ready-config]='\''{"changes":[{"path":["ready_setting"],"operation":"update"}],"conflicts":[{"path":["conflicting_setting"]}],"adoption_notices":[]}'\''
+    SMART_PLAN[error-config]='\''{"error":{"code":"invalid_toml"},"changes":[],"conflicts":[],"adoption_notices":[]}'\''
+    BUCKETS[blocked-config]=blocked
+    BUCKETS[ready-config]=smart_conflict
+    BUCKETS[error-config]=smart_error
+    _sync_print_smart_details
+  '
+  [ "$status" -eq 0 ]
+  echo "$output"
+  [[ "$output" != *"blocked-config"* ]]
+  [[ "$output" == *"safe update: ready-config :: ready_setting"* ]]
+  [[ "$output" == *"conflict (kept local): ready-config :: conflicting_setting"* ]]
+  [[ "$output" == *"ERROR: Codex config merge failed for error-config (invalid_toml)"* ]]
+}
+
 @test "interactive smart decisions skip compatibility-blocked destinations" {
   run bash -c '
     . "$BLUEPRINT_ROOT/lib/sync.sh"

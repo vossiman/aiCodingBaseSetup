@@ -416,10 +416,26 @@ EOF
   cp "$BLUEPRINT_ROOT/configs/codex/config.toml" "$TMPDIR/clone/configs/codex/config.toml"
   _substitute_file_to "$TMPDIR/clone/configs/codex/config.toml" "$TMPDIR/out.toml"
   if grep -q '^\[mcp_servers.memory-router\]' "$TMPDIR/out.toml"; then false; fi
+  # Removed servers must not leave explanatory comments suggesting availability.
+  if grep -q 'memory-router\|memory_search' "$TMPDIR/out.toml"; then false; fi
   # No dangling empty bearer anywhere in the rendered file.
   if grep -q 'Bearer "' "$TMPDIR/out.toml"; then false; fi
   # Other content is intact.
   grep -q '^model' "$TMPDIR/out.toml"
+}
+
+@test "Codex rendered comments stay generic while configured server and HOME values render" {
+  export MEMORY_ROUTER_TOKEN=synthetic-comment-test
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  _substitute_file_to "$BLUEPRINT_ROOT/configs/codex/config.toml" "$TMPDIR/out.toml"
+  grep '^#' "$TMPDIR/out.toml" > "$TMPDIR/comments"
+  # Prose explains substitution without itself becoming a path or placeholder.
+  if grep -qF "$HOME" "$TMPDIR/comments"; then false; fi
+  if grep -qF '{{' "$TMPDIR/comments"; then false; fi
+  grep -qF "notify = [\"$HOME/.local/bin/codex-turn-done\"]" "$TMPDIR/out.toml"
+  grep -q '^\[mcp_servers.memory-router\]' "$TMPDIR/out.toml"
+  grep -q 'memory_search tool' "$TMPDIR/comments"
+  grep -qF 'Authorization = "Bearer synthetic-comment-test"' "$TMPDIR/out.toml"
 }
 
 @test "Codex smart render and strip files stay private through the engine boundary" {
