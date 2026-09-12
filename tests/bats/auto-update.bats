@@ -425,3 +425,39 @@ LEGACY
   [ "$status" -ne 0 ]
   exec {held_fd}>&-
 }
+
+@test "a still-finishing legacy worker does not make scheduler ensure fatal" {
+  false_systemd_shim
+  source "$TEST_ROOT/runtime/lib/auto-update.sh"
+  export AICODING_AUTO_UPDATE_SELF="$TEST_ROOT/aicoding-auto-update"
+  _aicoding_auto_recover_shared_lock_worker() { return 1; }
+  run aicoding_auto_update_ensure
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'recovery deferred'* ]]
+  wait_for_lines 1
+}
+
+@test "busy legacy worker hands scheduling to its replacement after finishing" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  mkdir -p "$HOME/.claude" "$TEST_ROOT/legacy"
+  # Keep the real legacy worker inside its synchronous update long enough
+  # to exceed the bounded TERM wait; the replacement must still start.
+  printf '\nsleep 4\n' >> "$TEST_ROOT/bin/aicoding-sync"
+  cat > "$TEST_ROOT/legacy/aicoding-auto-update" <<'LEGACY'
+#!/usr/bin/env bash
+source "$TEST_ROOT/runtime/lib/auto-update.sh"
+aicoding_auto_update_worker
+LEGACY
+  chmod +x "$TEST_ROOT/legacy/aicoding-auto-update"
+  exec {held_fd}>"$HOME/.claude/.aicoding-update.lock"
+  flock "$held_fd"
+  "$TEST_ROOT/legacy/aicoding-auto-update" --worker </dev/null >/dev/null 2>&1 &
+  exec {held_fd}>&-
+  wait_for_lines 1
+  run "$TEST_ROOT/aicoding-auto-update" --ensure
+  [ "$status" -eq 0 ]
+  wait_for_lines 2
+  run flock -n "$HOME/.claude/.aicoding-update.lock" true
+  [ "$status" -eq 0 ]
+}

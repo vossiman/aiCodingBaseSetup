@@ -124,6 +124,7 @@ main() {
   # Hold writer locks before any tool-owned mutation or managed-file mode
   # detection. A busy shared root is handled per destination as a deferral so
   # confirmed-local setup can continue.
+  _provision_recover_scheduler_locks
   if ! aicoding_shared_locks_acquire_managed_roots; then
     _AICODING_INSTALL_SHARED_LOCKS_READY=0
   fi

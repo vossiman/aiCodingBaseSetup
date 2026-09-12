@@ -89,6 +89,20 @@ _provision_tool_blocked() {
   return 3
 }
 
+# Recover old scheduler-held writer locks before the installer takes its own.
+# A worker still finishing a pass is a deferral, never an installer abort.
+_provision_recover_scheduler_locks() {
+  [ "${AICODINGSETUP_SKIP_NETWORK:-0}" != 1 ] || return 0
+  if ! declare -F _aicoding_auto_recover_shared_lock_worker >/dev/null 2>&1; then
+    . "$SCRIPT_DIR/lib/auto-update.sh" || return 1
+  fi
+  if ! _aicoding_auto_recover_shared_lock_worker; then
+    _AICODING_PREPARATION_DEFERRED=1
+    warn "Legacy updater recovery deferred; shared configuration may remain busy"
+  fi
+  return 0
+}
+
 _provision_ensure_update_components() {
   local root=${SCRIPT_DIR:-${BLUEPRINT_ROOT:-}}
   # Shell functions do not survive the installer exec; adapters need their

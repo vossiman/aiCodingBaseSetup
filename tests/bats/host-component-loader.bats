@@ -19,3 +19,27 @@ teardown() { rm -rf "$TEST_ROOT"; }
   _provision_ensure_update_components
   declare -F aicoding_select_ci_sha
 }
+
+@test "both installers recover legacy scheduler locks before taking shared writer locks" {
+  local installer
+  for installer in install.sh install-host.sh; do
+    export INSTALLER_TEST_PATH="$BLUEPRINT_ROOT/$installer"
+    rm -f "$TEST_ROOT/recovery-attempted"
+    run bash -c '
+      source "$INSTALLER_TEST_PATH"
+      ENV_TYPE=container
+      seed_github_known_host() { :; }
+      load_or_prompt_secrets() { :; }
+      ensure_gh_credential_helper() { :; }
+      ensure_gh_stored_auth() { :; }
+      ensure_git_credential_file_fallback() { :; }
+      _provision_recover_scheduler_locks() { touch "$TEST_ROOT/recovery-attempted"; }
+      aicoding_shared_locks_acquire_managed_roots() {
+        [ -f "$TEST_ROOT/recovery-attempted" ] || exit 43
+        exit 42
+      }
+      main
+    '
+    [ "$status" -eq 42 ]
+  done
+}

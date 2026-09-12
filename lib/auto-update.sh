@@ -32,18 +32,25 @@ _aicoding_auto_close_shared_lock_fds() {
   done < <(_aicoding_auto_shared_lock_fds "$$")
 }
 
-_aicoding_auto_recover_shared_lock_worker() (
-  local state pid fds ensure_fd
+# Caller owns ensure.lock. Return 3 only when a known worker is still exiting.
+_aicoding_auto_recover_shared_lock_worker_locked() {
+  local state pid fds
   state=$(_aicoding_auto_state_dir) || return 1
-  mkdir -p "$state" || return 1
-  exec {ensure_fd}>"$state/ensure.lock" || return 1
-  flock -n "$ensure_fd" || return 0
   pid=$(cat "$state/worker.pid" 2>/dev/null || true)
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
   fds=$(_aicoding_auto_shared_lock_fds "$pid")
   [ -n "$fds" ] || return 0
   # The stop helper verifies worker identity before signaling any process.
   _aicoding_auto_stop_worker
+}
+
+_aicoding_auto_recover_shared_lock_worker() (
+  local state ensure_fd
+  state=$(_aicoding_auto_state_dir) || return 1
+  mkdir -p "$state" || return 1
+  exec {ensure_fd}>"$state/ensure.lock" || return 1
+  flock -n "$ensure_fd" || return 0
+  _aicoding_auto_recover_shared_lock_worker_locked
 )
 
 _aicoding_auto_atomic_number() {
@@ -175,7 +182,7 @@ _aicoding_auto_stop_worker() {
     fi
     sleep 0.1
   done
-  return 1
+  return 3
 }
 
 aicoding_auto_update_enroll() {
@@ -184,6 +191,17 @@ aicoding_auto_update_enroll() {
   mkdir -p "$state" || return 1
   exec {ensure_fd}>"$state/ensure.lock" || return 1
   flock -w 15 "$ensure_fd" || { exec {ensure_fd}>&-; return 0; }
+  # This is the detached enrollment process. A TERM-pending legacy worker
+  # may still be finishing a foreground update; wait before starting its
+  # successor so the successor cannot exit against the old worker's lock.
+  local recovery_rc
+  while :; do
+    recovery_rc=0
+    _aicoding_auto_recover_shared_lock_worker_locked || recovery_rc=$?
+    [ "$recovery_rc" -ne 0 ] || break
+    [ "$recovery_rc" -eq 3 ] || { exec {ensure_fd}>&-; return "$recovery_rc"; }
+    sleep 1
+  done
   if _aicoding_auto_user_manager_available; then
     if _aicoding_auto_enable_linger && _aicoding_auto_stage_systemd; then
       if _aicoding_auto_stop_worker && _aicoding_auto_enable_systemd; then
@@ -212,7 +230,8 @@ aicoding_auto_update_ensure() {
     echo 'aicoding-auto-update: interval must be a positive integer' >&2
     return 2
   }
-  _aicoding_auto_recover_shared_lock_worker || return 1
+  _aicoding_auto_recover_shared_lock_worker \
+    || echo "aicoding-auto-update: legacy worker recovery deferred; detached enrollment will retry" >&2
   local state log self
   state=$(_aicoding_auto_state_dir) || return 1
   mkdir -p "$state" || return 1
