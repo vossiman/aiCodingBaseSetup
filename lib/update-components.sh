@@ -80,7 +80,7 @@ _aicoding_version_from_command() {
 }
 
 _aicoding_npm_target() {
-  timeout "$AICODING_VENDOR_TIMEOUT" npm view "$1" version --json </dev/null 2>/dev/null \
+  aicoding_progress_run "${AICODING_PROGRESS_COMPONENT:-package}: resolving version (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_quiet_stderr timeout "$AICODING_VENDOR_TIMEOUT" npm view "$1" version --json </dev/null \
     | jq -r 'if type == "array" then last else . end // empty' 2>/dev/null
 }
 
@@ -425,8 +425,8 @@ _aicoding_stage_git_source() {
     return 0
   fi
   rm -rf "$stage"; mkdir -p "$(dirname "$final")"
-  timeout "$AICODING_VENDOR_TIMEOUT" git clone --no-checkout "$remote" "$stage" >/dev/null 2>&1 || { rm -rf "$stage"; return 1; }
-  timeout "$AICODING_VENDOR_TIMEOUT" git -C "$stage" checkout --detach "$sha" >/dev/null 2>&1 || { rm -rf "$stage"; return 1; }
+  aicoding_progress_run "${AICODING_PROGRESS_COMPONENT:-source}: downloading source (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" git clone --no-checkout "$remote" "$stage" || { rm -rf "$stage"; return 1; }
+  aicoding_progress_run "${AICODING_PROGRESS_COMPONENT:-source}: extracting source (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" git -C "$stage" checkout --detach "$sha" || { rm -rf "$stage"; return 1; }
   [ "$(git -C "$stage" rev-parse HEAD 2>/dev/null)" = "$sha" ] || { rm -rf "$stage"; return 1; }
   rm -rf "$stage/.git"
   printf '%s\n' "$sha" > "$stage/.aicoding-version"
@@ -486,8 +486,9 @@ aicoding_update_npm_component() {
   if ! HOME="$stage/home" XDG_CONFIG_HOME="$stage/home/.config" \
       XDG_DATA_HOME="$stage/home/.local/share" XDG_CACHE_HOME="$stage/home/.cache" \
       XDG_STATE_HOME="$stage/home/.local/state" NPM_CONFIG_CACHE="$stage/.npm-cache" \
-      timeout "$AICODING_VENDOR_TIMEOUT" npm install --prefix "$stage" --no-audit --no-fund \
-        "$package@$target" </dev/null >/dev/null 2>&1; then
+      aicoding_progress_run "$component: downloading runtime (timeout ${AICODING_VENDOR_TIMEOUT}s)" \
+        _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" npm install --prefix "$stage" --no-audit --no-fund \
+        "$package@$target" </dev/null; then
     rm -rf "$stage"
     aicoding_result_record "$component" failed "$target" stage_install_failed
     return 1
@@ -557,8 +558,8 @@ _aicoding_prepare_playwright_browser() {
     || { aicoding_result_record "$component" failed "$version" browser_stage_prepare_failed; return 1; }
   HOME="$runtime_home" XDG_CONFIG_HOME="$runtime_home/.config" \
     XDG_DATA_HOME="$runtime_home/.local/share" XDG_CACHE_HOME="$runtime_home/.cache" \
-    PLAYWRIGHT_BROWSERS_PATH="$cache" timeout "$AICODING_VENDOR_TIMEOUT" \
-      "$cli" install-browser --no-remove chromium </dev/null >/dev/null 2>&1 \
+    PLAYWRIGHT_BROWSERS_PATH="$cache" aicoding_progress_run "playwright: preparing Chromium (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" \
+      "$cli" install-browser --no-remove chromium </dev/null \
     || { rm -rf "$runtime_home"; aicoding_result_record "$component" failed "$version" browser_install_failed; return 1; }
   if ! rm -rf "$runtime_home"; then
     aicoding_result_record "$component" failed "$version" browser_stage_cleanup_failed
@@ -572,12 +573,12 @@ _aicoding_prepare_playwright_browser() {
     node_path=$(command -v node 2>/dev/null) || true
     if [ -x "$core_cli" ] && [ -n "$node_path" ]; then
       if [ "$(id -u)" -eq 0 ]; then
-        PLAYWRIGHT_BROWSERS_PATH="$cache" timeout "$AICODING_VENDOR_TIMEOUT" \
-          "$node_path" "$core_cli" install-deps chromium </dev/null >/dev/null 2>&1 || true
+        PLAYWRIGHT_BROWSERS_PATH="$cache" aicoding_progress_run "playwright: preparing system libraries (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" \
+          "$node_path" "$core_cli" install-deps chromium </dev/null || true
       elif command -v sudo >/dev/null 2>&1 \
           && timeout "${AICODING_PROBE_TIMEOUT:-15}" sudo -n true </dev/null >/dev/null 2>&1; then
-        timeout "$AICODING_VENDOR_TIMEOUT" sudo -n env PLAYWRIGHT_BROWSERS_PATH="$cache" \
-          "$node_path" "$core_cli" install-deps chromium </dev/null >/dev/null 2>&1 || true
+        aicoding_progress_run "playwright: preparing system libraries (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" sudo -n env PLAYWRIGHT_BROWSERS_PATH="$cache" \
+          "$node_path" "$core_cli" install-deps chromium </dev/null || true
       fi
       missing=$(_aicoding_playwright_missing_libs "$bin") || rc=$?
     fi
@@ -615,29 +616,13 @@ _aicoding_npm_lock_valid() {
 }
 
 _aicoding_release_tree_digest() {
-  local root=$1 inventory path relative mode kind value digest
-  inventory=$(mktemp "${TMPDIR:-/tmp}/aicoding-release-integrity.XXXXXX") || return 1
-  while IFS= read -r -d '' path; do
-    relative=${path#"$root/"}
-    [ "$relative" != .aicoding-release-integrity ] || continue
-    mode=$(stat -c '%a' -- "$path" 2>/dev/null) || { rm -f "$inventory"; return 1; }
-    if [ -L "$path" ]; then
-      kind=link; value=$(readlink -- "$path") || { rm -f "$inventory"; return 1; }
-    elif [ -f "$path" ]; then
-      kind=file; value=$(sha256sum -- "$path" | awk '{print $1}') \
-        || { rm -f "$inventory"; return 1; }
-    elif [ -d "$path" ]; then
-      kind=directory; value=
-    else
-      rm -f "$inventory"
-      return 1
-    fi
-    printf '%s\0%s\0%s\0%s\0' "$relative" "$kind" "$mode" "$value" >>"$inventory" \
-      || { rm -f "$inventory"; return 1; }
-  done < <(find "$root" -mindepth 1 -print0 2>/dev/null | sort -z)
-  digest=$(sha256sum "$inventory" | awk '{print $1}') || { rm -f "$inventory"; return 1; }
-  rm -f "$inventory" || return 1
-  printf '%s\n' "$digest"
+  aicoding_progress_run "${AICODING_PROGRESS_COMPONENT:-package}: checking release integrity (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_release_tree_digest_impl "$@"
+}
+
+_aicoding_release_tree_digest_impl() {
+  local helper
+  helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/release-digest.py"
+  timeout "$AICODING_VENDOR_TIMEOUT" python3 "$helper" "$1" </dev/null 2>/dev/null
 }
 
 _aicoding_release_integrity_write() {
@@ -654,12 +639,44 @@ _aicoding_release_integrity_valid() {
   [ "$actual" = "$recorded" ]
 }
 
-# npm was deliberately invoked with --ignore-scripts. Reject any resolved
-# package whose install lifecycle would therefore be skipped.
-_aicoding_npm_tree_ignores_scripts_safely() {
-  local root=$1 manifest manifests key rc=0
-  jq -e '[.packages[] | select(.hasInstallScript == true)] | length == 0' \
+# tldjs 2.3.2 ships its public-suffix rules. Its audited postinstall only
+# refreshes them when npm_config_tldjs_update_rules=true; it is unnecessary
+# for runtime. Keep --ignore-scripts: this exception NEVER executes a hook.
+# Pin registry provenance and the reviewed hook/data bytes; any package update
+# or added lifecycle work requires a new audit, rather than a broad allowlist.
+_aicoding_npm_optional_refresh_is_bundled() {
+  local root=$1 key=$2 dir="$1/$2" hook_hash rules_hash
+  case "$key" in node_modules/*) ;; *) return 1 ;; esac
+  case "/$key/" in */../*|*/./*) return 1 ;; esac
+  jq -e --arg key "$key" '.packages[$key]
+    | .version == "2.3.2" and .link != true
+      and .resolved == "https://registry.npmjs.org/tldjs/-/tldjs-2.3.2.tgz"
+      and .integrity == "sha512-EORDwFMSZKrHPUVDhejCMDeAovRS5d8jZKiqALFiPp3cjKjEldPkxBY39ZSx3c45awz3RpKwJD1cCgGxEfy8/A=="' \
     "$root/package-lock.json" >/dev/null 2>&1 || return 1
+  jq -e '.name == "tldjs" and .version == "2.3.2"
+    and (.scripts.preinstall // "") == ""
+    and (.scripts.install // "") == ""
+    and .scripts.postinstall == "node ./bin/postinstall.js"' \
+    "$dir/package.json" >/dev/null 2>&1 || return 1
+  [ -f "$dir/bin/postinstall.js" ] && [ ! -L "$dir/bin/postinstall.js" ] \
+    && [ -f "$dir/rules.json" ] && [ ! -L "$dir/rules.json" ] || return 1
+  hook_hash=$(sha256sum "$dir/bin/postinstall.js") || return 1
+  rules_hash=$(sha256sum "$dir/rules.json") || return 1
+  [ "${hook_hash%% *}" = a967eff8a98099b264a5dd8b0c91289c064ba16fe9fe92ee0fb41c04e5734b38 ] \
+    && [ "${rules_hash%% *}" = f8acee981e0a21eb83e4df023413247607b8f7af2d322a46ee4fc3877fbb68a1 ]
+}
+
+# npm was deliberately invoked with --ignore-scripts. Reject any resolved
+# package whose required install lifecycle would therefore be skipped.
+_aicoding_npm_tree_ignores_scripts_safely() {
+  local root=$1 manifest manifests key install_keys rc=0
+  install_keys=$(jq -er '.packages | to_entries
+    | map(select(.value.hasInstallScript == true) | .key) | join("\n")' \
+    "$root/package-lock.json") || return 1
+  while IFS= read -r key; do
+    [ -z "$key" ] && continue
+    _aicoding_npm_optional_refresh_is_bundled "$root" "$key" || return 1
+  done <<< "$install_keys"
   # Finish enumeration before inspecting. Returning early from a process-
   # substitution reader gives find SIGPIPE and fires an inherited installer
   # ERR trap; it also used to hide genuine enumeration failures.
@@ -671,7 +688,10 @@ _aicoding_npm_tree_ignores_scripts_safely() {
   while IFS= read -r -d '' manifest; do
     jq -e '(.scripts // {}) as $s
       | all(["preinstall","install","postinstall"][];
-          ($s[.] // "") == "")' "$manifest" >/dev/null 2>&1 || { rc=1; break; }
+          ($s[.] // "") == "")' "$manifest" >/dev/null 2>&1 || {
+      key=${manifest#"$root/"}; key=${key%/package.json}
+      _aicoding_npm_optional_refresh_is_bundled "$root" "$key" || { rc=1; break; }
+    }
     if ! jq -e '(.scripts // {}) as $s
       | all(["prepublish","preprepare","prepare","postprepare"][];
           ($s[.] // "") == "")' "$manifest" >/dev/null 2>&1; then
@@ -776,9 +796,10 @@ aicoding_update_npm_entry_component() {
   if ! HOME="$stage/home" XDG_CONFIG_HOME="$stage/home/.config" \
     XDG_DATA_HOME="$stage/home/.local/share" XDG_CACHE_HOME="$stage/home/.cache" \
     XDG_STATE_HOME="$stage/home/.local/state" NPM_CONFIG_CACHE="$stage/.npm-cache" \
-    timeout "$AICODING_VENDOR_TIMEOUT" npm install --prefix "$stage" --ignore-scripts --omit=dev \
+    aicoding_progress_run "$component: downloading packages (timeout ${AICODING_VENDOR_TIMEOUT}s)" \
+      _aicoding_progress_capture "$install_log" timeout "$AICODING_VENDOR_TIMEOUT" npm install --prefix "$stage" --ignore-scripts --omit=dev \
       --save-exact --engine-strict --no-audit --no-fund \
-      "$package@$target" </dev/null >/dev/null 2>"$install_log"; then
+      "$package@$target" </dev/null; then
     failure_state=failed; failure_reason=stage_install_failed
     if grep -Eq 'EBADENGINE|Unsupported engine' "$install_log" 2>/dev/null; then
       failure_state=blocked; failure_reason=$(_aicoding_missing_runtime_reason node)
@@ -902,7 +923,7 @@ aicoding_update_claude() {
   if ! HOME="$staged_home" CLAUDE_CONFIG_DIR="$staged_home/.claude" \
       XDG_CONFIG_HOME="$staged_home/.config" XDG_DATA_HOME="$staged_home/.local/share" \
       XDG_CACHE_HOME="$staged_home/.cache" XDG_STATE_HOME="$staged_home/.local/state" \
-      timeout "$AICODING_VENDOR_TIMEOUT" bash "$installer" "$target" </dev/null >/dev/null 2>&1; then
+      aicoding_progress_run "claude: staging runtime (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" bash "$installer" "$target" </dev/null; then
     rm -rf "$stage"; aicoding_result_record claude failed "$target" stage_install_failed; return 1
   fi
   staged_bin="$staged_home/.local/share/claude/versions/$target"
@@ -974,14 +995,14 @@ aicoding_update_bw() {
   else
     command -v go >/dev/null 2>&1 \
       || { _aicoding_record_deferred bw-AICode blocked "$sha" "$(_aicoding_missing_runtime_reason go)"; return 1; }
-    (cd "$source" && timeout "$AICODING_VENDOR_TIMEOUT" go test ./... </dev/null >/dev/null 2>&1) \
+    (cd "$source" && aicoding_progress_run "bw-AICode: testing runtime (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" go test ./... </dev/null) \
       || { aicoding_result_record bw-AICode failed "$sha" tests_failed; return 1; }
     stage="$AICODING_DATA_DIR/versions/bw-AICode/.staging.$sha.$$"
     rm -rf "$stage"; mkdir -p "$stage/bin" || return 1
     cp -a "$source/claude-bw.sh" "$source/opencode-bw.sh" "$source/pi-bw.sh" \
       "$source/.aicoding-version" "$stage/" \
       || { rm -rf "$stage"; aicoding_result_record bw-AICode failed "$sha" stage_copy_failed; return 1; }
-    (cd "$source" && timeout "$AICODING_VENDOR_TIMEOUT" go build -o "$stage/bin/bw-docker-guard" ./cmd/bw-docker-guard </dev/null) \
+    (cd "$source" && aicoding_progress_run "bw-AICode: building runtime (timeout ${AICODING_VENDOR_TIMEOUT}s)" timeout "$AICODING_VENDOR_TIMEOUT" go build -o "$stage/bin/bw-docker-guard" ./cmd/bw-docker-guard </dev/null) \
       || { rm -rf "$stage"; aicoding_result_record bw-AICode failed "$sha" build_failed; return 1; }
     [ -x "$stage/bin/bw-docker-guard" ] \
       || { rm -rf "$stage"; aicoding_result_record bw-AICode failed "$sha" staged_validation_failed; return 1; }
@@ -996,14 +1017,22 @@ aicoding_update_bw() {
 }
 
 aicoding_update_component() {
+  local AICODING_PROGRESS_COMPONENT=$1 component_rc=0 started=$SECONDS
+  printf 'INFO: Updating %s\n' "$1" >&2
+  _aicoding_update_component_impl "$@" || component_rc=$?
+  printf 'INFO: %s update attempt finished (%ss, exit %s)\n' "$1" "$((SECONDS - started))" "$component_rc" >&2
+  return "$component_rc"
+}
+
+_aicoding_update_component_impl() {
   case "$1" in
     codex) aicoding_update_npm_component codex codex @openai/codex ;;
     opencode) aicoding_update_npm_component opencode opencode opencode-ai ;;
     pi) aicoding_update_npm_component pi pi @mariozechner/pi-coding-agent ;;
     claude) aicoding_update_claude ;;
     cursor)
-      _aicoding_record_deferred cursor blocked "" versioned_staging_unavailable
-      return 1
+      . "${BASH_SOURCE[0]%/*}/update-cursor.sh"
+      aicoding_update_cursor
       ;;
     dvw) aicoding_update_dvw ;;
     bw-AICode) aicoding_update_bw ;;

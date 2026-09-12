@@ -138,7 +138,7 @@ deploy_all_managed_files() {
 # MANAGED_MCPS / MANAGED_PLUGINS live in lib/provision.sh (sourced below,
 # after the colored loggers are defined) — shared with aicoding-sync so both
 # reconcile the same MCP/plugin set.
-MANAGED_HOOKS=("custom-statusline.js" "bw-deny-files.sh" "check-archived-docs.sh" "llmwiki-distill.sh" "agent-waiting.sh" "memory-hint.sh" "opus-verbosity.sh" "fable-guidance.sh" "redact-sessions-hook.sh" "redact-sessions-pending.sh")
+MANAGED_HOOKS=("agent-working.sh" "custom-statusline.js" "bw-deny-files.sh" "check-archived-docs.sh" "llmwiki-distill.sh" "agent-waiting.sh" "memory-hint.sh" "opus-verbosity.sh" "fable-guidance.sh" "redact-sessions-hook.sh" "redact-sessions-pending.sh")
 # Skills are whatever skills/ ships; the deploy loop above enumerates the
 # same dir. A hand-kept list here only falls behind and then flags a shipped
 # skill as unmanaged (review-by-harness, 2026-09-08).
@@ -359,6 +359,13 @@ reconcile_existing_install() {
   # fresh deployment before any actionable bucket reaches the write engine.
   for _d in "${!BUCKETS[@]}"; do
     case "${BUCKETS[$_d]}" in
+      drifted_and_updating|new_file_existing|to_remove)
+        report_managed_conflict "$_d" "${BUCKETS[$_d]}"
+        _provision_ensure_update_components || return 1
+        case "$(_aicoding_config_component "$_d")" in
+          config-*) _AICODING_INITIAL_CONFIG_DEFERRED=1 ;;
+        esac
+        ;;
       restore|new_file|will_update|will_update_owned|drifted_but_aligned|merge)
         _aicoding_initial_config_ready "$_d" || BUCKETS[$_d]=blocked
         ;;
@@ -406,7 +413,7 @@ reconcile_existing_install() {
 # _print_install_summary — emit the fixed-format summary line plus an
 # optional NOTE follow-up. Counters default to 0 when not set by the mode.
 _print_install_summary() {
-  local commit_short
+  local commit_short outcome=${1:-OK}
   commit_short=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
   local n_new=${_RECONCILE_NEW:-0}
   local n_restored=${_RECONCILE_RESTORED:-0}
@@ -414,8 +421,8 @@ _print_install_summary() {
   local n_merged=${_RECONCILE_MERGED:-0}
   local n_drifted=${_RECONCILE_DRIFTED:-0}
   local n_to_review=${_RECONCILE_TO_REVIEW:-0}
-  printf 'INSTALL OK  blueprint %s  new %d  restored %d  updated %d  merged %d  drifted %d  to_review %d\n' \
-    "$commit_short" "$n_new" "$n_restored" "$n_updated" "$n_merged" "$n_drifted" "$n_to_review"
+  printf 'INSTALL %s  blueprint %s  new %d  restored %d  updated %d  merged %d  drifted %d  to_review %d\n' \
+    "$outcome" "$commit_short" "$n_new" "$n_restored" "$n_updated" "$n_merged" "$n_drifted" "$n_to_review"
   if (( n_drifted > 0 || n_to_review > 0 )); then
     printf 'NOTE: %d drifted file(s), %d file(s) to review. Run aicoding-sync to address.\n' \
       "$n_drifted" "$n_to_review"

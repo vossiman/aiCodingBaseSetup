@@ -60,14 +60,15 @@ EOF
   [ "$output" = $'aicoding\ndvw' ]
 }
 
-@test "known Cursor staging limitation is a completed component deferral" {
+@test "unsupported Cursor platform is a completed component deferral" {
   unset AICODINGSETUP_SKIP_NETWORK
   _tool agent 'cursor-agent 2026.08.01'
+  _tool uname 'Unsupported'
 
   run aicoding_update_installed_components
   [ "$status" -eq 0 ]
   jq -e '.components.cursor.state == "blocked"
-    and .components.cursor.reason == "versioned_staging_unavailable"' \
+    and .components.cursor.reason == "unsupported_platform"' \
     "$AICODING_STATE_DIR/update-results.json"
 }
 
