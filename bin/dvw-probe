@@ -278,6 +278,18 @@ def collect_agents(proc, budget):
 _GONE = frozenset((errno.ENOENT, errno.ESRCH))
 
 
+def _explained(out, why):
+    """Carry why tmux_sessions is null, so the reader need not guess.
+
+    A bare null says "not measured" without saying by which of six paths,
+    and every one of them looks identical in the catalog's history. Naming
+    the path is what turns a recurring null into a reproducible bug.
+    """
+    if out['tmux_sessions'] is None and why:
+        return dict(out, tmux_unmeasured=why)
+    return out
+
+
 def collect_activity(proc, budget):
     """Observation only; current uid, default tmux socket and DevPod IDE TCP.
 
@@ -285,9 +297,12 @@ def collect_activity(proc, budget):
     not IDE processes. Does not read command arguments or environment. Custom
     tmux sockets and IDE transports other than DevPod TCP are outside scope.
     Incomplete metadata gives null rather than a potentially unsafe zero.
+    A null tmux_sessions carries `tmux_unmeasured` naming which path produced
+    it; consumers that do not know the key ignore it.
     """
     out = dict(tmux_sessions=None, terminals=None,
                cursor_connections=None, vscode_connections=None)
+    why = None
     try:
         # Force the default socket even if invoked from inside another tmux.
         r = _run(['tmux', '-L', 'default', 'list-sessions', '-F', '#{session_id}'],
@@ -296,14 +311,19 @@ def collect_activity(proc, budget):
             lines = r.stdout.splitlines()
             if lines and all(s.startswith('$') and s[1:].isdigit() for s in lines):
                 out['tmux_sessions'] = len(lines)
+            else:
+                why = 'list-sessions-unparsable'
         elif r.returncode == 1 and (r.stderr.startswith('no server running on ')
                 or (r.stderr.startswith('error connecting to ')
                     and r.stderr.rstrip().endswith('(No such file or directory)'))):
             out['tmux_sessions'] = 0
+        else:
+            why = 'list-sessions-failed'
     except subprocess.TimeoutExpired:
         budget.partial = True
+        why = 'list-sessions-timeout'
     except OSError:
-        pass
+        why = 'list-sessions-spawn-failed'
     deadline = time.monotonic() + budget.remaining(0.75)
     terminals, owners = set(), {}
     terminals_ok = ide_ok = True
@@ -314,14 +334,16 @@ def collect_activity(proc, budget):
     except OSError:
         if out['tmux_sessions'] == 0:
             out['tmux_sessions'] = None
-        return out
+            why = 'proc-unreadable'
+        return _explained(out, why)
     try:
         for name in names:
             if time.monotonic() >= deadline:
                 budget.partial = True
                 if out['tmux_sessions'] == 0:
                     out['tmux_sessions'] = None
-                return out
+                    why = 'walk-budget-exhausted'
+                return _explained(out, why)
             if not name.isdigit():
                 continue
             d = os.path.join(proc, name)
@@ -335,11 +357,12 @@ def collect_activity(proc, budget):
                 if exc.errno not in _GONE:
                     terminals_ok = ide_ok = tmux_metadata_ok = False
                 continue
-            state = None
+            state = session = None
             try:
                 stat = _read(os.path.join(d, 'stat')).decode('ascii')
                 fields = stat[stat.rindex(')') + 2:].split()
                 state = fields[0]
+                session = fields[3]
                 tty = int(fields[4])
                 if tty and state != 'Z':
                     terminals.add(tty)
@@ -353,8 +376,18 @@ def collect_activity(proc, budget):
                 continue  # zombies have no executable or live sockets
             try:
                 exe = os.readlink(os.path.join(d, 'exe'))
-                if os.path.basename(exe) == 'tmux' and out['tmux_sessions'] == 0:
+                if (os.path.basename(exe) == 'tmux' and out['tmux_sessions'] == 0
+                        and session in (None, name)):
+                    # A tmux *server* daemonises into its own session, so it is
+                    # always a session leader. A client is not: it keeps the
+                    # session of whatever spawned it. That distinction matters
+                    # because dvw-probe itself runs `tmux list-sessions`, so a
+                    # second probe overlapping this walk would otherwise be
+                    # read as a server this one failed to reach. An unreadable
+                    # session id (None) still counts, to keep the unsafe
+                    # direction of the guess "unknown" rather than "idle".
                     out['tmux_sessions'] = None
+                    why = 'tmux-process-without-server'
                 kind = ('cursor_connections' if '/.cursor-server/' in exe else
                         'vscode_connections' if '/.vscode-server/' in exe else
                         'devpod' if os.path.basename(exe) == 'devpod' else None)
@@ -374,6 +407,7 @@ def collect_activity(proc, budget):
                     ide_ok = tmux_metadata_ok = False
         if not tmux_metadata_ok and out['tmux_sessions'] == 0:
             out['tmux_sessions'] = None
+            why = 'process-metadata-unreadable'
         if terminals_ok:
             out['terminals'] = len(terminals)
         sockets = {}
@@ -407,7 +441,7 @@ def collect_activity(proc, budget):
                     sockets[(version, local, remote)] = owners.get(inode, set())
         if time.monotonic() >= deadline:
             budget.partial = True
-            return dict(out, terminals=None)
+            return _explained(dict(out, terminals=None), why)
         if ide_ok:
             for kind in ('cursor_connections', 'vscode_connections'):
                 matched = {endpoint for endpoint in live_ide[kind]
@@ -415,7 +449,7 @@ def collect_activity(proc, budget):
                 out[kind] = len(matched) if matched == live_ide[kind] else None
     except (OSError, ValueError, UnicodeError):
         pass
-    return out
+    return _explained(out, why)
 
 
 def _workspace_root():

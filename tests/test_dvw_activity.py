@@ -18,10 +18,11 @@ class ActivityTests(unittest.TestCase):
         for name in ('tcp', 'tcp6'):
             (self.proc / 'net' / name).write_text('  sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n')
 
-    def process(self, pid, exe='/usr/bin/bash', tty=0, sockets=()):
+    def process(self, pid, exe='/usr/bin/bash', tty=0, sockets=(), session=None):
         d = self.proc / str(pid)
         d.mkdir()
-        (d / 'stat').write_text(f'{pid} (name with spaces) S 1 1 1 {tty} 0 0')
+        session = pid if session is None else session
+        (d / 'stat').write_text(f'{pid} (name with spaces) S 1 1 {session} {tty} 0 0')
         (d / 'exe').symlink_to(exe)
         (d / 'fd').mkdir()
         for n, inode in enumerate(sockets):
@@ -37,6 +38,49 @@ class ActivityTests(unittest.TestCase):
     def test_custom_tmux_server_prevents_false_zero(self):
         self.process(1, '/usr/bin/tmux')
         self.assertIsNone(self.collect()['tmux_sessions'])
+
+    def test_daemonised_tmux_server_prevents_false_zero(self):
+        """A real server daemonises: reparented to init, its own session."""
+        self.process(1)
+        self.process(7493, '/usr/bin/tmux')
+        got = self.collect()
+        self.assertIsNone(got['tmux_sessions'])
+        self.assertEqual(got['tmux_unmeasured'], 'tmux-process-without-server')
+
+    def test_transient_tmux_client_is_not_a_server(self):
+        """Another dvw-probe's own `tmux list-sessions` child has this
+        workspace's tmux binary but is not a session leader, because the
+        probe spawns it in its own session. Counting it as a server made
+        an idle workspace report unknown for one sample, which restarted
+        the full idle countdown.
+        """
+        self.process(1)
+        self.process(2, '/usr/bin/tmux', session=1)
+        self.assertEqual(self.collect(), dict(tmux_sessions=0, terminals=0,
+                                              cursor_connections=0,
+                                              vscode_connections=0))
+
+    def test_unparsable_list_sessions_says_why(self):
+        self.process(1)
+        fn = P.get('collect_activity')
+        done = subprocess.CompletedProcess([], 0, 'not-a-session-id\n', '')
+        with patch.dict(fn.__globals__, {'_run': lambda *a: done}):
+            got = fn(str(self.proc), P['Budget'](3))
+        self.assertIsNone(got['tmux_sessions'])
+        self.assertEqual(got['tmux_unmeasured'], 'list-sessions-unparsable')
+
+    def test_unrecognised_list_sessions_failure_says_why(self):
+        self.process(1)
+        fn = P.get('collect_activity')
+        done = subprocess.CompletedProcess([], 1, '', 'lost server\n')
+        with patch.dict(fn.__globals__, {'_run': lambda *a: done}):
+            got = fn(str(self.proc), P['Budget'](3))
+        self.assertIsNone(got['tmux_sessions'])
+        self.assertEqual(got['tmux_unmeasured'], 'list-sessions-failed')
+
+    def test_a_measured_signal_carries_no_reason(self):
+        self.process(1)
+        self.assertNotIn('tmux_unmeasured', self.collect())
 
     def test_unreadable_agent_metadata_marks_partial(self):
         self.process(1)
