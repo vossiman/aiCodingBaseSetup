@@ -86,6 +86,9 @@ command = "context7-mcp"
 command = "playwright-mcp"
 args = ["--browser", "chromium"]
 
+[mcp_servers.kanban]
+command = "kanban-mcp"
+
 [mcp_servers.memory-router]
 # memory-router — central memory-lanes retrieval router on vossisrv (the
 # memory_search tool). Streamable HTTP; the bearer token is substituted at

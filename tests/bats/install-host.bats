@@ -187,6 +187,17 @@ _source_host_lib() {
   [ "$output" = "host" ]
 }
 
+@test "install-host.sh installs both Kanban helpers from the durable blueprint" {
+  export AICODINGSETUP_SKIP_NETWORK=1
+  bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  local durable="${AICODING_HOST_BLUEPRINT_DIR:-$HOME/.local/share/aicoding/blueprint}"
+  for h in kanban-post kanban-work; do
+    [ -L "$HOME/.local/bin/$h" ]
+    [ -x "$HOME/.local/bin/$h" ]
+    [ "$(readlink -f "$HOME/.local/bin/$h")" = "$durable/bin/$h" ]
+  done
+}
+
 @test "persistent host install reports expected preparation deferrals without failing enrollment or stamping provision" {
   export AICODING_PERSISTENT_ENROLLMENT=1
   run env _AICODINGSETUP_NVS_STRIPPED=1 bash -c '
@@ -209,6 +220,29 @@ _source_host_lib() {
   jq -e '.components.provision.state == "blocked"
     and .components.provision.reason == "preparation_deferred"' \
     "$HOME/.local/state/aicoding/update-results.json"
+}
+
+@test "persistent host install has both Kanban helpers and immutable MCP before managed config deploys" {
+  export AICODING_PERSISTENT_ENROLLMENT=1
+  run env _AICODINGSETUP_NVS_STRIPPED=1 bash -c '
+    source "$1"
+    aicoding_prepare_installed_config_tools() { :; }
+    aicoding_prepare_exact_mcps() {
+      printf "#!/bin/sh\nexit 0\n" > "$HOME/.local/bin/kanban-mcp"
+      chmod +x "$HOME/.local/bin/kanban-mcp"
+    }
+    install_claude_mcps() { :; }
+    install_claude_plugins() { :; }
+    deploy_all_managed_files() {
+      [ -x "$HOME/.local/bin/kanban-post" ]
+      [ -x "$HOME/.local/bin/kanban-work" ]
+      [ -x "$HOME/.local/bin/kanban-mcp" ]
+      : > "$HOME/kanban-config-ready"
+    }
+    main
+  ' _ "$BLUEPRINT_ROOT/install-host.sh" </dev/null
+  [ "$status" -eq 0 ]
+  [ -f "$HOME/kanban-config-ready" ]
 }
 
 @test "persistent host install propagates an injected preparation failure" {
@@ -239,8 +273,18 @@ _source_host_lib() {
   [ -f "$HOME/.codex/config.toml" ]
   [ -f "$HOME/.codex/AGENTS.md" ]
   [ -f "$HOME/.config/opencode/opencode.json" ]
+  [ -f "$HOME/.config/opencode/plugins/kanban-work.js" ]
+  cmp "$BLUEPRINT_ROOT/configs/opencode/plugins/kanban-work.js" \
+    "$HOME/.config/opencode/plugins/kanban-work.js"
+  jq -e 'has("plugin") | not' "$HOME/.config/opencode/opencode.json"
   [ -f "$HOME/.cursor/mcp.json" ]
   [ -f "$HOME/.cursor/cli-config.json" ]
+  [ -f "$HOME/.cursor/hooks.json" ]
+  if grep -q '{{HOME}}' "$HOME/.cursor/hooks.json"; then false; fi
+  jq -e --arg home "$HOME" '.hooks.preToolUse |
+    any(.command == ("bash \"" + $home + "/.claude/hooks/kanban-work-hook.sh\" cursor preToolUse"))' \
+    "$HOME/.cursor/hooks.json"
+  [ -x "$HOME/.claude/hooks/kanban-work-hook.sh" ]
   # tmux/ssh-agent wiring stays container-only.
   [ ! -f "$HOME/.tmux.conf" ]
   [ ! -f "$HOME/.bashrc.d/aicoding-ssh-auth-sock.sh" ]

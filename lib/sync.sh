@@ -1412,6 +1412,7 @@ _sync_provision() {
     install_agent_notify_symlink || rc=1
     install_update_status_symlink || rc=1
     install_kanban_post_symlink || rc=1
+    install_kanban_work_symlink || rc=1
     install_measure_remote_symlink || rc=1
     install_dokploy_api_symlink || rc=1
     install_bugsink_api_symlink || rc=1
@@ -1432,7 +1433,7 @@ _sync_provision() {
   # concrete local artifacts before writing a success stamp. Optional sources
   # that are absent from this blueprint are excluded.
   local name source dest
-  for name in dvw-probe agent-notify aicoding-status kanban-post measure-remote \
+  for name in dvw-probe agent-notify aicoding-status kanban-post kanban-work measure-remote \
               dokploy-api bugsink-api kuma-admin redact-transcript redact-sessions codex-turn-done; do
     source="$(dirname "$blueprint_lib")/bin/$name"
     dest="$HOME/.local/bin/$name"
@@ -1449,10 +1450,37 @@ _sync_provision() {
     else
       rendered=$(sed "s|{{MANAGED_DIR}}|${CODEX_MANAGED_DIR:-/etc/codex}|g" "$req_src")
       [ -f "$req" ] && [ "$(cat "$req" 2>/dev/null)" = "$rendered" ] || rc=1
-      for hook in bw-deny-files.sh redact-sessions-hook.sh redact-sessions-pending.sh \
+      for hook in bw-deny-files.sh kanban-work-hook.sh redact-sessions-hook.sh redact-sessions-pending.sh \
                   memory-hint.sh check-archived-docs.sh agent-working.sh; do
         cmp -s "$root/configs/claude/hooks/$hook" "${CODEX_MANAGED_DIR:-/etc/codex}/hooks/$hook" || rc=1
       done
+    fi
+  fi
+
+  # A receipt alone cannot prove that a Python entry point survived the
+  # staging-to-release move or that a retained release remains intact. Verify
+  # the physical Kanban release and stable launcher before stamping provision.
+  local kanban_pin_file="$(dirname "$blueprint_lib")/configs/versions/kanban-mcp.rev"
+  if [ -f "$kanban_pin_file" ]; then
+    local kanban_revision= kanban_state=
+    if ! _provision_ensure_update_components \
+        || ! kanban_revision=$(_aicoding_kanban_pinned_revision); then
+      rc=1
+    elif ! _aicoding_active_kanban_mcp_valid "$kanban_revision"; then
+      kanban_state=$(jq -r '.components["mcp-kanban"].state // empty' \
+        "$AICODING_RESULTS_FILE" 2>/dev/null) || kanban_state=
+      case "$kanban_state" in
+        current|updated)
+          rc=1
+          command -v aicoding_result_record >/dev/null 2>&1 \
+            && aicoding_result_record mcp-kanban failed "$kanban_revision" \
+              active_controller_invalid || true
+          ;;
+        *)
+          provision_deferred=1
+          _provision_record_blocked mcp-kanban exact_package_not_staged
+          ;;
+      esac
     fi
   fi
 

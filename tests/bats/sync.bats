@@ -242,6 +242,10 @@ EOF
 @test "unattended provisioning skips Claude work when Claude is not installed" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   _sync_source_update_libraries "$BLUEPRINT_ROOT"
+  local revision
+  revision=$(cat "$BLUEPRINT_ROOT/configs/versions/kanban-mcp.rev")
+  aicoding_result_record mcp-kanban current "$revision" verified "$revision"
+  _aicoding_active_kanban_mcp_valid() { return 0; }
   rm -f "$TMP/stubs/claude"
   PATH="$TMP/stubs:/usr/bin:/bin" run _sync_provision boot
 
@@ -456,13 +460,53 @@ EOF
     and .components.provision.successful_version == $sha' "$AICODING_RESULTS_FILE"
 }
 
-@test "sync --boot restores a missing kanban-post symlink" {
+@test "provision does not stamp a current Kanban receipt when its retained launcher is invalid" {
+  local clone="$TMP/kanban-invalid-blueprint"
+  local revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  mkdir -p "$clone/lib" "$clone/configs/versions"
+  printf '%s\n' "$revision" > "$clone/.aicoding-version"
+  printf '%s\n' "$revision" > "$clone/configs/versions/kanban-mcp.rev"
+  cat > "$clone/lib/provision.sh" <<'EOF'
+install_mcp_packages() { return 0; }
+install_claude_mcps() { return 0; }
+install_claude_plugins() { return 0; }
+install_codex_plugins() { return 0; }
+remove_deprecated_shims() { return 0; }
+_provision_ensure_update_components() { return 0; }
+_aicoding_kanban_pinned_revision() { cat "$AICODING_BLUEPRINT_CLONE/configs/versions/kanban-mcp.rev"; }
+_aicoding_active_kanban_mcp_valid() { return 1; }
+EOF
+  export AICODING_BLUEPRINT_CLONE="$clone"
+  source "$BLUEPRINT_ROOT/lib/update-results.sh"
+  aicoding_result_record mcp-kanban current "$revision" installed "$revision"
+
+  run _sync_provision boot
+
+  [ "$status" -ne 0 ]
+  jq -e '.components.provision.state == "failed"
+    and .components.provision.reason == "partial_provision_failure"' "$AICODING_RESULTS_FILE"
+}
+
+@test "sync --boot restores missing Kanban helper symlinks" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  rm -f "$HOME/.local/bin/kanban-post"
+  rm -f "$HOME/.local/bin/kanban-post" "$HOME/.local/bin/kanban-work"
   AICODING_UPDATE_TTL=0 aicoding_sync --boot
-  [ -L "$HOME/.local/bin/kanban-post" ]
-  [ -x "$HOME/.local/bin/kanban-post" ]
-  readlink "$HOME/.local/bin/kanban-post" | grep -q "bin/kanban-post"
+  for h in kanban-post kanban-work; do
+    [ -L "$HOME/.local/bin/$h" ]
+    [ -x "$HOME/.local/bin/$h" ]
+    readlink "$HOME/.local/bin/$h" | grep -q "bin/$h"
+  done
+}
+
+@test "sync --boot restores the managed Claude and Codex Kanban lifecycle wrappers" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  rm -f "$HOME/.claude/hooks/kanban-work-hook.sh" \
+    "$CODEX_MANAGED_DIR/hooks/kanban-work-hook.sh"
+  AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  [ -x "$HOME/.claude/hooks/kanban-work-hook.sh" ]
+  [ -x "$CODEX_MANAGED_DIR/hooks/kanban-work-hook.sh" ]
+  cmp "$BLUEPRINT_ROOT/configs/claude/hooks/kanban-work-hook.sh" \
+    "$CODEX_MANAGED_DIR/hooks/kanban-work-hook.sh"
 }
 
 @test "sync --boot restores missing dokploy-api and kuma-admin symlinks" {

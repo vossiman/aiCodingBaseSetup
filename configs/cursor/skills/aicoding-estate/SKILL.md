@@ -1,6 +1,6 @@
 ---
 name: aicoding-estate
-description: Estate conventions for every task on this machine. Use at the start of any session and whenever a question may have been answered before (memory retrieval via the memory-router MCP), whenever you find a defect or follow-up you were not asked to fix (file it on the kanban backlog board with kanban-post), and whenever a command would touch a secrets file, a private key, or a token (run secrets-check instead of reading them).
+description: Estate conventions for every task on this machine. Use at the start of any session, whenever a question may have been answered before, whenever unplanned follow-up belongs on the Kanban board through its installed MCP, or whenever a command could expose a secret, private key, or token.
 ---
 
 # Estate conventions
@@ -43,81 +43,13 @@ fail, proceed without retrieval rather than blocking.
 Durable lessons (gotchas, incidents, environment quirks) belong in the
 homelab-wiki, following its `AGENTS.md` conventions, never in project repos.
 
-## The backlog board: file work you find, don't just report it
+## Kanban work
 
-`https://kanban.dataprospectors.at` is the estate's shared backlog. Every
-repo files against it, tagged with its own repo name, so work found in one
-project is visible from the phone instead of dying in a transcript.
-
-**Write to it with `kanban-post`, never `curl`.** The board authenticates
-agents with a bearer token in the shared secrets store. `kanban-post` reads
-the store itself, so no credential ever appears in a command you write. It
-redacts the credential from everything it prints, refuses redirects, and
-refuses plaintext destinations.
-
-```bash
-kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P] [--swimlane KEY] [--due DATE]
-kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority P] [--swimlane KEY] [--due DATE|none]
-kanban-post --done TICKET
-kanban-post --comment TICKET "text"
-kanban-post --link TICKET --depends-on OTHER | --blocks OTHER | --relates OTHER
-kanban-post --unlink TICKET OTHER
-kanban-post --list-repos | --list-tickets
-```
-
-**Links.** `--link TICKET --depends-on OTHER` records that TICKET waits for
-OTHER; the board shows TICKET as `blocked` until OTHER reaches `done`.
-`--blocks` is the same link stated from the other side, and `--relates` is
-a plain see-also with no direction. Link follow-ups to the work they wait
-on instead of saying so in the body. `--unlink TICKET OTHER` removes the
-link between the two (any kind); if more than one kind joins that pair it
-refuses and lists them. Links cross repos freely, and `--repo` plays no part.
-
-**Swimlanes classify scope separately from status and urgency.** Set one
-explicitly with `--swimlane required|nice_to_have|waiting_for_feedback|needs_decision`
-on create or patch. Existing tickets and unspecified new tickets start in
-`needs_decision`; do not infer a lane from priority, status or wording.
-
-- `required`: necessary for the agreed scope/phase; identify the requirement.
-- `nice_to_have`: useful but deferrable without preventing that scope's completion.
-- `waiting_for_feedback`: the next meaningful step needs a person's answer,
-  review or confirmation. Record who/what is awaited and the previous lane
-  in the ticket context; no extra UI prompt is enforced. Explicitly return
-  or reclassify after feedback. Ticket dependencies use links instead.
-- `needs_decision`: unclassified or insufficient evidence; the default until
-  someone actively decides. A swimlane-only patch leaves status unchanged.
-
-**Write descriptions and comments in Markdown.** The board renders headings,
-lists, links, fenced code blocks, tables, and task lists. Structure longer
-descriptions with short headings and bullets for the problem, relevant context,
-and next steps or acceptance criteria. Start comments with the outcome or
-update, then add supporting details as needed. Keep short updates brief;
-formatting should help someone reading on a phone, not add ceremony. Use
-backticks for paths, commands, and identifiers; do not rely on raw HTML.
-Posted comments are append-only: add a new comment for a correction or update.
-
-**Every ticket has an issue key (`DEVMACHINE-12`)**, the repo name
-uppercased plus a number counted per repo. `TICKET` above is that key
-(case-insensitive) or the ticket's uuid. **Quote the key, not the uuid,** in
-commits, PRs and anything a human reads. Filing prints the new key on its
-own line.
-
-**`--repo` is required, and must name the repo you are standing in.** It is
-checked against the `github.com` origin of the current checkout, case and
-all. So file from the checkout the work belongs to: `cd` into the submodule
-or sibling repo first. A mismatch, or a directory that is no github.com
-checkout, is a refusal that makes no request. There is no default repo.
-
-Statuses are `backlog|todo|doing|done`. `--done ID` closes a ticket. Close
-what you finish: the board only stays useful if it drains. `--comment ID
-"text"` adds a comment without touching the card; use it for progress with
-no state change. The owner reads comments on a phone, so write for a human
-who lacks your context.
-
-**When to file one:** a real defect or follow-up you found but were not
-asked to fix, and that would otherwise only exist in this transcript. Not
-for work you are about to do in this session, and not as a substitute for
-telling the user what you found: file it *and* say so.
+Use the installed `kanban` MCP for ticket reads, claims, checkpoints, release,
+completion, comments, links, and follow-up filing. Its server instructions are
+the canonical workflow. Native lifecycle adapters bind the supplied work-session
+handle and release unfinished claims when a turn stops. `kanban-post` remains a
+credential-safe recovery CLI; it is not a status-transition bypass.
 
 ## Secrets: never read them
 

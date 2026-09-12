@@ -184,14 +184,16 @@ EOF
 }
 
 @test "Claude registration readiness is separate from package readiness for other harnesses" {
-  for component in mcp-context7 mcp-playwright; do
+  for component in mcp-context7 mcp-playwright mcp-kanban; do
     aicoding_result_record "$component" current 1.0.0 installed 1.0.0
   done
+  _aicoding_active_kanban_mcp_valid() { return 0; }
   run aicoding_exact_mcp_config_ready "$HOME/.codex/config.toml"
   [ "$status" -eq 0 ]
   run aicoding_exact_mcp_config_ready "$HOME/.claude/settings.json"
   [ "$status" -ne 0 ]
-  for component in mcp-registration-claude-context7 mcp-registration-claude-playwright; do
+  for component in mcp-registration-claude-context7 mcp-registration-claude-playwright \
+      mcp-registration-claude-kanban; do
     aicoding_result_record "$component" current 1.0.0 registration_verified 1.0.0
   done
   run aicoding_exact_mcp_config_ready "$HOME/.claude/settings.json"
@@ -654,6 +656,254 @@ CLI
 fi
 EOF
   chmod +x "$TMP/stubs/npm"
+}
+
+_stub_kanban_git_uv() {
+  # The suite-wide guard stays enabled unless a test explicitly installs these
+  # network-free Git/uv doubles. The updater must still honor a test that sets
+  # the guard back to 1 after calling this helper.
+  export AICODINGSETUP_SKIP_NETWORK=0
+  cat > "$TMP/stubs/git" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$TMP/git.log"
+if [ "$1" = clone ]; then
+  destination=${4:?missing clone destination}
+  mkdir -p "$destination"
+  cat > "$destination/pyproject.toml" <<'TOML'
+[project]
+name = "kanban"
+version = "0.1.0"
+TOML
+  : > "$destination/uv.lock"
+  exit 0
+fi
+if [ "$1" = -C ] && [ "$3" = checkout ] && [ "$4" = --detach ]; then
+  printf '%s\n' "$5" > "$2/.fake-head"
+  exit 0
+fi
+if [ "$1" = -C ] && [ "$3" = rev-parse ] && [ "$4" = HEAD ]; then
+  cat "$2/.fake-head"
+  exit 0
+fi
+exit 2
+EOF
+  cat > "$TMP/stubs/uv" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$TMP/uv.log"
+printf '%s\n' "${UV_NO_EDITABLE:-}" >> "$TMP/uv-no-editable.log"
+if [ "${1:-}" = venv ]; then
+  [ "$*" = 'venv --relocatable .venv' ] || exit 2
+  mkdir -p "$PWD/.venv/bin"
+  : > "$PWD/.venv/.relocatable"
+  exit 0
+fi
+[ -f "$PWD/.venv/.relocatable" ] || exit 3
+mkdir -p "$PWD/.venv/bin"
+cat > "$PWD/.venv/bin/python" <<'PYTHON'
+#!/bin/sh
+printf '0.1.0\n'
+PYTHON
+chmod +x "$PWD/.venv/bin/python"
+version=0.1.0
+[ "${KANBAN_UV_BAD_VERSION:-0}" != 1 ] || version=9.9.9
+cat > "$PWD/.venv/bin/kanban-mcp" <<SCRIPT
+#!/bin/sh
+case "\${1:-}" in
+  --version)
+    printf 'kanban-mcp %s\\n' '$version'
+    [ "${KANBAN_UV_EXTRA_VERSION_LINE:-0}" != 1 ] || printf 'unexpected\\n'
+    ;;
+  --instructions)
+    [ "${KANBAN_UV_EMPTY_INSTRUCTIONS:-0}" = 1 ] || printf 'Canonical claim workflow.\\n'
+    ;;
+  *) exit 0 ;;
+esac
+SCRIPT
+chmod +x "$PWD/.venv/bin/kanban-mcp"
+EOF
+  chmod +x "$TMP/stubs/git" "$TMP/stubs/uv"
+}
+
+_seed_old_kanban_release() {
+  local old="$AICODING_DATA_DIR/versions/mcp-kanban/old"
+  mkdir -p "$old/.venv/bin"
+  printf '%s\n' old > "$old/.aicoding-version"
+  cat > "$old/.venv/bin/kanban-mcp" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+  --version) printf 'kanban-mcp 0.0.1\n' ;;
+  --instructions) printf 'Old workflow.\n' ;;
+esac
+EOF
+  chmod +x "$old/.venv/bin/kanban-mcp"
+  _aicoding_release_integrity_write "$old"
+  aicoding_activate_version mcp-kanban old kanban-mcp .venv/bin/kanban-mcp
+}
+
+@test "Kanban MCP pin is one reviewed immutable revision" {
+  run _aicoding_kanban_pinned_revision
+  [ "$status" -eq 0 ]
+  [ "$output" = a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3 ]
+}
+
+@test "Kanban MCP stages the pinned repository revision and frozen lock" {
+  _stub_kanban_git_uv
+
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+
+  [ "$status" -eq 0 ]
+  local revision
+  revision=$(cat "$BLUEPRINT_ROOT/configs/versions/kanban-mcp.rev")
+  grep -Fq -- "checkout --detach $revision" "$TMP/git.log"
+  grep -Fxq 'sync --frozen --extra mcp --no-dev' "$TMP/uv.log"
+  grep -Fxq 'venv --relocatable .venv' "$TMP/uv.log"
+  [ "$(tail -n 1 "$TMP/uv-no-editable.log")" = 1 ]
+  [ "$(readlink "$AICODING_DATA_DIR/current/mcp-kanban")" = "../versions/mcp-kanban/$revision" ]
+  [ -x "$HOME/.local/bin/kanban-mcp" ]
+  [ "$("$HOME/.local/bin/kanban-mcp" --version)" = 'kanban-mcp 0.1.0' ]
+  grep -Fq 'PYTHONDONTWRITEBYTECODE=1' \
+    "$AICODING_DATA_DIR/versions/mcp-kanban/$revision/.venv/bin/kanban-mcp"
+  [ -x "$AICODING_DATA_DIR/versions/mcp-kanban/$revision/.venv/bin/kanban-mcp.runtime" ]
+  jq -e --arg revision "$revision" '.components["mcp-kanban"].state == "updated"
+    and .components["mcp-kanban"].successful_version == $revision' "$AICODING_RESULTS_FILE"
+}
+
+@test "Kanban MCP never trusts a mutable same-revision source cache" {
+  _stub_kanban_git_uv
+  local revision source_cache
+  revision=$(cat "$BLUEPRINT_ROOT/configs/versions/kanban-mcp.rev")
+  source_cache="$AICODING_DATA_DIR/sources/kanban/$revision"
+  mkdir -p "$source_cache"
+  printf '%s\n' "$revision" > "$source_cache/.aicoding-version"
+  printf 'altered same-SHA payload\n' > "$source_cache/pyproject.toml"
+
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+
+  [ "$status" -eq 0 ]
+  grep -Fq 'clone --no-checkout https://github.com/vossiman/kanban.git' "$TMP/git.log"
+  grep -Fq "/sources/kanban/.attempt.$revision." "$TMP/git.log"
+  [ "$(cat "$source_cache/pyproject.toml")" = 'altered same-SHA payload' ]
+  [ "$(cat "$AICODING_DATA_DIR/versions/mcp-kanban/$revision/pyproject.toml")" != \
+    'altered same-SHA payload' ]
+  if find "$AICODING_DATA_DIR/sources/kanban" -maxdepth 1 \
+      -name ".attempt.$revision.*" -print -quit | grep -q .; then
+    false
+  fi
+}
+
+@test "Kanban MCP direct updater blocks offline before git or uv" {
+  _stub_kanban_git_uv
+  export AICODINGSETUP_SKIP_NETWORK=1
+
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+
+  [ "$status" -ne 0 ]
+  [ ! -e "$TMP/git.log" ]
+  [ ! -e "$TMP/uv.log" ]
+  jq -e '.components["mcp-kanban"].state == "blocked"
+    and .components["mcp-kanban"].reason == "offline_exact_package_not_ready"' \
+    "$AICODING_RESULTS_FILE"
+}
+
+@test "Kanban MCP refuses a non-immutable revision before git or uv" {
+  _stub_kanban_git_uv
+  _aicoding_kanban_pinned_revision() { printf 'main\n'; }
+
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+
+  [ "$status" -ne 0 ]
+  [ ! -e "$TMP/git.log" ]
+  [ ! -e "$TMP/uv.log" ]
+  jq -e '.components["mcp-kanban"].reason == "pinned_revision_invalid"' "$AICODING_RESULTS_FILE"
+}
+
+@test "Kanban MCP validates version and instructions before activation" {
+  _stub_kanban_git_uv
+  _seed_old_kanban_release
+  export KANBAN_UV_BAD_VERSION=1
+
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+
+  [ "$status" -ne 0 ]
+  [ "$(readlink "$AICODING_DATA_DIR/current/mcp-kanban")" = '../versions/mcp-kanban/old' ]
+  [ "$("$HOME/.local/bin/kanban-mcp" --version)" = 'kanban-mcp 0.0.1' ]
+  jq -e '.components["mcp-kanban"].reason == "staged_controller_invalid"' "$AICODING_RESULTS_FILE"
+}
+
+@test "Kanban MCP rejects extra version output and empty instructions" {
+  _stub_kanban_git_uv
+  export KANBAN_UV_EXTRA_VERSION_LINE=1
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+  [ "$status" -ne 0 ]
+  [ ! -e "$AICODING_DATA_DIR/current/mcp-kanban" ]
+
+  rm -rf "$AICODING_DATA_DIR/sources/kanban" "$AICODING_DATA_DIR/versions/mcp-kanban"
+  : > "$TMP/git.log"; : > "$TMP/uv.log"
+  unset KANBAN_UV_EXTRA_VERSION_LINE
+  export KANBAN_UV_EMPTY_INSTRUCTIONS=1
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+  [ "$status" -ne 0 ]
+  [ ! -e "$AICODING_DATA_DIR/current/mcp-kanban" ]
+}
+
+@test "Kanban MCP reuses a verified release without git or uv and repairs its launcher" {
+  _stub_kanban_git_uv
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+  [ "$status" -eq 0 ]
+  rm "$HOME/.local/bin/kanban-mcp"
+  : > "$TMP/git.log"; : > "$TMP/uv.log"
+
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+
+  [ "$status" -eq 0 ]
+  [ ! -s "$TMP/git.log" ]
+  [ ! -s "$TMP/uv.log" ]
+  [ -x "$HOME/.local/bin/kanban-mcp" ]
+}
+
+@test "Kanban MCP rejects a corrupt retained release before network work" {
+  _stub_kanban_git_uv
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+  [ "$status" -eq 0 ]
+  local revision release
+  revision=$(cat "$BLUEPRINT_ROOT/configs/versions/kanban-mcp.rev")
+  release="$AICODING_DATA_DIR/versions/mcp-kanban/$revision"
+  printf '\n# corrupt\n' >> "$release/.venv/bin/kanban-mcp"
+  : > "$TMP/git.log"; : > "$TMP/uv.log"
+
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+
+  [ "$status" -ne 0 ]
+  [ ! -s "$TMP/git.log" ]
+  [ ! -s "$TMP/uv.log" ]
+  jq -e '.components["mcp-kanban"].reason == "existing_release_invalid"' "$AICODING_RESULTS_FILE"
+}
+
+@test "Kanban MCP rejects retained file and dangling symlink before network work" {
+  _stub_kanban_git_uv
+  _seed_old_kanban_release
+  local revision release kind
+  revision=$(cat "$BLUEPRINT_ROOT/configs/versions/kanban-mcp.rev")
+  release="$AICODING_DATA_DIR/versions/mcp-kanban/$revision"
+  mkdir -p "$(dirname "$release")"
+
+  for kind in file dangling-symlink; do
+    rm -f "$release" "$TMP/git.log" "$TMP/uv.log" "$AICODING_RESULTS_FILE"
+    if [ "$kind" = file ]; then
+      printf 'corrupt\n' > "$release"
+    else
+      ln -s "$TMP/missing-retained-release" "$release"
+    fi
+
+    AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+
+    [ "$status" -ne 0 ]
+    [ ! -e "$TMP/git.log" ]
+    [ ! -e "$TMP/uv.log" ]
+    [ "$(readlink "$AICODING_DATA_DIR/current/mcp-kanban")" = '../versions/mcp-kanban/old' ]
+    jq -e '.components["mcp-kanban"].reason == "existing_release_invalid"' \
+      "$AICODING_RESULTS_FILE"
+  done
 }
 
 @test "unchanged exact MCP release survives npm prefix-derived lock names across passes" {

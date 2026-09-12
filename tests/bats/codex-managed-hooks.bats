@@ -216,3 +216,28 @@ assert any(h["command"].endswith("check-archived-docs.sh") for group in hooks["S
 ' "$REQ"
   [ "$status" -eq 0 ]
 }
+
+@test "managed Codex lifecycle uses only the pinned 0.154.0 event set" {
+  ensure_codex_managed_hooks
+  [ -x "$CODEX_MANAGED_DIR/hooks/kanban-work-hook.sh" ]
+  cmp "$BLUEPRINT_ROOT/configs/claude/hooks/kanban-work-hook.sh" \
+    "$CODEX_MANAGED_DIR/hooks/kanban-work-hook.sh"
+  run python3 - "$REQ" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], "rb") as stream:
+    hooks = tomllib.load(stream)["hooks"]
+required = {
+    "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop",
+    "SessionEnd", "SubagentStart", "SubagentStop",
+}
+assert "PostToolUseFailure" not in hooks
+for event in required:
+    commands = [hook["command"] for group in hooks[event] for hook in group["hooks"]]
+    expected = f"kanban-work-hook.sh codex {event}"
+    assert any(command.endswith(expected) for command in commands), (event, commands)
+for group in hooks["SessionEnd"]:
+    for hook in group["hooks"]:
+        assert hook.get("timeout", 1) <= 3
+PY
+  [ "$status" -eq 0 ]
+}

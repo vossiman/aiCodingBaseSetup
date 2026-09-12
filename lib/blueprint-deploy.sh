@@ -656,6 +656,7 @@ managed_inventory_overwrite() {
   cat <<EOF
 $HOME/.claude/hooks/custom-statusline.js|overwrite|configs/claude/hooks/custom-statusline.js
 $HOME/.claude/hooks/bw-deny-files.sh|overwrite|configs/claude/hooks/bw-deny-files.sh
+$HOME/.claude/hooks/kanban-work-hook.sh|overwrite|configs/claude/hooks/kanban-work-hook.sh
 $HOME/.pi/agent/extensions/bw-deny-files.ts|overwrite|configs/pi/extensions/bw-deny-files.ts
 $HOME/.claude/hooks/check-archived-docs.sh|overwrite|configs/claude/hooks/check-archived-docs.sh
 $HOME/.claude/hooks/llmwiki-distill.sh|overwrite|configs/claude/hooks/llmwiki-distill.sh
@@ -679,6 +680,7 @@ $HOME/.local/bin/secrets-check|overwrite|configs/secrets/secrets-check
 $HOME/.codex/AGENTS.md|overwrite|configs/codex/AGENTS.md
 $HOME/.cursor/skills/aicoding-estate/SKILL.md|overwrite|configs/cursor/skills/aicoding-estate/SKILL.md
 $HOME/.cursor/hooks.json|overwrite|configs/cursor/hooks.json
+$HOME/.config/opencode/plugins/kanban-work.js|overwrite|configs/opencode/plugins/kanban-work.js
 EOF
   if [[ "$profile" == host ]]; then
     echo "$HOME/.bashrc.d/aicoding-boot-sync.sh|overwrite|configs/bash/boot-sync.sh"

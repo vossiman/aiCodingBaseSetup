@@ -78,95 +78,13 @@ Managed by the aiCodingBaseSetup blueprint (`configs/claude/CLAUDE.md`);
   `.claude/`. There is no scaffold command; the templates in the repo are the
   source of truth.
 
-## The backlog board: file work you find, don't just report it
+## Kanban work
 
-`https://kanban.dataprospectors.at` is the estate's shared backlog. Every
-repo files against it, tagged with its own repo name, so work found in one
-project is visible from the phone instead of dying in a transcript.
-
-**Write to it with `kanban-post`, never `curl`.** The board authenticates
-agents with a bearer token in the shared secrets store, and the secrets deny
-hook refuses any command that expands `$KANBAN_TOKEN`, because it cannot
-tell "send it in a header" from "print it". `kanban-post` is the same answer
-`git` got: a helper that reads the store itself, so no credential ever
-appears in a command you write. It redacts the credential from everything it
-prints, refuses redirects, and refuses plaintext destinations.
-
-```bash
-kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P] [--swimlane KEY] [--due DATE]
-kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority P] [--swimlane KEY] [--due DATE|none]
-kanban-post --done TICKET
-kanban-post --comment TICKET "text"
-kanban-post --link TICKET --depends-on OTHER | --blocks OTHER | --relates OTHER
-kanban-post --unlink TICKET OTHER
-kanban-post --list-repos | --list-tickets
-```
-
-**Links.** `--link TICKET --depends-on OTHER` records that TICKET waits for
-OTHER; the board shows TICKET as `blocked` until OTHER reaches `done`.
-`--blocks` is the same link stated from the other side, and `--relates` is
-a plain see-also with no direction. Link follow-ups to the work they wait
-on instead of saying so in the body. `--unlink TICKET OTHER` removes the
-link between the two (any kind); if more than one kind joins that pair it
-refuses and lists them. Links cross repos freely, and `--repo` plays no part.
-
-**Swimlanes classify scope separately from status and urgency.** Set one
-explicitly with `--swimlane required|nice_to_have|waiting_for_feedback|needs_decision`
-on create or patch. Existing tickets and unspecified new tickets start in
-`needs_decision`; do not infer a lane from priority, status or wording.
-
-- `required`: necessary for the agreed scope/phase; identify the requirement.
-- `nice_to_have`: useful but deferrable without preventing that scope's completion.
-- `waiting_for_feedback`: the next meaningful step needs a person's answer,
-  review or confirmation. Record who/what is awaited and the previous lane
-  in the ticket context; no extra UI prompt is enforced. Explicitly return
-  or reclassify after feedback. Ticket dependencies use links instead.
-- `needs_decision`: unclassified or insufficient evidence; the default until
-  someone actively decides. A swimlane-only patch leaves status unchanged.
-
-**Write descriptions and comments in Markdown.** The board renders headings,
-lists, links, fenced code blocks, tables, and task lists. Structure longer
-descriptions with short headings and bullets for the problem, relevant context,
-and next steps or acceptance criteria. Start comments with the outcome or
-update, then add supporting details as needed. Keep short updates brief;
-formatting should help someone reading on a phone, not add ceremony. Use
-backticks for paths, commands, and identifiers; do not rely on raw HTML.
-Posted comments are append-only: add a new comment for a correction or update.
-
-**Every ticket has an issue key (`DEVMACHINE-12`)**, the repo name
-uppercased plus a number counted per repo. `TICKET` above is that key
-(case-insensitive) or the ticket's uuid; both work. **Quote the key, not the
-uuid,** in commits, PRs and anything a human reads. That is what it is for.
-Filing prints the new key on its own line. Numbers are never reused, so a key
-keeps meaning the same work; the one thing that changes it is moving a ticket
-to another repo, which re-keys it.
-
-**`--repo` is required, and must name the repo you are standing in.** It is
-checked against the `github.com` origin of the current checkout, case and
-all. So file from the checkout the work belongs to: `cd` into the submodule
-or sibling repo first, rather than tagging someone else's finding with your
-own repo. A mismatch, and a directory that is no github.com checkout at all,
-are both refusals that make no request. There is no default: everything used
-to land in `devMachine`, which made the per-repo filter on the phone useless.
-
-A repo the board has not seen yet registers itself on first use. The name
-comes from the remote, so it cannot be a typo. Statuses are
-`backlog|todo|doing|done`; an unknown one is a 400 that lists the valid keys.
-
-`--done ID` closes a ticket (shorthand for `--patch ID --status done`). Close
-what you finish: the board only stays useful if it drains.
-
-`--comment ID "text"` adds a comment without touching the card. Use it when
-there is progress but no state change (a blocker, a decision, a partial
-result) instead of moving the card to signal intent. The text can also come
-from `--body` when it is long; giving it both ways is a refusal. This is the
-channel the owner reads on their phone, so write for a human who lacks your
-context.
-
-**When to file one:** a real defect or follow-up you found but were not
-asked to fix, and that would otherwise only exist in this transcript. Not
-for work you are about to do in this session, and not as a substitute for
-telling the user what you found: file it *and* say so.
+Use the installed `kanban` MCP for ticket reads, claims, checkpoints, release,
+completion, comments, links, and follow-up filing. Its server instructions are
+the canonical workflow. Native lifecycle adapters bind the supplied work-session
+handle and release unfinished claims when a turn stops. `kanban-post` remains a
+credential-safe recovery CLI; it is not a status-transition bypass.
 
 ## Parallel-session coordination
 

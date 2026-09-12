@@ -83,6 +83,40 @@ _fake_checkout() {
   cd "$dir" || return 1
 }
 
+# A bridge-shaped fake for the legacy completion adapter. The supplied handle
+# is intentionally only recorded as a hint; KANBAN_FAKE_BRIDGE=deny simulates
+# the real bridge refusing it because no matching native pre-call permit exists.
+_fake_kanban_work() {
+  mkdir -p "$TMPDIR/bin"
+  cat > "$TMPDIR/bin/kanban-work" <<'EOF'
+#!/usr/bin/env python3
+import json, os, sys
+operation = sys.argv[2]
+payload = json.load(sys.stdin)
+with open(os.environ["KANBAN_FAKE_LOG"], "a") as stream:
+    stream.write(json.dumps({"operation": operation, "payload": payload}, sort_keys=True) + "\n")
+if operation == "lookup":
+    claim = {
+        "id": "claim-fixture", "ticket": os.environ.get("KANBAN_FAKE_TICKET", "MYREPO-1")
+    }
+    if os.environ.get("KANBAN_FAKE_TICKET_ID"):
+        claim["ticket_id"] = os.environ["KANBAN_FAKE_TICKET_ID"]
+    print(json.dumps({"ok": True, "data": {
+        "handle": payload["handle"], "active_claim": {
+            **claim
+        }
+    }}))
+elif os.environ.get("KANBAN_FAKE_BRIDGE") == "deny":
+    print(json.dumps({"ok": False, "error": {"code": 403, "message": "matching native pre-call permit required"}}))
+    raise SystemExit(1)
+else:
+    print(json.dumps({"ok": True, "data": {"claim": {"id": "claim-fixture"}, "ticket": {"key": "MYREPO-1", "status": "done"}}}))
+EOF
+  chmod +x "$TMPDIR/bin/kanban-work"
+  export PATH="$TMPDIR/bin:$PATH"
+  export KANBAN_FAKE_LOG="$TMPDIR/kanban-work.log"
+}
+
 # A board-shaped server: it knows which repos are registered, 400s an
 # unknown one the way resolve_repo does, and appends "METHOD PATH BODY" to
 # $TMPDIR/requests so a test can assert what was actually sent.
@@ -230,6 +264,13 @@ EOF
   [[ "$output" == *"selftest: ok"* ]]
 }
 
+@test "the standard Bats suite runs the structured JSON transport tests" {
+  run env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v tests.python.test_kanban_post_json
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+  [[ "$output" != *"$FAKE_TOKEN"* ]]
+}
+
 # --repo: mandatory, and checked against the checkout
 #
 # The board tags every ticket with a repo, and that tag is the filter the
@@ -340,6 +381,107 @@ EOF
   run "$KP" --done abc123
   [ "$status" -eq 0 ]
   grep -q 'PATCH /api/tickets/abc123 .*"status": "done"' "$TMPDIR/requests"
+}
+
+@test "--done with evidence requires an explicitly bound native work session" {
+  _start_api_server myrepo
+  _fake_kanban_work
+  run "$KP" --done MYREPO-1 --evidence "tests pass"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"requires a bound native work session"* ]]
+  [ ! -f "$KANBAN_FAKE_LOG" ]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "--done with evidence rejects every legacy mutation argument before bridge lookup" {
+  _start_api_server myrepo
+  _fake_kanban_work
+  export KANBAN_WORK_HANDLE="handle-hint"
+  local -a incompatible=(title body status priority swimlane due)
+  local name
+  for name in "${incompatible[@]}"; do
+    case "$name" in
+      title) run "$KP" "ignored title" --done MYREPO-1 --evidence "tests pass" ;;
+      body) run "$KP" --done MYREPO-1 --evidence "tests pass" --body "ignored body" ;;
+      status) run "$KP" --done MYREPO-1 --evidence "tests pass" --status todo ;;
+      priority) run "$KP" --done MYREPO-1 --evidence "tests pass" --priority high ;;
+      swimlane) run "$KP" --done MYREPO-1 --evidence "tests pass" --swimlane required ;;
+      due) run "$KP" --done MYREPO-1 --evidence "tests pass" --due none ;;
+    esac
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"--done --evidence cannot be combined"* ]]
+    [ ! -f "$KANBAN_FAKE_LOG" ]
+  done
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "--done with evidence delegates the bound claim and references to kanban-work" {
+  _start_api_server myrepo
+  _fake_kanban_work
+  export KANBAN_WORK_HANDLE="handle-hint"
+  run "$KP" --done myrepo-1 --evidence "python tests pass" --reference "commit abc" --reference "CI run 7"
+  [ "$status" -eq 0 ]
+  run python3 - "$KANBAN_FAKE_LOG" <<'EOF'
+import json, sys
+calls = [json.loads(line) for line in open(sys.argv[1])]
+assert calls == [
+    {"operation": "lookup", "payload": {"handle": "handle-hint"}},
+    {"operation": "execute", "payload": {
+        "handle": "handle-hint", "operation": "complete_ticket", "payload": {
+            "claim_id": "claim-fixture", "evidence": "python tests pass",
+            "references": ["commit abc", "CI run 7"],
+        },
+    }},
+]
+EOF
+  [ "$status" -eq 0 ]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "--done evidence refuses a claim for another ticket" {
+  _start_api_server myrepo
+  _fake_kanban_work
+  export KANBAN_WORK_HANDLE="handle-hint"
+  export KANBAN_FAKE_TICKET="MYREPO-2"
+  run "$KP" --done MYREPO-1 --evidence "tests pass"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not the bound session's current claim"* ]]
+  [ "$(wc -l < "$KANBAN_FAKE_LOG")" -eq 1 ]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "--done evidence accepts the active claim ticket UUID" {
+  _start_api_server myrepo
+  _fake_kanban_work
+  export KANBAN_WORK_HANDLE="handle-hint"
+  export KANBAN_FAKE_TICKET_ID="44444444-4444-4444-8444-444444444444"
+  run "$KP" --done "$KANBAN_FAKE_TICKET_ID" --evidence "tests pass"
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$KANBAN_FAKE_LOG")" -eq 2 ]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "--done evidence rejects a UUID outside the active claim identities" {
+  _start_api_server myrepo
+  _fake_kanban_work
+  export KANBAN_WORK_HANDLE="handle-hint"
+  export KANBAN_FAKE_TICKET_ID="44444444-4444-4444-8444-444444444444"
+  run "$KP" --done "55555555-5555-4555-8555-555555555555" --evidence "tests pass"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not the bound session's current claim"* ]]
+  [ "$(wc -l < "$KANBAN_FAKE_LOG")" -eq 1 ]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "--work-handle is only a hint and cannot bypass a missing native permit" {
+  _start_api_server myrepo
+  _fake_kanban_work
+  export KANBAN_FAKE_BRIDGE="deny"
+  run "$KP" --done MYREPO-1 --evidence "tests pass" --work-handle "peer-supplied-handle"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"matching native pre-call permit required"* ]]
+  [ "$(wc -l < "$KANBAN_FAKE_LOG")" -eq 2 ]
+  [ ! -f "$TMPDIR/requests" ]
 }
 
 @test "--patch sends only the fields given" {
