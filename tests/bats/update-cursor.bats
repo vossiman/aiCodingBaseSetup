@@ -82,9 +82,60 @@ STUB
 @test "host preparation includes installed Cursor runtime" {
   . "$BLUEPRINT_ROOT/lib/provision.sh"
   _provision_ensure_update_components() { return 0; }
-  aicoding_installed_components() { echo cursor; }
+  cp "$TMP/package/dist-package/cursor-agent" "$TMP/stubs/agent"
   run aicoding_prepare_installed_config_tools
   [ "$status" -eq 0 ]
   [ -x "$HOME/.local/bin/agent" ]
   jq -e '.components.cursor.state == "updated"' "$AICODING_RESULTS_FILE"
+}
+
+@test "Cursor config reports unavailable Linux CLI before a missing receipt" {
+  export AICODING_REQUIRE_UPDATE_RECEIPT=1
+  . "$BLUEPRINT_ROOT/lib/provision.sh"
+  _provision_ensure_update_components() { return 0; }
+  run aicoding_installed_components
+  [ "$status" -eq 0 ]
+  [ "$output" = aicoding ]
+  run aicoding_prepare_installed_config_tools
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Updating cursor"* ]]
+  run aicoding_config_is_compatible "$HOME/.cursor/mcp.json"
+  [ "$status" -ne 0 ]
+  [ "$output" = cursor_not_installed ]
+  [ ! -e "$HOME/.local/bin/agent" ]
+}
+
+@test "Windows mounted Cursor is not treated as an installed Linux runtime" {
+  export AICODING_REQUIRE_UPDATE_RECEIPT=1
+  export AICODING_WSL_MOUNT_PREFIX="$TMP/mnt/"
+  mkdir -p "$TMP/mnt/c/bin"
+  cp "$TMP/package/dist-package/cursor-agent" "$TMP/mnt/c/bin/agent"
+  export PATH="$TMP/mnt/c/bin:$PATH"
+  run aicoding_installed_components
+  [ "$status" -eq 0 ]
+  [ "$output" = aicoding ]
+  run aicoding_config_is_compatible "$HOME/.cursor/mcp.json"
+  [ "$status" -ne 0 ]
+  [ "$output" = cursor_not_installed ]
+}
+
+@test "installed Linux Cursor still requires a verified update receipt" {
+  export AICODING_REQUIRE_UPDATE_RECEIPT=1
+  cp "$TMP/package/dist-package/cursor-agent" "$TMP/stubs/cursor-agent"
+  run aicoding_installed_components
+  [ "$status" -eq 0 ]
+  [ "$output" = $'aicoding\ncursor' ]
+  run aicoding_config_is_compatible "$HOME/.cursor/mcp.json"
+  [ "$status" -ne 0 ]
+  [ "$output" = cursor_update_not_verified ]
+}
+
+@test "Cursor enrollment explains why an unavailable CLI leaves configuration unchanged" {
+  . "$BLUEPRINT_ROOT/lib/provision-managed-files.sh"
+  warn() { printf 'WARN: %s\n' "$*"; }
+  export AICODING_REQUIRE_UPDATE_RECEIPT=1
+  run _aicoding_initial_config_ready "$HOME/.cursor/mcp.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no supported Linux agent or cursor-agent found"* ]]
+  [[ "$output" == *"host profile does not install absent tools"* ]]
 }

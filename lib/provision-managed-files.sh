@@ -44,7 +44,11 @@ _aicoding_initial_config_ready() {
   fi
   [ -n "$reason" ] || reason=runtime_compatibility_unavailable
   _AICODING_INITIAL_CONFIG_DEFERRED=1
-  warn "preserving $dest because its runtime is not ready ($reason)"
+  if [ "$reason" = cursor_not_installed ]; then
+    warn "preserving $dest: no supported Linux agent or cursor-agent found on PATH; host profile does not install absent tools ($reason)"
+  else
+    warn "preserving $dest because its runtime is not ready ($reason)"
+  fi
   return 1
 }
 
@@ -414,7 +418,8 @@ reconcile_existing_install() {
 # optional NOTE follow-up. Counters default to 0 when not set by the mode.
 _print_install_summary() {
   local commit_short outcome=${1:-OK}
-  commit_short=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
+  commit_short=$(_aicoding_managed_source_version "$SCRIPT_DIR")
+  commit_short=${commit_short:0:7}
   local n_new=${_RECONCILE_NEW:-0}
   local n_restored=${_RECONCILE_RESTORED:-0}
   local n_updated=${_RECONCILE_UPDATED:-0}
