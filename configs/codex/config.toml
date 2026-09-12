@@ -1,8 +1,12 @@
-# aiCodingBaseSetup — managed by install.sh. Do not edit directly; your
-# edits will be classified as "drifted" by aicoding-sync.
+# aiCodingBaseSetup template. aicoding-sync preserves personal Codex settings
+# with a setting-level merge; local-only settings remain silent.
 #
-# {{HOME}} / {{*_API_KEY}} placeholders are substituted at deploy time by
-# lib/blueprint-deploy.sh's deploy_overwrite_file_rendered pipeline.
+# Home directory and API key placeholders are substituted at deploy time
+# by the private smart-merge rendering pipeline.
+
+# This is a seed default, not an enforced fleet selection. An existing model
+# or model_reasoning_effort remains user-owned, including local Astra choices.
+# Missing values may receive blueprint defaults.
 
 model = "gpt-5.6-sol"
 
@@ -16,13 +20,14 @@ model = "gpt-5.6-sol"
 # redact-sessions sweep so a codex-only container still scrubs transcripts.
 notify = ["{{HOME}}/.local/bin/codex-turn-done"]
 
+# Project trust is user-owned. aicoding-sync preserves the complete
+# [projects."<path>"] subtree, including trusted and untrusted choices.
 # Historical: setting BOTH keys below once suppressed codex's per-project
 # trust screen and its [projects."<path>"].trust_level writes into this file
 # (spike-verified on 0.144). Codex 0.147 regressed that: it now auto-trusts
 # local projects and persists trust_level regardless (spike-verified
-# 2026-08-18). The drift problem is instead handled sync-side —
-# compute_managed_hash in lib/blueprint-deploy.sh strips [projects.*]
-# sections before drift comparison, so those writes are ignored.
+# 2026-08-18). The sync-side smart merge now excludes [projects.*] from
+# blueprint ownership, so those writes are preserved without conflict warnings.
 #
 # Automode is PROFILE-GATED (2026-08-31). In the devpod container the
 # container itself is the isolation boundary, so codex runs with no prompts
@@ -55,8 +60,9 @@ multi_agent_v2 = true
 # Codex has no custom-command statusline (openai/codex#17827) — these
 # built-in items approximate the claude/cursor powerline script (context
 # bar + limits + branch/PR). Item names spike-verified against the 0.144
-# binary. Reconfigure interactively via /statusline (note: codex persists
-# that back into this file, which aicoding-sync will classify as drift).
+# binary. Reconfigure interactively via /statusline. A local preference stays
+# silent while the blueprint value is unchanged; only incompatible blueprint
+# changes create a setting conflict.
 [tui]
 status_line = ["run-state", "context-used", "five-hour-limit", "weekly-limit", "branch-changes", "pull-request-number"]
 # Inline rendering instead of the alternate screen: in tmux the alt screen
@@ -83,11 +89,11 @@ args = ["--browser", "chromium"]
 [mcp_servers.kanban]
 command = "kanban-mcp"
 
+[mcp_servers.memory-router]
 # memory-router — central memory-lanes retrieval router on vossisrv (the
 # memory_search tool). Streamable HTTP; the bearer token is substituted at
 # deploy time (same pipeline as the API keys above) rather than read from the
 # environment, so it also works when codex is launched from non-interactive
 # contexts that never source ~/.bashrc.d.
-[mcp_servers.memory-router]
 url = "http://10.0.0.249:8091/mcp"
 http_headers = { Authorization = "Bearer {{MEMORY_ROUTER_TOKEN}}" }

@@ -50,6 +50,8 @@ STUB
   rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$AICODING_BLUEPRINT_CLONE/"
   (cd "$AICODING_BLUEPRINT_CLONE" && git init -q && git add -A && \
     git -c user.email=t@t -c user.name=t commit -q -m initial)
+  git -C "$AICODING_BLUEPRINT_CLONE" remote add origin "$BLUEPRINT_ROOT"
+  git -C "$AICODING_BLUEPRINT_CLONE" update-ref refs/remotes/origin/main HEAD
   # cwd must leave the real checkout: _sync_devcontainer_pin targets the
   # cwd's repo, and tests must never write into $BLUEPRINT_ROOT.
   cd "$TMPDIR"
@@ -93,6 +95,14 @@ EOF
   _aicoding_release_integrity_write "$release"
   aicoding_activate_version mcp-kanban "$revision" kanban-mcp .venv/bin/kanban-mcp
   aicoding_result_record mcp-kanban current "$revision" verified "$revision"
+}
+
+@test "regression: Python bytecode caches are ignored throughout the blueprint" {
+  run git -C "$BLUEPRINT_ROOT" check-ignore --no-index -v \
+    lib/__pycache__/codex_merge.cpython-312.pyc \
+    tests/__pycache__/test_codex_merge.cpython-312.pyc
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 2 ]
 }
 
 # Bug 1 regression: ~/.bashrc must survive aicoding-sync --yes.

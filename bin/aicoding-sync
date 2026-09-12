@@ -42,6 +42,7 @@ for arg in "${AICODING_REMAINING_ARGS[@]}"; do
     -h|--help)
       echo "usage: aicoding-sync [--blueprint PATH] [--dry-run|--yes|--boot|--first]"
       echo "  --blueprint PATH  use this local Git checkout verbatim (never fetch or reset it)"
+      echo "                    use the same checkout clean at origin/main to return to origin/main tracking"
       exit 0
       ;;
   esac
