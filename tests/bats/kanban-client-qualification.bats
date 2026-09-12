@@ -74,5 +74,7 @@ SH
   run rg -F "timed out" "$reports"/claude-*.json
   [ "$status" -eq 0 ]
   pid=$(cat "$child_pid")
-  ! kill -0 "$pid" 2>/dev/null
+  if kill -0 "$pid" 2>/dev/null; then
+    fail "version probe left child process $pid running"
+  fi
 }
