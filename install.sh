@@ -7,7 +7,8 @@ trap '_rc=$?; printf "INSTALL FAILED  step=%s  line=%s\n" "$_CURRENT_STEP" "$LIN
 # ============================================================================
 # AI Coding Base Setup — Installer/Updater
 # Configures Claude Code and opencode with shared MCPs, skills, hooks, plugins
-# Supports: Linux, WSL (bash). Windows is unsupported (see contrib/windows/).
+# Container installer (bash). Direct WSL uses install-host.sh.
+# Native Windows is unsupported (see contrib/windows/).
 # ============================================================================
 
 # Microsoft's devcontainer universal images ship `/etc/profile` sourcing
@@ -94,7 +95,7 @@ main() {
   done
 
   if [[ "${ENV_TYPE:-}" == wsl ]]; then
-    err "Container enrollment cannot run directly in WSL; use --profile host"
+    err "Container installer cannot run directly in WSL; use --profile host with bootstrap-aicoding.sh. For a local blueprint: AICODING_PROFILE=host aicoding-install --blueprint /path/to/checkout"
     return 1
   fi
 
