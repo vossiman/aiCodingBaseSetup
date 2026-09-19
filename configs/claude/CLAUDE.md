@@ -99,6 +99,7 @@ kanban-post --done TICKET
 kanban-post --comment TICKET "text"
 kanban-post --link TICKET --depends-on OTHER | --blocks OTHER | --relates OTHER
 kanban-post --unlink TICKET OTHER
+kanban-post --show TICKET
 kanban-post --list-repos | --list-tickets
 ```
 
@@ -155,6 +156,10 @@ comes from the remote, so it cannot be a typo. Statuses are
 
 `--done ID` closes a ticket (shorthand for `--patch ID --status done`). Close
 what you finish: the board only stays useful if it drains.
+
+`--show TICKET` prints the ticket with its comments and links, and changes
+nothing. Comments are where the owner answers, so read them before you
+pick up a ticket or reply on one. `--list-tickets` does not include them.
 
 `--comment ID "text"` adds a comment without touching the card. Use it when
 there is progress but no state change (a blocker, a decision, a partial
