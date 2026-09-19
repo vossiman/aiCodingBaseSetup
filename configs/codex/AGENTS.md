@@ -108,6 +108,7 @@ kanban-post --done TICKET
 kanban-post --comment TICKET "text"
 kanban-post --link TICKET --depends-on OTHER | --blocks OTHER | --relates OTHER
 kanban-post --unlink TICKET OTHER
+kanban-post --show TICKET
 kanban-post --list-repos | --list-tickets
 ```
 
@@ -157,10 +158,15 @@ refusal that makes no request. There is no default repo.
 
 Statuses are `backlog|todo|doing|done`; an unknown one is a 400 that lists
 the valid keys. `--done ID` closes a ticket. Close what you finish: the board
-only stays useful if it drains. `--comment ID "text"` adds a comment without
-touching the card; use it for progress with no state change (a blocker, a
-decision, a partial result). The owner reads comments on a phone, so write
-for a human who lacks your context.
+only stays useful if it drains.
+
+`--show TICKET` prints the ticket with its comments and links, and changes
+nothing. Comments are where the owner answers, so read them before you
+pick up a ticket or reply on one. `--list-tickets` does not include them.
+
+`--comment ID "text"` adds a comment without touching the card; use it for
+progress with no state change (a blocker, a decision, a partial result). The
+owner reads comments on a phone, so write for a human who lacks your context.
 
 **When to file one:** a real defect or follow-up you found but were not
 asked to fix, and that would otherwise only exist in this transcript. Not

@@ -119,6 +119,12 @@ class H(http.server.BaseHTTPRequestHandler):
             # surfaces whatever comes back rather than deriving its own.
             key = "".join(c for c in payload["repo"] if c.isalnum()).upper() + "-1"
             return self._reply(201, {"id": "new-id", "key": key, **payload})
+        if self.command == "GET" and self.path.startswith("/api/tickets/"):
+            key = self.path.rsplit("/", 1)[1]
+            if key == "MISSING-1":
+                return self._reply(404, {"detail": "Ticket not found"})
+            return self._reply(200, {"id": "some-uuid", "key": key, "title": "a ticket",
+                                     "comments": [{"id": "c1", "author": "owner", "body": "please use the blue one"}]})
         if self.command == "PATCH" and self.path.startswith("/api/tickets/"):
             return self._reply(200, {"id": self.path.rsplit("/", 1)[1], **payload})
         self._reply(404, {"detail": "not found"})
@@ -467,6 +473,44 @@ EOF
   run "$KP" --comment abc123 "note" --repo myrepo
   [ "$status" -ne 0 ]
   [[ "$output" == *"--repo"* ]]
+}
+
+# Reading a ticket. Comments are the channel the owner answers on, so an
+# agent that can write them but not read them only ever talks at the board.
+
+@test "--show fetches the ticket and prints its comments" {
+  _start_api_server myrepo
+  run "$KP" --show DEVMACHINE-12
+  [ "$status" -eq 0 ]
+  grep -q '^GET /api/tickets/DEVMACHINE-12 $' "$TMPDIR/requests"
+  [[ "$output" == *"DEVMACHINE-12"* ]]
+  [[ "$output" == *"please use the blue one"* ]]
+}
+
+@test "--show on an unknown ticket fails with the board's answer" {
+  _start_api_server myrepo
+  run "$KP" --show MISSING-1
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"404"* ]]
+  [[ "$output" == *"Ticket not found"* ]]
+}
+
+@test "--show only reads: it refuses flags that write" {
+  _start_api_server myrepo
+  run "$KP" --show abc123 --status done
+  [ "$status" -ne 0 ]
+  run "$KP" --show abc123 "a title"
+  [ "$status" -ne 0 ]
+  run "$KP" --show abc123 --comment abc123
+  [ "$status" -ne 0 ]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "the --show path redacts too" {
+  _start_server
+  run "$KP" --show some-ticket-id
+  [[ "$output" != *"$FAKE_TOKEN"* ]]
+  [[ "$output" == *"<redacted>"* ]]
 }
 
 # Due dates
