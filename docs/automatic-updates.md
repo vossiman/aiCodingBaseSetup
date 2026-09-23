@@ -124,7 +124,7 @@ steps, not only for changes that introduce a new syntax version.
 The default inventory is:
 
 ```text
-~/.aicodingsetup/consumer-versions.json
+~/.aicodingsetup/fleet/consumer-versions.json
 ```
 
 `AICODING_SHARED_CONSUMERS_FILE` may select another metadata file.
@@ -137,6 +137,8 @@ The current format is schema 1:
 ```json
 {
   "schema": 1,
+  "generated_at": 1789084700,
+  "newest_container_started_at": 1789084640,
   "roots": [
     {
       "shared_root": "/canonical/physical/root",
@@ -158,37 +160,39 @@ The current format is schema 1:
 }
 ```
 
-For the exact canonical root being changed, there must be exactly one matching
-root entry. `inventory_complete` must be `true`, `expires_at` must be a future
-Unix epoch value, and the consumer list must be nonempty. Every listed consumer
-must have a nonempty stable ID and, for the component being gated, a semantic
-version and `config_compatible: true`. Component-specific minimum versions are
-then checked. Missing, malformed, duplicate, incomplete, expired, or
-root-mismatched evidence defers the shared mutation.
+The proof must also carry a numeric `generated_at` later than a numeric
+`newest_container_started_at`, and the updater's own container id (see below)
+must appear among the matching root's consumers. For the exact canonical root
+being changed, there must be exactly one matching root entry.
+`inventory_complete` must be `true`, `expires_at` must be a future Unix epoch
+value, and the consumer list must be nonempty. Every listed consumer must have
+a nonempty stable ID and, for the component being gated, a semantic version
+(for `mcp-kanban`, its 40-character git revision) and
+`config_compatible: true`. Component-specific minimum versions are then
+checked. Missing, malformed, duplicate, incomplete, expired, stale, or
+root-mismatched evidence, or a proof that does not list this container,
+defers the shared mutation.
 
-### Establishing the authoritative inventory
+### Who publishes the inventory
 
-The rollout operator establishes this file from machine inventory, not from a
-single enrolling container:
+On vossisrv the dvw catalog publishes it (dvw `catalog-service/app/fleet.py`).
+Only running containers count. Every 30 seconds the catalog probes every
+running devpod container and writes one root entry per shared mount. A
+2-second container-list watcher, which keeps running while a pass probes,
+deletes the file as soon as a new container id appears, so the gate closes
+until that container has been probed. A pass that finds a running container
+it did not enumerate writes nothing and retries. A container that mounts a
+root's host folder (or a parent of it) at another path marks that root
+incomplete. The catalog removes the file when it starts and when it stops.
 
-1. Resolve each shared config destination to its canonical physical root.
-2. Enumerate every consumer of that root, including stopped containers and
-   machines that are temporarily unreachable. Assign each a stable ID.
-3. Verify the installed component version and the relevant config capability
-   for every consumer. Keep `inventory_complete: false` while any consumer is
-   unknown or unverified.
-4. Write the complete root entry atomically under that shared root's writer
-   lock, then set a bounded future `expires_at`. Do not include auth or config
-   contents; this file contains capability metadata only.
-5. Before expiry, repeat the inventory and capability checks. Advance
-   `expires_at` only after dormant as well as running consumers are accounted
-   for again. Expiry deliberately closes the gate.
+The updater additionally requires `generated_at` to be later than
+`newest_container_started_at`, and requires its own container id (from the
+`/etc/hostname` bind mount in `/proc/self/mountinfo`) among the root's
+consumers. A container the catalog has not probed yet can therefore never
+authorize a shared write.
 
-Enrollment does not create this proof and does not mark an inventory complete.
-That conservative behavior prevents one new container from declaring older or
-stopped siblings compatible. It also means the shared steps listed above remain
-deferred until rollout supplies the authoritative file. Ungated safe files and
-updates to roots proven local continue separately.
+Hosts without a catalog (local Linux and WSL setups) have no shared roots, and
+the gate already passes local roots, so they need no inventory.
 
 The two evidence sources answer different questions and both may be required:
 

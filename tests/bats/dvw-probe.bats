@@ -376,3 +376,86 @@ STUB
   # ... and never as a plain "git -C <root> status".
   if grep -qE '^-C [^ ]+ status' "$log"; then false; fi
 }
+
+_receipts() {
+  mkdir -p "$TMPDIR/state"
+  export AICODING_RESULTS_FILE="$TMPDIR/state/update-results.json"
+  cat > "$AICODING_RESULTS_FILE"
+}
+
+@test "capabilities come from successful update receipts" {
+  _receipts <<'RECEIPTS'
+{"schema":1,"components":{
+ "claude":{"state":"current","successful_version":"2.1.280"},
+ "codex":{"state":"updated","successful_version":"0.156.1"},
+ "cursor":{"state":"current","successful_version":"2026.09.18-9a7762b"},
+ "mcp-context7":{"state":"updated","successful_version":"4.1.1"},
+ "mcp-playwright":{"state":"current","successful_version":"0.0.82"},
+ "mcp-kanban":{"state":"updated","successful_version":"0123456789abcdef0123456789abcdef01234567"}}}
+RECEIPTS
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.capabilities.claude == {"version":"2.1.280","config_compatible":true}'
+  echo "$output" | jq -e '.capabilities["mcp-playwright"].version == "0.0.82"'
+  echo "$output" | jq -e '.capabilities["mcp-kanban"] == {"version":"0123456789abcdef0123456789abcdef01234567","config_compatible":true}'
+  echo "$output" | jq -e '.capabilities | keys == ["claude","codex","cursor","mcp-context7","mcp-kanban","mcp-playwright"]'
+  echo "$output" | jq -e '.partial == false'
+}
+
+@test "capabilities are collected before a hanging tmux and git spend the budget" {
+  _receipts <<'RECEIPTS'
+{"schema":1,"components":{"claude":{"state":"current","successful_version":"2.1.280"}}}
+RECEIPTS
+  printf '#!/bin/sh\nsleep 10\n' > "$TMPDIR/stubs/tmux"
+  printf '#!/bin/sh\nsleep 10\n' > "$TMPDIR/stubs/git"
+  chmod +x "$TMPDIR/stubs/tmux" "$TMPDIR/stubs/git"
+  export DVW_PROBE_BUDGET=1
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.partial == true and .tmux == null'
+  echo "$output" | jq -e '.capabilities.claude == {"version":"2.1.280","config_compatible":true}'
+}
+
+@test "a blocked, failed or absent receipt is a null capability, never compatible" {
+  _receipts <<'RECEIPTS'
+{"schema":1,"components":{
+ "claude":{"state":"blocked","successful_version":"2.1.280"},
+ "codex":{"state":"failed","successful_version":null},
+ "cursor":{"state":"current","successful_version":"not-a-version"}}}
+RECEIPTS
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.capabilities.claude == null and .capabilities.codex == null'
+  echo "$output" | jq -e '.capabilities.cursor == null and .capabilities["mcp-context7"] == null'
+}
+
+@test "mcp-kanban needs a 40-hex revision and other components a semantic version" {
+  _receipts <<'RECEIPTS'
+{"schema":1,"components":{
+ "claude":{"state":"current","successful_version":"0123456789abcdef0123456789abcdef01234567"},
+ "mcp-kanban":{"state":"current","successful_version":"1.2.3"}}}
+RECEIPTS
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.capabilities.claude == null'
+  echo "$output" | jq -e '.capabilities | has("mcp-kanban") and .["mcp-kanban"] == null'
+}
+
+@test "missing or malformed receipts give capabilities null and exit 0" {
+  export AICODING_RESULTS_FILE="$TMPDIR/nope.json"
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.capabilities == null'
+  _receipts <<<'{not json'
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.capabilities == null'
+}
+
+@test "an oversized receipts file is not read" {
+  _receipts < /dev/null
+  head -c 2000000 /dev/zero | tr '\0' ' ' > "$AICODING_RESULTS_FILE"
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.capabilities == null'
+}

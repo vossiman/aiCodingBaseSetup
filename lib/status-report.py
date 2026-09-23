@@ -357,6 +357,54 @@ def installed(tool):
     return "not detected locally"
 
 
+FLEET_ROOTS = (".claude", ".codex", ".cursor")
+
+
+def self_container_id():
+    explicit = os.environ.get("AICODING_SELF_CONTAINER_ID")
+    if explicit:
+        return explicit
+    # Only the actual hostname mount: the root field must end in
+    # .../containers/<id>/hostname AND the mount point field must be
+    # exactly /etc/hostname. With Docker-in-Docker, mountinfo also lists
+    # inner containers' own /containers/<id>/hostname paths mounted at
+    # other, inner mount points.
+    match = re.search(r"/containers/([0-9a-f]{64})/hostname /etc/hostname ", read(Path(os.environ.get("AICODING_MOUNTINFO", "/proc/self/mountinfo"))))
+    return match.group(1) if match else ""
+
+
+def fleet_proof_text():
+    if not any((HOME / name).exists() for name in FLEET_ROOTS):
+        return None
+    path = Path(os.environ.get("AICODING_SHARED_CONSUMERS_FILE", HOME / ".aicodingsetup/fleet/consumer-versions.json"))
+    if not path.exists():
+        return "missing (catalog not publishing, or a new container is being checked)"
+    proof = document(path)
+    roots = proof.get("roots") if isinstance(proof.get("roots"), list) else []
+    roots = [r for r in roots if isinstance(r, dict)]
+    if not roots:
+        return "unreadable"
+    me = self_container_id()
+    earliest = min((epoch(r.get("expires_at")) or 0) for r in roots)
+    if earliest <= NOW:
+        return f"expired at {local_time(earliest)}"
+    generated, newest = epoch(proof.get("generated_at")), epoch(proof.get("newest_container_started_at"))
+    if generated is None or newest is None:
+        return "unreadable"
+    if generated <= newest:
+        return "stale: generated before the newest container start"
+    for r in roots:
+        consumers = r.get("consumers") if isinstance(r.get("consumers"), list) else []
+        if r.get("inventory_complete") is not True:
+            verified = sum(1 for c in consumers if isinstance(c, dict) and c.get("components"))
+            return f"incomplete for {clean(r.get('shared_root'))}: {verified} of {len(consumers)} containers verified"
+        if not me:
+            return "not listed: own container id unknown"
+        if not any(isinstance(c, dict) and c.get("id") == me for c in consumers):
+            return "not listed: this container has not been probed yet"
+    return f"valid until {local_time(earliest)}"
+
+
 def result_text(record):
     if not isinstance(record, dict) or not record:
         return "no update result recorded"
@@ -403,6 +451,10 @@ def main():
     version = command([str(browser), "--version"]) if browser else ""
     print(f"  Playwright Chromium: {clean(version) if version else 'version unavailable' if browser else 'not detected in active managed browser cache'}")
     print(f"    Last browser update: {result_text(records.get('playwright-chromium'))}")
+    fleet = fleet_proof_text()
+    if fleet is not None:
+        print("\nFleet proof (shared config on this host)")
+        print(f"  {fleet}")
     print("\nManaged configuration, hooks and skills")
     managed_keys = {"config", "provision"} | {key for key in records if key.startswith(("config-", "mcp-registration-", "hooks", "skills"))}
     for key in sorted(managed_keys):

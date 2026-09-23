@@ -248,10 +248,12 @@ STUB
   ln -s "$shared_root" "$HOME/.codex"
   export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
   export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/consumers.json"
+  export AICODING_SELF_CONTAINER_ID=known
   expires=$(( $(date +%s) + 3600 ))
   revision=$(cat "$BLUEPRINT_ROOT/configs/versions/kanban-mcp.rev")
   jq -n --arg root "$shared_root" --arg revision "$revision" --argjson expires "$expires" \
-    '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
+    '{schema:1,generated_at:($expires - 60),newest_container_started_at:0,
+      roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
       consumers:[{id:"known",components:{
         codex:{version:"0.200.0",config_compatible:true},
         "mcp-context7":{version:"1.0.0",config_compatible:true},
@@ -335,9 +337,11 @@ STUB
   export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
   export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/consumers.json"
   export AICODING_RESULTS_FILE="$TMPDIR/results.json"
+  export AICODING_SELF_CONTAINER_ID=known
   expires=$(( $(date +%s) + 3600 ))
   jq -n --arg root "$shared_root" --argjson expires "$expires" \
-    '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
+    '{schema:1,generated_at:($expires - 60),newest_container_started_at:0,
+      roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
       consumers:[{id:"known",components:{codex:{version:"0.200.0",config_compatible:true}}}]}]}' \
     > "$AICODING_SHARED_CONSUMERS_FILE"
   cat > "$TMPDIR/stubs/codex" <<'STUB'
@@ -370,9 +374,11 @@ STUB
   export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
   export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/consumers.json"
   export AICODING_RESULTS_FILE="$TMPDIR/results.json"
+  export AICODING_SELF_CONTAINER_ID=known
   expires=$(( $(date +%s) + 3600 ))
   jq -n --arg root "$shared_root" --argjson expires "$expires" \
-    '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
+    '{schema:1,generated_at:($expires - 60),newest_container_started_at:0,
+      roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
       consumers:[{id:"known",components:{codex:{version:"0.200.0",config_compatible:true}}}]}]}' \
     > "$AICODING_SHARED_CONSUMERS_FILE"
   cat > "$TMPDIR/stubs/codex" <<'STUB'
@@ -430,9 +436,11 @@ STUB
   export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
   export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/consumers.json"
   export AICODING_RESULTS_FILE="$TMPDIR/results.json"
+  export AICODING_SELF_CONTAINER_ID=known
   expires=$(( $(date +%s) + 3600 ))
   jq -n --arg root "$shared_root" --argjson expires "$expires" \
-    '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
+    '{schema:1,generated_at:($expires - 60),newest_container_started_at:0,
+      roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
       consumers:[{id:"known",components:{claude:{version:"2.1.0",config_compatible:true}}}]}]}' \
     > "$AICODING_SHARED_CONSUMERS_FILE"
   cat > "$TMPDIR/stubs/claude" <<'STUB'
@@ -469,9 +477,11 @@ STUB
   export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
   export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/consumers.json"
   export AICODING_RESULTS_FILE="$TMPDIR/results.json"
+  export AICODING_SELF_CONTAINER_ID=known
   expires=$(( $(date +%s) + 3600 ))
   jq -n --arg root "$shared_root" --argjson expires "$expires" \
-    '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
+    '{schema:1,generated_at:($expires - 60),newest_container_started_at:0,
+      roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
       consumers:[{id:"known",components:{codex:{version:"0.200.0",config_compatible:true}}}]}]}' \
     > "$AICODING_SHARED_CONSUMERS_FILE"
   cat > "$TMPDIR/stubs/codex" <<'STUB'

@@ -233,17 +233,18 @@ EOF
   _tool codex 'codex-cli 0.200.0'
   export AICODING_REQUIRE_SHARED_COMPATIBILITY=1
   export AICODING_SHARED_CONSUMERS_FILE="$TMP/consumers.json"
+  export AICODING_SELF_CONTAINER_ID=new
   mkdir -p "$HOME/.codex"
   local expires=$(( $(date +%s) + 3600 )) root
   root=$(readlink -f "$HOME/.codex")
   export AICODING_SHARED_CONFIG_ROOTS="$root"
   cat > "$AICODING_SHARED_CONSUMERS_FILE" <<'EOF'
-{"schema":1,"roots":[{"inventory_complete":true,"shared_root":"ROOT","expires_at":EXPIRES,"consumers":[
+{"schema":1,"generated_at":NOW,"newest_container_started_at":0,"roots":[{"inventory_complete":true,"shared_root":"ROOT","expires_at":EXPIRES,"consumers":[
   {"id":"new","components":{"codex":{"version":"0.200.0","config_compatible":true}}},
   {"id":"old","components":{"codex":{"version":"0.147.0","config_compatible":true}}}
 ]}]}
 EOF
-  sed -i "s|ROOT|$root|; s|EXPIRES|$expires|" "$AICODING_SHARED_CONSUMERS_FILE"
+  sed -i "s|ROOT|$root|; s|EXPIRES|$expires|; s|NOW|$(date +%s)|" "$AICODING_SHARED_CONSUMERS_FILE"
   run aicoding_config_is_compatible "$HOME/.codex/config.toml"
   [ "$status" -ne 0 ]
   [ "$output" = codex_shared_consumers_incompatible ]
@@ -307,7 +308,9 @@ EOF
   export AICODING_SHARED_CONFIG_ROOTS="$codex_root:$claude_root"
   export AICODING_REQUIRE_SHARED_COMPATIBILITY=1
   export AICODING_SHARED_CONSUMERS_FILE="$TMP/consumers.json"
-  jq -n --arg cr "$codex_root" --arg ar "$claude_root" --argjson expires "$expires" '{schema:1,roots:[
+  export AICODING_SELF_CONTAINER_ID=dormant
+  jq -n --arg cr "$codex_root" --arg ar "$claude_root" --argjson expires "$expires" \
+    '{schema:1,generated_at:($expires - 3600),newest_container_started_at:0,roots:[
     {shared_root:$cr,inventory_complete:true,expires_at:$expires,consumers:[
       {id:"dormant",components:{codex:{version:"0.148.0",config_compatible:true}}}]},
     {shared_root:$ar,inventory_complete:true,expires_at:0,consumers:[
@@ -337,8 +340,10 @@ EOF
   run aicoding_config_is_compatible "$HOME/.config/opencode/opencode.json"
   [ "$status" -ne 0 ]
   [ "$output" = opencode_shared_consumers_incompatible ]
+  export AICODING_SELF_CONTAINER_ID=other
   jq -n --arg root "$HOME/.config/opencode" --argjson expires "$(( $(date +%s) + 3600 ))" \
-    '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
+    '{schema:1,generated_at:($expires - 60),newest_container_started_at:0,
+      roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
       consumers:[{id:"other",components:{opencode:{version:"1.2.3",config_compatible:true}}}]}]}' \
     > "$AICODING_SHARED_CONSUMERS_FILE"
   run aicoding_config_is_compatible "$HOME/.config/opencode/opencode.json"
@@ -1251,4 +1256,173 @@ EOF
   jq -e '.components["bw-AICode"].state == "blocked"
     and .components["bw-AICode"].reason == "manual_rebuild_required_go"' \
     "$AICODING_STATE_DIR/update-results.json"
+}
+
+_fleet_proof() {  # $1 root, $2 consumer id, [$3 generated_at], [$4 newest start]
+  local now; now=$(date +%s)
+  jq -n --arg r "$1" --arg id "$2" --argjson g "${3:-$now}" --argjson n "${4:-$((now - 60))}" \
+    --argjson e "$((now + 300))" '{schema:1,generated_at:$g,newest_container_started_at:$n,roots:[
+      {shared_root:$r,inventory_complete:true,expires_at:$e,consumers:[
+        {id:$id,components:{codex:{version:"0.200.0",config_compatible:true}}}]}]}' \
+    > "$AICODING_SHARED_CONSUMERS_FILE"
+}
+
+_fleet_env() {
+  mkdir -p "$HOME/.codex"
+  export AICODING_REQUIRE_SHARED_COMPATIBILITY=1
+  export AICODING_SHARED_CONSUMERS_FILE="$TMP/consumers.json"
+  export AICODING_SHARED_CONFIG_ROOTS; AICODING_SHARED_CONFIG_ROOTS=$(readlink -f "$HOME/.codex")
+  export AICODING_SELF_CONTAINER_ID=selfid
+}
+
+@test "fleet proof listing this container opens the gate" {
+  _fleet_env
+  _fleet_proof "$AICODING_SHARED_CONFIG_ROOTS" selfid
+  run _aicoding_shared_consumers_allow codex 0.148.0 "$HOME/.codex/config.toml"
+  [ "$status" -eq 0 ]
+}
+
+@test "fleet proof that does not list this container keeps the gate closed" {
+  _fleet_env
+  _fleet_proof "$AICODING_SHARED_CONFIG_ROOTS" someoneelse
+  run _aicoding_shared_consumers_allow codex 0.148.0 "$HOME/.codex/config.toml"
+  [ "$status" -ne 0 ]
+}
+
+@test "unknown own container id fails closed on a shared root" {
+  _fleet_env
+  unset AICODING_SELF_CONTAINER_ID
+  export AICODING_MOUNTINFO="$TMP/mountinfo"; : > "$AICODING_MOUNTINFO"
+  _fleet_proof "$AICODING_SHARED_CONFIG_ROOTS" selfid
+  run _aicoding_shared_consumers_allow codex 0.148.0 "$HOME/.codex/config.toml"
+  [ "$status" -ne 0 ]
+}
+
+@test "proof generated before the newest container start is rejected" {
+  _fleet_env
+  local now; now=$(date +%s)
+  _fleet_proof "$AICODING_SHARED_CONFIG_ROOTS" selfid "$((now - 10))" "$now"
+  run _aicoding_shared_consumers_allow codex 0.148.0 "$HOME/.codex/config.toml"
+  [ "$status" -ne 0 ]
+}
+
+@test "proof without generated_at is rejected" {
+  _fleet_env
+  _fleet_proof "$AICODING_SHARED_CONFIG_ROOTS" selfid
+  jq 'del(.generated_at)' "$AICODING_SHARED_CONSUMERS_FILE" > "$TMP/x" && mv "$TMP/x" "$AICODING_SHARED_CONSUMERS_FILE"
+  run _aicoding_shared_consumers_allow codex 0.148.0 "$HOME/.codex/config.toml"
+  [ "$status" -ne 0 ]
+}
+
+@test "own container id is read from mountinfo" {
+  unset AICODING_SELF_CONTAINER_ID
+  export AICODING_MOUNTINFO="$TMP/mountinfo"
+  printf '1 2 0:1 /var/lib/docker/containers/%s/hostname /etc/hostname rw - ext4 /dev/x rw\n' \
+    "$(printf 'a%.0s' {1..64})" > "$AICODING_MOUNTINFO"
+  run _aicoding_self_container_id
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'a%.0s' {1..64})" ]
+}
+
+@test "own container id ignores inner DinD container paths listed before the hostname mount" {
+  set -o pipefail
+  unset AICODING_SELF_CONTAINER_ID
+  export AICODING_MOUNTINFO="$TMP/mountinfo"
+  local inner self
+  inner=$(printf 'b%.0s' {1..64}); self=$(printf 'a%.0s' {1..64})
+  {
+    printf '1 2 0:1 /var/lib/docker/containers/%s/mounts/shm /var/lib/docker/containers/%s/mounts/shm rw - tmpfs shm rw\n' "$inner" "$inner"
+    printf '2 2 0:1 /docker/containers/%s/resolv.conf /etc/resolv.conf rw - ext4 /dev/x rw\n' "$self"
+    printf '3 2 0:1 /docker/containers/%s/hostname /etc/hostname rw - ext4 /dev/x rw\n' "$self"
+    printf '4 2 0:1 /var/lib/docker/containers/%s/hostname /var/lib/docker/containers/%s/hostname rw - ext4 /dev/x rw\n' "$inner" "$inner"
+    # Enough trailing lines that an early-exiting reader would SIGPIPE a writer.
+    for i in $(seq 1 5000); do printf '%s 2 0:1 /x /y%s rw - ext4 /dev/x rw\n' "$((i + 4))" "$i"; done
+  } > "$AICODING_MOUNTINFO"
+  run _aicoding_self_container_id
+  [ "$status" -eq 0 ]
+  [ "$output" = "$self" ]
+}
+
+@test "own container id skips an inner hostname root field at a non-etc mount point listed first" {
+  unset AICODING_SELF_CONTAINER_ID
+  export AICODING_MOUNTINFO="$TMP/mountinfo"
+  local inner self
+  inner=$(printf 'b%.0s' {1..64}); self=$(printf 'a%.0s' {1..64})
+  {
+    # The inner container's own /containers/<id>/hostname root field, but
+    # mounted at its own mount point, not /etc/hostname. An unanchored
+    # match on the root field alone would pick this line up first.
+    printf '1 2 0:1 /var/lib/docker/containers/%s/hostname /var/lib/docker/containers/%s/hostname rw - ext4 /dev/x rw\n' "$inner" "$inner"
+    printf '2 2 0:1 /docker/containers/%s/hostname /etc/hostname rw - ext4 /dev/x rw\n' "$self"
+  } > "$AICODING_MOUNTINFO"
+  run _aicoding_self_container_id
+  [ "$status" -eq 0 ]
+  [ "$output" = "$self" ]
+}
+
+@test "mountinfo without a hostname mount gives no own container id" {
+  unset AICODING_SELF_CONTAINER_ID
+  export AICODING_MOUNTINFO="$TMP/mountinfo"
+  printf '1 2 0:1 /var/lib/docker/containers/%s/mounts/shm /dev/shm rw - tmpfs shm rw\n' \
+    "$(printf 'b%.0s' {1..64})" > "$AICODING_MOUNTINFO"
+  run _aicoding_self_container_id
+  [ -z "$output" ]
+}
+
+@test "proof without newest_container_started_at is rejected" {
+  _fleet_env
+  _fleet_proof "$AICODING_SHARED_CONFIG_ROOTS" selfid
+  jq 'del(.newest_container_started_at)' "$AICODING_SHARED_CONSUMERS_FILE" > "$TMP/x" && mv "$TMP/x" "$AICODING_SHARED_CONSUMERS_FILE"
+  run _aicoding_shared_consumers_allow codex 0.148.0 "$HOME/.codex/config.toml"
+  [ "$status" -ne 0 ]
+}
+
+@test "proof generated in the same second as the newest container start is rejected" {
+  _fleet_env
+  local now; now=$(date +%s)
+  _fleet_proof "$AICODING_SHARED_CONFIG_ROOTS" selfid "$now" "$now"
+  run _aicoding_shared_consumers_allow codex 0.148.0 "$HOME/.codex/config.toml"
+  [ "$status" -ne 0 ]
+}
+
+# tests/bats/fixtures/fleet-proof-contract.json is a copy of dvw's
+# catalog-service/tests/fixtures/fleet-proof-contract.json, which dvw's
+# test_cross_repo_contract_fixture_matches_build_proof keeps equal to what
+# build_proof writes. If this test fails after copying a new version over,
+# the catalog and this gate disagree on the proof format.
+@test "the dvw catalog contract fixture opens the gate for every component" {
+  mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.cursor"
+  export AICODING_REQUIRE_SHARED_COMPATIBILITY=1
+  export AICODING_SHARED_CONSUMERS_FILE="$TMP/consumers.json"
+  local claude codex cursor now
+  claude=$(readlink -f "$HOME/.claude"); codex=$(readlink -f "$HOME/.codex"); cursor=$(readlink -f "$HOME/.cursor")
+  export AICODING_SHARED_CONFIG_ROOTS="$claude:$codex:$cursor"
+  now=$(date +%s)
+  jq --argjson now "$now" --arg home "$(readlink -f "$HOME")" '
+    (.generated_at - .newest_container_started_at) as $age
+    | .generated_at = $now | .newest_container_started_at = ($now - $age)
+    | .roots |= map(.expires_at = ($now + 300)
+        | .shared_root |= sub("^/home/codespace"; $home))' \
+    "$BLUEPRINT_ROOT/tests/bats/fixtures/fleet-proof-contract.json" > "$AICODING_SHARED_CONSUMERS_FILE"
+  AICODING_SELF_CONTAINER_ID=$(jq -r '.roots[0].consumers[1].id' "$AICODING_SHARED_CONSUMERS_FILE")
+  export AICODING_SELF_CONTAINER_ID
+  [[ "$AICODING_SELF_CONTAINER_ID" =~ ^[0-9a-f]{64}$ ]]
+  local component root minimum
+  for root in "$claude" "$codex" "$cursor"; do
+    for component in claude codex cursor mcp-context7 mcp-playwright mcp-kanban; do
+      minimum=""; [ "$component" != codex ] || minimum=0.148.0
+      _aicoding_shared_consumers_allow "$component" "$minimum" "$root/config" \
+        || { echo "gate closed: $component on $root"; return 1; }
+    done
+  done
+  # Same proof, but this container is not a consumer: closed.
+  AICODING_SELF_CONTAINER_ID=$(printf 'c%.0s' {1..64})
+  run _aicoding_shared_consumers_allow claude "" "$claude/config"
+  [ "$status" -ne 0 ]
+}
+
+@test "default proof path is the fleet directory" {
+  unset AICODING_SHARED_CONSUMERS_FILE
+  run bash -c ". '$BLUEPRINT_ROOT/lib/update-results.sh'; . '$BLUEPRINT_ROOT/lib/update-components.sh'; declare -f _aicoding_shared_consumers_allow"
+  [[ "$output" == *'/.aicodingsetup/fleet/consumer-versions.json'* ]]
 }
