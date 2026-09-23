@@ -229,11 +229,15 @@ call; the tmux build runs under `nice -n 19 ionice -c3`, `make -j2` and a 1800 s
 limit. The shared config writer locks are released before this step starts.
 
 Outcomes use the normal result states: `current` or `updated` with the digest;
-`blocked` with `sudo_unavailable`, `apt_lock_busy` or `apt_unavailable`;
-`failed` with `tmux_build_failed`, `apt_timeout`, `apt_install_failed`,
-`frogmouth_install_failed`, `uv_install_failed`, `go_install_failed` or
-`verification_failed:<items>`. Failures retry on the next pass and never block
-tool or config updates. The existing `provision` record is unrelated.
+`blocked` with `sudo_unavailable`, `apt_lock_busy`, `apt_unavailable` or the
+fallback `system_provision_blocked`; `failed` with `apt_timeout`,
+`apt_install_failed`, `tmux_build_failed`, `tmux_build_timeout`,
+`uv_install_failed`, `uv_install_timeout`, `frogmouth_install_failed`,
+`frogmouth_install_timeout`, `go_install_failed`, `go_install_timeout`,
+`verification_failed:<items>` or the fallback `system_provision_failed`. A
+timeout on the `apt-get update` call itself is also recorded as
+`apt_timeout`. Failures retry on the next pass and never block tool or
+config updates. The existing `provision` record is unrelated.
 
 A rebuilt tmux takes effect when the tmux server next starts. Until then
 `aicoding-status` prints `tmux: updated, active after restart`. Nothing

@@ -270,7 +270,8 @@ owned_file_has_generated_provenance() {
 }
 
 # Acquire non-blocking writer locks inside the physical shared destinations.
-# FDs remain open for the process lifetime, including a refresh exec.
+# FDs stay open across a refresh exec, but the scheduled step releases them
+# via aicoding_shared_locks_release before it returns.
 aicoding_shared_locks_acquire() {
   local dest logical root fd
   local -a roots=()

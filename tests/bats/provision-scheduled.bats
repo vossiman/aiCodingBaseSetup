@@ -258,6 +258,33 @@ case "$*" in *install*) echo "E: Could not get lock /var/lib/dpkg/lock-frontend.
   if grep -qE '(^|[[:space:]])(kill|pkill|killall)([[:space:]]|$)' "$CALLS"; then false; fi
 }
 
+@test "a busy archives directory lock during install is blocked/apt_lock_busy" {
+  _load_scheduled
+  _all_present
+  rm "$TMP/stubs/rg"
+  _stub apt-get 'printf "apt-get %s\n" "$*" >> "$CALLS"
+case "$*" in *install*) echo "E: Unable to lock directory /var/cache/apt/archives/" >&2; exit 100 ;; esac'
+  _run_orchestrator
+  [ "$status" -eq 3 ]
+  [ "$(_record state)" = blocked ]
+  [ "$(_record reason)" = apt_lock_busy ]
+}
+
+@test "an apt-get update timeout is failed/apt_timeout and install never runs" {
+  _load_scheduled
+  _all_present
+  rm "$TMP/stubs/rg"
+  _stub timeout 'printf "timeout %s\n" "$*" >> "$CALLS"
+while [ $# -gt 0 ]; do case "$1" in -*|[0-9]*) shift ;; *) break ;; esac; done
+case "$*" in *"update -qq"*) exit 124 ;; esac
+exec "$@"'
+  _run_orchestrator
+  [ "$status" -eq 1 ]
+  [ "$(_record state)" = failed ]
+  [ "$(_record reason)" = apt_timeout ]
+  if grep -q 'install.*ripgrep' "$CALLS"; then false; fi
+}
+
 @test "without passwordless sudo it is blocked/sudo_unavailable before any apt call" {
   _load_scheduled
   _all_present

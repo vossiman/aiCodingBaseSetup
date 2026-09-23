@@ -84,11 +84,14 @@ _sched_apt_install() {
   if [ "$rc" -ne 0 ] && grep -qE 'Could not get lock|Unable to acquire the dpkg frontend lock|Unable to lock directory' "$errf"; then
     rm -f "$errf"; _sched_note_reason apt_lock_busy; return 3
   fi
+  if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+    rm -f "$errf"; _sched_note_reason apt_timeout; return 1
+  fi
   rc=0
   timeout --kill-after=30 900 sudo -n env DEBIAN_FRONTEND=noninteractive \
     apt-get "${opts[@]}" install -y --no-install-recommends "$@" </dev/null >/dev/null 2>"$errf" || rc=$?
   if [ "$rc" -eq 0 ]; then rm -f "$errf"; return 0; fi
-  if grep -qE 'Could not get lock|Unable to acquire the dpkg frontend lock' "$errf"; then
+  if grep -qE 'Could not get lock|Unable to acquire the dpkg frontend lock|Unable to lock directory' "$errf"; then
     rm -f "$errf"; _sched_note_reason apt_lock_busy; return 3
   fi
   rm -f "$errf"

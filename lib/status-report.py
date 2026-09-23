@@ -475,7 +475,9 @@ def main():
         print("\nFleet proof (shared config on this host)")
         print(f"  {fleet}")
     print("\nManaged configuration, hooks and skills")
-    managed_keys = {"config", "provision", "provision-system"} | {key for key in records if key.startswith(("config-", "mcp-registration-", "hooks", "skills"))}
+    managed_keys = {"config", "provision"} | {key for key in records if key.startswith(("config-", "mcp-registration-", "hooks", "skills"))}
+    if "provision-system" in records:
+        managed_keys.add("provision-system")
     for key in sorted(managed_keys):
         print(f"  {clean(key)}: {result_text(records.get(key))}")
     if tmux_restart_pending():

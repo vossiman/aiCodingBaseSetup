@@ -543,3 +543,11 @@ PY
   [[ "$output" == *"provision-system: updated"* ]]
   [[ "$output" == *"tmux: updated, active after restart"* ]]
 }
+
+@test "status omits provision-system when no record for it exists" {
+  mkdir -p "$AICODING_STATE_DIR"
+  printf '{"schema":1,"components":{"provision":{"state":"current"}}}\n' > "$AICODING_RESULTS_FILE"
+  run "$BIN"
+  [ "$status" -eq 0 ]
+  if [[ "$output" == *"provision-system"* ]]; then false; fi
+}
