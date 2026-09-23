@@ -8,6 +8,7 @@ import os
 import sqlite3
 import tempfile
 import threading
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -235,7 +236,8 @@ CREATE TABLE tool_operations (
 
 
 class Store:
-    def __init__(self, path: str | Path | None = None):
+    def __init__(self, path: str | Path | None = None, now: Callable[[], datetime] | None = None):
+        self.now = now or (lambda: datetime.now(UTC))
         if path is None:
             state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
             path = state / "aicoding" / "kanban-work.sqlite3"
@@ -247,7 +249,7 @@ class Store:
         self._connection.execute("PRAGMA foreign_keys=ON")
         self._migrate()
         self._recheck_modes()
-        self.cleanup()
+        self.cleanup(self.now())
 
     @staticmethod
     def _connect(path: Path):

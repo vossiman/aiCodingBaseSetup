@@ -53,7 +53,7 @@ class AdapterTests(unittest.TestCase):
         }, clear=False)
         self.env.start()
         self.clock = Clock()
-        self.store = Store(self.state)
+        self.store = Store(self.state, now=self.clock)
         self.queue = LifecycleQueue(self.store, now=self.clock)
         self.ingress = EventIngestor(self.store, self.queue, now=self.clock)
         self.versions = {"claude": "2.1.268", "codex": "0.154.0"}
@@ -601,7 +601,7 @@ class CursorAdapterTests(unittest.TestCase):
         }, clear=False)
         self.env.start()
         self.clock = Clock()
-        self.store = Store(self.state)
+        self.store = Store(self.state, now=self.clock)
         self.queue = LifecycleQueue(self.store, now=self.clock)
         self.ingress = EventIngestor(self.store, self.queue, now=self.clock)
         self.adapter = CursorAdapter(
@@ -946,7 +946,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
         }, clear=False)
         self.env.start()
         self.clock = Clock()
-        self.store = Store(self.state)
+        self.store = Store(self.state, now=self.clock)
         self.queue = LifecycleQueue(self.store, now=self.clock)
         self.ingress = EventIngestor(self.store, self.queue, now=self.clock)
         self.adapter = OpenCodeAdapter(self.store, self.ingress, now=self.clock)
@@ -1192,7 +1192,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.before("read", {"filePath": "old"}, call="old-call", instance=old_instance)
 
         self.store.close()
-        self.store = Store(self.state)
+        self.store = Store(self.state, now=self.clock)
         self.queue = LifecycleQueue(self.store, now=self.clock)
         self.ingress = EventIngestor(self.store, self.queue, now=self.clock)
         self.adapter = OpenCodeAdapter(self.store, self.ingress, now=self.clock)
@@ -1239,7 +1239,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
                                 instance=old_instance).lifecycle
 
         self.store.close()
-        self.store = Store(self.state)
+        self.store = Store(self.state, now=self.clock)
         self.queue = LifecycleQueue(self.store, now=self.clock)
         self.ingress = EventIngestor(self.store, self.queue, now=self.clock)
         self.adapter = OpenCodeAdapter(self.store, self.ingress, now=self.clock)
