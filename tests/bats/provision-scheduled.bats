@@ -125,3 +125,72 @@ _load_provision_system() {
   run ensure_tmux
   [ "$status" -eq 3 ]
 }
+
+_load_scheduled() {
+  info() { printf 'INFO: %s\n' "$*"; }
+  ok() { printf 'OK: %s\n' "$*"; }
+  warn() { printf 'WARN: %s\n' "$*"; }
+  err() { printf 'ERROR: %s\n' "$*"; }
+  . "$BLUEPRINT_ROOT/lib/update-results.sh"
+  . "$BLUEPRINT_ROOT/lib/provision-scheduled.sh" >/dev/null
+}
+
+# Everything the descriptor wants is present in the test prefix.
+_all_present() {
+  local c
+  for c in git git-lfs bwrap rg gh; do _stub "$c" 'exit 0'; done
+  _stub parallel 'echo "GNU parallel 20240222"'
+  : > "$TMP/terminfo/x/xterm-kitty"
+  printf '%s\n' "$AICODING_TMUX_COMMIT_PIN" > "$AICODING_TMUX_COMMIT_FILE"
+  _stub tmux 'echo "tmux next-3.9"'
+  printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/uv"; chmod +x "$HOME/.local/bin/uv"
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/prefix/bin/frogmouth"; chmod +x "$TMP/prefix/bin/frogmouth"
+  mkdir -p "$AICODING_GO_ROOT/bin"
+  printf '#!/bin/sh\nexit 0\n' > "$AICODING_GO_ROOT/bin/go"; chmod +x "$AICODING_GO_ROOT/bin/go"
+}
+
+@test "descriptor names the fixed apt list, the tmux pin, frogmouth, go and uv" {
+  _load_scheduled
+  run aicoding_system_provision_descriptor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"apt=git git-lfs jq bubblewrap ripgrep parallel kitty-terminfo gh"* ]]
+  [[ "$output" == *"tmux=$AICODING_TMUX_COMMIT_PIN"* ]]
+  [[ "$output" == *"frogmouth=uv-tool python3.12"* ]]
+  [[ "$output" == *"go=if-missing"* ]]
+  [[ "$output" == *"uv=if-missing"* ]]
+}
+
+@test "digest is 64 hex and changes with the tmux pin" {
+  _load_scheduled
+  local a b
+  a=$(aicoding_system_provision_digest)
+  [[ "$a" =~ ^[0-9a-f]{64}$ ]]
+  AICODING_TMUX_COMMIT_PIN=0000000000000000000000000000000000000000
+  b=$(aicoding_system_provision_digest)
+  [ "$a" != "$b" ]
+}
+
+@test "no pending actions when every item is present" {
+  _load_scheduled
+  _all_present
+  run _sched_pending_actions
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "pending actions list missing items in execution order" {
+  _load_scheduled
+  _all_present
+  rm "$TMP/stubs/rg" "$TMP/stubs/gh" "$TMP/terminfo/x/xterm-kitty" "$TMP/prefix/bin/frogmouth"
+  printf '%s\n' 5356c62eadf8650ad1ffc95f52755d6f66029a20 > "$AICODING_TMUX_COMMIT_FILE"
+  run _sched_pending_actions
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'apt:ripgrep\napt:kitty-terminfo\napt:gh\ntmux\nfrogmouth')" ]
+}
+
+@test "GNU parallel check rejects moreutils parallel" {
+  _load_scheduled
+  _stub parallel 'echo "parallel: moreutils"'
+  run _sched_package_present parallel
+  [ "$status" -ne 0 ]
+}
