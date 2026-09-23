@@ -28,7 +28,7 @@ legacy_digest() {
     fi
     printf '%s\0%s\0%s\0%s\0' "$relative" "$kind" "$mode" "$value" >>"$inventory" \
       || { rm -f "$inventory"; return 1; }
-  done < <(find "$root" -mindepth 1 -print0 2>/dev/null | sort -z)
+  done < <(find "$root" -mindepth 1 -print0 2>/dev/null | LC_ALL=C sort -z)
   digest=$(sha256sum "$inventory" | awk '{print $1}') || { rm -f "$inventory"; return 1; }
   rm -f "$inventory" || return 1
   printf '%s\n' "$digest"
@@ -110,4 +110,27 @@ legacy_digest() {
     [ "$status" -eq 0 ]
     [ "$output" = "$expected" ]
   done
+}
+
+@test "release digest does not depend on the locale or the root path" {
+  mkdir -p "$TMP/tree/pkg"
+  printf content > "$TMP/tree/pkg/asyncbackend.py"
+  printf content > "$TMP/tree/pkg/_asyncbackend.py"
+  printf content > "$TMP/tree/pkg/types.py"
+  mkdir -p "$TMP/tree/pkg/types"
+  printf content > "$TMP/tree/pkg/types/methods.py"
+  printf content > "$TMP/tree/ä-name"
+  printf content > "$TMP/tree/Zed"
+  local c_digest other_digest locale copy
+  c_digest=$(LC_ALL=C _aicoding_release_tree_digest_impl "$TMP/tree")
+  [ -n "$c_digest" ]
+  for locale in de_AT.UTF-8 en_US.UTF-8 C.UTF-8; do
+    locale -a 2>/dev/null | tr '[:upper:]' '[:lower:]' | grep -qx "$(printf '%s' "$locale" | tr '[:upper:]' '[:lower:]' | sed 's/utf-8/utf8/')" || continue
+    other_digest=$(LC_ALL=$locale _aicoding_release_tree_digest_impl "$TMP/tree")
+    [ "$other_digest" = "$c_digest" ]
+  done
+  mkdir -p "$TMP/elsewhere/Zed"
+  cp -a "$TMP/tree" "$TMP/elsewhere/Zed/relocated"
+  copy=$(_aicoding_release_tree_digest_impl "$TMP/elsewhere/Zed/relocated")
+  [ "$copy" = "$c_digest" ]
 }

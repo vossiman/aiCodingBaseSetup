@@ -9,7 +9,6 @@ fails the complete digest, without printing paths or file contents.
 import hashlib
 import os
 import stat
-import subprocess
 import sys
 
 
@@ -78,11 +77,11 @@ def digest(root):
         walk(directory, b"")
     finally:
         os.close(directory)
-    inventory = b"\0".join(records) + (b"\0" if records else b"")
-    ordered = subprocess.run(["sort", "-z"], input=inventory, stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, check=True).stdout
+    # Byte order only: a locale-collated sort made the digest depend on the
+    # caller's LC_ALL and on the absolute root path, so a stamp written by an
+    # interactive de_AT shell failed under the C locale of a scheduled run.
     result = hashlib.sha256()
-    for path in ordered.split(b"\0")[:-1]:
+    for path in sorted(records):
         result.update(records[path])
     return result.hexdigest()
 
@@ -90,5 +89,5 @@ def digest(root):
 if __name__ == "__main__":
     try:
         print(digest(sys.argv[1]))
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+    except (OSError, ValueError, KeyError):
         sys.exit(1)
