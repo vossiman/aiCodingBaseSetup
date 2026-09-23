@@ -248,13 +248,16 @@ aicoding_config_is_shared() { aicoding_config_shared_root "$1" >/dev/null; }
 # The container id is the only identity the catalog and this container share.
 # Docker bind-mounts /etc/hostname from /var/lib/docker/containers/<id>/, and
 # the blueprint sets --hostname to the workspace name, so hostname cannot serve.
-# Only the hostname mount counts: with Docker-in-Docker, mountinfo also lists
-# inner containers' paths (for example their shm mounts) under /containers/.
+# Only the actual hostname mount counts: the root field must end in
+# .../containers/<id>/hostname AND the mount point field must be exactly
+# /etc/hostname. With Docker-in-Docker, mountinfo also lists inner
+# containers' own /containers/<id>/hostname paths mounted at other, inner
+# mount points, so matching the root field alone is not enough.
 _aicoding_self_container_id() {
   if [ -n "${AICODING_SELF_CONTAINER_ID:-}" ]; then
     printf '%s\n' "$AICODING_SELF_CONTAINER_ID"; return 0
   fi
-  grep -m1 -oE '/containers/[0-9a-f]{64}/hostname ' "${AICODING_MOUNTINFO:-/proc/self/mountinfo}" 2>/dev/null \
+  grep -m1 -oE '/containers/[0-9a-f]{64}/hostname /etc/hostname ' "${AICODING_MOUNTINFO:-/proc/self/mountinfo}" 2>/dev/null \
     | grep -oE '[0-9a-f]{64}'
 }
 

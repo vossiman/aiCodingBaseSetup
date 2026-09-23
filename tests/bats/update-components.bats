@@ -1343,6 +1343,23 @@ _fleet_env() {
   [ "$output" = "$self" ]
 }
 
+@test "own container id skips an inner hostname root field at a non-etc mount point listed first" {
+  unset AICODING_SELF_CONTAINER_ID
+  export AICODING_MOUNTINFO="$TMP/mountinfo"
+  local inner self
+  inner=$(printf 'b%.0s' {1..64}); self=$(printf 'a%.0s' {1..64})
+  {
+    # The inner container's own /containers/<id>/hostname root field, but
+    # mounted at its own mount point, not /etc/hostname. An unanchored
+    # match on the root field alone would pick this line up first.
+    printf '1 2 0:1 /var/lib/docker/containers/%s/hostname /var/lib/docker/containers/%s/hostname rw - ext4 /dev/x rw\n' "$inner" "$inner"
+    printf '2 2 0:1 /docker/containers/%s/hostname /etc/hostname rw - ext4 /dev/x rw\n' "$self"
+  } > "$AICODING_MOUNTINFO"
+  run _aicoding_self_container_id
+  [ "$status" -eq 0 ]
+  [ "$output" = "$self" ]
+}
+
 @test "mountinfo without a hostname mount gives no own container id" {
   unset AICODING_SELF_CONTAINER_ID
   export AICODING_MOUNTINFO="$TMP/mountinfo"

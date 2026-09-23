@@ -364,9 +364,12 @@ def self_container_id():
     explicit = os.environ.get("AICODING_SELF_CONTAINER_ID")
     if explicit:
         return explicit
-    # Only the hostname mount: with Docker-in-Docker, mountinfo also lists
-    # inner containers' paths under /containers/.
-    match = re.search(r"/containers/([0-9a-f]{64})/hostname ", read(Path(os.environ.get("AICODING_MOUNTINFO", "/proc/self/mountinfo"))))
+    # Only the actual hostname mount: the root field must end in
+    # .../containers/<id>/hostname AND the mount point field must be
+    # exactly /etc/hostname. With Docker-in-Docker, mountinfo also lists
+    # inner containers' own /containers/<id>/hostname paths mounted at
+    # other, inner mount points.
+    match = re.search(r"/containers/([0-9a-f]{64})/hostname /etc/hostname ", read(Path(os.environ.get("AICODING_MOUNTINFO", "/proc/self/mountinfo"))))
     return match.group(1) if match else ""
 
 

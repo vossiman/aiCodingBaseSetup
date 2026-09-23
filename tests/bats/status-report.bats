@@ -483,6 +483,13 @@ _status_fleet() {
   run "$BIN"; [[ "$output" == *"not listed: this container has not been probed yet"* ]]
   jq --arg id "$self" '.roots[0].consumers=[{id:$id,components:{}}]' "$AICODING_SHARED_CONSUMERS_FILE" > "$TMP/p" && mv "$TMP/p" "$AICODING_SHARED_CONSUMERS_FILE"
   run "$BIN"; [[ "$output" == *"valid until"* ]]
+  # An inner DinD container's OWN /containers/<id>/hostname root field,
+  # mounted at its own non-/etc/hostname mount point, is listed first; the
+  # real /etc/hostname line comes later and must still be the one used.
+  printf '4 2 0:1 /var/lib/docker/containers/%s/hostname /var/lib/docker/containers/%s/hostname rw - ext4 /dev/x rw\n' "$inner" "$inner" > "$AICODING_MOUNTINFO"
+  printf '3 2 0:1 /docker/containers/%s/hostname /etc/hostname rw - ext4 /dev/x rw\n' "$self" >> "$AICODING_MOUNTINFO"
+  jq --arg id "$self" '.roots[0].consumers=[{id:$id,components:{}}]' "$AICODING_SHARED_CONSUMERS_FILE" > "$TMP/p" && mv "$TMP/p" "$AICODING_SHARED_CONSUMERS_FILE"
+  run "$BIN"; [[ "$output" == *"valid until"* ]]
 }
 
 @test "status helper imports never write bytecode into their source tree" {
