@@ -167,7 +167,7 @@ being changed, there must be exactly one matching root entry.
 `inventory_complete` must be `true`, `expires_at` must be a future Unix epoch
 value, and the consumer list must be nonempty. Every listed consumer must have
 a nonempty stable ID and, for the component being gated, a semantic version
-and `config_compatible: true`. Component-specific minimum versions are then
+(for `mcp-kanban`, its 40-character git revision) and `config_compatible: true`. Component-specific minimum versions are then
 checked. Missing, malformed, duplicate, incomplete, expired, stale, or
 root-mismatched evidence, or a proof that does not list this container,
 defers the shared mutation.
