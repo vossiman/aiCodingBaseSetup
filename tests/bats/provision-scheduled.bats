@@ -196,6 +196,16 @@ _all_present() {
   [ "$status" -ne 0 ]
 }
 
+@test "a matching marker with no tmux binary at the prefix still pends tmux" {
+  _load_scheduled
+  _all_present
+  printf '%s\n' "$AICODING_TMUX_COMMIT_PIN" > "$AICODING_TMUX_COMMIT_FILE"
+  rm -f "$TMP/prefix/bin/tmux"
+  run _sched_pending_actions
+  [ "$status" -eq 0 ]
+  [[ "$output" == *tmux* ]]
+}
+
 _run_orchestrator() {
   export AICODINGSETUP_SKIP_NETWORK=1 AICODING_SYSTEM_PROVISION_RUN_OFFLINE=1
   run aicoding_run_system_provision
@@ -345,6 +355,23 @@ EOF
   [ "$status" -eq 1 ]
   [ "$(_record state)" = failed ]
   [[ "$(_record reason)" == verification_failed:apt:gh* ]]
+}
+
+@test "a failure reason replaces an earlier blocked reason" {
+  _load_scheduled
+  _all_present
+  printf '%s\n' 5356c62eadf8650ad1ffc95f52755d6f66029a20 > "$AICODING_TMUX_COMMIT_FILE"
+  rm "$TMP/stubs/rg"
+  # Block only the top-level ripgrep install; let the tmux build-deps
+  # install (invoked from inside ensure_tmux via AICODING_TMUX_APT_FN)
+  # succeed so the tmux step reaches the (failing) build itself.
+  _stub apt-get 'printf "apt-get %s\n" "$*" >> "$CALLS"
+case "$*" in *install*ripgrep*) echo "E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 4242 (apt)" >&2; exit 100 ;; esac'
+  export FAKE_MAKE_FAIL=1
+  _run_orchestrator
+  [ "$status" -eq 1 ]
+  [ "$(_record state)" = failed ]
+  [[ "$(_record reason)" == tmux_* ]]
 }
 
 @test "the scheduled library contains no kill, pkill or killall" {

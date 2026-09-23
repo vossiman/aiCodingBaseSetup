@@ -42,8 +42,9 @@ _sched_package_present() {
 
 _sched_tmux_current() {
   local marker="${AICODING_TMUX_COMMIT_FILE:-/usr/local/share/aicoding/tmux-commit}" installed=""
+  local prefix="${AICODING_TMUX_PREFIX:-/usr/local}"
   [ -r "$marker" ] && read -r installed < "$marker"
-  [ "$installed" = "$AICODING_TMUX_COMMIT_PIN" ]
+  [ "$installed" = "$AICODING_TMUX_COMMIT_PIN" ] && [ -x "$prefix/bin/tmux" ]
 }
 
 _sched_uv_bin() {
@@ -63,10 +64,13 @@ _sched_pending_actions() {
   return 0
 }
 
-# First reason wins; later steps must not overwrite the cause of a failure.
+# First reason wins, except a failure reason replaces a blocked one: pass
+# "overwrite" as $2 to force the write regardless of what is already there.
 _sched_note_reason() {
   [ -n "${_SCHED_REASON_FILE:-}" ] || return 0
-  [ -s "$_SCHED_REASON_FILE" ] || printf '%s\n' "$1" > "$_SCHED_REASON_FILE"
+  if [ "${2:-}" = overwrite ] || [ ! -s "$_SCHED_REASON_FILE" ]; then
+    printf '%s\n' "$1" > "$_SCHED_REASON_FILE"
+  fi
 }
 
 # Non-interactive, bounded apt. No source-file cleanup, unlike apt_install.
@@ -152,14 +156,22 @@ ensure_system_packages_scheduled() {
 }
 
 # Combine a step status into the running worst status: failed (1) beats
-# blocked (3) beats ok (0). Timeouts (124, 137) count as failed.
+# blocked (3) beats ok (0). Timeouts (124, 137) count as failed. A failure
+# reason replaces an earlier blocked reason recorded by a prior step (a
+# failure is the worse outcome and must be the one reported); first-
+# blocked-wins among blocked steps and first-failure-wins among failed
+# steps still hold. Only overwrite when the running worst was blocked
+# (worst == 3): a step's own internal reason (for example _sched_apt_install
+# already noting apt_timeout before returning 1 to its caller) must not be
+# clobbered by the generic reason its caller passes in for the same step.
 _sched_merge_rc() {
-  local rc=$1 reason=$2 worst=${3:-0}
+  local rc=$1 reason=$2 worst=${3:-0} overwrite=""
+  [ "$worst" -eq 3 ] && overwrite=overwrite
   case "$rc" in
     0) return "$worst" ;;
     3) _sched_note_reason "$reason"; [ "$worst" -eq 1 ] && return 1; return 3 ;;
-    124|137) _sched_note_reason "${reason%_failed}_timeout"; return 1 ;;
-    *) _sched_note_reason "$reason"; return 1 ;;
+    124|137) _sched_note_reason "${reason%_failed}_timeout" "$overwrite"; return 1 ;;
+    *) _sched_note_reason "$reason" "$overwrite"; return 1 ;;
   esac
 }
 
