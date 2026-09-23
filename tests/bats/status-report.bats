@@ -431,6 +431,35 @@ PY
   [[ "$output" == *"Playwright Chromium: Google Chrome for Testing 147.0.7718.0"* ]]
 }
 
+_status_fleet() {
+  mkdir -p "$HOME/.claude"
+  export AICODING_SHARED_CONSUMERS_FILE="$TMP/proof.json" AICODING_SELF_CONTAINER_ID=me
+}
+
+@test "fleet proof missing is explained" {
+  _status_fleet
+  run "$BIN"
+  [[ "$output" == *"Fleet proof (shared config on this host)"* ]]
+  [[ "$output" == *"missing (catalog not publishing"* ]]
+}
+
+@test "fleet proof valid, expired, incomplete and not-listed are distinct" {
+  _status_fleet
+  local now; now=$(date +%s)
+  jq -n --argjson e "$((now + 300))" '{schema:1,generated_at:1,newest_container_started_at:0,roots:[
+    {shared_root:"/home/codespace/.claude",inventory_complete:true,expires_at:$e,consumers:[{id:"me",components:{}}]}]}' \
+    > "$AICODING_SHARED_CONSUMERS_FILE"
+  run "$BIN"; [[ "$output" == *"valid until"* ]]
+  jq '.roots[0].expires_at = 1' "$AICODING_SHARED_CONSUMERS_FILE" > "$TMP/p" && mv "$TMP/p" "$AICODING_SHARED_CONSUMERS_FILE"
+  run "$BIN"; [[ "$output" == *"expired at"* ]]
+  jq --argjson e "$((now + 300))" '.roots[0].expires_at=$e | .roots[0].inventory_complete=false | .roots[0].consumers += [{id:"x",components:{}}]' \
+    "$AICODING_SHARED_CONSUMERS_FILE" > "$TMP/p" && mv "$TMP/p" "$AICODING_SHARED_CONSUMERS_FILE"
+  run "$BIN"; [[ "$output" == *"incomplete for /home/codespace/.claude"* ]]
+  jq '.roots[0].inventory_complete=true | .roots[0].consumers=[{id:"other",components:{}}]' \
+    "$AICODING_SHARED_CONSUMERS_FILE" > "$TMP/p" && mv "$TMP/p" "$AICODING_SHARED_CONSUMERS_FILE"
+  run "$BIN"; [[ "$output" == *"not listed: this container has not been probed yet"* ]]
+}
+
 @test "status helper imports never write bytecode into their source tree" {
   mkdir -p "$TMP/import-source"
   cp "$BLUEPRINT_ROOT/lib/status-report.py" "$TMP/import-source/status-report.py"
