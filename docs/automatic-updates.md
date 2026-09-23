@@ -203,3 +203,39 @@ The two evidence sources answer different questions and both may be required:
 
 A local success receipt cannot replace shared inventory, and shared inventory
 cannot turn a failed local update into success.
+
+## Scheduled system packages
+
+On the container profile, every sync pass except `--dry-run` also runs
+`aicoding_run_system_provision` (`lib/provision-scheduled.sh`). It is additive:
+it installs what is missing and swaps binaries atomically. It never stops a
+process, restarts a container, or deletes anything outside its own temp and
+state files. Hosts (Mint, WSL) skip it; they never ran install-time system
+provisioning. Because old manifests without a profile default to the container
+profile, the step also requires a second signal: an explicit container profile,
+or a container runtime (`/.dockerenv`, `/run/.containerenv`, or the devcontainer
+and Codespaces variables).
+
+What it covers is a fixed descriptor: the apt packages
+`git git-lfs jq bubblewrap ripgrep parallel kitty-terminfo gh`, the tmux pin
+`AICODING_TMUX_COMMIT_PIN`, frogmouth as a uv tool in `/opt/uv` with its
+launcher in `/usr/local/bin`, and go and uv when missing. The sha256 of that
+descriptor is the recorded `provision-system` successful version. A pass does
+nothing when the recorded digest matches; otherwise it installs the pending
+items and records the new digest only after every item verifies.
+
+Limits: `sudo -n` only; apt waits at most 120 s for the dpkg lock and 900 s per
+call; the tmux build runs under `nice -n 19 ionice -c3`, `make -j2` and a 1800 s
+limit. The shared config writer locks are released before this step starts.
+
+Outcomes use the normal result states: `current` or `updated` with the digest;
+`blocked` with `sudo_unavailable`, `apt_lock_busy` or `apt_unavailable`;
+`failed` with `tmux_build_failed`, `apt_timeout`, `apt_install_failed`,
+`frogmouth_install_failed`, `uv_install_failed`, `go_install_failed` or
+`verification_failed:<items>`. Failures retry on the next pass and never block
+tool or config updates. The existing `provision` record is unrelated.
+
+A rebuilt tmux takes effect when the tmux server next starts. Until then
+`aicoding-status` prints `tmux: updated, active after restart`. Nothing
+restarts it. Items that exist only in the image are not handled here; status
+suggests a rebuild when the image is older than its pin.
