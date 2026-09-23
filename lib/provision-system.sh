@@ -435,21 +435,33 @@ ensure_uv() {
   [[ -d "$HOME/.local/bin" ]] && export PATH="$HOME/.local/bin:$PATH"
 }
 
+# Pin MUST match TMUX_COMMIT in image/Dockerfile; tests/bats/image.bats enforces it.
+# 13c10f6 is portable master as of 2026-09-09; upstream still has no 3.8
+# release tag (only 3.8-rc).
+AICODING_TMUX_COMMIT_PIN="13c10f672c7a6bc64b2d4829ae550d8d6caf61fe"
+
 ensure_tmux() {
   # Need tmux 3.8+ with the synchronized-output dirty-region fixes. The
   # version string is not sufficient for master snapshots: both the broken
   # 2026-07-04 build and fixed builds report "next-3.8". Keep a commit marker
   # so changing the pin actually rebuilds existing containers.
-  local minver="3.8"
   # 2026-07-06: mark the complete scroll region dirty after scrolling during
-  # a DEC 2026 synchronized update (tmux#5330). Without this, Codex output is
-  # present in capture-pane but remains invisible until a forced redraw.
-  # The fix first shipped as b074242, the portable-tree merge containing
-  # OpenBSD commit d33d5b7 (pinning d33d5b7 directly would fetch the
-  # non-autoconf OpenBSD source tree). 13c10f6 is portable master as of
-  # 2026-09-09; upstream still has no 3.8 release tag.
-  local tmux_commit="13c10f672c7a6bc64b2d4829ae550d8d6caf61fe"
+  # a DEC 2026 synchronized update (tmux#5330). The fix first shipped as
+  # b074242, the portable-tree merge containing OpenBSD commit d33d5b7.
+  # Scheduled callers set AICODING_TMUX_STRICT=1: no apt fallback, and a
+  # non-zero return (3 blocked, 1 failed) instead of warn-and-succeed.
+  local minver="3.8"
+  local tmux_commit="$AICODING_TMUX_COMMIT_PIN"
   local tmux_commit_file="${AICODING_TMUX_COMMIT_FILE:-/usr/local/share/aicoding/tmux-commit}"
+  local prefix="${AICODING_TMUX_PREFIX:-/usr/local}"
+  local strict="${AICODING_TMUX_STRICT:-0}"
+  local apt_fn="${AICODING_TMUX_APT_FN:-apt_install}"
+  local jobs="${AICODING_TMUX_BUILD_JOBS:-$(nproc)}"
+  local -a niced=()
+  if [[ "${AICODING_TMUX_LOW_PRIORITY:-0}" == 1 ]]; then
+    niced=(nice -n 19)
+    command -v ionice &>/dev/null && niced+=(ionice -c3)
+  fi
   if command -v tmux &>/dev/null; then
     local current installed_commit=""
     current="$(tmux -V 2>/dev/null | awk '{print $2}')"
@@ -462,28 +474,39 @@ ensure_tmux() {
       return 0
     fi
     if awk "BEGIN{exit !(${current:-0} >= ${minver})}" 2>/dev/null; then
-      info "tmux $current is not pinned commit ${tmux_commit:0:7} — rebuilding"
+      info "tmux $current is not pinned commit ${tmux_commit:0:7}: rebuilding"
     else
-      info "tmux ${current:-?} is older than $minver — building newer from source"
+      info "tmux ${current:-?} is older than $minver: building newer from source"
     fi
   else
-    info "tmux not installed — building from source"
+    info "tmux not installed: building from source"
   fi
 
   if [[ -n "${AICODINGSETUP_SKIP_NETWORK:-}" ]]; then
     warn "Skipping tmux rebuild while network operations are disabled"
+    [[ "$strict" == 1 ]] && return 3
     return 0
   fi
 
-  command -v curl &>/dev/null || { warn "curl not available — skipping tmux build"; return 0; }
-  apt_install build-essential libevent-dev libncurses-dev pkg-config bison autoconf automake || {
-    warn "Could not install tmux build deps — falling back to apt's tmux"
-    apt_install tmux || warn "apt tmux install also failed — tmux may be missing (non-fatal)"
+  if ! command -v curl &>/dev/null; then
+    warn "curl not available: skipping tmux build"
+    [[ "$strict" == 1 ]] && return 1
     return 0
-  }
+  fi
+  local deps_rc=0
+  "$apt_fn" build-essential libevent-dev libncurses-dev pkg-config bison autoconf automake || deps_rc=$?
+  if [[ "$deps_rc" -ne 0 ]]; then
+    if [[ "$strict" == 1 ]]; then
+      warn "Could not install tmux build deps"
+      return "$deps_rc"
+    fi
+    warn "Could not install tmux build deps: falling back to apt's tmux"
+    apt_install tmux || warn "apt tmux install also failed: tmux may be missing (non-fatal)"
+    return 0
+  fi
 
-  local build_dir="/tmp/tmux-build-$$"
-  local install_tmp="/usr/local/bin/.tmux-${tmux_commit:0:7}-$$"
+  local build_dir="${TMPDIR:-/tmp}/tmux-build-$$"
+  local install_tmp="$prefix/bin/.tmux-${tmux_commit:0:7}-$$"
   rm -rf "$build_dir" && mkdir -p "$build_dir"
   (
     cd "$build_dir"
@@ -493,18 +516,28 @@ ensure_tmux() {
     curl -fsSL "https://github.com/tmux/tmux/archive/${tmux_commit}.tar.gz" \
       | tar xz --strip-components=1 \
       && sh autogen.sh &>/dev/null \
-      && ./configure --prefix=/usr/local &>/dev/null \
-      && make -j"$(nproc)" &>/dev/null \
-      && $SUDO install -d -m 0755 /usr/local/bin /usr/local/share/man/man1 \
-      && $SUDO install -m 0644 tmux.1 /usr/local/share/man/man1/tmux.1 \
+      && ./configure --prefix="$prefix" &>/dev/null \
+      && ${niced[@]+"${niced[@]}"} make -j"$jobs" &>/dev/null \
+      && $SUDO install -d -m 0755 "$prefix/bin" "$prefix/share/man/man1" \
+      && $SUDO install -m 0644 tmux.1 "$prefix/share/man/man1/tmux.1" \
       && $SUDO install -m 0755 tmux "$install_tmp" \
-      && $SUDO mv -f "$install_tmp" /usr/local/bin/tmux \
+      && $SUDO mv -f "$install_tmp" "$prefix/bin/tmux" \
       && $SUDO install -d -m 0755 "$(dirname "$tmux_commit_file")" \
       && printf '%s\n' "$tmux_commit" | $SUDO tee "$tmux_commit_file" >/dev/null
-  ) || { warn "tmux build failed — falling back to apt's tmux"; $SUDO rm -f "$install_tmp"; apt_install tmux || warn "apt tmux install also failed — tmux may be missing (non-fatal)"; rm -rf "$build_dir"; return 0; }
+  ) || {
+    $SUDO rm -f "$install_tmp"
+    rm -rf "$build_dir"
+    if [[ "$strict" == 1 ]]; then
+      warn "tmux build failed"
+      return 1
+    fi
+    warn "tmux build failed: falling back to apt's tmux"
+    apt_install tmux || warn "apt tmux install also failed: tmux may be missing (non-fatal)"
+    return 0
+  }
   rm -rf "$build_dir"
   hash -r
-  ok "tmux $(tmux -V 2>/dev/null | awk '{print $2}') (master ${tmux_commit:0:7}) built and installed to /usr/local/bin/tmux"
+  ok "tmux (master ${tmux_commit:0:7}) built and installed to $prefix/bin/tmux"
 }
 
 # Resolve the browser cache for the exact currently selected MCP package.

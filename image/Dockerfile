@@ -7,7 +7,7 @@
 # in user-owned ~/.local/bin — aicoding-sync --boot self-updates them in place.
 
 # --- Stage 1: build tmux from the pinned commit -----------------------------
-# Pin MUST match tmux_commit in lib/provision-system.sh (ensure_tmux);
+# Pin MUST match AICODING_TMUX_COMMIT_PIN in lib/provision-system.sh (ensure_tmux);
 # tests/bats/image.bats enforces it.
 FROM mcr.microsoft.com/devcontainers/base:ubuntu AS tmux-build
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]

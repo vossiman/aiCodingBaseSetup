@@ -326,6 +326,51 @@ _sync_profile() {
   printf '%s\n' "$p"
 }
 
+# Explicit-only variant of the profile lookup, for step 5 of aicoding_sync
+# below. _sync_profile above intentionally falls back to "container" so old
+# clones keep their historical behavior, but that same fallback would let a
+# legacy host install (predating profiles) run step 5's apt installs and
+# tmux build. This lookup performs the same checks but returns failure when
+# nothing explicitly names a profile: no default. Deliberately does not call
+# manifest_get_profile (lib/blueprint-deploy.sh), which also defaults to
+# container; the manifest is read directly here instead.
+_sync_explicit_container_profile() {
+  local p=${AICODING_PROFILE:-}
+  if [ -z "$p" ] && command -v jq >/dev/null 2>&1 \
+      && [ -f "$AICODING_STATE_DIR/component-selection.json" ]; then
+    p=$(jq -r '.profile // empty' "$AICODING_STATE_DIR/component-selection.json" 2>/dev/null) || p=
+  fi
+  if [ -z "$p" ] && command -v jq >/dev/null 2>&1 && [ -f "$AICODING_MANIFEST" ]; then
+    p=$(jq -r '.profile // empty' "$AICODING_MANIFEST" 2>/dev/null) || p=
+  fi
+  [ "$p" = container ]
+}
+
+# Mirrors the container test in detect_environment() (lib/provision-system.sh).
+# Kept in sync by hand rather than sourcing that file here, which would print
+# its own INFO line and run its install-helper side effects. Tests force the
+# answer with AICODING_CONTAINER_RUNTIME=0|1; production never sets it.
+_sync_is_container_runtime() {
+  if [ -n "${AICODING_CONTAINER_RUNTIME:-}" ]; then
+    [ "$AICODING_CONTAINER_RUNTIME" = 1 ]
+    return
+  fi
+  [ -f /.dockerenv ] || [ -f /run/.containerenv ] \
+    || [ -n "${REMOTE_CONTAINERS:-}" ] || [ -n "${DEVCONTAINER:-}" ] \
+    || [ -n "${CODESPACES:-}" ]
+}
+
+# Step 5's gate (aicoding_sync, below). _sync_profile alone is not enough:
+# it falls back to container for legacy/pre-profile manifests, and a host
+# must never run step 5's apt installs or tmux build. Require a second,
+# independent signal too: either something explicitly names container
+# (env, component selection, or the manifest's own .profile key with no
+# default), or the runtime environment itself looks like a container.
+_sync_system_provision_allowed() {
+  [ "$(_sync_profile)" = container ] || return 1
+  _sync_explicit_container_profile || _sync_is_container_runtime
+}
+
 ensure_kvm_group_access() {
   # Container profile only: /dev/kvm may well exist on a real desktop, but
   # joining a system group there is an unrequested privilege change, and the
@@ -1688,6 +1733,21 @@ _sync_refresh_and_reexec() {
   return 0
 }
 
+# Additive system packages (fixed apt list, tmux pin, frogmouth, go, uv).
+# Container profile only: hosts never ran install-time system provisioning.
+_sync_system_provision() {
+  local lib=""
+  if [ -f "${AICODING_BLUEPRINT_CLONE:-}/lib/provision-scheduled.sh" ]; then
+    lib="$AICODING_BLUEPRINT_CLONE/lib/provision-scheduled.sh"
+  elif [ -n "${SCRIPT_DIR:-}" ] && [ -f "$SCRIPT_DIR/lib/provision-scheduled.sh" ]; then
+    lib="$SCRIPT_DIR/lib/provision-scheduled.sh"
+  else
+    return 0
+  fi
+  . "$lib" >/dev/null || return 1
+  aicoding_run_system_provision
+}
+
 aicoding_sync() {
   # Parse the FIRST recognized flag; no flag = interactive.
   local mode=interactive arg
@@ -1763,6 +1823,21 @@ aicoding_sync() {
     fi
   elif [ "$mode" != dry-run ] && [ "$overall_rc" -eq 0 ]; then
     _sync_binaries_stamp
+  fi
+
+  # 5. Additive system provisioning. Never stops processes; see
+  #    lib/provision-scheduled.sh.
+  if [ "$mode" != dry-run ] && _sync_system_provision_allowed; then
+    local system_rc=0
+    # A tmux build can take minutes; other containers must be able to update
+    # shared config meanwhile.
+    declare -F aicoding_shared_locks_release >/dev/null 2>&1 && aicoding_shared_locks_release
+    _sync_system_provision || system_rc=$?
+    case "$system_rc" in
+      0) ;;
+      3) _SYNC_PASS_DEFERRED=1 ;;
+      *) overall_rc=1 ;;
+    esac
   fi
   if [ "$mode" = boot ] && command -v aicoding_result_record >/dev/null 2>&1 && [ -n "$selected" ]; then
     local active

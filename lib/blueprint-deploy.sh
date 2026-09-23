@@ -270,7 +270,8 @@ owned_file_has_generated_provenance() {
 }
 
 # Acquire non-blocking writer locks inside the physical shared destinations.
-# FDs remain open for the process lifetime, including a refresh exec.
+# FDs stay open across a refresh exec, but the scheduled step releases them
+# via aicoding_shared_locks_release before it returns.
 aicoding_shared_locks_acquire() {
   local dest logical root fd
   local -a roots=()
@@ -311,6 +312,18 @@ aicoding_shared_locks_acquire_managed_roots() {
     "$HOME/.cursor/.aicoding-managed" \
     "$HOME/.config/opencode/.aicoding-managed" \
     "$HOME/.local/share/opencode/.aicoding-managed"
+}
+
+# Close every shared writer lock this process holds. Long local work (a tmux
+# build) must not keep other containers from updating shared config.
+aicoding_shared_locks_release() {
+  declare -p _AICODING_SHARED_LOCK_FDS >/dev/null 2>&1 || return 0
+  local fd
+  for fd in "${_AICODING_SHARED_LOCK_FDS[@]}"; do
+    exec {fd}>&-
+  done
+  _AICODING_SHARED_LOCK_FDS=()
+  declare -gA _AICODING_SHARED_LOCKED_ROOTS=()
 }
 
 # enumerate_skill_files <skills_root> — one file path per line, relative to
