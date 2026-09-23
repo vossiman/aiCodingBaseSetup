@@ -148,7 +148,9 @@ EOF
   expires=$(( $(date +%s) + 3600 ))
   export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
   export AICODING_SHARED_CONSUMERS_FILE="$TEST_ROOT/consumers.json"
-  jq -n --arg root "$shared_root" --argjson expires "$expires" '{schema:1,roots:[{
+  export AICODING_SELF_CONTAINER_ID=known
+  jq -n --arg root "$shared_root" --argjson expires "$expires" \
+    '{schema:1,generated_at:($expires - 60),newest_container_started_at:0,roots:[{
     shared_root:$root,inventory_complete:true,expires_at:$expires,consumers:[{
       id:"known",components:{
         "mcp-context7":{version:"1.0.0",config_compatible:true},

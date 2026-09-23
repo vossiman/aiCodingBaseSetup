@@ -245,12 +245,23 @@ aicoding_config_shared_root() {
 
 aicoding_config_is_shared() { aicoding_config_shared_root "$1" >/dev/null; }
 
+# The container id is the only identity the catalog and this container share.
+# Docker bind-mounts /etc/hostname from /var/lib/docker/containers/<id>/, and
+# the blueprint sets --hostname to the workspace name, so hostname cannot serve.
+_aicoding_self_container_id() {
+  if [ -n "${AICODING_SELF_CONTAINER_ID:-}" ]; then
+    printf '%s\n' "$AICODING_SELF_CONTAINER_ID"; return 0
+  fi
+  grep -oE '/containers/[0-9a-f]{64}/' "${AICODING_MOUNTINFO:-/proc/self/mountinfo}" 2>/dev/null \
+    | head -1 | grep -oE '[0-9a-f]{64}'
+}
+
 # A scheduler may publish non-secret consumer capability evidence in the
 # shared aicodingsetup mount. Until every known consumer opts in, changing
 # version-dependent shared settings is unsafe and remains deferred.
 _aicoding_shared_consumers_allow() {
-  local component=$1 minimum=${2:-} destination=${3:-} registry shared_root shared_rc
-  registry=${AICODING_SHARED_CONSUMERS_FILE:-$HOME/.aicodingsetup/consumer-versions.json}
+  local component=$1 minimum=${2:-} destination=${3:-} registry shared_root shared_rc self_id
+  registry=${AICODING_SHARED_CONSUMERS_FILE:-$HOME/.aicodingsetup/fleet/consumer-versions.json}
   [ "${AICODING_REQUIRE_SHARED_COMPATIBILITY:-0}" != 1 ] && return 0
   if shared_root=$(aicoding_config_shared_root "$destination"); then
     :
@@ -261,14 +272,20 @@ _aicoding_shared_consumers_allow() {
   fi
   local now version
   [ -f "$registry" ] || return 1
+  self_id=$(_aicoding_self_container_id) || self_id=""
+  [ -n "$self_id" ] || return 1
   now=$(date +%s)
-  jq -e --arg c "$component" --arg root "$shared_root" --argjson now "$now" '
+  jq -e --arg c "$component" --arg root "$shared_root" --arg self "$self_id" --argjson now "$now" '
     .schema == 1 and (.roots | type == "array")
+    and (.generated_at | type == "number")
+    and (.newest_container_started_at | type == "number")
+    and .generated_at > .newest_container_started_at
     and ([.roots[] | select(.shared_root == $root)] | length == 1)
     and ([.roots[] | select(.shared_root == $root)][0] as $r
       | $r.inventory_complete == true
       and ($r.expires_at | type == "number" and . > $now)
       and ($r.consumers | type == "array" and length > 0)
+      and any($r.consumers[]; .id == $self)
       and all($r.consumers[];
       (.id | type == "string" and length > 0)
       and (.components[$c].config_compatible == true)
