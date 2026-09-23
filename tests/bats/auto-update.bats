@@ -9,7 +9,8 @@ setup() {
   export AICODING_AUTO_UPDATE_INTERVAL=1
   export AICODING_AUTO_UPDATE_MIN_BACKOFF=1
   export AICODING_AUTO_UPDATE_MAX_BACKOFF=2
-  export PATH="$TEST_ROOT/bin:$PATH"
+  # A removed fixture must never fall through to live agent/update launchers.
+  export PATH="$TEST_ROOT/bin:/usr/bin:/bin"
   mkdir -p "$HOME/.local/bin" "$TEST_ROOT/bin" "$AICODING_STATE_DIR"
   mkdir -p "$TEST_ROOT/runtime/bin" "$TEST_ROOT/runtime/lib" "$TEST_ROOT/runtime/configs/systemd"
   cp "$BLUEPRINT_ROOT/bin/aicoding-auto-update" "$TEST_ROOT/runtime/bin/"
@@ -27,7 +28,7 @@ if [ "${AICODING_TEST_BUSY:-0}" = 1 ]; then
   exit 0
 fi
 exec {sync_fd}>"$AICODING_STATE_DIR/sync.lock"
-flock -n "$sync_fd" || exit 0
+flock -n "$sync_fd" || { echo 'aicoding-sync: update already running' >&2; exit 0; }
 printf '%s %s\n' "$PWD" "$*" >> "$AICODING_TEST_ATTEMPTS"
 printf '%s\n' "${AICODING_UPDATE_TTL:-unset}" >> "$AICODING_TEST_TTLS"
 if [ "${AICODING_TEST_DEFERRED:-0}" = 1 ]; then
@@ -44,10 +45,98 @@ EOF
   : > "$AICODING_TEST_TTLS"
 }
 
+# Enrollment and fallback workers are separate detached process groups; the
+# current worker.pid cannot enumerate enrollment still waiting to create one.
+# Freeze every exact fixture process and its descendants before termination so
+# competing enrollment cannot create a replacement behind teardown's snapshot.
+_stop_fixture_processes() {
+  python3 - "$TEST_ROOT" <<'PY_CLEANUP'
+import os
+from pathlib import Path
+import signal
+import sys
+import time
+
+root = os.fsencode(sys.argv[1])
+excluded = {os.getpid(), os.getppid()}
+known = {}
+
+def snapshot():
+    rows = {}
+    starts = {}
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid in excluded:
+            continue
+        try:
+            args = (entry / 'cmdline').read_bytes().split(b'\0')
+            stat = (entry / 'stat').read_text().rsplit(')', 1)[1].split()
+            if stat[0] == 'Z':
+                continue
+            starts[pid] = stat[19]
+            rows[pid] = (int(stat[1]), int(stat[2]), any(
+                arg == root or arg.startswith(root + b'/') for arg in args))
+        except (OSError, IndexError, ValueError):
+            continue
+    selected = {pid for pid, (_, _, match) in rows.items()
+                if match or known.get(pid) == starts[pid]}
+    groups = {group for pid, (_, group, _) in rows.items() if pid in selected and group == pid}
+    while True:
+        children = {pid for pid, (parent, group, _) in rows.items()
+                    if parent in selected or group in groups}
+        if children <= selected:
+            # Retain descendants by process identity even after their parent
+            # exits and the kernel reparents them outside the fixture tree.
+            known.update({pid: starts[pid] for pid in selected})
+            return selected
+        selected |= children
+
+def send(pids, sig):
+    for pid in pids:
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+
+quiet = 0
+for attempt in range(30):
+    pids = snapshot()
+    if not pids:
+        quiet += 1
+        if quiet == 2:
+            break
+        time.sleep(.05)
+        continue
+    quiet = 0
+    send(pids, signal.SIGSTOP)
+    # Catch children forked immediately before the original parents froze.
+    pids |= snapshot()
+    send(pids, signal.SIGSTOP)
+    send(pids, signal.SIGTERM)
+    send(pids, signal.SIGCONT)
+    time.sleep(.1)
+    # Reidentify survivors before escalation; never signal a recycled PID
+    # merely because it appeared in the preceding snapshot.
+    send(snapshot(), signal.SIGKILL)
+    time.sleep(.02)
+else:
+    raise SystemExit('fixture process cleanup did not converge; preserving runtime')
+PY_CLEANUP
+}
+
 teardown() {
-  if [ -f "$AICODING_STATE_DIR/auto-update/worker.pid" ]; then
-    kill "$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")" 2>/dev/null || true
+  touch "$TEST_ROOT/release"
+  if [ -f "$TEST_ROOT/once.pid" ]; then
+    wait "$(cat "$TEST_ROOT/once.pid")" 2>/dev/null || true
+    flock -w 2 "$AICODING_STATE_DIR/sync.lock" true || true
   fi
+  if [ -f "$TEST_ROOT/detached.pid" ]; then
+    kill "$(cat "$TEST_ROOT/detached.pid")" 2>/dev/null || true
+  fi
+  _stop_fixture_processes || return 1
+  wait 2>/dev/null || true
   rm -rf "$TEST_ROOT"
 }
 
@@ -682,4 +771,401 @@ LEGACY
   wait_for_replacement "$old_worker"
   run flock -n "$HOME/.claude/.aicoding-update.lock" true
   [ "$status" -eq 0 ]
+}
+
+@test "manual once records completed success and attempt without fallback success stamp" {
+  run "$TEST_ROOT/aicoding-auto-update" --once
+  [ "$status" -eq 0 ]
+  [ -s "$AICODING_STATE_DIR/auto-update/last-attempt" ]
+  jq -e '.outcome == "success" and .source == "manual" and .completed_at >= .started_at and .exit_code == 0' "$AICODING_STATE_DIR/auto-update/last-completed.json"
+  [ ! -e "$AICODING_STATE_DIR/auto-update/run.json" ]
+  [ ! -e "$AICODING_STATE_DIR/auto-update/last-success" ]
+}
+
+@test "systemd once records completed deferral then failure honestly" {
+  local source_setting
+  source_setting=$(sed -n 's/^Environment=//p' "$TEST_ROOT/runtime/configs/systemd/aicoding-auto-update.service")
+  [ "$source_setting" = AICODING_AUTO_UPDATE_SOURCE=systemd ]
+  export "$source_setting"
+  export INVOCATION_ID=synthetic AICODING_TEST_DEFERRED=1
+  run "$TEST_ROOT/aicoding-auto-update" --once
+  [ "$status" -eq 0 ]
+  jq -e '.outcome == "deferred" and .source == "systemd"' "$AICODING_STATE_DIR/auto-update/last-completed.json"
+  export AICODING_TEST_DEFERRED=0 AICODING_TEST_FAILS=99
+  run "$TEST_ROOT/aicoding-auto-update" --once
+  [ "$status" -eq 1 ]
+  jq -e '.outcome == "failed" and .exit_code == 1' "$AICODING_STATE_DIR/auto-update/last-completed.json"
+}
+
+@test "busy sync does not overwrite the last completed outcome" {
+  "$TEST_ROOT/aicoding-auto-update" --once
+  cp "$AICODING_STATE_DIR/auto-update/last-completed.json" "$TEST_ROOT/completed"
+  export AICODING_TEST_BUSY=1
+  run "$TEST_ROOT/aicoding-auto-update" --once
+  [ "$status" -eq 0 ]
+  cmp "$TEST_ROOT/completed" "$AICODING_STATE_DIR/auto-update/last-completed.json"
+  [ ! -e "$AICODING_STATE_DIR/auto-update/run.json" ]
+}
+
+@test "ongoing once holds lifetime lock with process identity and concurrent request preserves it" {
+  cat > "$TEST_ROOT/bin/date" <<'DATE'
+#!/usr/bin/env bash
+if [ "$*" = +%s ] && [ -n "${AICODING_TEST_NOW:-}" ]; then
+  printf '%s\n' "$AICODING_TEST_NOW"
+else
+  exec /usr/bin/date "$@"
+fi
+DATE
+  chmod +x "$TEST_ROOT/bin/date"
+  export AICODING_TEST_NOW=1000
+  printf '\nwhile [ ! -f "$TEST_ROOT/release" ]; do sleep 0.05; done\n' >> "$TEST_ROOT/bin/aicoding-sync"
+  "$TEST_ROOT/aicoding-auto-update" --once > "$TEST_ROOT/once.log" 2>&1 &
+  local runner=$!
+  printf '%s\n' "$runner" > "$TEST_ROOT/once.pid"
+  wait_for_lines 1
+  jq -e --argjson pid "$runner" '.pid == $pid and .start_ticks > 0 and .started_at > 0' "$AICODING_STATE_DIR/auto-update/run.json"
+  run flock -n "$AICODING_STATE_DIR/auto-update/run.lock" true
+  [ "$status" -ne 0 ]
+  export AICODING_TEST_NOW=2000
+  run "$TEST_ROOT/aicoding-auto-update" --once
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'update already running'* ]]
+  [ "$(cat "$AICODING_STATE_DIR/auto-update/last-attempt")" = 1000 ]
+  jq -e --argjson pid "$runner" '.pid == $pid' "$AICODING_STATE_DIR/auto-update/run.json"
+  touch "$TEST_ROOT/release"
+  wait "$runner"
+  jq -e '.outcome == "success"' "$AICODING_STATE_DIR/auto-update/last-completed.json"
+  run flock -n "$AICODING_STATE_DIR/auto-update/run.lock" true
+  [ "$status" -eq 0 ]
+}
+
+@test "missing sync executable records a failed attempt" {
+  source "$TEST_ROOT/runtime/lib/auto-update.sh"
+  # Mask resolution without falling through to the host's installed sync.
+  command() { if [ "$*" = '-v aicoding-sync' ]; then return 1; fi; builtin command "$@"; }
+  AICODING_RUNTIME_ROOT="$TEST_ROOT/runtime"
+  run aicoding_auto_update_once
+  [ "$status" -eq 1 ]
+  jq -e '.outcome == "failed" and .exit_code == 1' "$AICODING_STATE_DIR/auto-update/last-completed.json"
+  [ ! -e "$AICODING_STATE_DIR/auto-update/run.json" ]
+}
+
+@test "failed fallback records failure while overdue retry is pending then recovers" {
+  false_systemd_shim
+  export AICODING_TEST_FAILS=1 AICODING_AUTO_UPDATE_MIN_BACKOFF=2 AICODING_AUTO_UPDATE_INTERVAL=3600
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_lines 1
+  for _ in $(seq 40); do [ -s "$AICODING_STATE_DIR/auto-update/next-due" ] && break; sleep 0.025; done
+  jq -e '.outcome == "failed" and .source == "fallback"' "$AICODING_STATE_DIR/auto-update/last-completed.json"
+  [ "$(cat "$AICODING_STATE_DIR/auto-update/next-due")" -le "$(date +%s)" ]
+  [ ! -e "$AICODING_STATE_DIR/auto-update/last-success" ]
+  wait_for_lines 2 100
+  for _ in $(seq 40); do [ -s "$AICODING_STATE_DIR/auto-update/last-success" ] && break; sleep 0.025; done
+  jq -e '.outcome == "success" and .source == "fallback"' "$AICODING_STATE_DIR/auto-update/last-completed.json"
+}
+
+@test "fallback deferral records completed outcome without superseding previous success timestamp" {
+  false_systemd_shim
+  export AICODING_TEST_DEFERRED=1 AICODING_AUTO_UPDATE_INTERVAL=3600
+  mkdir -p "$AICODING_STATE_DIR/auto-update"
+  printf '123\n' > "$AICODING_STATE_DIR/auto-update/last-success"
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_lines 1
+  for _ in $(seq 40); do [ -s "$AICODING_STATE_DIR/auto-update/next-due" ] && break; sleep 0.025; done
+  jq -e '.outcome == "deferred" and .source == "fallback"' "$AICODING_STATE_DIR/auto-update/last-completed.json"
+  [ "$(cat "$AICODING_STATE_DIR/auto-update/last-success")" = 123 ]
+}
+
+@test "sync cannot leak the reporting lock to detached children from older releases" {
+  cat >> "$TEST_ROOT/bin/aicoding-sync" <<'CHILD'
+sleep 30 </dev/null >/dev/null 2>&1 &
+printf '%s\n' "$!" > "$TEST_ROOT/detached.pid"
+CHILD
+  "$TEST_ROOT/aicoding-auto-update" --once
+  local child
+  child=$(cat "$TEST_ROOT/detached.pid")
+  kill -0 "$child"
+  run flock -n "$AICODING_STATE_DIR/auto-update/run.lock" true
+  kill "$child"
+  [ "$status" -eq 0 ]
+}
+
+@test "interrupted once leaves identity evidence but does not overwrite completed outcome" {
+  "$TEST_ROOT/aicoding-auto-update" --once
+  cp "$AICODING_STATE_DIR/auto-update/last-completed.json" "$TEST_ROOT/completed"
+  printf '\nwhile [ ! -f "$TEST_ROOT/release" ]; do sleep 0.05; done\n' >> "$TEST_ROOT/bin/aicoding-sync"
+  "$TEST_ROOT/aicoding-auto-update" --once > "$TEST_ROOT/once.log" 2>&1 &
+  local runner=$!
+  printf '%s\n' "$runner" > "$TEST_ROOT/once.pid"
+  wait_for_lines 2
+  jq -e --argjson pid "$runner" '.pid == $pid' "$AICODING_STATE_DIR/auto-update/run.json"
+  kill -KILL "$runner"
+  wait "$runner" 2>/dev/null || true
+  cmp "$TEST_ROOT/completed" "$AICODING_STATE_DIR/auto-update/last-completed.json"
+  [ -s "$AICODING_STATE_DIR/auto-update/run.json" ]
+  touch "$TEST_ROOT/release"
+  for _ in $(seq 40); do
+    if flock -n "$AICODING_STATE_DIR/sync.lock" true; then break; fi
+    sleep 0.025
+  done
+  run "$TEST_ROOT/aicoding-auto-update" --once
+  [ "$status" -eq 0 ]
+  [ ! -e "$AICODING_STATE_DIR/auto-update/run.json" ]
+  jq -e '.outcome == "success"' "$AICODING_STATE_DIR/auto-update/last-completed.json"
+}
+
+@test "ensure upgrades an idle worker without current reporting protocol and preserves its due time" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_lines 1
+  for _ in $(seq 40); do [ -s "$AICODING_STATE_DIR/auto-update/next-due" ] && break; sleep 0.025; done
+  local old_worker due
+  old_worker=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")
+  due=$(cat "$AICODING_STATE_DIR/auto-update/next-due")
+  rm -f "$AICODING_STATE_DIR/auto-update/worker.protocol"
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_replacement "$old_worker"
+  [ "$(cat "$AICODING_STATE_DIR/auto-update/next-due")" = "$due" ]
+  [ -s "$AICODING_STATE_DIR/auto-update/worker.protocol" ]
+}
+
+@test "outdated-worker upgrade waits for its active sync to finish" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  printf '\nif [ "${AICODING_TEST_SLOW_LEGACY:-0}" = 1 ]; then sleep 2; touch "$TEST_ROOT/legacy-finished"; fi\n' >> "$TEST_ROOT/bin/aicoding-sync"
+  AICODING_TEST_SLOW_LEGACY=1 "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_lines 1
+  local old_worker
+  old_worker=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")
+  rm -f "$AICODING_STATE_DIR/auto-update/worker.protocol"
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  sleep 0.2
+  kill -0 "$old_worker"
+  [ "$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")" = "$old_worker" ]
+  wait_for_replacement "$old_worker"
+  [ -f "$TEST_ROOT/legacy-finished" ]
+}
+
+@test "stale protocol receipt cannot authenticate a recycled worker PID" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_lines 1
+  local old_worker
+  old_worker=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")
+  printf '1 %s 1\n' "$old_worker" > "$AICODING_STATE_DIR/auto-update/worker.protocol"
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_replacement "$old_worker"
+}
+
+_upgrading_sync_fixture() {
+  cp "$BLUEPRINT_ROOT/bin/aicoding-sync" "$TEST_ROOT/runtime/bin/"
+  cp "$BLUEPRINT_ROOT/lib/blueprint-source.sh" "$TEST_ROOT/runtime/lib/"
+  cat > "$TEST_ROOT/runtime/lib/sync.sh" <<'SYNC'
+aicoding_sync() {
+  printf '%s\n' "$*" >> "$AICODING_TEST_ATTEMPTS"
+  return "${AICODING_TEST_SYNC_RC:-0}"
+}
+SYNC
+  rm "$TEST_ROOT/bin/aicoding-sync"
+  ln -s "$TEST_ROOT/runtime/bin/aicoding-sync" "$TEST_ROOT/bin/aicoding-sync"
+  mkdir -p "$TEST_ROOT/legacy" "$AICODING_STATE_DIR/auto-update"
+  # An already loaded legacy worker has no protocol/run reporting, but invokes
+  # the updated stable sync entrypoint on its next scheduled pass.
+  cat > "$TEST_ROOT/legacy/aicoding-auto-update" <<'LEGACY'
+#!/usr/bin/env bash
+state="$AICODING_STATE_DIR/auto-update"
+exec 9>"$state/worker.lock"
+flock -n 9 || exit 0
+printf '%s\n' "$$" > "$state/worker.pid"
+sleep_pid=
+trap 'test -z "$sleep_pid" || kill "$sleep_pid" 2>/dev/null; rm -f "$state/worker.pid"; exit 0' TERM INT
+while :; do
+  aicoding-sync --boot
+  printf '%s\n' "$(date +%s)" > "$state/next-due"
+  sleep 1 & sleep_pid=$!
+  wait "$sleep_pid"
+  sleep_pid=
+done
+LEGACY
+  chmod +x "$TEST_ROOT/legacy/aicoding-auto-update"
+}
+
+@test "a legacy worker upgrades itself through the newly selected sync without another shell" {
+  false_systemd_shim
+  _upgrading_sync_fixture
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  AICODINGSETUP_SKIP_NETWORK= "$TEST_ROOT/legacy/aicoding-auto-update" --worker > "$TEST_ROOT/legacy.log" 2>&1 &
+  local old_worker=$!
+  wait_for_lines 1
+  wait_for_replacement "$old_worker"
+  for _ in $(seq 80); do [ -s "$AICODING_STATE_DIR/auto-update/last-completed.json" ] && break; sleep .05; done
+  jq -e '.outcome == "success" and .source == "fallback"' "$AICODING_STATE_DIR/auto-update/last-completed.json"
+}
+
+@test "scheduled migration hook preserves sync failure and respects the no-network guard" {
+  false_systemd_shim
+  _upgrading_sync_fixture
+  export AICODING_TEST_SYNC_RC=7
+  printf '99999999\n' > "$AICODING_STATE_DIR/auto-update/worker.pid"
+  run "$TEST_ROOT/runtime/bin/aicoding-sync" --boot
+  [ "$status" -eq 7 ]
+  [ ! -f "$AICODING_STATE_DIR/auto-update/enroll.log" ]
+  run env AICODINGSETUP_SKIP_NETWORK= "$TEST_ROOT/runtime/bin/aicoding-sync" --boot
+  [ "$status" -eq 7 ]
+  for _ in $(seq 80); do [ -s "$AICODING_STATE_DIR/auto-update/worker.protocol" ] && break; sleep .05; done
+  [ -s "$AICODING_STATE_DIR/auto-update/worker.protocol" ]
+}
+
+@test "stale PID of another runtime worker is not signalled during protocol migration" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  AICODING_STATE_DIR="$TEST_ROOT/other-state" "$TEST_ROOT/aicoding-auto-update" --worker > "$TEST_ROOT/other.log" 2>&1 &
+  local other_worker=$!
+  printf '%s\n' "$other_worker" > "$TEST_ROOT/detached.pid"
+  wait_for_lines 1
+  mkdir -p "$AICODING_STATE_DIR/auto-update"
+  printf '%s\n' "$other_worker" > "$AICODING_STATE_DIR/auto-update/worker.pid"
+  run bash -c '. "$1/lib/auto-update.sh"; _aicoding_auto_recover_shared_lock_worker' _ "$TEST_ROOT/runtime"
+  [ "$status" -eq 0 ]
+  kill -0 "$other_worker"
+  [ ! -e "$AICODING_STATE_DIR/auto-update/worker.pid" ]
+}
+
+@test "fixture cleanup drains delayed enrollment before removing its runtime" {
+  false_systemd_shim
+  cat > "$TEST_ROOT/bin/systemctl" <<'SYSTEMCTL'
+#!/usr/bin/env bash
+sleep 0.2
+exit 1
+SYSTEMCTL
+  chmod +x "$TEST_ROOT/bin/systemctl"
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  _stop_fixture_processes
+  sleep 0.3
+  local observed
+  observed=$(ps -eo args=)
+  if [[ "$observed" == *"$TEST_ROOT/runtime/bin/aicoding-auto-update"* ]]; then false; fi
+}
+
+@test "manual once inside an unrelated systemd service stays manual" {
+  export INVOCATION_ID=unrelated-ci-runner-service
+  run "$TEST_ROOT/aicoding-auto-update" --once
+  [ "$status" -eq 0 ]
+  jq -e '.source == "manual"' "$AICODING_STATE_DIR/auto-update/last-completed.json"
+}
+
+@test "legacy service source detection is scoped to the updater unit cgroup" {
+  source "$TEST_ROOT/runtime/lib/auto-update.sh"
+  printf '0::/user.slice/user-1000.slice/user@1000.service/app.slice/aicoding-auto-update.service\n' > "$TEST_ROOT/cgroup"
+  run _aicoding_auto_in_systemd_service "$TEST_ROOT/cgroup"
+  [ "$status" -eq 0 ]
+  printf '0::/system.slice/actions-runner.service\n' > "$TEST_ROOT/cgroup"
+  run _aicoding_auto_in_systemd_service "$TEST_ROOT/cgroup"
+  [ "$status" -eq 1 ]
+}
+
+@test "detached scheduler cleanup closes inherited unlinked scheduler lock descriptors" {
+  mkdir -p "$AICODING_STATE_DIR/auto-update"
+  exec {worker_fd}>"$AICODING_STATE_DIR/auto-update/worker.lock"
+  exec {run_fd}>"$AICODING_STATE_DIR/auto-update/run.lock"
+  flock "$worker_fd"
+  flock "$run_fd"
+  rm "$AICODING_STATE_DIR/auto-update/worker.lock" "$AICODING_STATE_DIR/auto-update/run.lock"
+  # The replacement inode is independent: the deleted lock does not block it.
+  # It must nevertheless not leak into a newly detached scheduler's lifetime.
+  run flock -n "$AICODING_STATE_DIR/auto-update/worker.lock" true
+  [ "$status" -eq 0 ]
+  run bash -c '
+    source "$TEST_ROOT/runtime/lib/auto-update.sh"
+    _aicoding_auto_close_scheduler_lock_fds
+    [ ! -e "/proc/$BASHPID/fd/$1" ] && [ ! -e "/proc/$BASHPID/fd/$2" ]
+  ' _ "$worker_fd" "$run_fd"
+  exec {worker_fd}>&-
+  exec {run_fd}>&-
+  [ "$status" -eq 0 ]
+}
+
+@test "deleted worker lock stops only a worker with matching protocol identity" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_lines 1
+  local worker
+  worker=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")
+  rm "$AICODING_STATE_DIR/auto-update/worker.lock"
+  run bash -c '. "$1/lib/auto-update.sh"; _aicoding_auto_stop_worker' _ "$TEST_ROOT/runtime"
+  [ "$status" -eq 0 ]
+  if kill -0 "$worker" 2>/dev/null; then false; fi
+}
+
+@test "deleted worker lock without protocol proof preserves worker and defers transition" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_lines 1
+  local worker
+  worker=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")
+  rm "$AICODING_STATE_DIR/auto-update/worker.lock" "$AICODING_STATE_DIR/auto-update/worker.protocol"
+  run bash -c '. "$1/lib/auto-update.sh"; _aicoding_auto_stop_worker' _ "$TEST_ROOT/runtime"
+  [ "$status" -eq 1 ]
+  kill -0 "$worker"
+  [ "$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")" = "$worker" ]
+}
+
+@test "deleted worker descriptor cannot stand in for a held replacement lock inode" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_lines 1
+  local worker
+  worker=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")
+  rm "$AICODING_STATE_DIR/auto-update/worker.lock"
+  exec {replacement_fd}>"$AICODING_STATE_DIR/auto-update/worker.lock"
+  flock "$replacement_fd"
+  run bash -c '. "$1/lib/auto-update.sh"; _aicoding_auto_stop_worker' _ "$TEST_ROOT/runtime"
+  exec {replacement_fd}>&-
+  [ "$status" -eq 3 ]
+  kill -0 "$worker"
+  [ "$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")" = "$worker" ]
+}
+
+@test "post-sync migration skips enrollment inside the updater systemd service" {
+  false_systemd_shim
+  _upgrading_sync_fixture
+  printf '99999999\n' > "$AICODING_STATE_DIR/auto-update/worker.pid"
+  run env AICODINGSETUP_SKIP_NETWORK= AICODING_AUTO_UPDATE_SOURCE=systemd "$TEST_ROOT/runtime/bin/aicoding-sync" --boot
+  [ "$status" -eq 0 ]
+  sleep .1
+  [ ! -f "$AICODING_STATE_DIR/auto-update/enroll.log" ]
+  source "$TEST_ROOT/runtime/lib/auto-update.sh"
+  _aicoding_auto_in_systemd_service() { return 0; }
+  AICODINGSETUP_SKIP_NETWORK= aicoding_auto_upgrade_worker_after_sync "$TEST_ROOT/runtime"
+  [ ! -f "$AICODING_STATE_DIR/auto-update/enroll.log" ]
+}
+
+@test "ensure repairs a deleted lifetime lock before starting a fallback successor" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_lines 1
+  local old_worker
+  old_worker=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")
+  rm "$AICODING_STATE_DIR/auto-update/worker.lock"
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_replacement "$old_worker"
+  if kill -0 "$old_worker" 2>/dev/null; then false; fi
+}
+
+@test "failed attempt timestamp persistence releases the controller lock" {
+  source "$TEST_ROOT/runtime/lib/auto-update.sh"
+  _aicoding_auto_atomic_number() { return 1; }
+  local rc=0
+  aicoding_auto_update_once || rc=$?
+  [ "$rc" -eq 1 ]
+  run flock -n "$AICODING_STATE_DIR/auto-update/run.lock" true
+  [ "$status" -eq 0 ]
+  [ ! -s "$AICODING_TEST_ATTEMPTS" ]
 }

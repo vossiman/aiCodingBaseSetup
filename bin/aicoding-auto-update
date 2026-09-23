@@ -15,6 +15,7 @@ esac
 # they start a worker which will later acquire the same lock.
 case "${1:-}" in
   --enroll|--worker)
+    _aicoding_auto_close_scheduler_lock_fds || exit 1
     if [[ "${AICODING_SYNC_LOCK_FD:-}" =~ ^[0-9]+$ ]]; then
       eval "exec ${AICODING_SYNC_LOCK_FD}>&-"
     fi

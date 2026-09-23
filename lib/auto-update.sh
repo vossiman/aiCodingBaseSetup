@@ -42,6 +42,70 @@ _aicoding_auto_close_shared_lock_fds() {
   done < <(_aicoding_auto_shared_lock_fds "$$")
 }
 
+# A worker keeps the library loaded for its entire lifetime. A new launcher
+# alone cannot upgrade its run reporting, so enrollment replaces old workers.
+# Bind capability evidence to process start time, not a reusable PID alone.
+_aicoding_auto_worker_protocol_current() {
+  local state=$1 pid=$2 protocol recorded_pid ticks actual_ticks
+  [ -r "$state/worker.protocol" ] || return 1
+  read -r protocol recorded_pid ticks < "$state/worker.protocol" || return 1
+  [ "$protocol" = 1 ] && [ "$recorded_pid" = "$pid" ] || return 1
+  actual_ticks=$(_aicoding_auto_process_start_ticks "$pid" 2>/dev/null) || return 1
+  [ "$ticks" = "$actual_ticks" ]
+}
+
+# Protocol identity alone does not prove mutual exclusion when a lock file
+# was removed and recreated while the process kept its old inode open.
+_aicoding_auto_worker_has_current_lock() {
+  local state=$1 pid=$2 expected path target
+  [ -e "$state/worker.lock" ] || return 1
+  expected=$(readlink -f "$state/worker.lock" 2>/dev/null) || return 1
+  for path in /proc/"$pid"/fd/[0-9]*; do
+    target=$(readlink "$path" 2>/dev/null) || continue
+    [ "$target" != "$expected" ] || return 0
+  done
+  return 1
+}
+
+# Legacy workers pass their lifetime lock into sync children. Detached
+# enrollment must not retain it while waiting for that worker to exit.
+_aicoding_auto_close_scheduler_lock_fds() {
+  local pid=$BASHPID path fd target
+  for path in /proc/"$pid"/fd/[0-9]*; do
+    fd=${path##*/}
+    [ "$fd" -gt 2 ] 2>/dev/null || continue
+    target=$(readlink "$path" 2>/dev/null) || continue
+    case "$target" in
+      */auto-update/worker.lock|*/auto-update/run.lock|\
+      */auto-update/worker.lock\ \(deleted\)|*/auto-update/run.lock\ \(deleted\))
+        exec {fd}>&- || return 1 ;;
+    esac
+  done
+}
+
+# Invoked by the newly selected scheduled sync while the old shell may still
+# own worker.lock. Queue migration in the new release, without making sync
+# wait for itself to release sync.lock. A saved worker PID also permits recovery
+# after a crash; state with no worker PID never enrolls through this hook.
+aicoding_auto_upgrade_worker_after_sync() {
+  [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ] || return 0
+  # A oneshot service would kill detached children when its cgroup exits.
+  # Any legacy fallback still upgrades through its own next scheduled pass.
+  [ "${AICODING_AUTO_UPDATE_SOURCE:-}" != systemd ] || return 0
+  _aicoding_auto_in_systemd_service && return 0
+  local root=$1 state pid self
+  state=$(_aicoding_auto_state_dir) || return 1
+  pid=$(cat "$state/worker.pid" 2>/dev/null || true)
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
+  if _aicoding_auto_worker_protocol_current "$state" "$pid" \
+      && _aicoding_auto_worker_has_current_lock "$state" "$pid"; then return 0; fi
+  self="$root/bin/aicoding-auto-update"
+  [ -x "$self" ] || return 1
+  _aicoding_auto_rotate_log "$state/enroll.log"
+  nohup setsid "$self" --enroll </dev/null >>"$state/enroll.log" 2>&1 &
+  return 0
+}
+
 # Caller owns ensure.lock. Never signal a worker while an update is active.
 _aicoding_auto_recover_shared_lock_worker_locked() {
   local state pid fds sync_fd own_sync_fd=0 rc=0 inherited_target= expected_target= probe_fd
@@ -56,7 +120,10 @@ _aicoding_auto_recover_shared_lock_worker_locked() {
     case "$rc" in 0) return 0 ;; 1) return 3 ;; *) return 1 ;; esac
   fi
   fds=$(_aicoding_auto_shared_lock_fds "$pid")
-  [ -n "$fds" ] || return 0
+  if [ -z "$fds" ] && _aicoding_auto_worker_protocol_current "$state" "$pid" \
+      && _aicoding_auto_worker_has_current_lock "$state" "$pid"; then
+    return 0
+  fi
   # The scheduler was introduced in d9db8ad with every pass routed through
   # bin/aicoding-sync, which already held sync.lock for the whole run. Thus
   # no supported legacy scheduler predates this mutual-exclusion protocol.
@@ -100,7 +167,74 @@ _aicoding_auto_atomic_number() {
   mv -f -- "$tmp" "$path"
 }
 
+# PID reuse must not make an interrupted attempt look alive. Field 22 is
+# measured from boot; strip the parenthesized command before splitting fields.
+_aicoding_auto_process_start_ticks() {
+  local stat
+  local -a fields
+  IFS= read -r stat < "/proc/$1/stat" || return 1
+  read -r -a fields <<< "${stat##*) }"
+  [[ "${fields[19]:-}" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "${fields[19]}"
+}
+
+# INVOCATION_ID is inherited by any command launched under a systemd service,
+# including manual updates from hosted CI or terminals. Older installed units
+# lack our explicit source marker, so recognize only this unit's cgroup.
+_aicoding_auto_in_systemd_service() {
+  local file=${1:-/proc/$BASHPID/cgroup} hierarchy controllers path
+  [ -r "$file" ] || return 1
+  while IFS=: read -r hierarchy controllers path; do
+    case "$path/" in
+      */aicoding-auto-update.service/*) return 0 ;;
+    esac
+  done < "$file"
+  return 1
+}
+
 aicoding_auto_update_once() {
+  local state run_fd started completed pid ticks source=manual outcome rc=0
+  state=$(_aicoding_auto_state_dir) || return 1
+  mkdir -p "$state" || return 1
+  AICODING_AUTO_UPDATE_PERFORMED=0
+  AICODING_AUTO_UPDATE_DEFERRED=0
+  exec {run_fd}>"$state/run.lock" || return 1
+  if ! flock -n "$run_fd"; then
+    echo 'aicoding-auto-update: update already running; request deferred' >&2
+    exec {run_fd}>&-
+    return 0
+  fi
+  # A request rejected by the controller lock never began an attempt.
+  started=$(date +%s) || { exec {run_fd}>&-; return 1; }
+  _aicoding_auto_atomic_number "$state/last-attempt" "$started" \
+    || { exec {run_fd}>&-; return 1; }
+  case "${AICODING_AUTO_UPDATE_SOURCE:-}" in
+    systemd|fallback) source=$AICODING_AUTO_UPDATE_SOURCE ;;
+    *) _aicoding_auto_in_systemd_service && source=systemd ;;
+  esac
+  pid=$BASHPID
+  ticks=$(_aicoding_auto_process_start_ticks "$pid") || ticks=0
+  if ! _aicoding_auto_atomic_number "$state/run.json" \
+      "{\"pid\":$pid,\"start_ticks\":$ticks,\"started_at\":$started,\"source\":\"$source\"}"; then
+    exec {run_fd}>&-
+    return 1
+  fi
+  AICODING_AUTO_UPDATE_PERFORMED=1
+  _aicoding_auto_update_execute_once || rc=$?
+  if [ "$AICODING_AUTO_UPDATE_PERFORMED" -eq 1 ] || [ "$rc" -ne 0 ]; then
+    outcome=success
+    [ "$AICODING_AUTO_UPDATE_DEFERRED" -eq 0 ] || outcome=deferred
+    [ "$rc" -eq 0 ] || outcome=failed
+    completed=$(date +%s) || completed=$started
+    _aicoding_auto_atomic_number "$state/last-completed.json" \
+      "{\"started_at\":$started,\"completed_at\":$completed,\"outcome\":\"$outcome\",\"exit_code\":$rc,\"source\":\"$source\"}" || rc=1
+  fi
+  rm -f -- "$state/run.json"
+  exec {run_fd}>&-
+  return "$rc"
+}
+
+_aicoding_auto_update_execute_once() {
   local state sync output rc=0
   local -a pipeline_status
   state=$(_aicoding_auto_state_dir) || return 1
@@ -117,7 +251,9 @@ aicoding_auto_update_once() {
   # A scheduler tick and an explicit --once are update requests, rather than
   # shell-start noise. Bypass sync's legacy boot throttle for this invocation
   # so a timer firing at the same cadence as the TTL still checks components.
-  if (cd "$state" && AICODING_UPDATE_TTL=0 "$sync" --boot </dev/null) 2>&1 | tee "$output"; then
+  # Keep the reporting lock exclusively in this shell. A selected older
+  # release may detach enrollment without knowing about this new descriptor.
+  if (exec {run_fd}>&-; cd "$state" && AICODING_UPDATE_TTL=0 "$sync" --boot </dev/null) 2>&1 | (exec {run_fd}>&-; tee "$output"); then
     pipeline_status=("${PIPESTATUS[@]}")
   else
     pipeline_status=("${PIPESTATUS[@]}")
@@ -206,7 +342,7 @@ _aicoding_auto_start_worker() {
 }
 
 _aicoding_auto_stop_worker() {
-  local state pid argument arguments= i
+  local state pid argument arguments= i path target expected owns_lock=0 deleted_lock=0 replacement_fd=
   state=$(_aicoding_auto_state_dir) || return 1
   pid=$(cat "$state/worker.pid" 2>/dev/null || true)
   if [[ ! "$pid" =~ ^[1-9][0-9]*$ ]]; then
@@ -223,16 +359,47 @@ _aicoding_auto_stop_worker() {
     *aicoding-auto-update*' --worker '*) ;;
     *) [ "$(cat "$state/worker.pid" 2>/dev/null || true)" != "$pid" ] || rm -f -- "$state/worker.pid"; return 0 ;;
   esac
-  kill "$pid" 2>/dev/null || return 0
+  # A recycled PID may now name another aicoding worker in a different state
+  # directory. Its command line alone does not authorize terminating it.
+  expected=$(readlink -f "$state/worker.lock" 2>/dev/null) || expected=
+  if [ -n "$expected" ]; then
+    for path in /proc/"$pid"/fd/[0-9]*; do
+      target=$(readlink "$path" 2>/dev/null) || continue
+      if [ "$target" = "$expected" ]; then owns_lock=1; break; fi
+      [ "$target" != "$expected (deleted)" ] || deleted_lock=1
+    done
+  fi
+  if [ "$owns_lock" -ne 1 ] && [ "$deleted_lock" -eq 1 ]; then
+    # A deleted path spelling is not ownership proof. The state receipt must
+    # bind this exact process, and no replacement lock owner may be hidden by
+    # stopping the retired-inode worker before enabling a different backend.
+    _aicoding_auto_worker_protocol_current "$state" "$pid" || {
+      echo 'aicoding-auto-update: deleted worker lock ownership cannot be verified; transition deferred' >&2
+      return 1
+    }
+    exec {replacement_fd}>"$state/worker.lock" || return 1
+    if ! flock -n "$replacement_fd"; then
+      exec {replacement_fd}>&-
+      return 3
+    fi
+    owns_lock=1
+  fi
+  if [ "$owns_lock" -ne 1 ]; then
+    [ "$(cat "$state/worker.pid" 2>/dev/null || true)" != "$pid" ] || rm -f -- "$state/worker.pid"
+    return 0
+  fi
+  kill "$pid" 2>/dev/null || { [ -z "$replacement_fd" ] || exec {replacement_fd}>&-; return 0; }
   for ((i=0; i<20; i++)); do
     # Removing the PID file is not process exit: the TERM trap may still
     # own worker.lock and inherited descriptors until the shell exits.
     if ! kill -0 "$pid" 2>/dev/null; then
       [ "$(cat "$state/worker.pid" 2>/dev/null || true)" != "$pid" ] || rm -f -- "$state/worker.pid"
+      [ -z "$replacement_fd" ] || exec {replacement_fd}>&-
       return 0
     fi
     sleep 0.1
   done
+  [ -z "$replacement_fd" ] || exec {replacement_fd}>&-
   return 3
 }
 
@@ -318,7 +485,7 @@ aicoding_auto_update_worker() {
   _aicoding_auto_positive_integer "$AICODING_AUTO_UPDATE_MAX_BACKOFF" || return 2
   [ "$AICODING_AUTO_UPDATE_MIN_BACKOFF" -le "$AICODING_AUTO_UPDATE_MAX_BACKOFF" ] || return 2
 
-  local state lock_fd pid_file next_file attempt_file success_file log now due delay backoff rc sleep_pid=
+  local state lock_fd pid_file next_file success_file log now due delay backoff rc sleep_pid=
   state=$(_aicoding_auto_state_dir) || return 1
   mkdir -p "$state" || return 1
   # The fallback is long-lived. Move off the caller's workspace before taking
@@ -328,10 +495,13 @@ aicoding_auto_update_worker() {
   exec {lock_fd}>"$state/worker.lock" || return 1
   flock -n "$lock_fd" || { exec {lock_fd}>&-; return 0; }
   pid_file="$state/worker.pid"
+  local ticks
+  ticks=$(_aicoding_auto_process_start_ticks "$$") || { exec {lock_fd}>&-; return 1; }
+  _aicoding_auto_atomic_number "$state/worker.protocol" "1 $$ $ticks" \
+    || { exec {lock_fd}>&-; return 1; }
   printf '%s\n' "$$" > "$pid_file" || { exec {lock_fd}>&-; return 1; }
   trap '[ -z "${sleep_pid:-}" ] || kill "$sleep_pid" 2>/dev/null || true; test "$(cat "$pid_file" 2>/dev/null)" != "$$" || rm -f -- "$pid_file"; exit 0' TERM INT HUP
   next_file="$state/next-due"
-  attempt_file="$state/last-attempt"
   success_file="$state/last-success"
   log="$state/worker.log"
   backoff=$AICODING_AUTO_UPDATE_MIN_BACKOFF
@@ -341,10 +511,9 @@ aicoding_auto_update_worker() {
     due=$(cat "$next_file" 2>/dev/null || echo 0)
     [[ "$due" =~ ^[0-9]+$ ]] || due=0
     if [ "$due" -le "$now" ]; then
-      _aicoding_auto_atomic_number "$attempt_file" "$now" || true
       rc=0
       _aicoding_auto_rotate_log "$log"
-      aicoding_auto_update_once >>"$log" 2>&1 || rc=$?
+      AICODING_AUTO_UPDATE_SOURCE=fallback aicoding_auto_update_once >>"$log" 2>&1 || rc=$?
       now=$(date +%s) || now=0
       if [ "$rc" -eq 0 ] && [ "${AICODING_AUTO_UPDATE_PERFORMED:-1}" -eq 1 ]; then
         if [ "${AICODING_AUTO_UPDATE_DEFERRED:-0}" -ne 1 ]; then

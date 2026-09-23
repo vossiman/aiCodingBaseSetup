@@ -49,3 +49,16 @@ for arg in "${AICODING_REMAINING_ARGS[@]}"; do
 done
 . "$AICODING_BLUEPRINT_CLONE/lib/sync.sh"
 aicoding_sync "${AICODING_REMAINING_ARGS[@]}"
+_aicoding_sync_rc=$?
+# Existing fallback shells retain old library code after runtime activation.
+# Their first pass through this selected entrypoint queues a safe idle upgrade.
+if [ "$AICODING_BLUEPRINT_LOCAL" != 1 ] && [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ]; then
+  for arg in "${AICODING_REMAINING_ARGS[@]}"; do
+    if [ "$arg" = --boot ] && [ -f "$SCRIPT_DIR/lib/auto-update.sh" ]; then
+      . "$SCRIPT_DIR/lib/auto-update.sh"
+      aicoding_auto_upgrade_worker_after_sync "$SCRIPT_DIR" || true
+      break
+    fi
+  done
+fi
+exit "$_aicoding_sync_rc"

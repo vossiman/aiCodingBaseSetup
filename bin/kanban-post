@@ -29,6 +29,7 @@ Usage:
   kanban-post --comment TICKET "text" | --comment TICKET --body TEXT
   kanban-post --link TICKET --depends-on OTHER | --blocks OTHER | --relates OTHER
   kanban-post --unlink TICKET OTHER
+  kanban-post --show TICKET     # the ticket with its comments and links
   kanban-post --list-repos | --list-tickets
   kanban-post --json OPERATION  # reads one JSON object from stdin
   kanban-post --selftest        # proves the token cannot reach the output
@@ -724,6 +725,8 @@ def main() -> int:
                    help="plain see-also link, no direction")
     p.add_argument("--unlink", metavar="TICKET", default=None,
                    help="remove the link between TICKET and OTHER (given positionally)")
+    p.add_argument("--show", metavar="TICKET", default=None,
+                   help="print the ticket with its comments and links; changes nothing")
     p.add_argument("--list-repos", action="store_true")
     p.add_argument("--list-tickets", action="store_true")
     p.add_argument("--json", metavar="OPERATION", default=None,
@@ -755,12 +758,22 @@ def main() -> int:
     if a.link and a.unlink:
         p.error("--link and --unlink are alternatives")
 
+    if a.show:
+        # Read-only by construction: any flag that would write is a refusal
+        # rather than something silently dropped.
+        writes = ("title", "repo", "body", "status", "priority", "swimlane", "due",
+                  "patch", "done", "comment", "link", "unlink", "list_repos", "list_tickets")
+        if any(getattr(a, name) for name in writes) or kinds:
+            p.error("--show only reads a ticket; give it the ticket and nothing else")
+
     if a.selftest:
         return selftest()
     if a.list_repos:
         status, out = call("GET", "/api/repos")
     elif a.list_tickets:
         status, out = call("GET", "/api/tickets")
+    elif a.show:
+        status, out = call("GET", f"/api/tickets/{a.show}")
     elif a.link:
         if len(kinds) != 1:
             p.error("--link needs exactly one of --depends-on OTHER, --blocks OTHER, --relates OTHER")

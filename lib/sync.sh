@@ -585,6 +585,75 @@ _sync_collect_smart_decisions() {
   done
 }
 
+# Record a component only after considering EVERY destination in its inventory.
+# A successful tool install or aggregate config receipt is not recovery evidence:
+# another destination for that same harness may still be blocked or conflicted.
+# $2 lists buckets whose application completed; an empty list means no-op only.
+_sync_record_config_results() {
+  local target=$1 applied=" ${2:-} " d component bucket rank result state reason
+  command -v aicoding_result_record >/dev/null 2>&1 || return 0
+  command -v _aicoding_config_component >/dev/null 2>&1 || return 0
+  [ "$target" != unknown ] || return 0
+  # Severity wins across destinations: verified < unexamined < blocked < conflict < failed.
+  local -A ranks=()
+  declare -gA _SYNC_RECOVERY_UNVERIFIED
+  for d in "${!BUCKETS[@]}"; do
+    component=$(_aicoding_config_component "$d")
+    case "$component" in config-*) ;; *) continue ;; esac
+    bucket=${BUCKETS[$d]}
+    rank=1
+    if [[ "${APPLY_FAILURES[$d]:-0}" == 1 || "$bucket" == smart_error ]]; then
+      rank=5
+    elif [[ "$bucket" == blocked ]]; then
+      rank=3
+    elif [[ "${_SYNC_RECOVERY_UNVERIFIED[$d]:-0}" == 1 ]]; then
+      rank=2
+    elif [[ "$bucket" == smart_update || "$bucket" == smart_conflict \
+        || ( "${FILE_MODE[$d]:-}" == toml_merge && "$bucket" != up_to_date && "$bucket" != smart_retired ) ]]; then
+      result=${SMART_APPLY_RESULT[$d]:-}
+      if [[ -z "$result" ]]; then
+        rank=2
+      elif ! printf '%s' "$result" | jq -e 'type == "object" and (.error == null)' >/dev/null 2>&1; then
+        rank=5
+      elif ! printf '%s' "$result" | jq -e '.conflicts == []' >/dev/null 2>&1; then
+        rank=4
+      elif ! printf '%s' "$result" | jq -e '.applied == true and .unmanaged == false' >/dev/null 2>&1; then
+        rank=2
+      fi
+    else
+      case "$bucket" in
+        up_to_date|drifted_but_aligned) ;;
+        *)
+          case "$applied" in
+            *" $bucket "*) ;;
+            *)
+              case "$bucket" in
+                drifted_and_updating|new_file_existing|to_remove) rank=4 ;;
+                *) rank=2 ;; # Not applied or not understood: retain prior evidence.
+              esac
+              ;;
+          esac
+          ;;
+      esac
+    fi
+    (( rank <= ${ranks[$component]:-0} )) || ranks[$component]=$rank
+  done
+  for component in "${!ranks[@]}"; do
+    case "${ranks[$component]}" in
+      1) aicoding_result_record "$component" current "$target" reconciliation_verified "$target" || true ;;
+      2) : ;;
+      *)
+        case "${ranks[$component]}" in
+          3) state=blocked; reason=${blocked_reasons[$component]:-partial_config_blocked} ;;
+          4) state=conflict; reason=managed_config_conflict ;;
+          5) state=failed; reason=managed_config_apply_failed ;;
+        esac
+        aicoding_result_record "$component" "$state" "$target" "$reason" || true
+        ;;
+    esac
+  done
+}
+
 # Config reconcile: classify managed files, preview/prompt/apply per mode,
 # stamp the manifest. Ported from the old aicoding-update CLI and folded in.
 # $1 = mode: boot | first | dry-run | yes | interactive.
@@ -592,17 +661,18 @@ _sync_collect_smart_decisions() {
 # remain fail-open so unattended maintenance continues.
 _sync_reconcile() {
   local mode=$1
-  declare -gA _SYNC_DEFERRED_PROVISION_COMPONENTS=()
+  declare -gA _SYNC_DEFERRED_PROVISION_COMPONENTS=() _SYNC_RECOVERY_UNVERIFIED=()
   # Clear prior classifications before any early return. The caller uses this
   # snapshot to distinguish actual smart errors from ordinary reconcile
   # failures that must still abort before maintenance.
-  declare -gA BUCKETS FILE_MODE FILE_SOURCE SMART_PLAN SMART_APPLY_RESULT SMART_DECISIONS
+  declare -gA BUCKETS FILE_MODE FILE_SOURCE SMART_PLAN SMART_APPLY_RESULT SMART_DECISIONS APPLY_FAILURES
   BUCKETS=()
   FILE_MODE=()
   FILE_SOURCE=()
   SMART_PLAN=()
   SMART_APPLY_RESULT=()
   SMART_DECISIONS=()
+  APPLY_FAILURES=()
   if _sync_color_on; then _SYNC_COLOR=1; else _SYNC_COLOR=0; fi
 
   # _sync_refresh_and_reexec already fetched in this process; a second fetch
@@ -661,7 +731,16 @@ _sync_reconcile() {
   done
 
   local blocked_count=0 reason component
-  local -A blocked_reasons=()
+  local -A blocked_reasons=() recovery_components=()
+  # Recheck prerequisites for a no-op only when retiring an unresolved receipt.
+  # Otherwise unchanged config must not introduce update work for absent tools.
+  if [ -f "${AICODING_RESULTS_FILE:-}" ]; then
+    while IFS= read -r component; do
+      recovery_components[$component]=1
+    done < <(jq -r '(.components // {}) | to_entries[]
+      | select(.value.state == "blocked" or .value.state == "conflict" or .value.state == "failed")
+      | .key | select(startswith("config-"))' "$AICODING_RESULTS_FILE" 2>/dev/null)
+  fi
   if [ "$mode" != dry-run ] && command -v aicoding_config_is_compatible >/dev/null 2>&1; then
     export AICODING_REQUIRE_UPDATE_RECEIPT=1
     # The compatibility helper resolves each destination and treats confirmed
@@ -670,6 +749,10 @@ _sync_reconcile() {
     export AICODING_REQUIRE_SHARED_COMPATIBILITY=1
     for d in "${!BUCKETS[@]}"; do
       case "${BUCKETS[$d]}" in
+        up_to_date)
+          component=$(_aicoding_config_component "$d")
+          [[ "${recovery_components[$component]:-0}" == 1 ]] || continue
+          ;;
         restore|new_file|will_update|will_update_owned|drifted_but_aligned|merge|smart_update|smart_conflict) ;;
         smart_error)
           _SYNC_DEFERRED_PROVISION_COMPONENTS[codex]=1
@@ -678,6 +761,13 @@ _sync_reconcile() {
         *) continue ;;
       esac
       if ! reason=$(aicoding_config_is_compatible "$d"); then
+        if [[ "${BUCKETS[$d]}" == up_to_date ]]; then
+          # No update is pending here. Retain the old receipt without renewing
+          # its timestamp or downgrading an unconfirmed failure to a new block.
+          # Recovery uncertainty must not gate the stamp or invent deferrals.
+          _SYNC_RECOVERY_UNVERIFIED[$d]=1
+          continue
+        fi
         BUCKETS[$d]=blocked
         blocked_count=$((blocked_count + 1))
         component=$(_aicoding_config_component "$d")
@@ -748,6 +838,7 @@ _sync_reconcile() {
     # without touching any managed file (lib/tests/bin-only changes). Leaving
     # the old commit recorded keeps aicoding-status on "behind" forever.
     if _sync_has_smart_errors; then
+      _sync_record_config_results "$NEW_COMMIT" ""
       _SYNC_DEFERRED_PROVISION_COMPONENTS[codex]=1
       _SYNC_PASS_DEFERRED=1
       command -v aicoding_result_record >/dev/null 2>&1 \
@@ -755,6 +846,7 @@ _sync_reconcile() {
       if [[ "$mode" != boot && "$mode" != first ]]; then return 1; fi
       return 0
     elif [ "$blocked_count" -gt 0 ]; then
+      _sync_record_config_results "$NEW_COMMIT" ""
       echo "$blocked_count managed config update(s) blocked by tool compatibility"
       command -v aicoding_result_record >/dev/null 2>&1 \
         && aicoding_result_record config blocked "$NEW_COMMIT" partial_config_blocked || true
@@ -772,6 +864,7 @@ _sync_reconcile() {
         return 1
       fi
     fi
+    _sync_record_config_results "$NEW_COMMIT" ""
     command -v aicoding_result_record >/dev/null 2>&1 && [ "$NEW_COMMIT" != unknown ] \
       && aicoding_result_record config current "$NEW_COMMIT" applied "$NEW_COMMIT" || true
     return 0
@@ -932,6 +1025,9 @@ _sync_reconcile() {
   if [ "$commit_rc" -ne 0 ]; then
     _SYNC_DEFERRED_PROVISION_COMPONENTS[claude]=1
     _SYNC_DEFERRED_PROVISION_COMPONENTS[codex]=1
+  fi
+  if [ "$commit_rc" -eq 0 ]; then
+    _sync_record_config_results "$NEW_COMMIT" "$buckets"
   fi
   if command -v aicoding_result_record >/dev/null 2>&1; then
     if [ "$commit_rc" -ne 0 ]; then

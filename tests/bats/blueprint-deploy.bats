@@ -981,9 +981,9 @@ EOF
   [ "${BUCKETS[$HOME/.tmux.conf]}" = "restore" ]
   [ "${BUCKETS[$HOME/.obsolete]}" = "to_remove" ]
 
-  # Apply only restore + new_file + will_update + drifted_but_aligned + merge.
+  # This fixture has only overwrite sources; merge and removal are excluded.
   manifest_stage_begin
-  apply_managed_buckets "restore new_file will_update drifted_but_aligned merge"
+  apply_managed_buckets "restore new_file will_update drifted_but_aligned"
   manifest_stage_commit
 
   # tmux.conf restored.
