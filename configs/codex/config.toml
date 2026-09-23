@@ -86,8 +86,13 @@ command = "context7-mcp"
 command = "playwright-mcp"
 args = ["--browser", "chromium"]
 
+# Codex builds its initial tool catalog after waiting at most
+# mcp_optional_startup_grace_ms (1 s) for optional servers; kanban-mcp needs
+# about 3 s to start, so without `required` its tools never reach the model.
 [mcp_servers.kanban]
 command = "kanban-mcp"
+required = true
+startup_timeout_sec = 30
 
 [mcp_servers.memory-router]
 # memory-router — central memory-lanes retrieval router on vossisrv (the
