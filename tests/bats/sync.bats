@@ -865,6 +865,44 @@ STUB
   [ "$(cat "$HOME/auto-update.log")" = --ensure ]
 }
 
+@test "provisioning skips enrollment in a sync started by the automatic updater" {
+  local clone="$TMP/enroll-marker-blueprint" marker
+  mkdir -p "$clone/lib"
+  printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > "$clone/.aicoding-version"
+  cat > "$clone/lib/provision.sh" <<'STUB'
+install_mcp_packages() { return 0; }
+install_claude_mcps() { return 0; }
+install_claude_plugins() { return 0; }
+install_codex_plugins() { return 0; }
+remove_deprecated_shims() { return 0; }
+header() { :; }; info() { :; }; ok() { :; }; warn() { :; }
+STUB
+  cp "$BLUEPRINT_ROOT/lib/provision-integrations.sh" "$clone/lib/"
+  cat > "$HOME/.local/bin/aicoding-auto-update" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$HOME/auto-update.log"
+STUB
+  chmod +x "$HOME/.local/bin/aicoding-auto-update"
+  export AICODING_BLUEPRINT_CLONE="$clone"
+  . "$BLUEPRINT_ROOT/lib/update-results.sh"
+  local body='. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_config_is_shared() { return 1; }; _sync_provision boot'
+
+  # A new updater marks its sync; an older fallback worker or the systemd
+  # unit is recognized by AICODING_AUTO_UPDATE_SOURCE.
+  for marker in AICODING_AUTO_UPDATE_RUN=1 AICODING_AUTO_UPDATE_SOURCE=fallback \
+      AICODING_AUTO_UPDATE_SOURCE=systemd; do
+    run env -u AICODING_AUTO_UPDATE_RUN -u AICODING_AUTO_UPDATE_SOURCE \
+      AICODINGSETUP_SKIP_NETWORK= "$marker" bash -c "$body"
+    [ "$status" -eq 0 ]
+    [ ! -e "$HOME/auto-update.log" ]
+  done
+
+  run env -u AICODING_AUTO_UPDATE_RUN -u AICODING_AUTO_UPDATE_SOURCE \
+    AICODINGSETUP_SKIP_NETWORK= bash -c "$body"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$HOME/auto-update.log")" = --ensure ]
+}
+
 @test "sync --boot leaves an existing unmanaged file at a newly managed path alone" {
   # Regression (unified review 2026-08-20, HIGH): dest exists + manifest
   # exists + path untracked used to bucket as new_file, which boot's

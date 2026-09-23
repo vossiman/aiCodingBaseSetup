@@ -31,6 +31,7 @@ exec {sync_fd}>"$AICODING_STATE_DIR/sync.lock"
 flock -n "$sync_fd" || { echo 'aicoding-sync: update already running' >&2; exit 0; }
 printf '%s %s\n' "$PWD" "$*" >> "$AICODING_TEST_ATTEMPTS"
 printf '%s\n' "${AICODING_UPDATE_TTL:-unset}" >> "$AICODING_TEST_TTLS"
+printf '%s\n' "${AICODING_AUTO_UPDATE_RUN:-unset}" >> "$TEST_ROOT/run-markers"
 if [ "${AICODING_TEST_DEFERRED:-0}" = 1 ]; then
   echo 'aicoding-sync: completed with deferrals' >&2
   exit 0
@@ -837,6 +838,12 @@ DATE
   jq -e '.outcome == "success"' "$AICODING_STATE_DIR/auto-update/last-completed.json"
   run flock -n "$AICODING_STATE_DIR/auto-update/run.lock" true
   [ "$status" -eq 0 ]
+}
+
+@test "an updater pass marks its sync so provisioning does not re-enroll mid-run" {
+  run env -u AICODING_AUTO_UPDATE_RUN "$TEST_ROOT/aicoding-auto-update" --once
+  [ "$status" -eq 0 ]
+  [ "$(cat "$TEST_ROOT/run-markers")" = 1 ]
 }
 
 @test "missing sync executable records a failed attempt" {

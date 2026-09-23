@@ -1610,7 +1610,14 @@ _sync_provision() {
     # install.sh enrolls the scheduler at install time. Legacy installs never
     # did, and activation above only now gave them the launcher, so a sync
     # converges enrollment the same way. Idempotent; skipped offline.
-    if [ -x "$HOME/.local/bin/aicoding-auto-update" ]; then
+    # Never from a sync the scheduler itself started: a detached enrollment
+    # can switch backends and TERM the fallback worker that is still waiting
+    # on this sync, leaving neither timer nor worker. AICODING_AUTO_UPDATE_RUN
+    # marks the updater's sync; AICODING_AUTO_UPDATE_SOURCE also covers older
+    # fallback workers and the systemd unit, which predate that marker.
+    if [ -x "$HOME/.local/bin/aicoding-auto-update" ] \
+        && [ "${AICODING_AUTO_UPDATE_RUN:-}" != 1 ] \
+        && [ -z "${AICODING_AUTO_UPDATE_SOURCE:-}" ]; then
       ensure_aicoding_auto_update || rc=1
     fi
     # A sync is one of the documented recovery triggers for transcripts a
