@@ -376,3 +376,58 @@ STUB
   # ... and never as a plain "git -C <root> status".
   if grep -qE '^-C [^ ]+ status' "$log"; then false; fi
 }
+
+_receipts() {
+  mkdir -p "$TMPDIR/state"
+  export AICODING_RESULTS_FILE="$TMPDIR/state/update-results.json"
+  cat > "$AICODING_RESULTS_FILE"
+}
+
+@test "capabilities come from successful update receipts" {
+  _receipts <<'RECEIPTS'
+{"schema":1,"components":{
+ "claude":{"state":"current","successful_version":"2.1.280"},
+ "codex":{"state":"updated","successful_version":"0.156.1"},
+ "cursor":{"state":"current","successful_version":"2026.09.18-9a7762b"},
+ "mcp-context7":{"state":"updated","successful_version":"4.1.1"},
+ "mcp-playwright":{"state":"current","successful_version":"0.0.82"}}}
+RECEIPTS
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.capabilities.claude == {"version":"2.1.280","config_compatible":true}'
+  echo "$output" | jq -e '.capabilities["mcp-playwright"].version == "0.0.82"'
+  echo "$output" | jq -e '.capabilities | keys == ["claude","codex","cursor","mcp-context7","mcp-playwright"]'
+  echo "$output" | jq -e '.partial == false'
+}
+
+@test "a blocked, failed or absent receipt is a null capability, never compatible" {
+  _receipts <<'RECEIPTS'
+{"schema":1,"components":{
+ "claude":{"state":"blocked","successful_version":"2.1.280"},
+ "codex":{"state":"failed","successful_version":null},
+ "cursor":{"state":"current","successful_version":"not-a-version"}}}
+RECEIPTS
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.capabilities.claude == null and .capabilities.codex == null'
+  echo "$output" | jq -e '.capabilities.cursor == null and .capabilities["mcp-context7"] == null'
+}
+
+@test "missing or malformed receipts give capabilities null and exit 0" {
+  export AICODING_RESULTS_FILE="$TMPDIR/nope.json"
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.capabilities == null'
+  _receipts <<<'{not json'
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.capabilities == null'
+}
+
+@test "an oversized receipts file is not read" {
+  _receipts < /dev/null
+  head -c 2000000 /dev/zero | tr '\0' ' ' > "$AICODING_RESULTS_FILE"
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.capabilities == null'
+}

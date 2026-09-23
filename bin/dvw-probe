@@ -16,6 +16,7 @@ docs/superpowers/specs/2026-09-01-docker-proxy-probe-design.md.
 import errno
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -24,6 +25,9 @@ import time
 SCHEMA = 1
 AGENT_CLIS = ("claude", "codex", "cursor-agent", "opencode")
 WRAPPERS = ("node", "python", "python3", "bun")
+CAPABILITY_COMPONENTS = ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright")
+MAX_RECEIPTS = 1024 * 1024
+_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+")
 
 # Caps mirrored from the consumer's model (dvw catalog): a document that
 # breaks them is rejected wholesale there, so truncate here instead and say
@@ -523,6 +527,51 @@ def collect_cgroup(cg):
         return None
 
 
+def _receipts_path():
+    explicit = os.environ.get("AICODING_RESULTS_FILE")
+    if explicit:
+        return explicit
+    state = os.environ.get("AICODING_STATE_DIR") or os.path.join(
+        os.path.expanduser("~"), ".local/state/aicoding")
+    return os.path.join(state, "update-results.json")
+
+
+def collect_capabilities(budget):
+    """Per-component versions this container has verified, from its receipts.
+
+    Receipts are what the updater itself trusts for readiness, and reading one
+    small file keeps the probe far inside its budget. A version command per
+    tool would cost seconds on a cold cache.
+    """
+    if budget.remaining(1.0) <= 0:
+        budget.partial = True
+        return None
+    try:
+        with open(_receipts_path(), "rb") as fh:
+            raw = fh.read(MAX_RECEIPTS + 1)
+    except OSError:
+        return None
+    if len(raw) > MAX_RECEIPTS:
+        return None
+    try:
+        doc = json.loads(raw.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    if not isinstance(doc, dict) or doc.get("schema") != 1:
+        return None
+    components = doc.get("components")
+    if not isinstance(components, dict):
+        return None
+    out = {}
+    for name in CAPABILITY_COMPONENTS:
+        rec = components.get(name)
+        version = rec.get("successful_version") if isinstance(rec, dict) else None
+        ok = (isinstance(rec, dict) and rec.get("state") in ("current", "updated")
+              and isinstance(version, str) and _VERSION.match(version) is not None)
+        out[name] = {"version": version, "config_compatible": True} if ok else None
+    return out
+
+
 def _finish(doc):
     """Sanitise, cap and serialise the document; the only way out."""
     flags = {"truncated": False}
@@ -551,7 +600,7 @@ def _arm_deadline(doc, seconds):
         except Exception:
             payload = json.dumps({"schema": SCHEMA, "ts": int(time.time()),
                                   "partial": True, "tmux": None, "agents": None,
-                                  "git": None, "cgroup": None},
+                                  "git": None, "cgroup": None, "capabilities": None},
                                  separators=(",", ":")) + "\n"
         try:
             sys.stdout.write(payload)
@@ -575,13 +624,15 @@ def main():
         cg = os.environ.get("DVW_PROBE_CGROUP", "/sys/fs/cgroup")
         doc = {"schema": SCHEMA, "ts": int(time.time()), "partial": False,
                "tmux": None, "agents": None, "git": None, "cgroup": None,
-               "activity": dict(tmux_sessions=None, terminals=None, cursor_connections=None, vscode_connections=None)}
+               "activity": dict(tmux_sessions=None, terminals=None, cursor_connections=None, vscode_connections=None),
+               "capabilities": None}
         _arm_deadline(doc, seconds)
         for key, fn in (("cgroup", lambda: collect_cgroup(cg)),
                         ("agents", lambda: collect_agents(proc, budget)),
                         ("tmux", lambda: collect_tmux(budget)),
                         ("activity", lambda: collect_activity(proc, budget)),
-                        ("git", lambda: collect_git(budget))):
+                        ("git", lambda: collect_git(budget)),
+                        ("capabilities", lambda: collect_capabilities(budget))):
             try:
                 doc[key] = fn()
             except Exception:  # a collector must never take the document down
@@ -601,7 +652,7 @@ def main():
             ts = 0
         payload = json.dumps({"schema": SCHEMA, "ts": ts, "partial": True,
                               "tmux": None, "agents": None, "git": None,
-                              "cgroup": None}, separators=(",", ":")) + "\n"
+                              "cgroup": None, "capabilities": None}, separators=(",", ":")) + "\n"
     try:
         sys.stdout.write(payload)
         sys.stdout.flush()
