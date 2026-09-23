@@ -1688,6 +1688,21 @@ _sync_refresh_and_reexec() {
   return 0
 }
 
+# Additive system packages (fixed apt list, tmux pin, frogmouth, go, uv).
+# Container profile only: hosts never ran install-time system provisioning.
+_sync_system_provision() {
+  local lib=""
+  if [ -f "${AICODING_BLUEPRINT_CLONE:-}/lib/provision-scheduled.sh" ]; then
+    lib="$AICODING_BLUEPRINT_CLONE/lib/provision-scheduled.sh"
+  elif [ -n "${SCRIPT_DIR:-}" ] && [ -f "$SCRIPT_DIR/lib/provision-scheduled.sh" ]; then
+    lib="$SCRIPT_DIR/lib/provision-scheduled.sh"
+  else
+    return 0
+  fi
+  . "$lib" >/dev/null || return 1
+  aicoding_run_system_provision
+}
+
 aicoding_sync() {
   # Parse the FIRST recognized flag; no flag = interactive.
   local mode=interactive arg
@@ -1763,6 +1778,21 @@ aicoding_sync() {
     fi
   elif [ "$mode" != dry-run ] && [ "$overall_rc" -eq 0 ]; then
     _sync_binaries_stamp
+  fi
+
+  # 5. Additive system provisioning. Never stops processes; see
+  #    lib/provision-scheduled.sh.
+  if [ "$mode" != dry-run ] && [ "$profile" = container ]; then
+    local system_rc=0
+    # A tmux build can take minutes; other containers must be able to update
+    # shared config meanwhile.
+    declare -F aicoding_shared_locks_release >/dev/null 2>&1 && aicoding_shared_locks_release
+    _sync_system_provision || system_rc=$?
+    case "$system_rc" in
+      0) ;;
+      3) _SYNC_PASS_DEFERRED=1 ;;
+      *) overall_rc=1 ;;
+    esac
   fi
   if [ "$mode" = boot ] && command -v aicoding_result_record >/dev/null 2>&1 && [ -n "$selected" ]; then
     local active

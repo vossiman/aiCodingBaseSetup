@@ -1556,3 +1556,21 @@ EOF
   done
   jq -e '.permissions.allow == (.permissions.allow | unique)' "$f"
 }
+
+@test "aicoding_shared_locks_release frees the writer locks for another process" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$HOME/.claude"
+  aicoding_shared_locks_acquire "$HOME/.claude/.aicoding-managed"
+  run flock -n "$HOME/.claude/.aicoding-update.lock" true
+  [ "$status" -ne 0 ]
+  aicoding_shared_locks_release
+  run flock -n "$HOME/.claude/.aicoding-update.lock" true
+  [ "$status" -eq 0 ]
+  [ "${#_AICODING_SHARED_LOCK_FDS[@]}" -eq 0 ]
+}
+
+@test "aicoding_shared_locks_release is a no-op when nothing is held" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run aicoding_shared_locks_release
+  [ "$status" -eq 0 ]
+}

@@ -313,6 +313,18 @@ aicoding_shared_locks_acquire_managed_roots() {
     "$HOME/.local/share/opencode/.aicoding-managed"
 }
 
+# Close every shared writer lock this process holds. Long local work (a tmux
+# build) must not keep other containers from updating shared config.
+aicoding_shared_locks_release() {
+  declare -p _AICODING_SHARED_LOCK_FDS >/dev/null 2>&1 || return 0
+  local fd
+  for fd in "${_AICODING_SHARED_LOCK_FDS[@]}"; do
+    exec {fd}>&-
+  done
+  _AICODING_SHARED_LOCK_FDS=()
+  declare -gA _AICODING_SHARED_LOCKED_ROOTS=()
+}
+
 # enumerate_skill_files <skills_root> — one file path per line, relative to
 # <skills_root>, sorted. The single source of truth for what a skill dir
 # ships: install (provision-managed-files.sh) and sync inventory
