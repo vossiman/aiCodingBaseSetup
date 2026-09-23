@@ -37,7 +37,7 @@ PY
   [ "$(jq -r .status "$reports"/codex-*.json)" = "unsupported" ]
   [ "$(jq -r .evidence "$reports"/codex-*.json)" = "preflight_only" ]
   [ "$(jq '[.scenarios[] | select(. == true)] | length' "$reports"/codex-*.json)" -eq 0 ]
-  run rg -F "app-server inventory does not use the same configuration" "$reports"/codex-*.json
+  run grep -qF "app-server inventory does not use the same configuration" "$reports"/codex-*.json
   [ "$status" -eq 0 ]
 }
 
@@ -71,7 +71,7 @@ SH
   [ "$status" -eq 1 ]
   [[ "$output" != *"Traceback"* ]]
   [ "$(find "$reports" -maxdepth 1 -name '*.json' | wc -l)" -eq 4 ]
-  run rg -F "timed out" "$reports"/claude-*.json
+  run grep -qF "timed out" "$reports"/claude-*.json
   [ "$status" -eq 0 ]
   pid=$(cat "$child_pid")
   if kill -0 "$pid" 2>/dev/null; then
