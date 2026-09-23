@@ -24,6 +24,26 @@ setup() {
 
 teardown() { rm -rf "$TMPDIR"; }
 
+# wait_for_stub PID [TIMEOUT_SECONDS]
+# Bounds `wait` on a background stub server. Every stub below sets its own
+# srv.timeout so handle_request() returns even with no client, but this is
+# the second safety net: if a stub still does not exit, kill it and fail
+# the test with a clear message instead of hanging the whole bats run.
+wait_for_stub() {
+  local pid="$1" timeout="${2:-15}" start
+  start=$(date +%s)
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ $(( $(date +%s) - start )) -ge "$timeout" ]; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      echo "wait_for_stub: pid $pid did not exit within ${timeout}s" >&2
+      return 1
+    fi
+    sleep 0.1
+  done
+  wait "$pid"
+}
+
 @test "short prompt: no output, exit 0, no network" {
   export MEMORY_ROUTER_URL="http://127.0.0.1:1"   # would fail if contacted
   run bash -c "printf 'fix bug' | '$CLI' --client hook:test"
@@ -64,12 +84,14 @@ class H(BaseHTTPRequestHandler):
         self.send_response(200); self.end_headers()
         self.wfile.write(body.encode())
     def log_message(self, *a): pass
-HTTPServer(("127.0.0.1", int(sys.argv[1])), H).handle_request()
+srv = HTTPServer(("127.0.0.1", int(sys.argv[1])), H)
+srv.timeout = 10
+srv.handle_request()
 PY
   server=$!
   export MEMORY_ROUTER_URL="http://127.0.0.1:$port"
   run bash -c "printf 'which ports are in use on vossisrv' | '$CLI' --client hook:test"
-  wait "$server"
+  wait_for_stub "$server"
   [ "$status" -eq 0 ]
   [[ "$output" == *"<memory-hints"* ]]
   [[ "$output" == *"ports.md § vossisrv"* ]]
@@ -93,12 +115,14 @@ class H(BaseHTTPRequestHandler):
         self.send_response(200); self.end_headers()
         self.wfile.write(json.dumps({"query_id": "q", "results": [], "source": "wiki-grep"}).encode())
     def log_message(self, *a): pass
-HTTPServer(("127.0.0.1", int(sys.argv[1])), H).handle_request()
+srv = HTTPServer(("127.0.0.1", int(sys.argv[1])), H)
+srv.timeout = 10
+srv.handle_request()
 PY
   server=$!
   export MEMORY_ROUTER_URL="http://127.0.0.1:$port"
   run bash -c "printf 'which ports are in use on vossisrv' | '$CLI'"
-  wait "$server"
+  wait_for_stub "$server"
   [ "$status" -eq 0 ]; [ -z "$output" ]
 }
 
@@ -115,12 +139,14 @@ class H(BaseHTTPRequestHandler):
         self.send_response(200); self.end_headers()
         self.wfile.write(json.dumps([1, 2, 3]).encode())
     def log_message(self, *a): pass
-HTTPServer(("127.0.0.1", int(sys.argv[1])), H).handle_request()
+srv = HTTPServer(("127.0.0.1", int(sys.argv[1])), H)
+srv.timeout = 10
+srv.handle_request()
 PY
   server=$!
   export MEMORY_ROUTER_URL="http://127.0.0.1:$port"
   run bash -c "printf 'which ports are in use on vossisrv' | '$CLI'"
-  wait "$server"
+  wait_for_stub "$server"
   [ "$status" -eq 0 ]; [ -z "$output" ]
 }
 
@@ -197,7 +223,7 @@ PY
   export MEMORY_ROUTER_URL="http://127.0.0.1:$port"
   unset MEMORY_ROUTER_TEST_TOKEN
   run bash -c 'printf "what did we decide about backups" | "$1" --client test' _ "$MH"
-  wait "$server" 2>/dev/null || true
+  wait_for_stub "$server" || true
   [ "$status" -eq 0 ]
   [ -z "$output" ]
   # The listener must never have been contacted at all: with no injected
@@ -246,13 +272,13 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Location", f"http://127.0.0.1:{second}/hint")
         self.end_headers()
     def log_message(self, *a): pass
-HTTPServer(("127.0.0.1", first), H).handle_request()
+srv = HTTPServer(("127.0.0.1", first), H); srv.timeout = 3; srv.handle_request()
 PY
   redirector=$!
   export MEMORY_ROUTER_URL="http://127.0.0.1:$first"
   run bash -c "printf 'which ports are in use on vossisrv' | '$CLI' --client hook:test"
-  wait "$redirector" 2>/dev/null || true
-  wait "$sink" 2>/dev/null || true
+  wait_for_stub "$redirector" || true
+  wait_for_stub "$sink" || true
   [ "$status" -eq 0 ]
   [ -z "$output" ]
   # The redirect target must never have seen the bearer token.
@@ -283,14 +309,46 @@ class H(BaseHTTPRequestHandler):
             {"citation": "router.md", "text": "your request said " + echoed}]})
         self.send_response(200); self.end_headers(); self.wfile.write(body.encode())
     def log_message(self, *a): pass
-HTTPServer(("127.0.0.1", int(sys.argv[1])), H).handle_request()
+srv = HTTPServer(("127.0.0.1", int(sys.argv[1])), H)
+srv.timeout = 10
+srv.handle_request()
 PY
   server=$!
   export MEMORY_ROUTER_URL="http://127.0.0.1:$port"
   run bash -c "printf 'which ports are in use on vossisrv' | '$CLI' --client hook:test"
-  wait "$server"
+  wait_for_stub "$server"
   [ "$status" -eq 0 ]
   [[ "$output" == *"<memory-hints"* ]]
   [[ "$output" != *"test-token"* ]]
   [[ "$output" == *"<redacted>"* ]]
+}
+
+@test "regression: a stub server with no client connecting still exits within its timeout bound" {
+  # Before this fix, the stub's handle_request() had no srv.timeout, so a
+  # test where the client under test never connects would block forever and
+  # "wait $server" would hang the whole bats run (this is what happened in
+  # the 2026-09-23 incident: two such stubs sat in poll for 2+ hours under
+  # --jobs 12). No client connects to $port here at all. With srv.timeout
+  # bounding handle_request(), and wait_for_stub as a second safety net,
+  # this must return well under 30s.
+  port=$(python3 - <<'PY'
+import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()
+PY
+)
+  python3 - "$port" <<'PY' &
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
+    def log_message(self, *a): pass
+srv = HTTPServer(("127.0.0.1", int(sys.argv[1])), H)
+srv.timeout = 3
+srv.handle_request()
+PY
+  server=$!
+  start=$(date +%s)
+  wait_for_stub "$server" 15
+  elapsed=$(( $(date +%s) - start ))
+  [ "$elapsed" -lt 20 ]
 }
