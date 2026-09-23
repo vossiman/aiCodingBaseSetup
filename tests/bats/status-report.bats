@@ -507,3 +507,39 @@ assert sorted(path.name for path in source.parent.iterdir()) == ['status-report.
 PY
   [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
+
+@test "tmux restart pending is detected from a deleted executable" {
+  mkdir -p "$TMP/proc/123" "$TMP/proc/456" "$TMP/proc/self"
+  ln -s "/usr/local/bin/tmux (deleted)" "$TMP/proc/123/exe"
+  ln -s "/usr/bin/bash" "$TMP/proc/456/exe"
+  run python3 - "$BLUEPRINT_ROOT/lib/status-report.py" "$TMP/proc" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('status_report', sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(m.tmux_restart_pending(sys.argv[2]))
+PY
+  [ "$status" -eq 0 ]
+  [ "$output" = True ]
+}
+
+@test "tmux restart pending is false when the running tmux binary is current" {
+  mkdir -p "$TMP/proc/123"
+  ln -s "/usr/local/bin/tmux" "$TMP/proc/123/exe"
+  run python3 - "$BLUEPRINT_ROOT/lib/status-report.py" "$TMP/proc" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('status_report', sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(m.tmux_restart_pending(sys.argv[2]))
+PY
+  [ "$output" = False ]
+}
+
+@test "status lists provision-system and the tmux restart line" {
+  mkdir -p "$TMP/proc/123" "$AICODING_STATE_DIR"
+  ln -s "/usr/local/bin/tmux (deleted)" "$TMP/proc/123/exe"
+  printf '{"schema":1,"components":{"provision-system":{"state":"updated","reason":"installed","attempted_at":"2026-09-23T10:00:00Z","successful_version":"abc","succeeded_at":"2026-09-23T10:00:00Z"}}}\n' > "$AICODING_RESULTS_FILE"
+  AICODING_STATUS_PROC="$TMP/proc" run "$BIN"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"provision-system: updated"* ]]
+  [[ "$output" == *"tmux: updated, active after restart"* ]]
+}

@@ -405,6 +405,25 @@ def fleet_proof_text():
     return f"valid until {local_time(earliest)}"
 
 
+def tmux_restart_pending(proc_root=None):
+    """True when a running tmux process still executes a replaced binary."""
+    root = Path(proc_root or os.environ.get("AICODING_STATUS_PROC", "/proc"))
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return False
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            target = os.readlink(entry / "exe")
+        except OSError:
+            continue
+        if target.endswith(" (deleted)") and os.path.basename(target[: -len(" (deleted)")]).startswith("tmux"):
+            return True
+    return False
+
+
 def result_text(record):
     if not isinstance(record, dict) or not record:
         return "no update result recorded"
@@ -456,9 +475,11 @@ def main():
         print("\nFleet proof (shared config on this host)")
         print(f"  {fleet}")
     print("\nManaged configuration, hooks and skills")
-    managed_keys = {"config", "provision"} | {key for key in records if key.startswith(("config-", "mcp-registration-", "hooks", "skills"))}
+    managed_keys = {"config", "provision", "provision-system"} | {key for key in records if key.startswith(("config-", "mcp-registration-", "hooks", "skills"))}
     for key in sorted(managed_keys):
         print(f"  {clean(key)}: {result_text(records.get(key))}")
+    if tmux_restart_pending():
+        print("  tmux: updated, active after restart (the running server keeps the previous binary)")
     blockers = [(key, record) for key, record in records.items() if isinstance(record, dict)
                 and record.get("state") in ("blocked", "conflict", "failed")]
     print("\nUnresolved recorded blockers — last observation, not a fresh check")
