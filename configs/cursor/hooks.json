@@ -1,8 +1,38 @@
 {
   "version": 1,
   "hooks": {
-    "stop": [{ "command": "bash \"{{HOME}}/.claude/hooks/redact-sessions-hook.sh\"" }],
-    "sessionEnd": [{ "command": "bash \"{{HOME}}/.claude/hooks/redact-sessions-hook.sh\"" }],
-    "sessionStart": [{ "command": "bash \"{{HOME}}/.claude/hooks/redact-sessions-pending.sh\" --cursor" }]
+    "sessionStart": [
+      { "command": "bash \"{{HOME}}/.claude/hooks/redact-sessions-pending.sh\" --cursor" },
+      { "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" cursor sessionStart" }
+    ],
+    "beforeSubmitPrompt": [
+      { "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" cursor beforeSubmitPrompt" }
+    ],
+    "preToolUse": [
+      { "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" cursor preToolUse", "failClosed": true }
+    ],
+    "postToolUse": [
+      { "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" cursor postToolUse" }
+    ],
+    "postToolUseFailure": [
+      { "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" cursor postToolUseFailure" }
+    ],
+    "subagentStart": [
+      { "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" cursor subagentStart" }
+    ],
+    "subagentStop": [
+      { "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" cursor subagentStop" }
+    ],
+    "preCompact": [
+      { "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" cursor preCompact" }
+    ],
+    "stop": [
+      { "command": "bash \"{{HOME}}/.claude/hooks/redact-sessions-hook.sh\"" },
+      { "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" cursor stop" }
+    ],
+    "sessionEnd": [
+      { "command": "bash \"{{HOME}}/.claude/hooks/redact-sessions-hook.sh\"" },
+      { "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" cursor sessionEnd" }
+    ]
   }
 }

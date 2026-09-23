@@ -5,7 +5,7 @@
 # Sourced (no shebang / set -e); matches lib/*.sh.
 
 # Managed component lists (also used for unmanaged component detection).
-MANAGED_MCPS=("firecrawl" "brave-search" "context7" "playwright" "logfire" "memory-router")
+MANAGED_MCPS=("firecrawl" "brave-search" "context7" "playwright" "kanban" "logfire" "memory-router")
 MANAGED_PLUGINS=(
   "superpowers@claude-plugins-official"
   "frontend-design@claude-plugins-official"
@@ -151,7 +151,7 @@ _provision_reconcile_selected_exact_mcp() {
   _provision_reconcile_exact_mcp "$@"
 }
 
-# Stage both exact MCP packages without running the broader installer. C calls
+# Stage all exact MCP packages without running the broader installer. C calls
 # this before first config deployment; --register-claude additionally creates
 # or migrates the user-scope Claude registrations and their separate receipts.
 aicoding_prepare_exact_mcps() {
@@ -174,6 +174,8 @@ aicoding_prepare_exact_mcps() {
       && aicoding_result_record mcp-context7 failed "" staged_updater_unavailable || true
     command -v aicoding_result_record >/dev/null 2>&1 \
       && aicoding_result_record mcp-playwright failed "" staged_updater_unavailable || true
+    command -v aicoding_result_record >/dev/null 2>&1 \
+      && aicoding_result_record mcp-kanban failed "" staged_updater_unavailable || true
     return 1
   }
   if [ "${AICODINGSETUP_SKIP_NETWORK:-0}" = 1 ]; then
@@ -185,9 +187,17 @@ aicoding_prepare_exact_mcps() {
       _provision_record_blocked mcp-playwright offline_exact_package_not_ready
       _AICODING_PREPARATION_DEFERRED=1
     fi
+    local kanban_revision
+    kanban_revision=$(_aicoding_kanban_pinned_revision) || kanban_revision=
+    if [ -n "$kanban_revision" ] && _aicoding_active_kanban_mcp_valid "$kanban_revision"; then
+      aicoding_result_record mcp-kanban current "$kanban_revision" offline_verified "$kanban_revision"
+    else
+      _provision_record_blocked mcp-kanban offline_exact_package_not_ready
+      _AICODING_PREPARATION_DEFERRED=1
+    fi
     return 0
   fi
-  for component in mcp-context7 mcp-playwright; do
+  for component in mcp-context7 mcp-playwright mcp-kanban; do
     component_rc=0
     AICODING_COMPONENT_ATTEMPT_DISPOSITION=
     AICODING_COMPONENT_LAST_RESULT=
@@ -427,6 +437,11 @@ install_claude_mcps() {
     _provision_reconcile_selected_exact_mcp playwright mcp-playwright playwright-mcp --browser chromium \
     || registration_rc=$?
   case "$registration_rc" in 0) ok "playwright MCP exact registration reconciled when selected" ;; 3) deferred=1 ;; *) rc=1 ;; esac
+  registration_rc=0
+  AICODING_MCP_REGISTRATION_FORCE=$registration_force \
+    _provision_reconcile_selected_exact_mcp kanban mcp-kanban kanban-mcp \
+    || registration_rc=$?
+  case "$registration_rc" in 0) ok "kanban MCP exact registration reconciled when selected" ;; 3) deferred=1 ;; *) rc=1 ;; esac
 
   # logfire — hosted MCP, EU region. The logfire plugin hardcodes the US URL
   # in its bundled .mcp.json (no env override); its README tells EU users to

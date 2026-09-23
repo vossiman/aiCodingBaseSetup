@@ -91,3 +91,71 @@ type = "command"
 command = "{{MANAGED_DIR}}/hooks/agent-working.sh"
 timeout = 5
 statusMessage = "agent working"
+
+# Native Kanban work lifecycle. The shared wrapper performs no parsing or
+# network access; kanban-work validates the pinned native payload and journals
+# queue intent locally before returning. Codex 0.154.0 has no
+# PostToolUseFailure event, so none is configured here.
+[[hooks.SessionStart]]
+matcher = "startup|resume|clear|compact"
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "{{MANAGED_DIR}}/hooks/kanban-work-hook.sh codex SessionStart"
+timeout = 10
+statusMessage = "Kanban session"
+
+[[hooks.UserPromptSubmit]]
+matcher = ".*"
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "{{MANAGED_DIR}}/hooks/kanban-work-hook.sh codex UserPromptSubmit"
+timeout = 10
+statusMessage = "Kanban activity"
+
+[[hooks.PreToolUse]]
+matcher = ".*"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "{{MANAGED_DIR}}/hooks/kanban-work-hook.sh codex PreToolUse"
+timeout = 10
+statusMessage = "Kanban permit"
+
+[[hooks.PostToolUse]]
+matcher = ".*"
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "{{MANAGED_DIR}}/hooks/kanban-work-hook.sh codex PostToolUse"
+timeout = 10
+statusMessage = "Kanban activity"
+
+[[hooks.Stop]]
+matcher = ".*"
+[[hooks.Stop.hooks]]
+type = "command"
+command = "{{MANAGED_DIR}}/hooks/kanban-work-hook.sh codex Stop"
+timeout = 3
+statusMessage = "Kanban handoff"
+
+[[hooks.SessionEnd]]
+matcher = ".*"
+[[hooks.SessionEnd.hooks]]
+type = "command"
+command = "{{MANAGED_DIR}}/hooks/kanban-work-hook.sh codex SessionEnd"
+timeout = 3
+statusMessage = "Kanban session end"
+
+[[hooks.SubagentStart]]
+matcher = ".*"
+[[hooks.SubagentStart.hooks]]
+type = "command"
+command = "{{MANAGED_DIR}}/hooks/kanban-work-hook.sh codex SubagentStart"
+timeout = 10
+statusMessage = "Kanban child session"
+
+[[hooks.SubagentStop]]
+matcher = ".*"
+[[hooks.SubagentStop.hooks]]
+type = "command"
+command = "{{MANAGED_DIR}}/hooks/kanban-work-hook.sh codex SubagentStop"
+timeout = 3
+statusMessage = "Kanban child end"

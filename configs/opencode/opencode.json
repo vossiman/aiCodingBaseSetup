@@ -38,6 +38,13 @@
       ],
       "enabled": true
     },
+    "kanban": {
+      "type": "local",
+      "command": [
+        "kanban-mcp"
+      ],
+      "enabled": true
+    },
     "memory-router": {
       "type": "remote",
       "url": "http://10.0.0.249:8091/mcp",

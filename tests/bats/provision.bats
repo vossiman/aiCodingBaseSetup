@@ -112,18 +112,18 @@ EOF
     "$AICODING_STATE_DIR/update-results.json"
 }
 
-@test "exact MCP preprovision stages both packages and can force Claude registration" {
+@test "exact MCP preprovision stages all packages and can force Claude registration" {
   aicoding_update_component() {
     printf '%s|%s|%s\n' "$1" "${AICODING_MCP_REGISTRATION_FORCE:-0}" \
       "${AICODING_MCP_REGISTRATION_DISABLE:-0}" >> "$TMP/prepared"
   }
   run aicoding_prepare_exact_mcps --register-claude
   [ "$status" -eq 0 ]
-  [ "$(cat "$TMP/prepared")" = $'mcp-context7|1|0\nmcp-playwright|1|0' ]
+  [ "$(cat "$TMP/prepared")" = $'mcp-context7|1|0\nmcp-playwright|1|0\nmcp-kanban|1|0' ]
   rm "$TMP/prepared"
   run aicoding_prepare_exact_mcps
   [ "$status" -eq 0 ]
-  [ "$(cat "$TMP/prepared")" = $'mcp-context7|0|1\nmcp-playwright|0|1' ]
+  [ "$(cat "$TMP/prepared")" = $'mcp-context7|0|1\nmcp-playwright|0|1\nmcp-kanban|0|1' ]
 }
 
 @test "offline exact MCP preprovision reports a nonfatal deferral when local packages are not ready" {
@@ -135,8 +135,41 @@ EOF
   [ "${_AICODING_PREPARATION_DEFERRED:-0}" -eq 1 ]
   [ ! -e "$TMP/network-called" ]
   jq -e '.components["mcp-context7"].state == "blocked"
-    and .components["mcp-playwright"].state == "blocked"' \
+    and .components["mcp-playwright"].state == "blocked"
+    and .components["mcp-kanban"].state == "blocked"
+    and .components["mcp-kanban"].reason == "offline_exact_package_not_ready"' \
     "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "scheduled provision adds an exact user-scope Kanban registration" {
+  _managed_launcher kanban-mcp mcp-kanban a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3
+  aicoding_result_record claude current 2.1.50 installed 2.1.50
+  cat > "$TMP/stubs/claude" <<'EOF'
+#!/bin/sh
+echo "$*" >> "$TMP/claude-calls"
+case "$*" in
+  '--version') echo '2.1.50 (Claude Code)' ;;
+  'mcp get kanban')
+    [ -f "$TMP/registered-kanban" ] || exit 1
+    printf 'Command: %s/.local/bin/kanban-mcp\nArgs: \n' "$HOME" ;;
+  'mcp add kanban -s user -- '*'/kanban-mcp') : > "$TMP/registered-kanban" ;;
+esac
+EOF
+  chmod +x "$TMP/stubs/claude"
+
+  AICODING_MCP_REGISTRATION_FORCE=1 run _provision_reconcile_exact_mcp \
+    kanban mcp-kanban kanban-mcp
+
+  [ "$status" -eq 0 ]
+  grep -q 'mcp add kanban -s user -- .*/kanban-mcp$' "$TMP/claude-calls"
+  jq -e '.components["mcp-registration-claude-kanban"].state == "updated"' \
+    "$AICODING_RESULTS_FILE"
+}
+
+@test "Kanban is included in managed MCP inventory" {
+  run printf '%s\n' "${MANAGED_MCPS[@]}"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -Fxq kanban
 }
 
 @test "scheduled tool readiness enforces shared inventory without a caller flag" {

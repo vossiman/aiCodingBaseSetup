@@ -115,6 +115,30 @@ blueprint_copy() {
     "$HOME/.local/state/aicoding/update-results.json"
 }
 
+@test "persistent install has both Kanban helpers and immutable MCP before managed config deploys" {
+  export AICODING_PERSISTENT_ENROLLMENT=1
+  run env _AICODINGSETUP_NVS_STRIPPED=1 bash -c '
+    source "$1"
+    aicoding_prepare_installed_config_tools() { :; }
+    aicoding_prepare_exact_mcps() {
+      printf "#!/bin/sh\nexit 0\n" > "$HOME/.local/bin/kanban-mcp"
+      chmod +x "$HOME/.local/bin/kanban-mcp"
+    }
+    install_claude_mcps() { :; }
+    install_claude_plugins() { :; }
+    install_codex_plugins() { :; }
+    deploy_all_managed_files() {
+      [ -x "$HOME/.local/bin/kanban-post" ]
+      [ -x "$HOME/.local/bin/kanban-work" ]
+      [ -x "$HOME/.local/bin/kanban-mcp" ]
+      : > "$HOME/kanban-config-ready"
+    }
+    main
+  ' _ "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  [ -f "$HOME/kanban-config-ready" ]
+}
+
 @test "persistent install propagates an injected preparation failure" {
   export AICODING_PERSISTENT_ENROLLMENT=1
   run env _AICODINGSETUP_NVS_STRIPPED=1 bash -c '
@@ -219,24 +243,27 @@ STUB
 }
 
 @test "direct first-deploy uses a shared config root when complete evidence is present" {
-  local shared_root="$TMPDIR/shared-codex" expires results
+  local shared_root="$TMPDIR/shared-codex" expires results revision release
   mkdir -p "$shared_root" "$HOME/.local/state/aicoding"
   ln -s "$shared_root" "$HOME/.codex"
   export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
   export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/consumers.json"
   expires=$(( $(date +%s) + 3600 ))
-  jq -n --arg root "$shared_root" --argjson expires "$expires" \
+  revision=$(cat "$BLUEPRINT_ROOT/configs/versions/kanban-mcp.rev")
+  jq -n --arg root "$shared_root" --arg revision "$revision" --argjson expires "$expires" \
     '{schema:1,roots:[{shared_root:$root,inventory_complete:true,expires_at:$expires,
       consumers:[{id:"known",components:{
         codex:{version:"0.200.0",config_compatible:true},
         "mcp-context7":{version:"1.0.0",config_compatible:true},
-        "mcp-playwright":{version:"1.0.0",config_compatible:true}
+        "mcp-playwright":{version:"1.0.0",config_compatible:true},
+        "mcp-kanban":{version:$revision,config_compatible:true}
       }}]}]}' > "$AICODING_SHARED_CONSUMERS_FILE"
   results="$HOME/.local/state/aicoding/update-results.json"
-  jq -n '{schema:1,components:{
+  jq -n --arg revision "$revision" '{schema:1,components:{
     codex:{state:"current"},
     "mcp-context7":{state:"current"},
-    "mcp-playwright":{state:"current"}
+    "mcp-playwright":{state:"current"},
+    "mcp-kanban":{state:"current",successful_version:$revision}
   }}' > "$results"
   cat > "$TMPDIR/stubs/codex" <<'STUB'
 #!/bin/sh
@@ -244,6 +271,27 @@ STUB
 exit 0
 STUB
   chmod +x "$TMPDIR/stubs/codex"
+
+  source "$BLUEPRINT_ROOT/lib/runtime.sh"
+  source "$BLUEPRINT_ROOT/lib/update-results.sh"
+  source "$BLUEPRINT_ROOT/lib/update-components.sh"
+  release="$AICODING_DATA_DIR/versions/mcp-kanban/$revision"
+  mkdir -p "$release/.venv/bin"
+  printf '%s\n' "$revision" > "$release/.aicoding-version"
+  cat > "$release/.venv/bin/python" <<'STUB'
+#!/bin/sh
+printf '0.1.0\n'
+STUB
+  cat > "$release/.venv/bin/kanban-mcp" <<'STUB'
+#!/bin/sh
+case "${1:-}" in
+  --version) printf 'kanban-mcp 0.1.0\n' ;;
+  --instructions) printf 'Canonical work instructions.\n' ;;
+esac
+STUB
+  chmod +x "$release/.venv/bin/python" "$release/.venv/bin/kanban-mcp"
+  _aicoding_release_integrity_write "$release"
+  aicoding_activate_version mcp-kanban "$revision" kanban-mcp .venv/bin/kanban-mcp
 
   run bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
 
@@ -1831,14 +1879,92 @@ LDD
 
 @test "install.sh symlinks the kanban board client" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  [ -L "$HOME/.local/bin/kanban-post" ]
-  [ -x "$HOME/.local/bin/kanban-post" ]
-  readlink "$HOME/.local/bin/kanban-post" | grep -q "bin/kanban-post"
+  for h in kanban-post kanban-work; do
+    [ -L "$HOME/.local/bin/$h" ]
+    [ -x "$HOME/.local/bin/$h" ]
+    [ "$(readlink -f "$HOME/.local/bin/$h")" = "$BLUEPRINT_ROOT/bin/$h" ]
+  done
   for h in dokploy-api kuma-admin bugsink-api; do
     [ -L "$HOME/.local/bin/$h" ]
     [ -x "$HOME/.local/bin/$h" ]
     readlink "$HOME/.local/bin/$h" | grep -q "bin/$h"
   done
+}
+
+@test "install.sh deploys the Claude Kanban lifecycle wrapper as managed executable" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  local hook="$HOME/.claude/hooks/kanban-work-hook.sh" hash
+  [ -x "$hook" ]
+  cmp "$BLUEPRINT_ROOT/configs/claude/hooks/kanban-work-hook.sh" "$hook"
+  hash=$(jq -r '.files["'"$hook"'"].deployed_hash' "$AICODING_MANIFEST")
+  [ -n "$hash" ]
+  [ "$hash" != null ]
+}
+
+@test "install.sh deploys Cursor hooks as managed overwrite with Kanban lifecycle wiring" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  local hooks="$HOME/.cursor/hooks.json" hash mode
+  [ -f "$hooks" ]
+  if grep -q '{{HOME}}' "$hooks"; then false; fi
+  jq -e --arg home "$HOME" '.hooks.preToolUse |
+    any(.command == ("bash \"" + $home + "/.claude/hooks/kanban-work-hook.sh\" cursor preToolUse"))' "$hooks"
+  jq -e '.hooks.preToolUse | any(.failClosed == true)' "$hooks"
+  jq -e '(.hooks.beforeMCPExecution // null) == null and
+    (.hooks.afterMCPExecution // null) == null' "$hooks"
+  hash=$(jq -r '.files["'"$hooks"'"].deployed_hash' "$AICODING_MANIFEST")
+  mode=$(jq -r '.files["'"$hooks"'"].mode' "$AICODING_MANIFEST")
+  [ -n "$hash" ]
+  [ "$hash" != null ]
+  [ "$mode" = overwrite ]
+}
+
+@test "install.sh deploys the auto-discovered OpenCode Kanban plugin as managed overwrite" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  local plugin="$HOME/.config/opencode/plugins/kanban-work.js" hash mode
+  [ -f "$plugin" ]
+  cmp "$BLUEPRINT_ROOT/configs/opencode/plugins/kanban-work.js" "$plugin"
+  hash=$(jq -r '.files["'"$plugin"'"].deployed_hash' "$AICODING_MANIFEST")
+  mode=$(jq -r '.files["'"$plugin"'"].mode' "$AICODING_MANIFEST")
+  [ -n "$hash" ]
+  [ "$hash" != null ]
+  [ "$mode" = overwrite ]
+  jq -e 'has("plugin") | not' "$HOME/.config/opencode/opencode.json"
+}
+
+@test "install.sh reconcile updates the managed OpenCode plugin and preserves personal plugins" {
+  blueprint_copy
+  mkdir -p "$HOME/.config/opencode/plugins"
+  printf '%s\n' 'export const PersonalPlugin = async () => ({})' \
+    > "$HOME/.config/opencode/plugins/personal.js"
+  bash "$BP/install.sh" --force-reinstall </dev/null
+
+  printf '%s\n' '// reconcile fixture' >> "$BP/configs/opencode/plugins/kanban-work.js"
+  run bash "$BP/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "Mode: reconcile"
+  cmp "$BP/configs/opencode/plugins/kanban-work.js" \
+    "$HOME/.config/opencode/plugins/kanban-work.js"
+  grep -qx 'export const PersonalPlugin = async () => ({})' \
+    "$HOME/.config/opencode/plugins/personal.js"
+}
+
+@test "install.sh reconcile updates managed Cursor hooks and preserves personal MCP servers" {
+  blueprint_copy
+  mkdir -p "$HOME/.cursor"
+  cat > "$HOME/.cursor/mcp.json" <<'EOF'
+{"mcpServers":{"personal":{"command":"personal-mcp","args":["--safe"]}}}
+EOF
+  bash "$BP/install.sh" --force-reinstall </dev/null
+  jq -e '.mcpServers.personal.command == "personal-mcp"' "$HOME/.cursor/mcp.json"
+
+  jq '.hooks.preCompact[0].timeout = 17' "$BP/configs/cursor/hooks.json" \
+    > "$BP/configs/cursor/hooks.json.new"
+  mv "$BP/configs/cursor/hooks.json.new" "$BP/configs/cursor/hooks.json"
+  run bash "$BP/install.sh" </dev/null
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "Mode: reconcile"
+  jq -e '.hooks.preCompact[0].timeout == 17' "$HOME/.cursor/hooks.json"
+  jq -e '.mcpServers.personal.command == "personal-mcp"' "$HOME/.cursor/mcp.json"
 }
 
 @test "install.sh symlinks clip-x11-bridge into ~/.local/bin" {

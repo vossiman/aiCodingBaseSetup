@@ -25,11 +25,11 @@ The installer ensures four AI coding CLIs are present and configured:
 | OpenAI Codex | `codex` | `codex` (first run — ChatGPT sign-in or `OPENAI_API_KEY`) | `~/.codex/auth.json` |
 | Cursor Agent | `agent` (or `cursor-agent` on older releases) | `agent login` (or `CURSOR_API_KEY`) | `~/.config/cursor/auth.json` — `install.sh` symlinks `~/.config/cursor` into the bind-mounted `~/.aicodingsetup/cursor-config` so login is once-ever across pods (the mounted `~/.cursor` holds only MCP config, not credentials) |
 
-All four read the same 4 MCP servers; auth state persists across containers via bind-mounted home directories (DevPod setup — see "Devcontainers" below).
+All four read the same managed MCP servers; auth state persists across containers via bind-mounted home directories (DevPod setup — see "Devcontainers" below).
 
 ### MCP Servers
 
-Configured for **all four CLIs**: `claude mcp add` for Claude Code (existing), `~/.config/opencode/opencode.json` `mcp` field for opencode, `~/.codex/config.toml` `[mcp_servers.*]` tables for codex, and `~/.cursor/mcp.json` `mcpServers` object for cursor-agent. Same four servers, four config formats — `install.sh` deploys each from a template in `configs/`.
+Configured for **all four CLIs**: `claude mcp add` for Claude Code, `~/.config/opencode/opencode.json` `mcp` field for opencode, `~/.codex/config.toml` `[mcp_servers.*]` tables for Codex, and `~/.cursor/mcp.json` `mcpServers` object for Cursor Agent. `install.sh` deploys each format from `configs/`.
 
 | MCP | Purpose | Auth |
 |-----|---------|------|
@@ -37,6 +37,58 @@ Configured for **all four CLIs**: `claude mcp add` for Claude Code (existing), `
 | brave-search | Web, news, image, video search | API key |
 | context7 | Library documentation lookup (via Docker) | None |
 | playwright | Browser automation, screenshots, testing | None (via plugin) |
+| kanban | Shared backlog reads and native-session-bound work lifecycle | `kanban-post` broker only |
+
+#### Kanban MCP lifecycle
+
+The Kanban controller is installed from the exact Git revision in
+`configs/versions/kanban-mcp.rev`. The updater checks out that detached
+revision, creates a relocatable virtual environment from the committed lock,
+and validates `kanban-mcp --version` and `kanban-mcp --instructions` before it
+publishes `~/.local/share/aicoding/current/mcp-kanban` and the stable
+`~/.local/bin/kanban-mcp` launcher. The `mcp-kanban` update receipt records the
+full revision. Claude registration has its own
+`mcp-registration-claude-kanban` receipt. A retained release must pass its
+integrity and controller checks before it can be reused.
+
+The managed MCP entries contain only the local `kanban-mcp` command. They do
+not contain `KANBAN_TOKEN`, an authorization header, a board URL, or a checkout
+path. The controller reaches the board through `kanban-post`, which remains the
+only process that reads `KANBAN_TOKEN` and is also the credential-safe recovery
+CLI. Recovery use does not bypass claim lifecycle rules.
+
+Native Claude Code, Codex, and Cursor hooks and the OpenCode plugin mint a work
+handle for the current native session and run generation. They bind that handle
+to a backend work session, issue one-use 60-second pre-call permits, report
+activity for running tools, and reconcile claims on stop and session end.
+Normal turn stop releases unfinished work; compaction and active child or tool
+work preserve the parent claim. Delivery queues prioritize release and end over
+stale activity, and supervision is bounded to two hours.
+
+The operational registry is
+`${XDG_STATE_HOME:-$HOME/.local/state}/aicoding/kanban-work.sqlite3`. Its
+directory is mode `0700` and the database is mode `0600`. Ended generations and
+completed native-event receipts are retained for seven days; consumed permits
+are retained for one hour. The delivery queue is capped at 1024 rows. This
+registry coordinates processes running as the same user. It is not an
+adversarial security boundary against another process running as that user.
+
+Lifecycle mutations stay disabled unless the exact installed client version is
+listed in `configs/kanban/qualified-clients.json`; board read tools remain
+available. A missing matrix, malformed matrix, or unlisted version therefore
+keeps compatibility mode. The qualification preflight observes each real
+client's exact version and writes an honest unsupported report unless native
+lifecycle evidence exists:
+
+```bash
+tools/qualify-kanban-clients --all --output out/kanban-mcp-qualification
+```
+
+It launches no model today, and the production matrix is empty. Rollout is
+Codex-first; the other clients are not a prerequisite for a later Codex-only
+rollout. Codex remains unsupported because its available nonexecuting hook
+inventory does not use the same configuration as the proposed model launch.
+See [the qualification status and blockers](docs/kanban-mcp-qualification.md).
 
 ### Claude Code Plugins (Marketplace)
 
@@ -92,9 +144,9 @@ Accepted tool limitations are recorded in
 
 - **`~/.bashrc.d/aicoding-env.sh`** — empty by default; put container-wide `export FOO=bar` lines here. Sourced from every login shell via the managed block in `~/.bashrc`.
 - **`~/.bashrc.d/aicoding-ssh-auth-sock.sh`** — stabilizes the forwarded SSH agent socket across DevPod / Cursor reconnects. Routes every shell through `~/.ssh/agent.sock` (a symlink we keep current). Without it, long-lived tmux panes hold a stale `SSH_AUTH_SOCK` path after the host's SSH session rotates, and `git push` fails with `Permission denied (publickey)` until you open a new pane.
-- **`~/.codex/config.toml`**: smart TOML-managed file; declares the 5 MCPs in `[mcp_servers.<name>]` tables with secrets substituted privately at deploy time. Existing model, reasoning effort, and project trust remain user-owned. Other blueprint settings use setting-level three-way comparison.
-- **`~/.cursor/mcp.json`** — merge-mode managed file; declares the 4 MCPs in JSON `{mcpServers: ...}` (Claude-Desktop-compatible schema). User-added entries are preserved by the merge.
-- **`~/.cursor/skills/aicoding-estate/SKILL.md`** — overwrite-mode managed file; Cursor's only file-backed global instruction surface (User Rules live in the account, `~/.cursor/rules` is not read by the CLI). Carries the memory-retrieval, backlog-board (`kanban-post`) and secrets guidance that Claude gets from `~/.claude/CLAUDE.md` and Codex from `~/.codex/AGENTS.md`.
+- **`~/.codex/config.toml`**: smart TOML-managed file; declares the 6 MCPs in `[mcp_servers.<name>]` tables with secrets substituted privately at deploy time. Existing model, reasoning effort, and project trust remain user-owned. Other blueprint settings use setting-level three-way comparison. The Kanban entry is command-only.
+- **`~/.cursor/mcp.json`** — merge-mode managed file; declares the 5 MCPs in JSON `{mcpServers: ...}` (Claude-Desktop-compatible schema). User-added entries are preserved by the merge.
+- **`~/.cursor/skills/aicoding-estate/SKILL.md`** — overwrite-mode managed file; Cursor's only file-backed global instruction surface (User Rules live in the account, `~/.cursor/rules` is not read by the CLI). Carries the memory-retrieval, canonical Kanban MCP pointer, backlog-board recovery guidance, and secrets guidance that Claude gets from `~/.claude/CLAUDE.md` and Codex from `~/.codex/AGENTS.md`.
 
 ### External Tools (detected, not installed)
 
