@@ -532,7 +532,14 @@ _sync_stage_selected_blueprint() {
     aicoding_stage_source aicoding "$stage" "$sha" || { rm -rf "$stage"; return 1; }
     rm -rf "$stage" || return 1
   fi
-  aicoding_activate_version aicoding "$sha" || return 1
+  # Same stable launchers as aicoding-install. Passing them on every sync is
+  # what converges an old layout (launchers symlinked into a tracking clone,
+  # no aicoding-auto-update) without a manual reinstall. Activation replaces
+  # a symlinked launcher atomically and never writes through the link.
+  aicoding_activate_version aicoding "$sha" \
+    aicoding-sync bin/aicoding-sync aicoding-install bin/aicoding-install \
+    aicoding-status bin/aicoding-status aicoding-select bin/aicoding-select \
+    aicoding-auto-update bin/aicoding-auto-update || return 1
   printf '%s\n' "$final"
 }
 
@@ -1560,6 +1567,12 @@ _sync_provision() {
     install_kuma_admin_symlink || rc=1
     install_redact_transcript_symlink || rc=1
     install_redact_sessions_symlinks || rc=1
+    # install.sh enrolls the scheduler at install time. Legacy installs never
+    # did, and activation above only now gave them the launcher, so a sync
+    # converges enrollment the same way. Idempotent; skipped offline.
+    if [ -x "$HOME/.local/bin/aicoding-auto-update" ]; then
+      ensure_aicoding_auto_update || rc=1
+    fi
     # A sync is one of the documented recovery triggers for transcripts a
     # crashed session left behind. Synchronous and bounded: a detached sweep
     # would outlive the sync and keep writing state into a HOME the caller
