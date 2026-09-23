@@ -167,7 +167,8 @@ being changed, there must be exactly one matching root entry.
 `inventory_complete` must be `true`, `expires_at` must be a future Unix epoch
 value, and the consumer list must be nonempty. Every listed consumer must have
 a nonempty stable ID and, for the component being gated, a semantic version
-(for `mcp-kanban`, its 40-character git revision) and `config_compatible: true`. Component-specific minimum versions are then
+(for `mcp-kanban`, its 40-character git revision) and
+`config_compatible: true`. Component-specific minimum versions are then
 checked. Missing, malformed, duplicate, incomplete, expired, stale, or
 root-mismatched evidence, or a proof that does not list this container,
 defers the shared mutation.
@@ -176,14 +177,19 @@ defers the shared mutation.
 
 On vossisrv the dvw catalog publishes it (dvw `catalog-service/app/fleet.py`).
 Only running containers count. Every 30 seconds the catalog probes every
-running devpod container and writes one root entry per shared mount; a
-2-second container-list watcher deletes the file as soon as a new container
-id appears, so the gate closes until that container has been probed.
+running devpod container and writes one root entry per shared mount. A
+2-second container-list watcher, which keeps running while a pass probes,
+deletes the file as soon as a new container id appears, so the gate closes
+until that container has been probed. A pass that finds a running container
+it did not enumerate writes nothing and retries. A container that mounts a
+root's host folder (or a parent of it) at another path marks that root
+incomplete. The catalog removes the file when it starts and when it stops.
 
 The updater additionally requires `generated_at` to be later than
-`newest_container_started_at`, and requires its own container id (from
-`/proc/self/mountinfo`) among the root's consumers. A container the catalog
-has not probed yet can therefore never authorize a shared write.
+`newest_container_started_at`, and requires its own container id (from the
+`/etc/hostname` bind mount in `/proc/self/mountinfo`) among the root's
+consumers. A container the catalog has not probed yet can therefore never
+authorize a shared write.
 
 Hosts without a catalog (local Linux and WSL setups) have no shared roots, and
 the gate already passes local roots, so they need no inventory.

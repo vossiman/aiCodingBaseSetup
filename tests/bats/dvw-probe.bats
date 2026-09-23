@@ -402,6 +402,20 @@ RECEIPTS
   echo "$output" | jq -e '.partial == false'
 }
 
+@test "capabilities are collected before a hanging tmux and git spend the budget" {
+  _receipts <<'RECEIPTS'
+{"schema":1,"components":{"claude":{"state":"current","successful_version":"2.1.280"}}}
+RECEIPTS
+  printf '#!/bin/sh\nsleep 10\n' > "$TMPDIR/stubs/tmux"
+  printf '#!/bin/sh\nsleep 10\n' > "$TMPDIR/stubs/git"
+  chmod +x "$TMPDIR/stubs/tmux" "$TMPDIR/stubs/git"
+  export DVW_PROBE_BUDGET=1
+  run "$PROBE"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.partial == true and .tmux == null'
+  echo "$output" | jq -e '.capabilities.claude == {"version":"2.1.280","config_compatible":true}'
+}
+
 @test "a blocked, failed or absent receipt is a null capability, never compatible" {
   _receipts <<'RECEIPTS'
 {"schema":1,"components":{

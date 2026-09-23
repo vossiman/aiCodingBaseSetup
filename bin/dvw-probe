@@ -29,8 +29,9 @@ CAPABILITY_COMPONENTS = ("claude", "codex", "cursor", "mcp-context7", "mcp-playw
                          "mcp-kanban")
 MAX_RECEIPTS = 1024 * 1024
 _VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+")
-# mcp-kanban is pinned to a git revision, not a release; the updater's shared
-# gate checks the same shapes.
+# mcp-kanban is pinned to a git revision, not a release. The probe is
+# intentionally stricter than the updater's shared gate: \Z rejects a
+# trailing newline that the gate's jq `$` would accept.
 _REVISION = re.compile(r"^[0-9a-f]{40}\Z")
 _VERSION_SHAPES = {"mcp-kanban": _REVISION}
 
@@ -633,12 +634,14 @@ def main():
                "activity": dict(tmux_sessions=None, terminals=None, cursor_connections=None, vscode_connections=None),
                "capabilities": None}
         _arm_deadline(doc, seconds)
-        for key, fn in (("cgroup", lambda: collect_cgroup(cg)),
+        # Capabilities first: one small file read that the fleet proof needs
+        # complete, so a slow tmux or git cannot spend its budget.
+        for key, fn in (("capabilities", lambda: collect_capabilities(budget)),
+                        ("cgroup", lambda: collect_cgroup(cg)),
                         ("agents", lambda: collect_agents(proc, budget)),
                         ("tmux", lambda: collect_tmux(budget)),
                         ("activity", lambda: collect_activity(proc, budget)),
-                        ("git", lambda: collect_git(budget)),
-                        ("capabilities", lambda: collect_capabilities(budget))):
+                        ("git", lambda: collect_git(budget))):
             try:
                 doc[key] = fn()
             except Exception:  # a collector must never take the document down
