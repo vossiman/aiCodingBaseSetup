@@ -1819,3 +1819,29 @@ _kvm_unused_gid() {
   run env AICODING_UPDATE_TTL=0 bash -c '. "$1/lib/sync.sh"; aicoding_config_is_shared() { return 1; }; _sync_system_provision() { return 3; }; aicoding_sync --boot' _ "$BLUEPRINT_ROOT"
   [[ "$output" == *"aicoding-sync: completed with deferrals"* ]]
 }
+
+@test "sync step 5 does not run for a legacy manifest off a container runtime" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  _sync_system_provision() { echo STEP5 >> "$TMP/ran.log"; return 0; }
+  # No .profile in the manifest (legacy/pre-profile install) and the runtime
+  # seam forced off: this must look exactly like a host to step 5, even
+  # though _sync_profile's own fallback would otherwise call it container.
+  jq -e '.profile' "$AICODING_MANIFEST" >/dev/null 2>&1 && false
+  AICODING_CONTAINER_RUNTIME=0 AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  if grep -q STEP5 "$TMP/ran.log"; then false; fi
+}
+
+@test "sync step 5 runs for a legacy manifest on a container runtime" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  _sync_system_provision() { echo STEP5 >> "$TMP/ran.log"; return 0; }
+  jq -e '.profile' "$AICODING_MANIFEST" >/dev/null 2>&1 && false
+  AICODING_CONTAINER_RUNTIME=1 AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  grep -q STEP5 "$TMP/ran.log"
+}
+
+@test "sync step 5 runs on an explicit container profile even off a container runtime" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  _sync_system_provision() { echo STEP5 >> "$TMP/ran.log"; return 0; }
+  AICODING_PROFILE=container AICODING_CONTAINER_RUNTIME=0 AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  grep -q STEP5 "$TMP/ran.log"
+}
