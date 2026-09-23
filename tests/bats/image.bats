@@ -39,7 +39,7 @@ IMAGE_DIR="$BLUEPRINT_ROOT/image"
   # Same commit in both places or artifact regressions return on one path.
   local df_commit lib_commit
   df_commit=$(grep -oE 'TMUX_COMMIT=[0-9a-f]{40}' "$IMAGE_DIR/Dockerfile" | head -1 | cut -d= -f2)
-  lib_commit=$(grep -oE 'tmux_commit="[0-9a-f]{40}"' "$BLUEPRINT_ROOT/lib/provision-system.sh" | cut -d'"' -f2)
+  lib_commit=$(grep -oE '^AICODING_TMUX_COMMIT_PIN="[0-9a-f]{40}"' "$BLUEPRINT_ROOT/lib/provision-system.sh" | cut -d'"' -f2)
   [ -n "$df_commit" ]
   [ "$df_commit" = "$lib_commit" ]
 }
