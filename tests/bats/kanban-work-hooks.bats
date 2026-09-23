@@ -45,3 +45,14 @@ for event in required:
 PY
   [ "$status" -eq 0 ]
 }
+
+@test "shared wrapper keeps Python from writing bytecode into the release" {
+  cat > "$HOME/.local/bin/kanban-work" <<'STUB'
+#!/bin/sh
+printf '%s\n' "${PYTHONDONTWRITEBYTECODE:-unset}" > "$HOME/bytecode.log"
+STUB
+  chmod +x "$HOME/.local/bin/kanban-work"
+  run env -u PYTHONDONTWRITEBYTECODE bash "$HOOK" claude Stop </dev/null
+  [ "$status" -eq 0 ]
+  [ "$(cat "$HOME/bytecode.log")" = 1 ]
+}

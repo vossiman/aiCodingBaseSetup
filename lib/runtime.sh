@@ -288,7 +288,7 @@ aicoding_activate_version() (
   }
 
   local current="$current_root/$component" previous="$previous_root/$component"
-  local current_existed=0 previous_existed=0 old_target="" desired_target="../versions/$component/$version"
+  local current_existed=0 current_valid=1 previous_existed=0 old_target="" desired_target="../versions/$component/$version"
   local current_touched=0 previous_touched=0 activation_started=0
   local _aicoding_runtime_pending_temp=""
   local -a launchers=() relatives=() launcher_existed=() launcher_changed=() launcher_touched=() backup_created=()
@@ -347,12 +347,21 @@ aicoding_activate_version() (
   trap '_aicoding_runtime_activation_signal HUP 129' HUP
 
   if [ -e "$current" ] || [ -L "$current" ]; then
-    old_target=$(_aicoding_runtime_release_target "$component" "$current") || {
-      trap - TERM INT HUP
-      rm -rf -- "$transaction" 2>/dev/null || true
-      exec {lock_fd}>&-
-      return 1
-    }
+    if ! old_target=$(_aicoding_runtime_release_target "$component" "$current"); then
+      # A corrupt current release (e.g. bytecode written into it) must not
+      # strand every later activation. Only a pointer can be replaced, and
+      # it never becomes the previous (fallback) release.
+      [ -L "$current" ] || {
+        trap - TERM INT HUP
+        rm -rf -- "$transaction" 2>/dev/null || true
+        exec {lock_fd}>&-
+        return 1
+      }
+      printf 'aicoding runtime: current %s release is invalid; activating %s without a previous fallback\n' \
+        "$component" "$version" >&2
+      old_target=""
+      current_valid=0
+    fi
     current_existed=1
     if ! cp -a --no-dereference -- "$current" "$transaction/current"; then
       trap - TERM INT HUP
@@ -424,7 +433,10 @@ aicoding_activate_version() (
 
   # A changed wrapper must remain runnable against the old release until the
   # managed current pointer is switched as the final activation operation.
-  if [ "$current_existed" -eq 1 ] && [ "$old_target" != "$desired_target" ]; then
+  # An invalid current release is replaced first instead (below), so its
+  # executables are never relied on.
+  if [ "$current_existed" -eq 1 ] && [ "$current_valid" -eq 1 ] \
+      && [ "$old_target" != "$desired_target" ]; then
     local old_release="$AICODING_DATA_DIR/${old_target#../}"
     for ((i=0; i<${#launchers[@]}; i++)); do
       if [ "${launcher_changed[$i]}" -eq 1 ] \
@@ -448,7 +460,8 @@ aicoding_activate_version() (
     fi
   done
 
-  if [ "$current_existed" -eq 1 ] && [ "$old_target" != "$desired_target" ]; then
+  if [ "$current_existed" -eq 1 ] && [ "$current_valid" -eq 1 ] \
+      && [ "$old_target" != "$desired_target" ]; then
     previous_touched=1
     if ! _aicoding_runtime_commit_previous "$previous_root" "$component" "$old_target"; then
       _aicoding_runtime_activation_rollback || true
@@ -482,7 +495,10 @@ aicoding_activate_version() (
       exec {lock_fd}>&-
       return 1
     fi
-  elif [ "$current_existed" -eq 0 ]; then
+  elif [ "$current_existed" -eq 0 ] || [ "$current_valid" -eq 0 ]; then
+    # Fresh enrollment, or replacement of an invalid current release: publish
+    # current first so no wrapper ever resolves to a missing or corrupt tree.
+    # previous is left untouched; rollback restores the snapshot of current.
     if ! _aicoding_runtime_validate_release "$component" "$version"; then
       _aicoding_runtime_activation_rollback || true
       exec {lock_fd}>&-
