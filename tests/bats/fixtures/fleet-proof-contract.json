@@ -1,0 +1,202 @@
+{
+  "schema": 1,
+  "generated_at": 1790000000,
+  "newest_container_started_at": 1789999400,
+  "roots": [
+    {
+      "shared_root": "/home/codespace/.claude",
+      "inventory_complete": true,
+      "expires_at": 1790000300,
+      "consumers": [
+        {
+          "id": "7e3c1a9b5d2f4e6a8c0b1d3f5a7c9e2b4d6f8a0c1e3b5d7f9a2c4e6b8d0f1a3c",
+          "components": {
+            "claude": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "codex": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "cursor": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-context7": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-playwright": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-kanban": {
+              "version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3",
+              "config_compatible": true
+            }
+          }
+        },
+        {
+          "id": "0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c",
+          "components": {
+            "claude": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "codex": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "cursor": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-context7": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-playwright": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-kanban": {
+              "version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3",
+              "config_compatible": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "shared_root": "/home/codespace/.codex",
+      "inventory_complete": true,
+      "expires_at": 1790000300,
+      "consumers": [
+        {
+          "id": "7e3c1a9b5d2f4e6a8c0b1d3f5a7c9e2b4d6f8a0c1e3b5d7f9a2c4e6b8d0f1a3c",
+          "components": {
+            "claude": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "codex": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "cursor": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-context7": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-playwright": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-kanban": {
+              "version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3",
+              "config_compatible": true
+            }
+          }
+        },
+        {
+          "id": "0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c",
+          "components": {
+            "claude": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "codex": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "cursor": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-context7": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-playwright": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-kanban": {
+              "version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3",
+              "config_compatible": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "shared_root": "/home/codespace/.cursor",
+      "inventory_complete": true,
+      "expires_at": 1790000300,
+      "consumers": [
+        {
+          "id": "7e3c1a9b5d2f4e6a8c0b1d3f5a7c9e2b4d6f8a0c1e3b5d7f9a2c4e6b8d0f1a3c",
+          "components": {
+            "claude": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "codex": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "cursor": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-context7": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-playwright": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-kanban": {
+              "version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3",
+              "config_compatible": true
+            }
+          }
+        },
+        {
+          "id": "0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c",
+          "components": {
+            "claude": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "codex": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "cursor": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-context7": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-playwright": {
+              "version": "1.2.3",
+              "config_compatible": true
+            },
+            "mcp-kanban": {
+              "version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3",
+              "config_compatible": true
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

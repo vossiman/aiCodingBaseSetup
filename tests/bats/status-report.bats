@@ -460,6 +460,31 @@ _status_fleet() {
   run "$BIN"; [[ "$output" == *"not listed: this container has not been probed yet"* ]]
 }
 
+@test "fleet proof stale, unknown own id and DinD mountinfo are reported" {
+  _status_fleet
+  local now; now=$(date +%s)
+  jq -n --argjson e "$((now + 300))" --argjson n "$now" '{schema:1,generated_at:$n,newest_container_started_at:$n,roots:[
+    {shared_root:"/home/codespace/.claude",inventory_complete:true,expires_at:$e,consumers:[{id:"me",components:{}}]}]}' \
+    > "$AICODING_SHARED_CONSUMERS_FILE"
+  run "$BIN"; [[ "$output" == *"stale: generated before the newest container start"* ]]
+  jq '.newest_container_started_at -= 60' "$AICODING_SHARED_CONSUMERS_FILE" > "$TMP/p" && mv "$TMP/p" "$AICODING_SHARED_CONSUMERS_FILE"
+  run "$BIN"; [[ "$output" == *"valid until"* ]]
+  unset AICODING_SELF_CONTAINER_ID
+  export AICODING_MOUNTINFO="$TMP/mountinfo"; : > "$AICODING_MOUNTINFO"
+  run "$BIN"; [[ "$output" == *"not listed: own container id unknown"* ]]
+  [[ "$output" != *"valid until"* ]]
+  # An inner DinD container's shm mount comes first; only the hostname mount
+  # names this container.
+  local inner self
+  inner=$(printf 'b%.0s' {1..64}); self=$(printf 'a%.0s' {1..64})
+  printf '1 2 0:1 /var/lib/docker/containers/%s/mounts/shm /var/lib/docker/containers/%s/mounts/shm rw - tmpfs shm rw\n' "$inner" "$inner" > "$AICODING_MOUNTINFO"
+  printf '3 2 0:1 /docker/containers/%s/hostname /etc/hostname rw - ext4 /dev/x rw\n' "$self" >> "$AICODING_MOUNTINFO"
+  jq --arg id "$inner" '.roots[0].consumers=[{id:$id,components:{}}]' "$AICODING_SHARED_CONSUMERS_FILE" > "$TMP/p" && mv "$TMP/p" "$AICODING_SHARED_CONSUMERS_FILE"
+  run "$BIN"; [[ "$output" == *"not listed: this container has not been probed yet"* ]]
+  jq --arg id "$self" '.roots[0].consumers=[{id:$id,components:{}}]' "$AICODING_SHARED_CONSUMERS_FILE" > "$TMP/p" && mv "$TMP/p" "$AICODING_SHARED_CONSUMERS_FILE"
+  run "$BIN"; [[ "$output" == *"valid until"* ]]
+}
+
 @test "status helper imports never write bytecode into their source tree" {
   mkdir -p "$TMP/import-source"
   cp "$BLUEPRINT_ROOT/lib/status-report.py" "$TMP/import-source/status-report.py"

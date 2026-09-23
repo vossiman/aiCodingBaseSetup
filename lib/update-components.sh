@@ -248,17 +248,21 @@ aicoding_config_is_shared() { aicoding_config_shared_root "$1" >/dev/null; }
 # The container id is the only identity the catalog and this container share.
 # Docker bind-mounts /etc/hostname from /var/lib/docker/containers/<id>/, and
 # the blueprint sets --hostname to the workspace name, so hostname cannot serve.
+# Only the hostname mount counts: with Docker-in-Docker, mountinfo also lists
+# inner containers' paths (for example their shm mounts) under /containers/.
 _aicoding_self_container_id() {
   if [ -n "${AICODING_SELF_CONTAINER_ID:-}" ]; then
     printf '%s\n' "$AICODING_SELF_CONTAINER_ID"; return 0
   fi
-  grep -oE '/containers/[0-9a-f]{64}/' "${AICODING_MOUNTINFO:-/proc/self/mountinfo}" 2>/dev/null \
-    | head -1 | grep -oE '[0-9a-f]{64}'
+  grep -m1 -oE '/containers/[0-9a-f]{64}/hostname ' "${AICODING_MOUNTINFO:-/proc/self/mountinfo}" 2>/dev/null \
+    | grep -oE '[0-9a-f]{64}'
 }
 
-# A scheduler may publish non-secret consumer capability evidence in the
-# shared aicodingsetup mount. Until every known consumer opts in, changing
-# version-dependent shared settings is unsafe and remains deferred.
+# The dvw catalog on the host publishes the fleet proof: every running devpod
+# container, the host source of its shared config mounts, and the component
+# versions its probe verified. A shared root opens only when that proof is
+# fresh, complete for the root, lists this container, and every consumer
+# reports the component compatible; anything else keeps the change deferred.
 _aicoding_shared_consumers_allow() {
   local component=$1 minimum=${2:-} destination=${3:-} registry shared_root shared_rc self_id
   registry=${AICODING_SHARED_CONSUMERS_FILE:-$HOME/.aicodingsetup/fleet/consumer-versions.json}
