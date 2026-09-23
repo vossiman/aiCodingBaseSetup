@@ -1800,7 +1800,10 @@ _kvm_unused_gid() {
     echo STEP5 >> "$TMP/ran.log"
     return 0
   }
-  AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  # Forces the container-runtime seam: without it this test only passes on a
+  # box with /.dockerenv (or one of the other real signals), which a bare CI
+  # VM does not have.
+  AICODING_CONTAINER_RUNTIME=1 AICODING_UPDATE_TTL=0 aicoding_sync --boot
   grep -q STEP5 "$TMP/ran.log"
   if grep -q LOCK_HELD "$TMP/ran.log"; then false; fi
 }
