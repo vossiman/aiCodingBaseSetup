@@ -532,8 +532,55 @@ _sync_stage_selected_blueprint() {
     aicoding_stage_source aicoding "$stage" "$sha" || { rm -rf "$stage"; return 1; }
     rm -rf "$stage" || return 1
   fi
-  aicoding_activate_version aicoding "$sha" || return 1
+  # Same stable launchers as aicoding-install. Passing them on every sync is
+  # what converges an old layout (launchers symlinked into a tracking clone,
+  # no aicoding-auto-update) without a manual reinstall. Activation replaces
+  # a symlinked launcher atomically and never writes through the link.
+  aicoding_activate_version aicoding "$sha" "${_SYNC_STABLE_LAUNCHERS[@]}" || return 1
   printf '%s\n' "$final"
+}
+
+# Launcher/relative-executable pairs, identical to bin/aicoding-install.
+_SYNC_STABLE_LAUNCHERS=(
+  aicoding-sync bin/aicoding-sync aicoding-install bin/aicoding-install
+  aicoding-status bin/aicoding-status aicoding-select bin/aicoding-select
+  aicoding-auto-update bin/aicoding-auto-update
+)
+
+# Legacy code (a tracking clone or an older release) stages and activates the
+# selected release without launchers, then re-executes it. Reconcile the
+# stable launchers from the running release itself. Cheap when they already
+# match: no activation, so no release digest is recomputed.
+_sync_reconcile_running_launchers() {
+  local root sha release current i launcher relative expected result=0 sync_root
+  root=$(readlink -f -- "${AICODING_BLUEPRINT_CLONE:-}" 2>/dev/null) || return 0
+  sha=$(cat "$root/.aicoding-version" 2>/dev/null) || return 0
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 0
+  release=$(readlink -f -- "$AICODING_DATA_DIR/versions/aicoding/$sha" 2>/dev/null) || return 0
+  [ "$root" = "$release" ] || return 0
+  if ! declare -F aicoding_activate_version >/dev/null 2>&1; then
+    sync_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd) || return 1
+    . "$sync_root/lib/runtime.sh" || return 1
+  fi
+  current="$AICODING_DATA_DIR/current/aicoding"
+  if [ "$(readlink -- "$current" 2>/dev/null)" = "../versions/aicoding/$sha" ]; then
+    expected=$(mktemp) || return 1
+    for ((i=0; i<${#_SYNC_STABLE_LAUNCHERS[@]}; i+=2)); do
+      launcher=${_SYNC_STABLE_LAUNCHERS[$i]}; relative=${_SYNC_STABLE_LAUNCHERS[$((i + 1))]}
+      if [ -L "$HOME/.local/bin/$launcher" ] \
+          || ! _aicoding_runtime_write_wrapper "$expected" "$current" "$relative" \
+          || ! cmp -s -- "$expected" "$HOME/.local/bin/$launcher"; then
+        result=1
+        break
+      fi
+    done
+    rm -f -- "$expected"
+    [ "$result" -eq 1 ] || return 0
+  fi
+  aicoding_activate_version aicoding "$sha" "${_SYNC_STABLE_LAUNCHERS[@]}" || {
+    echo "aicoding-sync: could not reconcile stable launchers for ${sha:0:7}" >&2
+    return 1
+  }
 }
 
 _sync_has_smart_errors() {
@@ -1560,6 +1607,19 @@ _sync_provision() {
     install_kuma_admin_symlink || rc=1
     install_redact_transcript_symlink || rc=1
     install_redact_sessions_symlinks || rc=1
+    # install.sh enrolls the scheduler at install time. Legacy installs never
+    # did, and activation above only now gave them the launcher, so a sync
+    # converges enrollment the same way. Idempotent; skipped offline.
+    # Never from a sync the scheduler itself started: a detached enrollment
+    # can switch backends and TERM the fallback worker that is still waiting
+    # on this sync, leaving neither timer nor worker. AICODING_AUTO_UPDATE_RUN
+    # marks the updater's sync; AICODING_AUTO_UPDATE_SOURCE also covers older
+    # fallback workers and the systemd unit, which predate that marker.
+    if [ -x "$HOME/.local/bin/aicoding-auto-update" ] \
+        && [ "${AICODING_AUTO_UPDATE_RUN:-}" != 1 ] \
+        && [ -z "${AICODING_AUTO_UPDATE_SOURCE:-}" ]; then
+      ensure_aicoding_auto_update || rc=1
+    fi
     # A sync is one of the documented recovery triggers for transcripts a
     # crashed session left behind. Synchronous and bounded: a detached sweep
     # would outlive the sync and keep writing state into a HOME the caller
@@ -1721,7 +1781,11 @@ _sync_devcontainer_pin() {
 # deliberately no legacy tracking-clone fetch/reset fallback.
 _sync_refresh_and_reexec() {
   if [[ "$AICODING_BLUEPRINT_LOCAL" == 1 ]]; then refresh_blueprint; return $?; fi
-  if [[ "${AICODING_SYNC_REEXECED:-0}" == 1 ]]; then _SYNC_REFRESHED=1; return 0; fi
+  if [[ "${AICODING_SYNC_REEXECED:-0}" == 1 ]]; then
+    _SYNC_REFRESHED=1
+    _sync_reconcile_running_launchers
+    return $?
+  fi
   if [ -n "${AICODING_SELECTED_AICODING_SHA:-}" ]; then
     local selected_root
     selected_root=$(_sync_stage_selected_blueprint "$AICODING_SELECTED_AICODING_SHA") || return 1

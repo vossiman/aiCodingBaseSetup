@@ -761,6 +761,165 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+@test "sync activation converts legacy clone-symlinked launchers into managed wrappers" {
+  local repo="$TMP/legacy-repo" clone="$TMP/legacy-clone" sha release name
+  git clone -q "$BLUEPRINT_ROOT" "$repo"
+  sha=$(git -C "$repo" rev-parse HEAD)
+  # Old layout: launchers are symlinks into the tracking clone, and the
+  # scheduler launcher was never installed.
+  mkdir -p "$clone/bin" "$HOME/.local/bin"
+  for name in aicoding-sync aicoding-install; do
+    printf '#!/bin/sh\necho legacy %s\n' "$name" > "$clone/bin/$name"
+    chmod +x "$clone/bin/$name"
+    ln -sfn "$clone/bin/$name" "$HOME/.local/bin/$name"
+  done
+  rm -f "$HOME/.local/bin/aicoding-auto-update" "$HOME/.local/bin/aicoding-status" \
+    "$HOME/.local/bin/aicoding-select"
+  local before
+  before=$(cd "$clone" && md5sum bin/*)
+  export AICODING_BLUEPRINT_REMOTE="$repo" AICODING_DATA_DIR="$TMP/data"
+
+  release=$(_sync_stage_selected_blueprint "$sha")
+
+  [ "$release" = "$AICODING_DATA_DIR/versions/aicoding/$sha" ]
+  for name in aicoding-sync aicoding-install aicoding-status aicoding-select aicoding-auto-update; do
+    [ -f "$HOME/.local/bin/$name" ] && [ ! -L "$HOME/.local/bin/$name" ]
+    [ -x "$HOME/.local/bin/$name" ]
+    grep -qF '# Managed by aicoding immutable runtime.' "$HOME/.local/bin/$name"
+  done
+  [ "$(cd "$clone" && md5sum bin/*)" = "$before" ]
+  [ "$(readlink "$AICODING_DATA_DIR/current/aicoding")" = "../versions/aicoding/$sha" ]
+}
+
+@test "a sync re-executed by legacy code heals the stable launchers before provisioning" {
+  local repo="$TMP/handoff-repo" source="$TMP/handoff-source" clone="$TMP/handoff-clone"
+  local sha release name before
+  git clone -q "$BLUEPRINT_ROOT" "$repo"
+  sha=$(git -C "$repo" rev-parse HEAD)
+  cp -a "$repo" "$source"; rm -rf "$source/.git"
+  printf '%s\n' "$sha" > "$source/.aicoding-version"
+  export AICODING_DATA_DIR="$TMP/data" AICODING_STATE_DIR="$TMP/state"
+  . "$BLUEPRINT_ROOT/lib/runtime.sh"
+  aicoding_stage_source aicoding "$source" "$sha"
+  # Legacy code activated the new release without any launchers.
+  aicoding_activate_version aicoding "$sha"
+  release="$AICODING_DATA_DIR/versions/aicoding/$sha"
+  mkdir -p "$clone/bin" "$HOME/.local/bin"
+  for name in aicoding-sync aicoding-install; do
+    printf '#!/bin/sh\necho legacy %s\n' "$name" > "$clone/bin/$name"
+    chmod +x "$clone/bin/$name"
+    ln -sfn "$clone/bin/$name" "$HOME/.local/bin/$name"
+  done
+  rm -f "$HOME/.local/bin/aicoding-auto-update"
+  before=$(cd "$clone" && md5sum bin/*)
+
+  # The re-executed new release: non-local, REEXECED, running from the release.
+  export AICODING_BLUEPRINT_LOCAL=0 AICODING_SYNC_REEXECED=1
+  export AICODING_BLUEPRINT_CLONE="$release" AICODING_SELECTED_AICODING_SHA="$sha"
+  _sync_refresh_and_reexec --boot
+
+  for name in aicoding-sync aicoding-install aicoding-status aicoding-select aicoding-auto-update; do
+    [ -f "$HOME/.local/bin/$name" ] && [ ! -L "$HOME/.local/bin/$name" ]
+    grep -qF '# Managed by aicoding immutable runtime.' "$HOME/.local/bin/$name"
+  done
+  [ "$(cd "$clone" && md5sum bin/*)" = "$before" ]
+
+  # Provisioning's enrollment step now finds the launcher (offline it stops
+  # before starting the scheduler, so no real enrollment is spawned).
+  header() { :; }; info() { echo "$*"; }; ok() { echo "$*"; }; warn() { echo "WARN $*"; }
+  . "$BLUEPRINT_ROOT/lib/provision-integrations.sh"
+  run ensure_aicoding_auto_update
+  [ "$status" -eq 0 ]
+  [[ "$output" != *unavailable* ]]
+  [[ "$output" == *"Skipping scheduler start"* ]]
+
+  # Already reconciled: a second pass performs no activation at all.
+  aicoding_activate_version() { : > "$TMP/activated-again"; return 1; }
+  _sync_refresh_and_reexec --boot
+  [ ! -e "$TMP/activated-again" ]
+}
+
+@test "provisioning enrolls the automatic updater when its launcher exists" {
+  local clone="$TMP/enroll-blueprint"
+  mkdir -p "$clone/lib"
+  printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > "$clone/.aicoding-version"
+  cat > "$clone/lib/provision.sh" <<'STUB'
+install_mcp_packages() { return 0; }
+install_claude_mcps() { return 0; }
+install_claude_plugins() { return 0; }
+install_codex_plugins() { return 0; }
+remove_deprecated_shims() { return 0; }
+header() { :; }; info() { :; }; ok() { :; }; warn() { :; }
+STUB
+  cp "$BLUEPRINT_ROOT/lib/provision-integrations.sh" "$clone/lib/"
+  cat > "$HOME/.local/bin/aicoding-auto-update" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$HOME/auto-update.log"
+STUB
+  chmod +x "$HOME/.local/bin/aicoding-auto-update"
+  export AICODING_BLUEPRINT_CLONE="$clone"
+  . "$BLUEPRINT_ROOT/lib/update-results.sh"
+
+  run env AICODINGSETUP_SKIP_NETWORK= bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_config_is_shared() { return 1; }; _sync_provision yes'
+  [ "$status" -eq 0 ]
+  [ "$(cat "$HOME/auto-update.log")" = --ensure ]
+}
+
+@test "provisioning skips enrollment in a sync started by the automatic updater" {
+  local clone="$TMP/enroll-marker-blueprint" marker
+  mkdir -p "$clone/lib"
+  printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa > "$clone/.aicoding-version"
+  cat > "$clone/lib/provision.sh" <<'STUB'
+install_mcp_packages() { return 0; }
+install_claude_mcps() { return 0; }
+install_claude_plugins() { return 0; }
+install_codex_plugins() { return 0; }
+remove_deprecated_shims() { return 0; }
+header() { :; }; info() { :; }; ok() { :; }; warn() { :; }
+STUB
+  cp "$BLUEPRINT_ROOT/lib/provision-integrations.sh" "$clone/lib/"
+  cat > "$HOME/.local/bin/aicoding-auto-update" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$HOME/auto-update.log"
+STUB
+  chmod +x "$HOME/.local/bin/aicoding-auto-update"
+  export AICODING_BLUEPRINT_CLONE="$clone"
+  . "$BLUEPRINT_ROOT/lib/update-results.sh"
+  local body='. "$BLUEPRINT_ROOT/lib/sync.sh"; aicoding_config_is_shared() { return 1; }; _sync_provision boot'
+
+  # A new updater marks its sync; an older fallback worker or the systemd
+  # unit is recognized by AICODING_AUTO_UPDATE_SOURCE.
+  for marker in AICODING_AUTO_UPDATE_RUN=1 AICODING_AUTO_UPDATE_SOURCE=fallback \
+      AICODING_AUTO_UPDATE_SOURCE=systemd; do
+    run env -u AICODING_AUTO_UPDATE_RUN -u AICODING_AUTO_UPDATE_SOURCE \
+      AICODINGSETUP_SKIP_NETWORK= "$marker" bash -c "$body"
+    [ "$status" -eq 0 ]
+    [ ! -e "$HOME/auto-update.log" ]
+  done
+
+  run env -u AICODING_AUTO_UPDATE_RUN -u AICODING_AUTO_UPDATE_SOURCE \
+    AICODINGSETUP_SKIP_NETWORK= bash -c "$body"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$HOME/auto-update.log")" = --ensure ]
+}
+
+@test "enrollment from a re-executed sync drops the sync handoff variables" {
+  cat > "$HOME/.local/bin/aicoding-auto-update" <<'STUB'
+#!/bin/sh
+env | grep -E '^(AICODING_SYNC_REEXECED|AICODING_SELECTED_AICODING_SHA|_SYNC_REFRESHED)=' > "$HOME/enroll-env"
+printf '%s\n' "$*" > "$HOME/enroll-args"
+STUB
+  chmod +x "$HOME/.local/bin/aicoding-auto-update"
+  header() { :; }; info() { :; }; ok() { :; }; warn() { :; }
+  . "$BLUEPRINT_ROOT/lib/provision-integrations.sh"
+  export AICODING_SYNC_REEXECED=1 _SYNC_REFRESHED=1
+  export AICODING_SELECTED_AICODING_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  AICODINGSETUP_SKIP_NETWORK= run ensure_aicoding_auto_update
+  [ "$status" -eq 0 ]
+  [ "$(cat "$HOME/enroll-args")" = --ensure ]
+  [ ! -s "$HOME/enroll-env" ]
+}
+
 @test "sync --boot leaves an existing unmanaged file at a newly managed path alone" {
   # Regression (unified review 2026-08-20, HIGH): dest exists + manifest
   # exists + path untracked used to bucket as new_file, which boot's

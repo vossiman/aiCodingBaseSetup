@@ -253,7 +253,9 @@ _aicoding_auto_update_execute_once() {
   # so a timer firing at the same cadence as the TTL still checks components.
   # Keep the reporting lock exclusively in this shell. A selected older
   # release may detach enrollment without knowing about this new descriptor.
-  if (exec {run_fd}>&-; cd "$state" && AICODING_UPDATE_TTL=0 "$sync" --boot </dev/null) 2>&1 | (exec {run_fd}>&-; tee "$output"); then
+  # AICODING_AUTO_UPDATE_RUN tells the sync that a scheduler already exists:
+  # re-enrolling mid-run could stop this very worker (see _sync_provision).
+  if (exec {run_fd}>&-; cd "$state" && AICODING_AUTO_UPDATE_RUN=1 AICODING_UPDATE_TTL=0 "$sync" --boot </dev/null) 2>&1 | (exec {run_fd}>&-; tee "$output"); then
     pipeline_status=("${PIPESTATUS[@]}")
   else
     pipeline_status=("${PIPESTATUS[@]}")

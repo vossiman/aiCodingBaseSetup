@@ -397,3 +397,141 @@ EOF
     [ "$output" = old ]
   done
 }
+
+@test "running kanban-work from a staged release leaves the release digest valid" {
+  local version=4141414141414141414141414141414141414141 release
+  local source="$TEST_ROOT/sources/kanban"
+  mkdir -p "$source/bin" "$source/lib"
+  cp "$BLUEPRINT_ROOT/bin/kanban-work" "$source/bin/kanban-work"
+  tar -C "$BLUEPRINT_ROOT/lib" --exclude=__pycache__ -cf - kanban_work | tar -C "$source/lib" -xf -
+  printf '%s\n' "$version" > "$source/.aicoding-version"
+  aicoding_stage_source aicoding "$source" "$version"
+  release="$AICODING_DATA_DIR/versions/aicoding/$version"
+
+  # The usage path still imports the whole lib.kanban_work package.
+  run env -u PYTHONDONTWRITEBYTECODE "$release/bin/kanban-work"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *usage* ]]
+  [ -z "$(find "$release" -name __pycache__ -print -quit)" ]
+  _aicoding_runtime_validate_release aicoding "$version"
+}
+
+@test "a corrupt current release does not block activating a new version" {
+  local old=4242424242424242424242424242424242424242
+  local new=4343434343434343434343434343434343434343
+  make_release "$TEST_ROOT/sources/old" "$old" old
+  make_release "$TEST_ROOT/sources/new" "$new" new
+  cp "$TEST_ROOT/sources/new/bin/tool" "$TEST_ROOT/sources/new/bin/tool-v2"
+  aicoding_stage_source demo "$TEST_ROOT/sources/old" "$old"
+  aicoding_activate_version demo "$old" demo-tool bin/tool
+  aicoding_stage_source demo "$TEST_ROOT/sources/new" "$new"
+  mkdir -p "$AICODING_DATA_DIR/versions/demo/$old/lib/__pycache__"
+  printf 'bytecode\n' > "$AICODING_DATA_DIR/versions/demo/$old/lib/__pycache__/value.pyc"
+  run _aicoding_runtime_validate_release demo "$old"
+  [ "$status" -ne 0 ]
+
+  # A changed wrapper would fail against the old release if it were checked:
+  # bin/tool-v2 exists only in the new one.
+  run aicoding_activate_version demo "$new" demo-tool bin/tool-v2
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"current demo release is invalid"* ]]
+  [ "$(printf '%s\n' "$output" | grep -c 'invalid')" -eq 1 ]
+  [ "$(readlink "$AICODING_DATA_DIR/current/demo")" = "../versions/demo/$new" ]
+  [ ! -e "$AICODING_DATA_DIR/previous/demo" ] && [ ! -L "$AICODING_DATA_DIR/previous/demo" ]
+  run "$HOME/.local/bin/demo-tool"
+  [ "$output" = new ]
+}
+
+@test "a failed switch away from a corrupt current release restores its pointer and launcher" {
+  local old=4444444444444444444444444444444444444445
+  local new=4545454545454545454545454545454545454545
+  make_release "$TEST_ROOT/sources/old" "$old" old
+  make_release "$TEST_ROOT/sources/new" "$new" new
+  cp "$TEST_ROOT/sources/new/bin/tool" "$TEST_ROOT/sources/new/bin/tool-v2"
+  aicoding_stage_source demo "$TEST_ROOT/sources/old" "$old"
+  aicoding_activate_version demo "$old" demo-tool bin/tool
+  cp -a "$HOME/.local/bin/demo-tool" "$TEST_ROOT/wrapper-before"
+  aicoding_stage_source demo "$TEST_ROOT/sources/new" "$new"
+  printf 'extra\n' > "$AICODING_DATA_DIR/versions/demo/$old/extra"
+  _aicoding_runtime_commit_wrapper() { return 1; }
+
+  run aicoding_activate_version demo "$new" demo-tool bin/tool-v2
+  [ "$status" -ne 0 ]
+  [ "$(readlink "$AICODING_DATA_DIR/current/demo")" = "../versions/demo/$old" ]
+  [ ! -e "$AICODING_DATA_DIR/previous/demo" ] && [ ! -L "$AICODING_DATA_DIR/previous/demo" ]
+  cmp "$TEST_ROOT/wrapper-before" "$HOME/.local/bin/demo-tool"
+}
+
+make_launcher_release() {
+  local root=$1 version=$2 name
+  make_release "$root" "$version" launched
+  for name in aicoding-sync aicoding-install aicoding-status aicoding-select aicoding-auto-update; do
+    cp "$root/bin/tool" "$root/bin/$name"
+  done
+}
+
+launcher_pairs() {
+  printf '%s\n' aicoding-sync bin/aicoding-sync aicoding-install bin/aicoding-install \
+    aicoding-status bin/aicoding-status aicoding-select bin/aicoding-select \
+    aicoding-auto-update bin/aicoding-auto-update
+}
+
+@test "dangling legacy launcher links are backed up and replaced by managed wrappers" {
+  local version=4646464646464646464646464646464646464646 name
+  make_launcher_release "$TEST_ROOT/sources/new" "$version"
+  aicoding_stage_source aicoding "$TEST_ROOT/sources/new" "$version"
+  # /tmp is tmpfs: after a restart the tracking clone is gone.
+  ln -s /tmp/aicoding-gone-clone/bin/aicoding-status "$HOME/.local/bin/aicoding-status"
+  ln -s /tmp/aicoding-gone-clone/bin/aicoding-sync "$HOME/.local/bin/aicoding-sync"
+
+  mapfile -t pairs < <(launcher_pairs)
+  run aicoding_activate_version aicoding "$version" "${pairs[@]}"
+  [ "$status" -eq 0 ]
+  for name in aicoding-sync aicoding-install aicoding-status aicoding-select aicoding-auto-update; do
+    [ -f "$HOME/.local/bin/$name" ] && [ ! -L "$HOME/.local/bin/$name" ]
+    grep -qF '# Managed by aicoding immutable runtime.' "$HOME/.local/bin/$name"
+  done
+  [ -L "$HOME/.local/bin/aicoding-status.pre-aicoding" ]
+  [ "$(readlink "$HOME/.local/bin/aicoding-status.pre-aicoding")" = /tmp/aicoding-gone-clone/bin/aicoding-status ]
+  [ "$(readlink "$HOME/.local/bin/aicoding-sync.pre-aicoding")" = /tmp/aicoding-gone-clone/bin/aicoding-sync ]
+  run "$HOME/.local/bin/aicoding-status"
+  [ "$output" = launched ]
+}
+
+@test "a failed activation restores dangling legacy launcher links exactly" {
+  local version=4747474747474747474747474747474747474747
+  make_launcher_release "$TEST_ROOT/sources/new" "$version"
+  aicoding_stage_source aicoding "$TEST_ROOT/sources/new" "$version"
+  ln -s /tmp/aicoding-gone-clone/bin/aicoding-status "$HOME/.local/bin/aicoding-status"
+  ln -s /tmp/aicoding-gone-clone/bin/aicoding-sync "$HOME/.local/bin/aicoding-sync"
+  # Launchers commit in order; fail the last one after the links were replaced.
+  _aicoding_runtime_commit_wrapper() {
+    case "$2" in */aicoding-auto-update) return 1 ;; esac
+    _aicoding_runtime_commit_path "$1" "$2"
+  }
+
+  mapfile -t pairs < <(launcher_pairs)
+  run aicoding_activate_version aicoding "$version" "${pairs[@]}"
+  [ "$status" -ne 0 ]
+  [ -L "$HOME/.local/bin/aicoding-status" ]
+  [ "$(readlink "$HOME/.local/bin/aicoding-status")" = /tmp/aicoding-gone-clone/bin/aicoding-status ]
+  [ "$(readlink "$HOME/.local/bin/aicoding-sync")" = /tmp/aicoding-gone-clone/bin/aicoding-sync ]
+  [ ! -e "$HOME/.local/bin/aicoding-status.pre-aicoding" ] && [ ! -L "$HOME/.local/bin/aicoding-status.pre-aicoding" ]
+  [ ! -e "$HOME/.local/bin/aicoding-install" ]
+  [ ! -e "$AICODING_DATA_DIR/current/aicoding" ] && [ ! -L "$AICODING_DATA_DIR/current/aicoding" ]
+}
+
+@test "activation still refuses a directory or a non-executable file as a launcher" {
+  local version=4848484848484848484848484848484848484848
+  make_launcher_release "$TEST_ROOT/sources/new" "$version"
+  aicoding_stage_source aicoding "$TEST_ROOT/sources/new" "$version"
+  mapfile -t pairs < <(launcher_pairs)
+  mkdir "$HOME/.local/bin/aicoding-status"
+  run aicoding_activate_version aicoding "$version" "${pairs[@]}"
+  [ "$status" -ne 0 ]
+  rmdir "$HOME/.local/bin/aicoding-status"
+  printf 'data\n' > "$HOME/.local/bin/aicoding-status"
+  run aicoding_activate_version aicoding "$version" "${pairs[@]}"
+  [ "$status" -ne 0 ]
+  [ ! -e "$AICODING_DATA_DIR/current/aicoding" ]
+}

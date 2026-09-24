@@ -105,6 +105,33 @@ Automatic passes require no recurring install command. To request the next
 check immediately, run `aicoding-auto-update --once`. Status itself never
 enrolls or restarts a scheduler and never installs an update.
 
+### Releases corrupted by Python bytecode
+
+Before this was fixed, `kanban-work` ran from the active release and let Python
+write `lib/kanban_work/__pycache__/` into it. That breaks the release digest.
+Activation then refused to move away from the invalid `current` release, so
+every later update failed with `activation_failed` and Codex config merges
+reported `invalid_blueprint_release`.
+
+Releases no longer receive bytecode. Activation now also replaces an invalid
+`current` release instead of stopping. It prints one warning and leaves
+`previous` untouched, so the corrupt tree never becomes a fallback.
+
+A container stuck before the fix still runs the old activation code, and that
+code performs the switch. Clean it once by hand, then sync:
+
+```bash
+find ~/.local/share/aicoding/versions -type d -name __pycache__ -prune -exec rm -rf {} +
+aicoding-sync
+```
+
+Every sync activation also installs the five stable launchers
+(`aicoding-sync`, `aicoding-install`, `aicoding-status`, `aicoding-select`,
+`aicoding-auto-update`), just as `aicoding-install` does. Provisioning then
+requests scheduler enrollment. Older installs that symlinked these launchers
+into the `/tmp/aicoding` tracking clone converge without a reinstall. The
+symlinks are replaced atomically and the clone's files are never written.
+
 ## Shared consumer evidence
 
 Some config roots are bind-mounted into several containers. A writer lock

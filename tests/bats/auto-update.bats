@@ -31,6 +31,8 @@ exec {sync_fd}>"$AICODING_STATE_DIR/sync.lock"
 flock -n "$sync_fd" || { echo 'aicoding-sync: update already running' >&2; exit 0; }
 printf '%s %s\n' "$PWD" "$*" >> "$AICODING_TEST_ATTEMPTS"
 printf '%s\n' "${AICODING_UPDATE_TTL:-unset}" >> "$AICODING_TEST_TTLS"
+printf '%s\n' "${AICODING_AUTO_UPDATE_RUN:-unset}" >> "$TEST_ROOT/run-markers"
+env | grep -E '^(AICODING_SYNC_REEXECED|AICODING_SELECTED_AICODING_SHA|_SYNC_REFRESHED|AICODING_BLUEPRINT_CLONE|AICODING_BLUEPRINT_LOCAL|AICODING_REQUIRE_UPDATE_RECEIPT|AICODING_REQUIRE_SHARED_COMPATIBILITY|AICODING_SYNC_MODE)=' >> "$TEST_ROOT/handoff-env" || true
 if [ "${AICODING_TEST_DEFERRED:-0}" = 1 ]; then
   echo 'aicoding-sync: completed with deferrals' >&2
   exit 0
@@ -837,6 +839,23 @@ DATE
   jq -e '.outcome == "success"' "$AICODING_STATE_DIR/auto-update/last-completed.json"
   run flock -n "$AICODING_STATE_DIR/auto-update/run.lock" true
   [ "$status" -eq 0 ]
+}
+
+@test "an updater pass marks its sync so provisioning does not re-enroll mid-run" {
+  run env -u AICODING_AUTO_UPDATE_RUN "$TEST_ROOT/aicoding-auto-update" --once
+  [ "$status" -eq 0 ]
+  [ "$(cat "$TEST_ROOT/run-markers")" = 1 ]
+}
+
+@test "scheduled syncs never inherit a re-executed sync's handoff variables" {
+  : > "$TEST_ROOT/handoff-env"
+  run env AICODING_SYNC_REEXECED=1 AICODING_SELECTED_AICODING_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    _SYNC_REFRESHED=1 AICODING_BLUEPRINT_CLONE=/stale/release AICODING_BLUEPRINT_LOCAL=1 \
+    AICODING_REQUIRE_UPDATE_RECEIPT=1 AICODING_REQUIRE_SHARED_COMPATIBILITY=1 AICODING_SYNC_MODE=boot \
+    "$TEST_ROOT/aicoding-auto-update" --once
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$AICODING_TEST_ATTEMPTS")" -eq 1 ]
+  [ ! -s "$TEST_ROOT/handoff-env" ]
 }
 
 @test "missing sync executable records a failed attempt" {

@@ -7,6 +7,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+# This script runs from an immutable release whose whole tree is digested.
+# Bytecode caches written next to lib/kanban_work would invalidate it.
+sys.dont_write_bytecode = True
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
