@@ -69,6 +69,38 @@ _source_stage() {
   AICODING_BLUEPRINT_CLONE="$STAGE" bash -c 'set -euo pipefail; . "$1/lib/blueprint-deploy.sh"' _ "$STAGE"
 }
 
+# Poll helpers: detached processes start late on a loaded runner, so every
+# timing assumption waits for the observable state, with a deadline.
+# True once the single-instance lock is observed held.
+_wait_lock_held() {
+  local tries=$(( ${1:-10} * 10 ))
+  while [ "$tries" -gt 0 ]; do
+    mkdir -p "$AICODING_STATE_DIR"
+    flock -n "$LOCK" true 2>/dev/null || return 0
+    sleep 0.1; tries=$((tries - 1))
+  done
+  return 1
+}
+
+# True once no process mentions this test's data dir (a healer's argv does).
+_wait_no_healer() {
+  local tries=$(( ${1:-10} * 10 ))
+  while [ "$tries" -gt 0 ]; do
+    pgrep -f -- "$AICODING_DATA_DIR" >/dev/null 2>&1 || return 0
+    sleep 0.1; tries=$((tries - 1))
+  done
+  return 1
+}
+
+# True until the deadline when PATH stays absent; polls for it to go away.
+_wait_gone() {
+  local tries=$(( ${2:-10} * 10 ))
+  while [ -e "$1" ] && [ "$tries" -gt 0 ]; do
+    sleep 0.1; tries=$((tries - 1))
+  done
+  [ ! -e "$1" ]
+}
+
 # True once no healer holds the single-instance lock.
 _wait_healer_idle() {
   local tries=$(( ${1:-10} * 10 ))
@@ -218,17 +250,15 @@ _wait_healer_idle() {
   _stage_release
   _corrupt_release
   _make_stage
+  # Long deadline: only activation should end this healer.
+  export AICODING_RELEASE_HEALER_SECONDS=60
   run _source_stage
   [ "$status" -eq 0 ]
   [ ! -e "$RELEASE/lib/kanban_work/__pycache__" ]
+  _wait_lock_held 10
   # An old kanban-work hook recreates the bytecode after the first heal.
-  sleep 0.3
   _corrupt_release
-  local tries=30
-  while [ -e "$RELEASE/lib/kanban_work/__pycache__" ] && [ "$tries" -gt 0 ]; do
-    sleep 0.1; tries=$((tries - 1))
-  done
-  [ ! -e "$RELEASE/lib/kanban_work/__pycache__" ]
+  _wait_gone "$RELEASE/lib/kanban_work/__pycache__" 10
   [ -f "$RELEASE/tools/render-debug/__pycache__/harness.pyc" ]
   run _validate_release
   [ "$status" -eq 0 ]
@@ -238,37 +268,40 @@ _wait_healer_idle() {
   # Activation of the staged release ends the healer well before its deadline.
   mkdir -p "$AICODING_DATA_DIR/versions/aicoding/$NEW_SHA"
   ln -sfn "../versions/aicoding/$NEW_SHA" "$AICODING_DATA_DIR/current/aicoding"
-  _wait_healer_idle 2
+  _wait_healer_idle 10
 }
 
 @test "background healer stops at its deadline" {
   _stage_release
   _make_stage
-  export AICODING_RELEASE_HEALER_SECONDS=1
+  export AICODING_RELEASE_HEALER_SECONDS=2
   run _source_stage
   [ "$status" -eq 0 ]
-  sleep 0.3
-  run flock -n "$LOCK" true
-  [ "$status" -ne 0 ]
-  _wait_healer_idle 3
+  _wait_lock_held 10
+  # No activation happens and the staging PID (this shell) stays alive, so
+  # only the deadline can release the lock.
+  _wait_healer_idle 15
 }
 
 @test "only one background healer runs at a time" {
   _stage_release
   _make_stage
+  # A healer that won the lock would run this long; one that lost exits now.
+  export AICODING_RELEASE_HEALER_SECONDS=60
   mkdir -p "$AICODING_STATE_DIR"
-  flock "$LOCK" sleep 3 3>&- &
+  # One process holds the lock, so killing it releases the lock.
+  ( exec 8>>"$LOCK"; flock 8; exec sleep 120 ) 3>&- &
   local holder=$!
-  sleep 0.3
+  _wait_lock_held 10
   _corrupt_release
   run _source_stage
   [ "$status" -eq 0 ]
   # The source-time heal still ran.
   [ ! -e "$RELEASE/lib/kanban_work/__pycache__" ]
-  # No second healer: recreated bytecode stays while the lock is held.
-  sleep 0.2
+  # The second healer gave up on the held lock and exited.
+  _wait_no_healer 10
   _corrupt_release
-  sleep 1
+  sleep 0.5  # margin only: no healer is left that could remove it
   [ -e "$RELEASE/lib/kanban_work/__pycache__" ]
   kill "$holder" 2>/dev/null || true
   wait "$holder" 2>/dev/null || true
