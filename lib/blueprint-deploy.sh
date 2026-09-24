@@ -1,6 +1,6 @@
 # aiCodingBaseSetup — blueprint deployment primitives.
 # Sourced by install.sh and bin/aicoding-sync. Pure shell functions only;
-# the one top-level side effect is _aicoding_heal_release_bytecode (below).
+# the one top-level side effect is the staging-only release heal (below).
 # Caller is responsible for `set -euo pipefail`.
 
 # Container-local, NOT ~/.aicodingsetup: that path is a host bind mount shared
@@ -18,56 +18,12 @@
 _aicoding_deploy_lib_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=codex-merge.sh
 . "$_aicoding_deploy_lib_dir/codex-merge.sh"
-unset _aicoding_deploy_lib_dir
-
-# _aicoding_heal_release_bytecode: remove Python bytecode that was written
-# into an immutable release after it was staged. Before PR #187, kanban-work
-# let Python write lib/kanban_work/__pycache__ into the active release. That
-# breaks the release digest, and the old activation code then refuses to move
-# away from the corrupt current release. The repo also tracks some bytecode
-# (tools/render-debug/__pycache__), which the digest covers. So a __pycache__
-# directory is removed only when it is newer than the release digest AND the
-# digest matches once those directories are left out. Never follows symlinks,
-# prints nothing and always returns 0. Runs at most once per process.
-_aicoding_heal_release_bytecode() {
-  [ -z "${_AICODING_RELEASE_BYTECODE_HEALED:-}" ] || return 0
-  _AICODING_RELEASE_BYTECODE_HEALED=1
-  local data=${AICODING_DATA_DIR:-} versions release digest expected actual dir
-  local -a stale=() excludes=()
-  if [ -z "$data" ]; then
-    [ -n "${HOME:-}" ] || return 0
-    data=$HOME/.local/share/aicoding
-  fi
-  versions=$data/versions
-  [ -d "$versions" ] && [ ! -L "$versions" ] || return 0
-  while IFS= read -r -d '' release; do
-    digest=$release/.aicoding-tree.sha256
-    [ -f "$digest" ] && [ ! -L "$digest" ] || continue
-    expected=$(cat "$digest" 2>/dev/null) || continue
-    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || continue
-    stale=()
-    while IFS= read -r -d '' dir; do
-      stale+=("$dir")
-    done < <(find "$release" -type d -name __pycache__ -prune -newer "$digest" -print0 2>/dev/null)
-    [ "${#stale[@]}" -gt 0 ] || continue
-    excludes=()
-    for dir in "${stale[@]}"; do excludes+=("--exclude=.${dir#"$release"}"); done
-    # Same recipe as _aicoding_runtime_tree_digest_impl (lib/runtime.sh).
-    actual=$(
-      set -o pipefail
-      tar -C "$release" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
-        --format=gnu --exclude='./.aicoding-tree.sha256' \
-        --anchored --no-wildcards "${excludes[@]}" -cf - . 2>/dev/null \
-        | sha256sum | awk '{print $1}'
-    ) || continue
-    [ "$actual" = "$expected" ] || continue
-    rm -rf -- "${stale[@]}" 2>/dev/null || true
-  done < <(find "$versions" -mindepth 2 -maxdepth 2 -type d ! -name '.*' -print0 2>/dev/null)
-  return 0
-}
+# shellcheck source=release-heal.sh
+. "$_aicoding_deploy_lib_dir/release-heal.sh"
 # Runs at source time on purpose: a container stuck on an older release only
 # executes new code by sourcing this file while it stages a newly selected one.
-_aicoding_heal_release_bytecode || true
+aicoding_heal_release_bytecode_when_staging "$_aicoding_deploy_lib_dir" || true
+unset _aicoding_deploy_lib_dir
 
 # compute_hash <path> — echo the sha256 hex of file content; empty if missing.
 compute_hash() {

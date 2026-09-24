@@ -120,12 +120,19 @@ Releases no longer receive bytecode. Activation now also replaces an invalid
 A container stuck before the fix still runs the old activation code, and that
 code performs the switch. It heals on its own at its next pass that stages a
 release it does not have yet. While staging, even old code sources the new
-release's `lib/blueprint-deploy.sh`, and sourcing it removes bytecode written
-into a release after staging. It removes a `__pycache__` directory only when
-the directory is newer than the release digest and the digest matches without
-it. The repository tracks `tools/render-debug/__pycache__/`, and the digest
-covers that, so a blanket delete of every `__pycache__` would corrupt every
-release.
+release's `lib/blueprint-deploy.sh` from the fresh staging clone. Only in that
+context does `lib/release-heal.sh` remove bytecode written into a release after
+staging. Ordinary sourcing, including `aicoding-sync --dry-run`, never touches
+releases. It removes a `__pycache__` directory only when the directory is newer
+than the release digest and the digest matches without it. The repository
+tracks `tools/render-debug/__pycache__/`, and the digest covers that, so a
+blanket delete of every `__pycache__` would corrupt every release.
+
+An old `kanban-work` hook can write the bytecode again in the seconds before
+activation. So the heal also starts one detached background healer. It repeats
+the same check every half second until the staged release is active, or the
+staging process has ended and the current release validates, or 180 seconds
+have passed. A lock under `~/.local/state/aicoding` keeps it to one instance.
 
 A container that already staged the newest release has nothing left to stage,
 so heal it by hand. Remove only the bytecode `kanban-work` wrote, then run the
