@@ -90,7 +90,12 @@ ensure_aicoding_auto_update() {
     info "Skipping scheduler start (AICODINGSETUP_SKIP_NETWORK)"
     return 0
   fi
-  "$command" --ensure </dev/null || { warn "could not ensure automatic updater"; return 1; }
+  # Launchers installed before the scheduler cleared these itself would pass
+  # the calling sync's handoff to the detached scheduler and pin its passes.
+  env -u AICODING_SYNC_REEXECED -u AICODING_SELECTED_AICODING_SHA -u _SYNC_REFRESHED \
+    -u AICODING_BLUEPRINT_CLONE -u AICODING_BLUEPRINT_LOCAL -u AICODING_SYNC_MODE \
+    -u AICODING_REQUIRE_UPDATE_RECEIPT -u AICODING_REQUIRE_SHARED_COMPATIBILITY \
+    "$command" --ensure </dev/null || { warn "could not ensure automatic updater"; return 1; }
   ok "automatic updater enrollment requested"
 }
 

@@ -903,6 +903,23 @@ STUB
   [ "$(cat "$HOME/auto-update.log")" = --ensure ]
 }
 
+@test "enrollment from a re-executed sync drops the sync handoff variables" {
+  cat > "$HOME/.local/bin/aicoding-auto-update" <<'STUB'
+#!/bin/sh
+env | grep -E '^(AICODING_SYNC_REEXECED|AICODING_SELECTED_AICODING_SHA|_SYNC_REFRESHED)=' > "$HOME/enroll-env"
+printf '%s\n' "$*" > "$HOME/enroll-args"
+STUB
+  chmod +x "$HOME/.local/bin/aicoding-auto-update"
+  header() { :; }; info() { :; }; ok() { :; }; warn() { :; }
+  . "$BLUEPRINT_ROOT/lib/provision-integrations.sh"
+  export AICODING_SYNC_REEXECED=1 _SYNC_REFRESHED=1
+  export AICODING_SELECTED_AICODING_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  AICODINGSETUP_SKIP_NETWORK= run ensure_aicoding_auto_update
+  [ "$status" -eq 0 ]
+  [ "$(cat "$HOME/enroll-args")" = --ensure ]
+  [ ! -s "$HOME/enroll-env" ]
+}
+
 @test "sync --boot leaves an existing unmanaged file at a newly managed path alone" {
   # Regression (unified review 2026-08-20, HIGH): dest exists + manifest
   # exists + path untracked used to bucket as new_file, which boot's
