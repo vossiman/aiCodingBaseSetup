@@ -132,7 +132,8 @@ EOF
 }
 
 @test "enrollment reports runtime activation failure" {
-  ln -s "$TEST_ROOT/missing-launcher" "$HOME/.local/bin/aicoding-sync"
+  # A dangling legacy link is replaceable now; a directory is still refused.
+  mkdir "$HOME/.local/bin/aicoding-sync"
 
   run run_enroll
 

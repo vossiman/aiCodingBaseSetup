@@ -411,7 +411,10 @@ aicoding_activate_version() (
     fi
     dest="$bin_root/$launcher"
     if [ -e "$dest" ] || [ -L "$dest" ]; then
-      if [ ! -f "$dest" ] || [ ! -x "$dest" ]; then
+      # Any symlink is a replaceable legacy launcher, even a dangling one: old
+      # installs linked into the /tmp tracking clone, which a restart wipes.
+      # It is copied as a link (never followed) for backup and rollback.
+      if [ ! -L "$dest" ] && { [ ! -f "$dest" ] || [ ! -x "$dest" ]; }; then
         trap - TERM INT HUP; rm -rf -- "$transaction" 2>/dev/null || true; exec {lock_fd}>&-; return 1
       fi
       launcher_existed[$i]=1
@@ -449,7 +452,7 @@ aicoding_activate_version() (
   activation_started=1
   # Persist legacy recovery copies atomically before changing launchers.
   for ((i=0; i<${#launchers[@]}; i++)); do
-    if [ -e "$transaction/legacy.$i" ]; then
+    if [ -e "$transaction/legacy.$i" ] || [ -L "$transaction/legacy.$i" ]; then
       backup="$bin_root/${launchers[$i]}.pre-aicoding"
       backup_created[$i]=1
       if ! _aicoding_runtime_commit_backup "$transaction/legacy.$i" "$backup"; then
