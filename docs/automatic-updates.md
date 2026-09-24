@@ -118,11 +118,22 @@ Releases no longer receive bytecode. Activation now also replaces an invalid
 `previous` untouched, so the corrupt tree never becomes a fallback.
 
 A container stuck before the fix still runs the old activation code, and that
-code performs the switch. Clean it once by hand, then sync:
+code performs the switch. It heals on its own at its next pass that stages a
+release it does not have yet. While staging, even old code sources the new
+release's `lib/blueprint-deploy.sh`, and sourcing it removes bytecode written
+into a release after staging. It removes a `__pycache__` directory only when
+the directory is newer than the release digest and the digest matches without
+it. The repository tracks `tools/render-debug/__pycache__/`, and the digest
+covers that, so a blanket delete of every `__pycache__` would corrupt every
+release.
+
+A container that already staged the newest release has nothing left to stage,
+so heal it by hand. Remove only the bytecode `kanban-work` wrote, then run the
+newest staged release's sync directly:
 
 ```bash
-find ~/.local/share/aicoding/versions -type d -name __pycache__ -prune -exec rm -rf {} +
-aicoding-sync
+find ~/.local/share/aicoding/versions/aicoding -path '*/lib/kanban_work/__pycache__' -type d -prune -exec rm -rf {} +
+~/.local/share/aicoding/versions/aicoding/<newest-sha>/bin/aicoding-sync --boot
 ```
 
 Every sync activation also installs the five stable launchers
