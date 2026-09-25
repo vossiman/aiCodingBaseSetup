@@ -396,11 +396,14 @@ ensure_kvm_group_access() {
 }
 
 # devbox-base images built 2026-09-09..2026-09-25 baked a root-owned uv cache
-# into the user's home, which breaks every uv call made as the user.
+# into the user's home, which breaks every uv call made as the user. Only that
+# exact path is repaired: a configurable one could aim a root `chown -R` at
+# anything.
 ensure_uv_cache_ownership() {
   [ "$(_sync_profile)" != host ] || return 0
-  local dir="${UV_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/uv}" foreign rc=0
+  local dir="$HOME/.cache/uv" foreign rc=0
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 0
+  [ "$(readlink -f "$dir")" = "$(readlink -f "$HOME")/.cache/uv" ] || return 0
   foreign=$(find "$dir" ! -user "$(id -u)" -print -quit 2>/dev/null) || rc=$?
   [ -z "$foreign" ] && [ "$rc" -eq 0 ] && return 0
   if sudo -n chown -R -P "$(id -u):$(id -g)" "$dir" 2>/dev/null; then
@@ -412,6 +415,8 @@ ensure_uv_cache_ownership() {
 }
 
 _sync_plumbing() {            # never throttled — must be correct now
+  # First: later steps (clip-x11-bridge) start through `uv run`.
+  command -v ensure_uv_cache_ownership >/dev/null 2>&1 && ensure_uv_cache_ownership || true
   command -v aicoding-ssh-agent-watch >/dev/null 2>&1 && aicoding-ssh-agent-watch --ensure 2>/dev/null || true
   # Clipboard-bridge X11 daemon (codex paste). Internally gated: no-op under
   # AICODINGSETUP_SKIP_NETWORK, outside containers, or without DISPLAY/uv.
@@ -424,7 +429,6 @@ _sync_plumbing() {            # never throttled — must be correct now
   command -v ensure_agents_skills_symlink >/dev/null 2>&1 && ensure_agents_skills_symlink || true
   command -v ensure_claude_runtime_scope >/dev/null 2>&1 && ensure_claude_runtime_scope || true
   command -v ensure_kvm_group_access >/dev/null 2>&1 && ensure_kvm_group_access || true
-  command -v ensure_uv_cache_ownership >/dev/null 2>&1 && ensure_uv_cache_ownership || true
 }
 
 # Return the provenance stored in manifest.json. A local source is deliberately

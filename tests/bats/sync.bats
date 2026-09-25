@@ -1586,12 +1586,21 @@ _uvc_stub_find_foreign() {
   grep -Fxq "sudo -n chown -R -P $(id -u):$(id -g) $HOME/.cache/uv" "$TMP/ran.log"
 }
 
-@test "uv cache heal honours UV_CACHE_DIR" {
+@test "uv cache heal never chowns a path taken from UV_CACHE_DIR" {
   _uvc_stub_sudo; _uvc_stub_find_foreign
   mkdir -p "$TMP/other-uv"
-  UV_CACHE_DIR="$TMP/other-uv" run ensure_uv_cache_ownership
+  UV_CACHE_DIR="$TMP/other-uv" XDG_CACHE_HOME="$TMP" run ensure_uv_cache_ownership
   [ "$status" -eq 0 ]
-  grep -Fq "chown -R -P $(id -u):$(id -g) $TMP/other-uv" "$TMP/ran.log"
+  if grep -q chown "$TMP/ran.log" 2>/dev/null; then false; fi
+}
+
+@test "uv cache heal refuses when ~/.cache is a symlink out of the home" {
+  _uvc_stub_sudo; _uvc_stub_find_foreign
+  mkdir -p "$TMP/outside/uv"
+  ln -s "$TMP/outside" "$HOME/.cache"
+  run ensure_uv_cache_ownership
+  [ "$status" -eq 0 ]
+  if grep -q chown "$TMP/ran.log" 2>/dev/null; then false; fi
 }
 
 @test "uv cache heal skips a symlinked cache" {
@@ -1621,8 +1630,11 @@ _uvc_stub_find_foreign() {
   if grep -q chown "$TMP/ran.log" 2>/dev/null; then false; fi
 }
 
-@test "sync plumbing runs the uv cache heal" {
-  declare -f _sync_plumbing | grep -q ensure_uv_cache_ownership
+@test "sync plumbing heals the uv cache before any uv-backed step" {
+  local body first
+  body=$(declare -f _sync_plumbing)
+  first=$(printf '%s\n' "$body" | grep -oE 'ensure_uv_cache_ownership|clip-x11-bridge' | head -n 1)
+  [ "$first" = ensure_uv_cache_ownership ]
 }
 
 # --- /dev/kvm group access ----------------------------------------------------
