@@ -26,9 +26,13 @@ elif endpoint == 'repos/vossiman/dvw/actions/workflows/ci.yml': name='workflow-d
 elif endpoint.startswith('repos/vossiman/bw-AICode/actions/workflows/ci.yml/runs?'):
     sha=endpoint.split('head_sha=')[1].split('&')[0]; name='runs-bw-'+sha
 elif endpoint == 'repos/vossiman/bw-AICode/actions/workflows/ci.yml': name='workflow-bw'
+elif endpoint.startswith('repos/vossiman/ai-usage/actions/workflows/ci.yml/runs?'):
+    sha=endpoint.split('head_sha=')[1].split('&')[0]; name='runs-ai-usage-'+sha
+elif endpoint == 'repos/vossiman/ai-usage/actions/workflows/ci.yml': name='workflow-ai-usage'
 elif endpoint in ('repos/vossiman/aiCodingBaseSetup/commits?sha=main&per_page=30',
                    'repos/vossiman/dvw/commits?sha=main&per_page=30',
-                   'repos/vossiman/bw-AICode/commits?sha=main&per_page=30'): name='commits'
+                   'repos/vossiman/bw-AICode/commits?sha=main&per_page=30',
+                   'repos/vossiman/ai-usage/commits?sha=main&per_page=30'): name='commits'
 elif '/compare/' in endpoint: name='compare'
 else: sys.exit(91)
 try:
@@ -42,6 +46,7 @@ STUB
   printf '%s\n' '{"id":330421083,"name":"tests","path":".github/workflows/tests.yml","state":"active"}' > "$CI_FIXTURE/workflow"
   printf '%s\n' '{"id":355909244,"name":"ci","path":".github/workflows/ci.yml","state":"active"}' > "$CI_FIXTURE/workflow-dvw"
   printf '%s\n' '{"id":344911642,"name":"ci","path":".github/workflows/ci.yml","state":"active"}' > "$CI_FIXTURE/workflow-bw"
+  printf '%s\n' '{"id":367323599,"name":"ci","path":".github/workflows/ci.yml","state":"active"}' > "$CI_FIXTURE/workflow-ai-usage"
   printf '[{"sha":"%s"},{"sha":"%s"}]\n' "$NEW" "$OLD" > "$CI_FIXTURE/commits"
   printf '{"status":"ahead","merge_base_commit":{"sha":"%s"}}\n' "$NEW" > "$CI_FIXTURE/compare"
   fixture_run "$NEW" completed success
@@ -50,6 +55,8 @@ STUB
   fixture_run "$OLD" completed success 355909244 runs-dvw
   fixture_run "$NEW" completed success 344911642 runs-bw
   fixture_run "$OLD" completed success 344911642 runs-bw
+  fixture_run "$NEW" completed success 367323599 runs-ai-usage
+  fixture_run "$OLD" completed success 367323599 runs-ai-usage
 }
 teardown() { rm -rf "$TMP"; }
 fixture_run() {
@@ -170,7 +177,7 @@ select_sha() { bash "$BLUEPRINT_ROOT/bin/aicoding-select" aicoding; }
   [ ! -e "$GH_CALLED" ]
 }
 @test "component policies use exact repository and workflow boundaries" {
-  for component in dvw bw-AICode; do
+  for component in dvw bw-AICode ai-usage; do
     run --separate-stderr bash "$BLUEPRINT_ROOT/bin/aicoding-select" "$component"
     [ "$status" -eq 0 ]
     [ "$output" = "$NEW" ]

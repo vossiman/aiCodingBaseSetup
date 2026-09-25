@@ -41,6 +41,11 @@ archive paths and types, probes the version under a temporary HOME, and only
 then activates the managed launchers. HTTPS authenticates the vendor download;
 the locally recorded digest detects later changes, not publisher authenticity.
 Unavailable platforms or failed verification preserve the existing installation.
+`ai-usage` (private `vossiman/ai-usage`) follows the newest `main` commit whose
+`ci` push run passed, like bw-AICode. Its unit tests run on the fetched source
+before the release is staged. The container profile selects it even before it
+is installed; a host updates it only once `ai-usage` is on `PATH`. Status
+never executes it, because any invocation polls the quota APIs.
 
 Slow selection, download and integrity operations report their phase and elapsed
 time on stderr. Downloads and package hashing are timeout-bounded. Cancelling a

@@ -1304,6 +1304,88 @@ EOF
     "$AICODING_STATE_DIR/update-results.json"
 }
 
+_stub_ai_usage_source() {  # $1 = test outcome (pass|fail)
+  export AI_USAGE_TESTS=${1:-pass}
+  aicoding_select_ci_sha() { printf '%s\n' dddddddddddddddddddddddddddddddddddddddd; }
+  _aicoding_stage_git_source() {
+    mkdir -p "$3"
+    printf '#!/usr/bin/env python3\nprint("ai-usage ok")\n' > "$3/ai_usage.py"
+    chmod +x "$3/ai_usage.py"
+    printf 'import sys\nsys.exit(0 if "%s" == "pass" else 1)\n' "$AI_USAGE_TESTS" > "$3/test_ai_usage.py"
+    printf '%s\n' "$2" > "$3/.aicoding-version"
+    printf '%s\n' "$3" >> "$TMP/ai-usage-staged"
+  }
+  export -f aicoding_select_ci_sha _aicoding_stage_git_source
+}
+
+@test "ai-usage stages the CI-selected commit, tests it, and activates the launcher" {
+  local sha=dddddddddddddddddddddddddddddddddddddddd
+  _stub_ai_usage_source pass
+  ln -s /nonexistent/ai_usage.py "$HOME/.local/bin/ai-usage"
+
+  run aicoding_update_component ai-usage
+
+  [ "$status" -eq 0 ]
+  [ "$(readlink "$AICODING_DATA_DIR/current/ai-usage")" = "../versions/ai-usage/$sha" ]
+  [ "$("$HOME/.local/bin/ai-usage")" = 'ai-usage ok' ]
+  [ "$(readlink "$HOME/.local/bin/ai-usage.pre-aicoding")" = /nonexistent/ai_usage.py ]
+  [ ! -e "$AICODING_DATA_DIR/versions/ai-usage/$sha/test_ai_usage.py" ]
+  jq -e --arg s "$sha" '.components["ai-usage"].state == "updated"
+    and .components["ai-usage"].successful_version == $s' "$AICODING_RESULTS_FILE"
+}
+
+@test "ai-usage reuses an existing release without fetching or testing again" {
+  _stub_ai_usage_source pass
+  run aicoding_update_component ai-usage
+  [ "$status" -eq 0 ]
+  : > "$TMP/ai-usage-staged"
+
+  run aicoding_update_component ai-usage
+
+  [ "$status" -eq 0 ]
+  [ ! -s "$TMP/ai-usage-staged" ]
+}
+
+@test "ai-usage refuses a commit whose tests fail" {
+  local sha=dddddddddddddddddddddddddddddddddddddddd
+  _stub_ai_usage_source fail
+
+  run aicoding_update_component ai-usage
+
+  [ "$status" -ne 0 ]
+  [ ! -e "$AICODING_DATA_DIR/versions/ai-usage/$sha" ]
+  [ ! -e "$AICODING_DATA_DIR/current/ai-usage" ]
+  jq -e '.components["ai-usage"].state == "failed"
+    and .components["ai-usage"].reason == "tests_failed"' "$AICODING_RESULTS_FILE"
+}
+
+@test "ai-usage is deferred, not failed, when CI selection is unavailable" {
+  aicoding_select_ci_sha() { return 2; }
+  export -f aicoding_select_ci_sha
+
+  run aicoding_update_component ai-usage
+
+  [ "$status" -ne 0 ]
+  jq -e '.components["ai-usage"].state == "blocked"
+    and .components["ai-usage"].reason == "ci_selection_unavailable"' "$AICODING_RESULTS_FILE"
+}
+
+@test "installed component discovery selects ai-usage on the container profile" {
+  _sync_profile() { echo container; }
+  run aicoding_installed_components
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -Fxq ai-usage
+}
+
+@test "installed component discovery selects ai-usage on a host only when installed" {
+  _sync_profile() { echo host; }
+  run aicoding_installed_components
+  if printf '%s\n' "$output" | grep -Fxq ai-usage; then false; fi
+  _tool ai-usage 'unused'
+  run aicoding_installed_components
+  printf '%s\n' "$output" | grep -Fxq ai-usage
+}
+
 _fleet_proof() {  # $1 root, $2 consumer id, [$3 generated_at], [$4 newest start]
   local now; now=$(date +%s)
   jq -n --arg r "$1" --arg id "$2" --argjson g "${3:-$now}" --argjson n "${4:-$((now - 60))}" \

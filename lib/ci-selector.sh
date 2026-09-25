@@ -10,6 +10,7 @@ _aicoding_ci_policy() {
     aicoding) _CI_REPO=vossiman/aiCodingBaseSetup; _CI_WORKFLOW=tests.yml; _CI_ID=330421083; _CI_NAME=tests ;;
     dvw) _CI_REPO=vossiman/dvw; _CI_WORKFLOW=ci.yml; _CI_ID=355909244; _CI_NAME=ci ;;
     bw-AICode) _CI_REPO=vossiman/bw-AICode; _CI_WORKFLOW=ci.yml; _CI_ID=344911642; _CI_NAME=ci ;;
+    ai-usage) _CI_REPO=vossiman/ai-usage; _CI_WORKFLOW=ci.yml; _CI_ID=367323599; _CI_NAME=ci ;;
     *) echo 'CI selection: unknown component' >&2; return 2 ;;
   esac
 }
