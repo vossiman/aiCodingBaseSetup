@@ -395,6 +395,22 @@ ensure_kvm_group_access() {
   return 0
 }
 
+# devbox-base images built 2026-09-09..2026-09-25 baked a root-owned uv cache
+# into the user's home, which breaks every uv call made as the user.
+ensure_uv_cache_ownership() {
+  [ "$(_sync_profile)" != host ] || return 0
+  local dir="${UV_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/uv}" foreign rc=0
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 0
+  foreign=$(find "$dir" ! -user "$(id -u)" -print -quit 2>/dev/null) || rc=$?
+  [ -z "$foreign" ] && [ "$rc" -eq 0 ] && return 0
+  if sudo -n chown -R -P "$(id -u):$(id -g)" "$dir" 2>/dev/null; then
+    declare -F ok >/dev/null && ok "took ownership of $dir (was partly owned by another user)"
+  else
+    echo "WARN: $dir is partly owned by another user and sudo is unavailable; uv will fail until it is chowned" >&2
+  fi
+  return 0
+}
+
 _sync_plumbing() {            # never throttled — must be correct now
   command -v aicoding-ssh-agent-watch >/dev/null 2>&1 && aicoding-ssh-agent-watch --ensure 2>/dev/null || true
   # Clipboard-bridge X11 daemon (codex paste). Internally gated: no-op under
@@ -408,6 +424,7 @@ _sync_plumbing() {            # never throttled — must be correct now
   command -v ensure_agents_skills_symlink >/dev/null 2>&1 && ensure_agents_skills_symlink || true
   command -v ensure_claude_runtime_scope >/dev/null 2>&1 && ensure_claude_runtime_scope || true
   command -v ensure_kvm_group_access >/dev/null 2>&1 && ensure_kvm_group_access || true
+  command -v ensure_uv_cache_ownership >/dev/null 2>&1 && ensure_uv_cache_ownership || true
 }
 
 # Return the provenance stored in manifest.json. A local source is deliberately

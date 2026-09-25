@@ -19,6 +19,9 @@ check() { # <desc> <cmd...>
 check "user codespace uid 1000"        '[ "$(id -un):$(id -u)" = codespace:1000 ]'
 check "passwordless sudo"              'sudo -n true'
 check "home is /home/codespace"        '[ "$HOME" = /home/codespace ]'
+# A root build step with HOME=/home/codespace leaves root-owned files here
+# (a baked ~/.cache/uv broke every uv call as the user). find must succeed.
+check "home owned by codespace"        'out=$(find /home/codespace -xdev ! -user codespace -print -quit) && [ -z "$out" ]'
 check "git"                            'command -v git'
 check "gh"                             'command -v gh'
 check "jq"                             'command -v jq'
