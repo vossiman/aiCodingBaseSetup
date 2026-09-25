@@ -24,6 +24,42 @@ IMAGE_DIR="$BLUEPRINT_ROOT/image"
   [ "$status" -eq 0 ]
 }
 
+@test "image workflow: patches docker-init.sh after the devcontainer build" {
+  grep -qF -- '-f image/Dockerfile.tmp-on-disk' "$BLUEPRINT_ROOT/.github/workflows/build-base-image.yml"
+  grep -qF 'tmp-on-disk.sh' "$IMAGE_DIR/Dockerfile.tmp-on-disk"
+  grep -qF 'Dockerfile.tmp-on-disk' "$IMAGE_DIR/README.md"
+}
+
+@test "image: tmp-on-disk swaps the dind tmpfs mount for a once-per-start wipe" {
+  init="$BATS_TEST_TMPDIR/docker-init.sh"
+  cat > "$init" <<'SH'
+#!/bin/sh
+dockerd_start="$(cat << 'INNEREOF'
+    # Mount /tmp (conditionally)
+    if ! mountpoint -q /tmp; then
+        mount -t tmpfs none /tmp
+    fi
+
+    dockerd > /tmp/dockerd.log 2>&1 &
+INNEREOF
+)"
+SH
+  TMP_ON_DISK_INIT="$init" run bash "$IMAGE_DIR/tmp-on-disk.sh"
+  [ "$status" -eq 0 ]
+  run grep -c 'mount -t tmpfs' "$init"
+  [ "$output" = "0" ]
+  grep -qF '/var/lib/devbox-tmp-boot' "$init"
+  sh -n "$init"
+}
+
+@test "image: tmp-on-disk fails the build when upstream's mount block changes" {
+  init="$BATS_TEST_TMPDIR/docker-init.sh"
+  printf '#!/bin/sh\nmount -t tmpfs tmpfs /tmp\n' > "$init"
+  TMP_ON_DISK_INIT="$init" run bash "$IMAGE_DIR/tmp-on-disk.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"upstream changed"* ]]
+}
+
 @test "image: build devcontainer.json keeps user codespace (mount contract)" {
   run jq -r '.remoteUser + " " + .containerUser' "$IMAGE_DIR/devcontainer.json"
   [ "$status" -eq 0 ]
