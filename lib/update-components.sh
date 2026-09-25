@@ -1119,6 +1119,7 @@ aicoding_update_ai_usage() {
   final="$AICODING_DATA_DIR/versions/ai-usage/$sha"
   if [ -d "$final" ]; then
     [ "$(cat "$final/.aicoding-version" 2>/dev/null)" = "$sha" ] && [ -x "$final/ai_usage.py" ] \
+      && _aicoding_release_integrity_valid "$final" \
       || { aicoding_result_record ai-usage failed "$sha" existing_release_invalid; return 1; }
   else
     command -v python3 >/dev/null 2>&1 \
@@ -1134,6 +1135,8 @@ aicoding_update_ai_usage() {
     rm -rf "$stage"; mkdir -p "$stage" || return 1
     cp -a "$source/ai_usage.py" "$source/.aicoding-version" "$stage/" && [ -x "$stage/ai_usage.py" ] \
       || { rm -rf "$stage"; aicoding_result_record ai-usage failed "$sha" stage_copy_failed; return 1; }
+    _aicoding_release_integrity_write "$stage" \
+      || { rm -rf "$stage"; aicoding_result_record ai-usage failed "$sha" stage_integrity_write_failed; return 1; }
     mv "$stage" "$final" \
       || { rm -rf "$stage"; aicoding_result_record ai-usage failed "$sha" activation_stage_failed; return 1; }
   fi

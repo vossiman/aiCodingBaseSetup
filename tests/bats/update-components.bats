@@ -1346,6 +1346,22 @@ _stub_ai_usage_source() {  # $1 = test outcome (pass|fail)
   [ ! -s "$TMP/ai-usage-staged" ]
 }
 
+@test "ai-usage refuses a retained release whose bytes changed" {
+  local sha=dddddddddddddddddddddddddddddddddddddddd release
+  _stub_ai_usage_source pass
+  run aicoding_update_component ai-usage
+  [ "$status" -eq 0 ]
+  release="$AICODING_DATA_DIR/versions/ai-usage/$sha"
+  chmod u+w "$release" "$release/ai_usage.py"
+  printf '#!/usr/bin/env python3\nprint("tampered")\n' > "$release/ai_usage.py"
+
+  run aicoding_update_component ai-usage
+
+  [ "$status" -ne 0 ]
+  jq -e '.components["ai-usage"].state == "failed"
+    and .components["ai-usage"].reason == "existing_release_invalid"' "$AICODING_RESULTS_FILE"
+}
+
 @test "ai-usage refuses a commit whose tests fail" {
   local sha=dddddddddddddddddddddddddddddddddddddddd
   _stub_ai_usage_source fail
