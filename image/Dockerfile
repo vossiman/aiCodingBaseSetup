@@ -156,8 +156,12 @@ USER root
 # import. Installed as root into /opt/uv, NOT ~/.local/share/uv: that
 # directory is a candidate host bind mount (uv interpreter persistence),
 # and a seed living only there would be shadowed at runtime.
-RUN UV_PYTHON_INSTALL_DIR=/opt/uv/python UV_TOOL_DIR=/opt/uv/tools UV_TOOL_BIN_DIR=/usr/local/bin \
+# HOME is still /home/codespace here, so uv's default cache would land
+# root-owned in the user's home and break every later uv call as codespace.
+RUN UV_CACHE_DIR=/tmp/uv-build-cache \
+      UV_PYTHON_INSTALL_DIR=/opt/uv/python UV_TOOL_DIR=/opt/uv/tools UV_TOOL_BIN_DIR=/usr/local/bin \
       /home/codespace/.local/bin/uv tool install --python 3.12 frogmouth \
+ && rm -rf /tmp/uv-build-cache \
  && [ -x /usr/local/bin/frogmouth ] \
  && su codespace -c '/usr/local/bin/frogmouth --version'
 USER codespace

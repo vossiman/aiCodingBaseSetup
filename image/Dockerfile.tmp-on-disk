@@ -5,3 +5,6 @@ ARG BASE
 FROM ${BASE}
 COPY --chmod=0755 tmp-on-disk.sh /usr/local/share/aicoding/tmp-on-disk.sh
 RUN sudo -n bash /usr/local/share/aicoding/tmp-on-disk.sh
+# The docker-in-docker feature downloads with wget as root while HOME is
+# /home/codespace, leaving a root-owned ~/.wget-hsts behind.
+RUN sudo -n rm -f /home/codespace/.wget-hsts

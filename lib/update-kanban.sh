@@ -102,8 +102,17 @@ _aicoding_finish_kanban_mcp_release() {
     kanban mcp-kanban "$revision" kanban-mcp
 }
 
+# The stage (and its uv log) is deleted on failure, so keep uv's last lines
+# where aicoding-status users can find them.
+_aicoding_kanban_keep_uv_log() {
+  local log=$1 diag="$AICODING_STATE_DIR/diagnostics/mcp-kanban-uv.log"
+  [ -s "$log" ] || return 0
+  mkdir -p "${diag%/*}" && (umask 077 && tail -n 20 "$log" > "$diag") || return 0
+  printf 'WARN: mcp-kanban: uv output kept in %s\n' "$diag" >&2
+}
+
 aicoding_update_kanban_mcp() {
-  local revision source release stage sync_log
+  local revision source release stage sync_log uv_cache
   revision=$(_aicoding_kanban_pinned_revision) || {
     aicoding_result_record mcp-kanban failed "" pinned_revision_invalid
     return 1
@@ -142,8 +151,11 @@ aicoding_update_kanban_mcp() {
   }
   stage="$AICODING_DATA_DIR/versions/mcp-kanban/.staging.$revision.$$"
   sync_log="$stage/.uv-sync.log"
+  # Private cache: the user's ~/.cache/uv may be unusable (a root-owned one
+  # shipped in devbox-base 2026-09-09..2026-09-25) and must not block this.
+  uv_cache="$AICODING_DATA_DIR/cache/uv"
   rm -rf "$stage"
-  mkdir -p "$stage" || {
+  mkdir -p "$stage" "$uv_cache" || {
     rm -rf "$source"
     aicoding_result_record mcp-kanban failed "$revision" stage_prepare_failed
     return 1
@@ -156,7 +168,8 @@ aicoding_update_kanban_mcp() {
   if ! (cd "$stage" && aicoding_progress_run \
       "mcp-kanban: creating relocatable environment (timeout ${AICODING_VENDOR_TIMEOUT}s)" \
       _aicoding_progress_capture "$sync_log" timeout "$AICODING_VENDOR_TIMEOUT" \
-      uv venv --relocatable .venv </dev/null); then
+      env UV_CACHE_DIR="$uv_cache" uv venv --relocatable .venv </dev/null); then
+    _aicoding_kanban_keep_uv_log "$sync_log"
     rm -rf "$source" "$stage"
     aicoding_result_record mcp-kanban failed "$revision" relocatable_venv_failed
     return 1
@@ -164,7 +177,8 @@ aicoding_update_kanban_mcp() {
   if ! (cd "$stage" && aicoding_progress_run \
       "mcp-kanban: installing frozen environment (timeout ${AICODING_VENDOR_TIMEOUT}s)" \
       _aicoding_progress_capture "$sync_log" timeout "$AICODING_VENDOR_TIMEOUT" \
-      env UV_NO_EDITABLE=1 uv sync --frozen --extra mcp --no-dev </dev/null); then
+      env UV_CACHE_DIR="$uv_cache" UV_NO_EDITABLE=1 uv sync --frozen --extra mcp --no-dev </dev/null); then
+    _aicoding_kanban_keep_uv_log "$sync_log"
     rm -rf "$source" "$stage"
     aicoding_result_record mcp-kanban failed "$revision" frozen_sync_failed
     return 1
@@ -174,6 +188,7 @@ aicoding_update_kanban_mcp() {
     aicoding_result_record mcp-kanban failed "$revision" controller_wrapper_failed
     return 1
   }
+  rm -f "$AICODING_STATE_DIR/diagnostics/mcp-kanban-uv.log"
   rm -f "$sync_log" || {
     rm -rf "$source" "$stage"
     aicoding_result_record mcp-kanban failed "$revision" stage_cleanup_failed

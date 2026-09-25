@@ -1548,6 +1548,95 @@ EOF
   [ ! -L "$TMP/.claude/jobs" ]                     # left untouched
 }
 
+# --- uv cache ownership ------------------------------------------------------
+# devbox-base images built 2026-09-09..2026-09-25 baked a root-owned
+# ~/.cache/uv (a root build step ran uv with HOME=/home/codespace), so every
+# uv call as the user failed. Plumbing hands the cache back on each pass.
+# A non-root test cannot create root-owned files, so `find` is stubbed to
+# report a foreign-owned entry where needed.
+
+_uvc_stub_sudo() {   # $1 = exit status; logs every call
+  printf '#!/bin/sh\necho "sudo $*" >> "%s/ran.log"\nexit %s\n' "$TMP" "${1:-0}" > "$TMP/stubs/sudo"
+  chmod +x "$TMP/stubs/sudo"
+}
+_uvc_stub_find_foreign() {
+  printf '#!/bin/sh\necho "$1/sdists-v9/.git"\n' > "$TMP/stubs/find"; chmod +x "$TMP/stubs/find"
+}
+
+@test "uv cache heal is a no-op when the cache is missing" {
+  _uvc_stub_sudo
+  run ensure_uv_cache_ownership
+  [ "$status" -eq 0 ]
+  if grep -q chown "$TMP/ran.log" 2>/dev/null; then false; fi
+}
+
+@test "uv cache heal is a no-op when the user owns everything" {
+  _uvc_stub_sudo
+  mkdir -p "$HOME/.cache/uv/sdists-v9"
+  run ensure_uv_cache_ownership
+  [ "$status" -eq 0 ]
+  if grep -q chown "$TMP/ran.log" 2>/dev/null; then false; fi
+}
+
+@test "uv cache heal chowns a foreign-owned cache without following symlinks" {
+  _uvc_stub_sudo; _uvc_stub_find_foreign
+  mkdir -p "$HOME/.cache/uv"
+  run ensure_uv_cache_ownership
+  [ "$status" -eq 0 ]
+  grep -Fxq "sudo -n chown -R -P $(id -u):$(id -g) $HOME/.cache/uv" "$TMP/ran.log"
+}
+
+@test "uv cache heal never chowns a path taken from UV_CACHE_DIR" {
+  _uvc_stub_sudo; _uvc_stub_find_foreign
+  mkdir -p "$TMP/other-uv"
+  UV_CACHE_DIR="$TMP/other-uv" XDG_CACHE_HOME="$TMP" run ensure_uv_cache_ownership
+  [ "$status" -eq 0 ]
+  if grep -q chown "$TMP/ran.log" 2>/dev/null; then false; fi
+}
+
+@test "uv cache heal refuses when ~/.cache is a symlink out of the home" {
+  _uvc_stub_sudo; _uvc_stub_find_foreign
+  mkdir -p "$TMP/outside/uv"
+  ln -s "$TMP/outside" "$HOME/.cache"
+  run ensure_uv_cache_ownership
+  [ "$status" -eq 0 ]
+  if grep -q chown "$TMP/ran.log" 2>/dev/null; then false; fi
+}
+
+@test "uv cache heal skips a symlinked cache" {
+  _uvc_stub_sudo; _uvc_stub_find_foreign
+  mkdir -p "$TMP/elsewhere" "$HOME/.cache"
+  ln -s "$TMP/elsewhere" "$HOME/.cache/uv"
+  run ensure_uv_cache_ownership
+  [ "$status" -eq 0 ]
+  if grep -q chown "$TMP/ran.log" 2>/dev/null; then false; fi
+}
+
+@test "uv cache heal warns and continues when sudo is refused" {
+  _uvc_stub_sudo 1; _uvc_stub_find_foreign
+  mkdir -p "$HOME/.cache/uv"
+  run ensure_uv_cache_ownership
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WARN:"*".cache/uv"* ]]
+  [ -d "$HOME/.cache/uv" ] && [ ! -L "$HOME/.cache/uv" ]
+}
+
+@test "uv cache heal is skipped on the host profile" {
+  _uvc_stub_sudo; _uvc_stub_find_foreign
+  mkdir -p "$HOME/.cache/uv"
+  manifest_get_profile() { echo host; }
+  run ensure_uv_cache_ownership
+  [ "$status" -eq 0 ]
+  if grep -q chown "$TMP/ran.log" 2>/dev/null; then false; fi
+}
+
+@test "sync plumbing heals the uv cache before any uv-backed step" {
+  local body first
+  body=$(declare -f _sync_plumbing)
+  first=$(printf '%s\n' "$body" | grep -oE 'ensure_uv_cache_ownership|clip-x11-bridge' | head -n 1)
+  [ "$first" = ensure_uv_cache_ownership ]
+}
+
 # --- /dev/kvm group access ----------------------------------------------------
 # Privileged devpods carry the host's /dev, but /dev/kvm is 0660 root:<host gid>
 # with no matching container group — so the Android emulator / qemu can't open it

@@ -696,7 +696,12 @@ EOF
 #!/bin/sh
 printf '%s\n' "$*" >> "$TMP/uv.log"
 printf '%s\n' "${UV_NO_EDITABLE:-}" >> "$TMP/uv-no-editable.log"
+printf '%s\n' "${UV_CACHE_DIR:-}" >> "$TMP/uv-cache-dir.log"
 if [ "${1:-}" = venv ]; then
+  if [ "${KANBAN_UV_FAIL_VENV:-0}" = 1 ]; then
+    printf 'error: Failed to initialize cache at /home/x/.cache/uv\n' >&2
+    exit 2
+  fi
   [ "$*" = 'venv --relocatable .venv' ] || exit 2
   mkdir -p "$PWD/.venv/bin"
   : > "$PWD/.venv/.relocatable"
@@ -771,6 +776,47 @@ EOF
   [ -x "$AICODING_DATA_DIR/versions/mcp-kanban/$revision/.venv/bin/kanban-mcp.runtime" ]
   jq -e --arg revision "$revision" '.components["mcp-kanban"].state == "updated"
     and .components["mcp-kanban"].successful_version == $revision' "$AICODING_RESULTS_FILE"
+}
+
+@test "Kanban MCP builds with a private uv cache, not the user's" {
+  _stub_kanban_git_uv
+  mkdir -p "$HOME/.cache/uv"
+  export UV_CACHE_DIR="$HOME/.cache/uv"
+
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+
+  [ "$status" -eq 0 ]
+  [ "$(sort -u "$TMP/uv-cache-dir.log")" = "$AICODING_DATA_DIR/cache/uv" ]
+  [ "$(wc -l < "$TMP/uv-cache-dir.log")" -eq 2 ]
+  [ ! -e "$AICODING_STATE_DIR/diagnostics/mcp-kanban-uv.log" ]
+}
+
+@test "Kanban MCP keeps uv's error output after a failed build" {
+  _stub_kanban_git_uv
+  export KANBAN_UV_FAIL_VENV=1
+
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+
+  [ "$status" -ne 0 ]
+  jq -e '.components["mcp-kanban"].reason == "relocatable_venv_failed"' "$AICODING_RESULTS_FILE"
+  grep -Fq 'Failed to initialize cache' "$AICODING_STATE_DIR/diagnostics/mcp-kanban-uv.log"
+  [ "$(stat -c %a "$AICODING_STATE_DIR/diagnostics/mcp-kanban-uv.log")" = 600 ]
+  [[ "$output" == *"$AICODING_STATE_DIR/diagnostics/mcp-kanban-uv.log"* ]]
+  if find "$AICODING_DATA_DIR/versions/mcp-kanban" -maxdepth 1 -name '.staging.*' \
+      -print -quit 2>/dev/null | grep -q .; then
+    false
+  fi
+}
+
+@test "Kanban MCP clears a stale uv diagnostic after a successful build" {
+  _stub_kanban_git_uv
+  mkdir -p "$AICODING_STATE_DIR/diagnostics"
+  printf 'old failure\n' > "$AICODING_STATE_DIR/diagnostics/mcp-kanban-uv.log"
+
+  AICODING_MCP_REGISTRATION_DISABLE=1 run aicoding_update_component mcp-kanban
+
+  [ "$status" -eq 0 ]
+  [ ! -e "$AICODING_STATE_DIR/diagnostics/mcp-kanban-uv.log" ]
 }
 
 @test "Kanban MCP never trusts a mutable same-revision source cache" {
