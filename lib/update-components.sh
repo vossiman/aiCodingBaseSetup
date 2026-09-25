@@ -340,6 +340,9 @@ _aicoding_config_component() {
 _aicoding_claude_mcp_selected() {
   local name=$1 plugin registration
   _aicoding_command_is_linux claude || return 1
+  # Kanban has no plugin alternative, so an installed launcher means it is
+  # wanted; sync must add it on machines installed before it existed.
+  [ "$name" = kanban ] && [ -x "$HOME/.local/bin/kanban-mcp" ] && return 0
   registration=$(_aicoding_claude_mcp_get "$name") || registration=""
   printf '%s\n' "$registration" | grep -q '^[[:space:]]*Command:[[:space:]]*' && return 0
   plugin="${name}@claude-plugins-official"
