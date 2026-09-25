@@ -8,6 +8,13 @@ Purpose-built base image replacing `devcontainers/universal:6`
   (with `moby: false`, docker-ce engine — see below) so the image carries
   universal-compatible `devcontainer.metadata`.
 - `daemon.json` — baked dind log rotation (20m × 3).
+- `tmp-on-disk.sh` + `Dockerfile.tmp-on-disk` — second build pass: the
+  docker-in-docker feature's `docker-init.sh` mounts an unsized tmpfs on
+  `/tmp` (copied from moby's `hack/dind`, where only moby's own tests need
+  it), which lets each container hold up to half of host RAM in `/tmp`. The
+  patch keeps `/tmp` on disk and empties it once per container start, so
+  restart behaviour is unchanged. The build fails if upstream changes the
+  block it replaces.
 - `smoke-test.sh <ref>` — contract assertions incl. a privileged dind boot.
 
 ## Build & release
@@ -22,6 +29,7 @@ Current baseline image size: **~985MB** (well under the 2–3GB target).
 Local build (needs ~15GB free docker disk):
 
     npx -y @devcontainers/cli@0.88.0 build --workspace-folder image --config image/devcontainer.json --image-name devbox-base:local
+    docker build -f image/Dockerfile.tmp-on-disk --build-arg BASE=devbox-base:local -t devbox-base:local image
     bash image/smoke-test.sh devbox-base:local
 
 `--config` is required: the CLI looks for `.devcontainer/devcontainer.json`

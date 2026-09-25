@@ -85,6 +85,29 @@ else
 fi
 rm -f "$dind_log"
 
+echo "-- /tmp on disk, emptied per start (image/tmp-on-disk.sh) --"
+check "docker-init.sh has no tmpfs mount" '! grep -q "mount -t tmpfs" /usr/local/share/docker-init.sh'
+tmp_cid="$(docker run -d --privileged -v /var/lib/docker -v /var/lib/containerd "$IMG" \
+  /usr/local/share/docker-init.sh sleep infinity)"
+tmp_exec() { docker exec --user codespace "$tmp_cid" bash -c "$1"; }
+tmp_ready() { # dockerd up means docker-init.sh got past the /tmp block
+  for _ in $(seq 1 90); do tmp_exec 'docker info' >/dev/null 2>&1 && return 0; sleep 1; done
+  return 1
+}
+if tmp_ready \
+   && tmp_exec '! mountpoint -q /tmp && [ "$(stat -c %a /tmp)" = 1777 ] && [ -s /tmp/dockerd.log ]' \
+   && tmp_exec 'touch /tmp/survives-running' && sleep 2 \
+   && tmp_exec '[ -e /tmp/survives-running ]' \
+   && docker restart "$tmp_cid" >/dev/null && tmp_ready \
+   && tmp_exec '[ ! -e /tmp/survives-running ] && [ "$(stat -c %a /tmp)" = 1777 ] && [ -s /tmp/dockerd.log ]'; then
+  echo "ok:   /tmp is disk-backed, 1777, kept while running, emptied on restart"
+else
+  echo "FAIL: /tmp on-disk lifecycle" >&2
+  docker logs "$tmp_cid" 2>&1 | tail -n 30 >&2
+  fail=1
+fi
+docker rm -f -v "$tmp_cid" >/dev/null 2>&1 || true
+
 size_bytes=$(docker image inspect "$IMG" --format '{{.Size}}')
 echo "image size: $((size_bytes / 1024 / 1024)) MB"
 if [ "$size_bytes" -gt $((4 * 1024 * 1024 * 1024)) ]; then

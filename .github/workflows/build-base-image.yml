@@ -67,6 +67,12 @@ jobs:
             --image-name "$IMAGE:$DATE_TAG" \
             --image-name "$IMAGE:latest"
 
+      - name: Patch docker-init.sh (/tmp on disk, not tmpfs)
+        run: |
+          docker build -f image/Dockerfile.tmp-on-disk \
+            --build-arg BASE="$IMAGE:$DATE_TAG" \
+            -t "$IMAGE:$DATE_TAG" -t "$IMAGE:latest" image
+
       - name: Smoke test
         run: bash image/smoke-test.sh "$IMAGE:$DATE_TAG"
 

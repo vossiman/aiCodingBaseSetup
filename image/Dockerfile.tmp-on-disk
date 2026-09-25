@@ -1,0 +1,7 @@
+# Second build pass, run after `devcontainer build` has layered the
+# docker-in-docker feature (features install after the main Dockerfile, so
+# its docker-init.sh can only be patched here). See tmp-on-disk.sh.
+ARG BASE
+FROM ${BASE}
+COPY --chmod=0755 tmp-on-disk.sh /usr/local/share/aicoding/tmp-on-disk.sh
+RUN sudo -n bash /usr/local/share/aicoding/tmp-on-disk.sh
