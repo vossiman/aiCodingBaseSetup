@@ -1,5 +1,5 @@
 {
-  "image": "ghcr.io/vossiman/devbox-base@sha256:b4fe07d06dcc7a3dac99ab87607f6160907162d85e483bd75fcc6b7565c83e64",
+  "image": "ghcr.io/vossiman/devbox-base@sha256:f6b72e290cfdddeaf085e886a8b6d4ebd8886544ce9219c9800f088a9886d4d6",
   "remoteUser": "codespace",
   "runArgs": ["--hostname", "${containerWorkspaceFolderBasename}"],
   "containerEnv": {
