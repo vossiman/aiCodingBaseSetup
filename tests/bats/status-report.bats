@@ -13,7 +13,7 @@ setup() {
   AUTO="$AICODING_STATE_DIR/auto-update"
   mkdir -p "$HOME" "$AUTO" "$TMP/stubs"
   export STATUS_COMMAND_LOG="$TMP/commands"
-  for name in claude codex opencode agent cursor-agent pi dvw bw claude-bw firecrawl-mcp brave-search-mcp-server context7-mcp playwright-mcp aicoding-auto-update git curl npm; do
+  for name in claude codex opencode agent cursor-agent pi dvw bw claude-bw ai-usage firecrawl-mcp brave-search-mcp-server context7-mcp playwright-mcp aicoding-auto-update git curl npm; do
     cat > "$TMP/stubs/$name" <<'STUB'
 #!/usr/bin/env bash
 printf '%s %s\n' "${0##*/}" "$*" >> "$STATUS_COMMAND_LOG"
@@ -204,6 +204,16 @@ NextElapseUSecMonotonic=$next"
   done
   [[ "$output" == *"bw-AICode: abc (selected local release)"* ]]
   [[ "$output" == *"Playwright Chromium: Chromium 140.1.2.3"* ]]
+}
+
+@test "ai-usage shows its managed release and is never executed" {
+  mkdir -p "$AICODING_DATA_DIR/versions/ai-usage/abc" "$AICODING_DATA_DIR/current"
+  printf 'abc\n' > "$AICODING_DATA_DIR/versions/ai-usage/abc/.aicoding-version"
+  ln -s ../versions/ai-usage/abc "$AICODING_DATA_DIR/current/ai-usage"
+  run "$BIN"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ai-usage: abc (selected local release)"* ]]
+  if grep -q '^ai-usage' "$STATUS_COMMAND_LOG" 2>/dev/null; then false; fi
 }
 
 @test "saved results show freshness and unresolved rows separately from recovered rows" {

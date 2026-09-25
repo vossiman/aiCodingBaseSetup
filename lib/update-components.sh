@@ -49,6 +49,11 @@ aicoding_installed_components() {
       || [ -d "${AICODING_VENDOR_DIR:-$AICODING_DATA_DIR/vendor}/bw-AICode/.git" ]; then
     printf 'bw-AICode\n'
   fi
+  # Wanted in every container, so it is selected there before it exists.
+  if _aicoding_command_is_linux ai-usage \
+      || { declare -F _sync_profile >/dev/null 2>&1 && [ "$(_sync_profile)" = container ]; }; then
+    printf 'ai-usage\n'
+  fi
 }
 
 # Boolean-only discovery: never prints registration/config contents. Stable
@@ -1108,6 +1113,38 @@ aicoding_update_bw() {
   aicoding_result_record bw-AICode updated "$sha" installed "$sha"
 }
 
+aicoding_update_ai_usage() {
+  local sha source final stage
+  sha=$(aicoding_select_ci_sha ai-usage) || { _aicoding_record_deferred ai-usage blocked "" ci_selection_unavailable; return 1; }
+  final="$AICODING_DATA_DIR/versions/ai-usage/$sha"
+  if [ -d "$final" ]; then
+    [ "$(cat "$final/.aicoding-version" 2>/dev/null)" = "$sha" ] && [ -x "$final/ai_usage.py" ] \
+      && _aicoding_release_integrity_valid "$final" \
+      || { aicoding_result_record ai-usage failed "$sha" existing_release_invalid; return 1; }
+  else
+    command -v python3 >/dev/null 2>&1 \
+      || { _aicoding_record_deferred ai-usage blocked "$sha" "$(_aicoding_missing_runtime_reason python3)"; return 1; }
+    source="$AICODING_DATA_DIR/sources/ai-usage/$sha"
+    _aicoding_stage_git_source "${AICODING_AI_USAGE_REMOTE:-https://github.com/vossiman/ai-usage}" "$sha" "$source" \
+      || { aicoding_result_record ai-usage failed "$sha" source_stage_failed; return 1; }
+    (cd "$source" && aicoding_progress_run "ai-usage: running tests (timeout ${AICODING_VENDOR_TIMEOUT}s)" \
+        _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" \
+        python3 -B -m unittest -q test_ai_usage </dev/null) \
+      || { aicoding_result_record ai-usage failed "$sha" tests_failed; return 1; }
+    stage="$AICODING_DATA_DIR/versions/ai-usage/.staging.$sha.$$"
+    rm -rf "$stage"; mkdir -p "$stage" || return 1
+    cp -a "$source/ai_usage.py" "$source/.aicoding-version" "$stage/" && [ -x "$stage/ai_usage.py" ] \
+      || { rm -rf "$stage"; aicoding_result_record ai-usage failed "$sha" stage_copy_failed; return 1; }
+    _aicoding_release_integrity_write "$stage" \
+      || { rm -rf "$stage"; aicoding_result_record ai-usage failed "$sha" stage_integrity_write_failed; return 1; }
+    mv "$stage" "$final" \
+      || { rm -rf "$stage"; aicoding_result_record ai-usage failed "$sha" activation_stage_failed; return 1; }
+  fi
+  _aicoding_activate_vendor_release ai-usage "$sha" ai-usage ai_usage.py \
+    || { aicoding_result_record ai-usage failed "$sha" activation_failed; return 1; }
+  aicoding_result_record ai-usage updated "$sha" installed "$sha"
+}
+
 aicoding_update_component() {
   local AICODING_PROGRESS_COMPONENT=$1 component_rc=0 started=$SECONDS
   printf 'INFO: Updating %s\n' "$1" >&2
@@ -1128,6 +1165,7 @@ _aicoding_update_component_impl() {
       ;;
     dvw) aicoding_update_dvw ;;
     bw-AICode) aicoding_update_bw ;;
+    ai-usage) aicoding_update_ai_usage ;;
     mcp-firecrawl) aicoding_update_npm_entry_component mcp-firecrawl firecrawl-mcp firecrawl-mcp ;;
     mcp-brave) aicoding_update_npm_entry_component mcp-brave brave-search-mcp-server @brave/brave-search-mcp-server ;;
     mcp-context7) aicoding_update_npm_entry_component mcp-context7 context7-mcp @upstash/context7-mcp ;;

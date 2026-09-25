@@ -296,6 +296,7 @@ TOOLS = [
     ("pi", "Pi", ("pi",), None),
     ("dvw", "dvw", ("dvw",), None),
     ("bw-AICode", "bw-AICode", ("bw", "claude-bw"), None),
+    ("ai-usage", "ai-usage", ("ai-usage",), None),
     ("mcp-firecrawl", "Firecrawl MCP", ("firecrawl-mcp",), "firecrawl-mcp"),
     ("mcp-brave", "Brave MCP", ("brave-search-mcp-server",), "@brave/brave-search-mcp-server"),
     ("mcp-context7", "Context7 MCP", ("context7-mcp",), "@upstash/context7-mcp"),
@@ -312,7 +313,7 @@ def installed(tool):
             executable = candidate
             break
     probed = ""
-    if executable and not package and key not in ("bw-AICode", "aicoding"):
+    if executable and not package and key not in ("bw-AICode", "ai-usage", "aicoding"):
         lines = command([executable, "--version"]).splitlines()
         probed = clean(lines[0]) if lines else ""
     active = DATA / "current" / key
@@ -326,7 +327,7 @@ def installed(tool):
                    if package else read(release / ".aicoding-version"))
         if not version:
             version = release.name
-        if not package and key not in ("bw-AICode", "aicoding"):
+        if not package and key not in ("bw-AICode", "ai-usage", "aicoding"):
             effective = f"{probed} (local version probe)" if probed else "effective CLI version unavailable"
             return f"{effective}; selected local release {clean(version)}"
         return f"{clean(version)} (selected local release)"
