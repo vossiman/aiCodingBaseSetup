@@ -1,6 +1,7 @@
 # aiCodingBaseSetup — blueprint deployment primitives.
 # Sourced by install.sh and bin/aicoding-sync. Pure shell functions only;
-# no top-level side effects. Caller is responsible for `set -euo pipefail`.
+# the one top-level side effect is the staging-only release heal (below).
+# Caller is responsible for `set -euo pipefail`.
 
 # Container-local, NOT ~/.aicodingsetup: that path is a host bind mount shared
 # by every devpod container, while this manifest describes container-local
@@ -17,6 +18,11 @@
 _aicoding_deploy_lib_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=codex-merge.sh
 . "$_aicoding_deploy_lib_dir/codex-merge.sh"
+# shellcheck source=release-heal.sh
+. "$_aicoding_deploy_lib_dir/release-heal.sh"
+# Runs at source time on purpose: a container stuck on an older release only
+# executes new code by sourcing this file while it stages a newly selected one.
+aicoding_heal_release_bytecode_when_staging "$_aicoding_deploy_lib_dir" || true
 unset _aicoding_deploy_lib_dir
 
 # compute_hash <path> — echo the sha256 hex of file content; empty if missing.
