@@ -431,6 +431,55 @@ EOF
   if kill -0 "$worker" 2>/dev/null; then false; fi
 }
 
+@test "busy healthy worker hands off to the timer instead of leaving no scheduler" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  # Keep the first fallback pass inside sync past the bounded TERM wait.
+  printf '\nif [ -e "$TEST_ROOT/slow-sync" ]; then rm -f "$TEST_ROOT/slow-sync"; sleep 4; fi\n' \
+    >> "$TEST_ROOT/bin/aicoding-sync"
+  touch "$TEST_ROOT/slow-sync"
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_lines 1
+  local worker
+  worker=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")
+  [ ! -e "$TEST_ROOT/slow-sync" ]
+  kill -0 "$worker"
+
+  cat > "$TEST_ROOT/bin/systemctl" <<'EOF2'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TEST_ROOT/systemctl.calls"
+case "$*" in
+  '--user is-system-running') echo running ;;
+  '--user show --property=Version --value') echo 257 ;;
+  '--user enable --now aicoding-auto-update.timer') touch "$TEST_ROOT/timer-enabled" ;;
+  '--user disable --now aicoding-auto-update.timer') rm -f "$TEST_ROOT/timer-enabled" ;;
+  '--user is-enabled aicoding-auto-update.timer') [ -e "$TEST_ROOT/timer-enabled" ] && echo enabled || echo disabled ;;
+  '--user is-active aicoding-auto-update.timer') [ -e "$TEST_ROOT/timer-enabled" ] && echo active || echo inactive ;;
+esac
+exit 0
+EOF2
+  cat > "$TEST_ROOT/bin/loginctl" <<'EOF2'
+#!/usr/bin/env bash
+echo yes
+EOF2
+  chmod +x "$TEST_ROOT/bin/systemctl" "$TEST_ROOT/bin/loginctl"
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  for _ in $(seq 150); do
+    kill -0 "$worker" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$worker" 2>/dev/null; then false; fi
+  sleep 0.5
+  local diag="enroll: $(cat "$AICODING_STATE_DIR/auto-update/enroll.log" 2>/dev/null) calls: $(cat "$TEST_ROOT/systemctl.calls" 2>/dev/null)"
+  # Exactly one scheduler survives: the enabled timer, and no fallback worker.
+  [ -e "$TEST_ROOT/timer-enabled" ] || { echo "$diag"; false; }
+  local pid
+  pid=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid" 2>/dev/null || true)
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "$diag"; false; fi
+  run flock -n "$AICODING_STATE_DIR/auto-update/worker.lock" true
+  [ "$status" -eq 0 ]
+}
+
 @test "healthy user manager transition removes a proven stale worker pid" {
   mkdir -p "$AICODING_STATE_DIR/auto-update"
   printf '999999999\n' > "$AICODING_STATE_DIR/auto-update/worker.pid"
