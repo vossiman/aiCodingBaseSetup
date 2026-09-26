@@ -52,18 +52,10 @@ _aicoding_ci_workflow() {
   _CI_RESOLVED_ID=$id
 }
 
-# 0 qualified; 1 no successful required run; 2 inaccessible/malformed API.
-_aicoding_ci_run_qualified() {
-  local sha=$1 runs latest
-  runs=$(_aicoding_ci_api "repos/$_CI_REPO/actions/workflows/$_CI_WORKFLOW/runs?head_sha=$sha&branch=main&event=push&per_page=100") || {
-    echo 'CI selection: required checks inaccessible' >&2; return 2;
-  }
-  # Fail closed on truncated responses instead of accidentally accepting an
-  # old success when a newer run was omitted. This also detects API errors.
+_aicoding_ci_runs_valid() {
   jq -e '
     type == "object" and (.total_count | type == "number")
     and (.workflow_runs | type == "array")
-    and .total_count == (.workflow_runs | length)
     and all(.workflow_runs[];
       type == "object"
       and (.id | type == "number") and (.run_number | type == "number")
@@ -73,9 +65,12 @@ _aicoding_ci_run_qualified() {
       and has("conclusion")
       and ((.conclusion | type) == "string" or (.conclusion | type) == "null")
       and (.status != "completed" or (.conclusion | type) == "string"))
-  ' <<< "$runs" >/dev/null 2>&1 || {
-    echo 'CI selection: malformed or incomplete checks response' >&2; return 2;
-  }
+  ' >/dev/null 2>&1
+}
+
+# 0 when the latest required run for sha in runs succeeded, else 1.
+_aicoding_ci_latest_succeeded() {
+  local sha=$1 runs=$2 latest
   latest=$(jq -c --arg sha "$sha" --argjson workflow "$_CI_RESOLVED_ID" '
     [.workflow_runs[] | select(.workflow_id == $workflow and .head_sha == $sha
       and .head_branch == "main" and .event == "push")]
@@ -84,12 +79,53 @@ _aicoding_ci_run_qualified() {
   jq -e '.status == "completed" and .conclusion == "success"' <<< "$latest" >/dev/null 2>&1
 }
 
+# 0 qualified; 1 no successful required run; 2 inaccessible/malformed API.
+_aicoding_ci_run_qualified() {
+  local sha=$1 runs
+  runs=$(_aicoding_ci_api "repos/$_CI_REPO/actions/workflows/$_CI_WORKFLOW/runs?head_sha=$sha&branch=main&event=push&per_page=100") || {
+    echo 'CI selection: required checks inaccessible' >&2; return 2;
+  }
+  # Fail closed on truncated responses instead of accidentally accepting an
+  # old success when a newer run was omitted. This also detects API errors.
+  _aicoding_ci_runs_valid <<< "$runs" \
+    && jq -e '.total_count == (.workflow_runs | length)' <<< "$runs" >/dev/null 2>&1 || {
+    echo 'CI selection: malformed or incomplete checks response' >&2; return 2;
+  }
+  _aicoding_ci_latest_succeeded "$sha" "$runs"
+}
+
+# One page of recent main push runs answers most candidates in one request.
+# It covers a candidate only when every run for it must be on the page: the
+# page is the whole history, or its oldest run predates the commit by over a
+# day (runs follow the push; the margin absorbs committer clock skew).
+# Anything else falls back to the exact per-SHA query.
+_aicoding_ci_bulk_runs() {
+  local runs
+  runs=$(_aicoding_ci_api "repos/$_CI_REPO/actions/workflows/$_CI_WORKFLOW/runs?branch=main&event=push&per_page=100") \
+    || return 1
+  _aicoding_ci_runs_valid <<< "$runs" \
+    && jq -e '(.total_count | . == floor and . >= 0) and .total_count >= (.workflow_runs | length)
+      and all(.workflow_runs[]; .created_at | type == "string" and ((try fromdateiso8601 catch null) != null))' \
+      <<< "$runs" >/dev/null 2>&1 || return 1
+  printf '%s\n' "$runs"
+}
+
+_aicoding_ci_bulk_covers() {
+  local runs=$1 committed=$2
+  jq -e --arg committed "$committed" '
+    if .total_count == (.workflow_runs | length) then true
+    else ($committed | try fromdateiso8601 catch null) as $c
+      | ([.workflow_runs[].created_at | fromdateiso8601] | min) as $oldest
+      | $c != null and $oldest != null and $oldest < $c - 86400
+    end' <<< "$runs" >/dev/null 2>&1
+}
+
 aicoding_select_ci_sha() {
   aicoding_progress_run "${1:-unknown}: selecting CI-qualified release" _aicoding_select_ci_sha_impl "$@"
 }
 
 _aicoding_select_ci_sha_impl() (
-  local component=${1:-} commits sha rc
+  local component=${1:-} commits sha committed rc bulk
   _aicoding_ci_policy "$component" || return $?
   _aicoding_ci_workflow || return $?
   commits=$(_aicoding_ci_api "repos/$_CI_REPO/commits?sha=main&per_page=30") || {
@@ -99,15 +135,17 @@ _aicoding_select_ci_sha_impl() (
     <<< "$commits" >/dev/null 2>&1 || {
     echo 'CI selection: invalid main history' >&2; return 2;
   }
-  while IFS= read -r sha; do
-    if _aicoding_ci_run_qualified "$sha"; then
-      printf '%s\n' "$sha"
-      return 0
+  bulk=$(_aicoding_ci_bulk_runs) || bulk=
+  while IFS=$'\t' read -r sha committed; do
+    rc=0
+    if [ -n "$bulk" ] && _aicoding_ci_bulk_covers "$bulk" "$committed"; then
+      _aicoding_ci_latest_succeeded "$sha" "$bulk" || rc=$?
     else
-      rc=$?
-      [ "$rc" -eq 1 ] || return "$rc"
+      _aicoding_ci_run_qualified "$sha" || rc=$?
     fi
-  done < <(jq -r '.[].sha' <<< "$commits")
+    [ "$rc" -eq 0 ] && { printf '%s\n' "$sha"; return 0; }
+    [ "$rc" -eq 1 ] || return "$rc"
+  done < <(jq -r '.[] | [.sha, (.commit.committer.date // "")] | @tsv' <<< "$commits")
   echo 'CI selection: no main commit has successful required checks' >&2
   return 1
 )
