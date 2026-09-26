@@ -298,14 +298,16 @@ Two distinct flows after the initial install:
 Normally neither. `aicoding-auto-update` checks every six hours and catches up
 after restart. Run `aicoding-status` for scheduler health, update activity,
 local attempt/completion/next-run times, installed tool versions, and dated
-update results. To request a pass now, run `aicoding-auto-update --once`.
+update results. When something is blocked, `aicoding-status --doctor` explains
+each recorded blocker and names the command that fixes it. To request a pass
+now, run `aicoding-auto-update --once`.
 The tmux badges provide a compact reminder:
 
 | Badge | What moved on blueprint `main` | What happens next |
 |-------|--------------------------------|-------------------|
 | ⬆`sync` | anything sync can deliver: managed configs, MCP/plugin definitions, agent-CLI updates, sync's own code | managed installs wait for the background updater to qualify CI and apply it; legacy installs can run `aicoding-sync` |
 | ⬆`install` | provisioning itself: `install.sh`, `lib/provision*`, `image/` | managed installs report automatic provisioning pending; legacy installs can run `aicoding-install` |
-| ⬆`provision!` | automatic provisioning for the active release is blocked or failed | run `aicoding-status` for the recorded blockers |
+| ⬆`provision!` | automatic provisioning for the active release is blocked or failed | run `aicoding-status --doctor` for the recorded blockers and their fixes |
 | ⬆`rebuild` | the base image | rebuild the container from your laptop |
 
 Rule of thumb: **supported agent harnesses, plugins, MCPs, and agent CLIs are

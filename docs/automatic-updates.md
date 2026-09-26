@@ -81,6 +81,14 @@ timestamps describe when the updater observed something; reading status does
 not refresh component availability checks. An old failure is unresolved until
 there is evidence of recovery, even when a newer blueprint is active.
 
+`aicoding-status --doctor` explains each unresolved blocker in plain words
+and names the command that fixes it, and lists which containers fail the
+shared-config fleet check. It exits 1 while blockers remain. Its text comes
+from `lib/status-reasons.json`. Every reason code the code records needs an
+entry there: `tests/bats/status-reasons.bats` scans `lib/` and `bin/` for
+literal codes, and `tests/bats/run.sh` fails the run when a test records a
+reason the catalog does not cover.
+
 Config results such as `config-cursor` cover multiple managed destinations.
 Reconciliation records recovery only when all relevant destinations have
 compatible prerequisites and verified reconciliation outcomes. A remaining

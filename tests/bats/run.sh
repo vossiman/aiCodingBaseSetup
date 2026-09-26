@@ -100,4 +100,12 @@ if [[ $user_set_jobs -eq 0 ]]; then
   fi
 fi
 
-exec "${BATS[@]}" --timing "${passthru[@]}" "${files[@]}"
+# Every reason that real code records during the run must have a catalog entry
+# in lib/status-reasons.json, or aicoding-status --doctor could not explain it.
+AICODING_REASON_AUDIT="$(mktemp)"
+export AICODING_REASON_AUDIT
+rc=0
+"${BATS[@]}" --timing "${passthru[@]}" "${files[@]}" || rc=$?
+python3 tests/status_reasons.py audit "$AICODING_REASON_AUDIT" "$BLUEPRINT_ROOT" || rc=1
+rm -f "$AICODING_REASON_AUDIT"
+exit "$rc"

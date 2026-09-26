@@ -1,0 +1,552 @@
+{
+  "schema": 1,
+  "reasons": {
+    "activation_failed": {
+      "kind": "action",
+      "meaning": "The new release was staged but could not be switched to active.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "activation_stage_failed": {
+      "kind": "action",
+      "meaning": "The staged release could not be moved into place.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "active_controller_invalid": {
+      "kind": "action",
+      "meaning": "The active kanban MCP release does not match its pin or does not start.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "applied": {
+      "kind": "ok",
+      "meaning": "The selected aicoding release is active."
+    },
+    "apt_install_failed": {
+      "kind": "action",
+      "meaning": "Installing system packages with apt failed.",
+      "fix": "Run `sudo apt-get update` and check for errors, then `aicoding-auto-update --once`."
+    },
+    "apt_lock_busy": {
+      "kind": "wait",
+      "meaning": "Another apt or dpkg process held the package lock.",
+      "fix": "Usually clears on the next pass. Otherwise wait for the other apt run and run `aicoding-auto-update --once`."
+    },
+    "apt_unavailable": {
+      "kind": "action",
+      "meaning": "`apt-get` is not available on this system.",
+      "fix": "Install the listed system tools with your package manager."
+    },
+    "archive_download_failed": {
+      "kind": "action",
+      "meaning": "Downloading the Cursor archive failed.",
+      "fix": "Check network access to the download source, then run `aicoding-auto-update --once`. Details are in `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "archive_invalid": {
+      "kind": "action",
+      "meaning": "The downloaded Cursor archive could not be extracted.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "browser_install_failed": {
+      "kind": "action",
+      "meaning": "Downloading the Playwright Chromium browser failed.",
+      "fix": "Check network access to the download source, then run `aicoding-auto-update --once`. Details are in `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "browser_marker_commit_failed": {
+      "kind": "action",
+      "meaning": "The marker for the installed Playwright browser could not be written.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "browser_ready": {
+      "kind": "ok",
+      "meaning": "The Playwright Chromium browser is installed and runs."
+    },
+    "browser_ready_version_unavailable": {
+      "kind": "action",
+      "meaning": "The Playwright browser is present but its version is unknown.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "browser_stage_cleanup_failed": {
+      "kind": "action",
+      "meaning": "A leftover Playwright browser stage could not be removed.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "browser_stage_prepare_failed": {
+      "kind": "action",
+      "meaning": "The Playwright browser staging directory could not be created.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "browser_unavailable": {
+      "kind": "action",
+      "meaning": "No Playwright Chromium browser is installed.",
+      "fix": "Run `aicoding-auto-update --once`."
+    },
+    "browser_validation_failed": {
+      "kind": "action",
+      "meaning": "The downloaded Playwright browser does not run or misses libraries.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "browser_validation_unavailable": {
+      "kind": "action",
+      "meaning": "The Playwright browser's system libraries could not be checked.",
+      "fix": "Run `aicoding-auto-update --once`. If it persists, reinstall the browser by removing `~/.local/share/aicoding/browser-cache/mcp-playwright` and retrying."
+    },
+    "browser_version_probe_failed": {
+      "kind": "action",
+      "meaning": "The Playwright browser was installed but did not report a version.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "build_failed": {
+      "kind": "action",
+      "meaning": "Building the tool from source failed.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "ci_selection_unavailable": {
+      "kind": "action",
+      "meaning": "No CI-qualified commit could be selected (GitHub unreachable or no green build yet).",
+      "fix": "Check network access to the download source, then run `aicoding-auto-update --once`. Details are in `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "claude_consumers_incompatible": {
+      "kind": "action",
+      "meaning": "The fleet check for the shared `~/.claude` failed, so Claude MCP registrations are frozen on every container.",
+      "fix": "Clear the fleet check first: see \"Fleet proof\" above, stop idle containers and sync the ones missing tools, then run `aicoding-sync --yes`."
+    },
+    "claude_version_unavailable": {
+      "kind": "action",
+      "meaning": "The Claude CLI did not report its version.",
+      "fix": "Check that `claude --version` works, then run `aicoding-sync --yes`."
+    },
+    "codex_sidecar_missing": {
+      "kind": "action",
+      "meaning": "The staged Codex package lacks its code-mode host binary.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "codex_superpowers_link_user_owned": {
+      "kind": "action",
+      "meaning": "`~/.codex` has a superpowers link you created, so sync leaves it alone.",
+      "fix": "Remove the link if you want the managed one, then run `aicoding-sync --yes`."
+    },
+    "committed_release_invalid": {
+      "kind": "action",
+      "meaning": "The release failed validation after it was committed.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "controller_wrapper_failed": {
+      "kind": "action",
+      "meaning": "The kanban MCP launcher could not be made bytecode-free.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "current": {
+      "kind": "ok",
+      "meaning": "Already at the target version; nothing to do."
+    },
+    "entrypoint_invalid": {
+      "kind": "action",
+      "meaning": "The npm package declares an unsafe or missing command entry point.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "exact_mcp_cli_unavailable": {
+      "kind": "action",
+      "meaning": "The exact Playwright MCP release has no CLI, so its browser cannot be installed.",
+      "fix": "Run `aicoding-auto-update --once` to reinstall the Playwright MCP."
+    },
+    "exact_mcp_release_unavailable": {
+      "kind": "action",
+      "meaning": "No active exact Playwright MCP release was found.",
+      "fix": "Run `aicoding-auto-update --once` to install it."
+    },
+    "exact_package_not_staged": {
+      "kind": "action",
+      "meaning": "An exact MCP package is not installed and verified yet, so registration and config wait for it.",
+      "fix": "Fix that package's own blocker (its `mcp-*` entry), then run `aicoding-sync --yes`."
+    },
+    "existing_release_invalid": {
+      "kind": "action",
+      "meaning": "A release for this version already exists on disk but is damaged.",
+      "fix": "Remove the damaged copy under `~/.local/share/aicoding/versions/` only if you know it is unused, then retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "frogmouth_install_failed": {
+      "kind": "action",
+      "meaning": "Installing frogmouth failed.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "frozen_sync_failed": {
+      "kind": "action",
+      "meaning": "Installing the kanban MCP dependencies from its lockfile failed.",
+      "fix": "Check `~/.local/state/aicoding/diagnostics/mcp-kanban-uv.log`, then run `aicoding-auto-update --once`."
+    },
+    "go_install_failed": {
+      "kind": "action",
+      "meaning": "Installing Go failed.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "installed": {
+      "kind": "ok",
+      "meaning": "The target version was installed."
+    },
+    "installer_download_failed": {
+      "kind": "action",
+      "meaning": "Downloading the Claude installer failed.",
+      "fix": "Check network access to the download source, then run `aicoding-auto-update --once`. Details are in `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "lifecycle_scripts_required": {
+      "kind": "action",
+      "meaning": "The npm package needs install scripts, which the updater refuses to run.",
+      "fix": "Nothing to fix locally; the pinned version stays until a release without install scripts is available."
+    },
+    "managed_adapter_unavailable": {
+      "kind": "action",
+      "meaning": "The pinned dvw source has no unattended install entry point.",
+      "fix": "Update dvw by hand with `dvw update`, or wait for a dvw release that supports unattended installs."
+    },
+    "managed_config_apply_failed": {
+      "kind": "action",
+      "meaning": "Writing a managed config file failed.",
+      "fix": "Run `aicoding-sync --yes` and read its output. `~/.local/state/aicoding/auto-update/worker.log` has the background run."
+    },
+    "managed_config_conflict": {
+      "kind": "action",
+      "meaning": "A managed config file was changed locally and also changed in the blueprint.",
+      "fix": "Run `aicoding-sync` interactively to review and merge the conflict."
+    },
+    "managed_install_failed": {
+      "kind": "action",
+      "meaning": "The dvw installer failed.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "manifest_write_failed": {
+      "kind": "action",
+      "meaning": "The deploy manifest could not be written, so the sync result was not saved.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "mcp_exact_version_staging_unavailable": {
+      "kind": "action",
+      "meaning": "The config needs the exact MCP packages (context7, playwright, kanban) and at least one is not installed, verified or fleet-compatible.",
+      "fix": "Fix the `mcp-*` and `mcp-registration-claude-*` blockers doctor lists first, then run `aicoding-sync --yes`."
+    },
+    "network_disabled": {
+      "kind": "wait",
+      "meaning": "Network access is switched off for this run (`AICODINGSETUP_SKIP_NETWORK=1`).",
+      "fix": "Run `aicoding-auto-update --once` from a normal shell with network access."
+    },
+    "node_runtime_incompatible": {
+      "kind": "action",
+      "meaning": "The installed Node.js is older than the package requires.",
+      "fix": "Update Node.js (in a container: rebuild it on the current devbox image), then run `aicoding-auto-update --once`."
+    },
+    "offline_exact_package_not_ready": {
+      "kind": "wait",
+      "meaning": "Network is off and the exact MCP package is not installed yet.",
+      "fix": "Run `aicoding-auto-update --once` with network access."
+    },
+    "offline_verified": {
+      "kind": "ok",
+      "meaning": "Network is off, but the installed package was checked and is valid."
+    },
+    "package_inventory_unavailable": {
+      "kind": "action",
+      "meaning": "The npm package's install scripts could not be inspected.",
+      "fix": "Check network access to the download source, then run `aicoding-auto-update --once`. Details are in `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "partial_config_blocked": {
+      "kind": "action",
+      "meaning": "Some managed config files were held back because a tool they depend on is not ready.",
+      "fix": "See the `config-*` entries for the reason per tool."
+    },
+    "partial_provision_failure": {
+      "kind": "action",
+      "meaning": "One or more provisioning steps failed.",
+      "fix": "Run `aicoding-sync --yes` and read its output. `~/.local/state/aicoding/auto-update/worker.log` has the background run."
+    },
+    "pinned_revision_invalid": {
+      "kind": "action",
+      "meaning": "The kanban MCP pin file in the blueprint is missing or not a commit SHA.",
+      "fix": "Fix `configs/versions/kanban-mcp.rev` in aiCodingBaseSetup via PR."
+    },
+    "playwright_system_libs_unavailable": {
+      "kind": "action",
+      "meaning": "Chromium needs system libraries that are not installed.",
+      "fix": "Run `sudo npx playwright install-deps chromium`, or on a devbox rebuild on the current image."
+    },
+    "preparation_deferred": {
+      "kind": "wait",
+      "meaning": "Provisioning waited for another component (see the other blockers).",
+      "fix": "Fix the other blockers listed; this clears on the next sync."
+    },
+    "python_runtime_unavailable": {
+      "kind": "action",
+      "meaning": "`python3` is missing, so the Cursor updater cannot run.",
+      "fix": "Install `python3`, then run `aicoding-auto-update --once`."
+    },
+    "reconciliation_verified": {
+      "kind": "ok",
+      "meaning": "The managed config matches the blueprint."
+    },
+    "registration_conflict": {
+      "kind": "action",
+      "meaning": "A Claude MCP registration with this name exists and was not created by aicoding, so sync leaves it alone.",
+      "fix": "Inspect it with `claude mcp get <name>`. Remove it with `claude mcp remove -s user <name>` if you want the managed one, then run `aicoding-sync --yes`."
+    },
+    "registration_migrated": {
+      "kind": "ok",
+      "meaning": "The Claude MCP registration was moved to the managed launcher."
+    },
+    "registration_migration_failed": {
+      "kind": "action",
+      "meaning": "Replacing the Claude MCP registration failed; the old one was restored.",
+      "fix": "Check `claude mcp list`, then run `aicoding-sync --yes`."
+    },
+    "registration_not_selected": {
+      "kind": "wait",
+      "meaning": "This MCP is not registered in Claude, and sync only updates registrations that exist.",
+      "fix": "Nothing is wrong unless you want the server. For kanban, install its launcher (`aicoding-auto-update --once`); for others run `claude mcp add` or enable the plugin."
+    },
+    "registration_recovery_cleanup_failed": {
+      "kind": "action",
+      "meaning": "The backup of the old Claude MCP registration could not be removed.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "registration_recovery_write_failed": {
+      "kind": "action",
+      "meaning": "Sync could not save a backup of the old Claude MCP registration, so it left it alone.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "registration_remove_failed": {
+      "kind": "action",
+      "meaning": "The old Claude MCP registration could not be removed.",
+      "fix": "Run `claude mcp remove -s user <name>` by hand, then `aicoding-sync --yes`."
+    },
+    "registration_rollback_cleanup_failed": {
+      "kind": "action",
+      "meaning": "The failed new Claude MCP registration could not be removed.",
+      "fix": "Check `claude mcp list` and remove the broken entry with `claude mcp remove -s user <name>`, then run `aicoding-sync --yes`."
+    },
+    "registration_rollback_restore_failed": {
+      "kind": "action",
+      "meaning": "The old Claude MCP registration could not be restored after a failed change. A backup is in `~/.local/state/aicoding/registration-recovery/`.",
+      "fix": "Re-add the server from that backup with `claude mcp add`, then run `aicoding-sync --yes`."
+    },
+    "registration_verified": {
+      "kind": "ok",
+      "meaning": "The Claude MCP registration points at the managed launcher."
+    },
+    "release_commit_failed": {
+      "kind": "action",
+      "meaning": "The staged release could not be committed or failed validation afterwards.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "relocatable_venv_failed": {
+      "kind": "action",
+      "meaning": "Creating the kanban MCP Python environment failed (often a root-owned `~/.cache/uv`).",
+      "fix": "Check `~/.local/state/aicoding/diagnostics/mcp-kanban-uv.log`. If uv reports a permission error, run `sudo chown -R \"$USER\" ~/.cache/uv`, then `aicoding-auto-update --once`."
+    },
+    "runtime_compatibility_unavailable": {
+      "kind": "action",
+      "meaning": "The managed file could not be checked against the installed tool.",
+      "fix": "Run `aicoding-sync --yes`."
+    },
+    "shared_registration_busy": {
+      "kind": "wait",
+      "meaning": "Another process held the lock on the shared Claude settings.",
+      "fix": "Usually clears on the next pass. Otherwise run `aicoding-sync --yes`."
+    },
+    "shared_registration_consumers_incompatible": {
+      "kind": "action",
+      "meaning": "Not every container sharing `~/.claude` has a compatible version of this MCP, so its registration is frozen.",
+      "fix": "Clear the fleet check first: see \"Fleet proof\" above, stop idle containers and sync the ones missing tools, then run `aicoding-sync --yes`."
+    },
+    "source_cleanup_failed": {
+      "kind": "action",
+      "meaning": "The downloaded source could not be removed after staging.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "source_stage_failed": {
+      "kind": "action",
+      "meaning": "Fetching the pinned source commit from GitHub failed.",
+      "fix": "Check network access to the download source, then run `aicoding-auto-update --once`. Details are in `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "stable_launcher_missing": {
+      "kind": "action",
+      "meaning": "The managed launcher in `~/.local/bin` is missing, so the Claude MCP registration cannot point at it.",
+      "fix": "Run `aicoding-auto-update --once` to reinstall the package, then `aicoding-sync --yes`."
+    },
+    "stage_cleanup_failed": {
+      "kind": "action",
+      "meaning": "A leftover staging directory or log could not be removed.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "stage_commit_failed": {
+      "kind": "action",
+      "meaning": "The staged release could not be committed into place.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "stage_copy_failed": {
+      "kind": "action",
+      "meaning": "Files could not be copied into the staging directory.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "stage_install_failed": {
+      "kind": "action",
+      "meaning": "Installing the package into the staging directory failed.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "stage_integrity_write_failed": {
+      "kind": "action",
+      "meaning": "The integrity record for the staged release could not be written.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "stage_metadata_write_failed": {
+      "kind": "action",
+      "meaning": "The package metadata for the stage could not be written.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "stage_prepare_failed": {
+      "kind": "action",
+      "meaning": "The staging directory could not be created.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "staged_controller_invalid": {
+      "kind": "action",
+      "meaning": "The staged kanban MCP launcher does not start correctly.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "staged_metadata_mismatch": {
+      "kind": "action",
+      "meaning": "The staged npm package does not match the expected name, version or lockfile.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "staged_updater_unavailable": {
+      "kind": "action",
+      "meaning": "The staged updater library could not be loaded, so exact MCP packages were not prepared.",
+      "fix": "Run `aicoding-sync --yes`."
+    },
+    "staged_validation_failed": {
+      "kind": "action",
+      "meaning": "The staged release did not pass its own checks.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "staged_version_mismatch": {
+      "kind": "action",
+      "meaning": "The staged binary reports a different version than the target.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "sudo_unavailable": {
+      "kind": "action",
+      "meaning": "Passwordless `sudo` is not available, so system packages cannot be installed in the background.",
+      "fix": "Run `aicoding-install` interactively to install them, or allow `sudo -n`."
+    },
+    "system_provision_blocked": {
+      "kind": "wait",
+      "meaning": "System provisioning is waiting on something outside its control.",
+      "fix": "Run `aicoding-auto-update --once` later."
+    },
+    "system_provision_failed": {
+      "kind": "action",
+      "meaning": "System provisioning failed.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "target_version_unavailable": {
+      "kind": "action",
+      "meaning": "The latest release version could not be looked up.",
+      "fix": "Check network access to the download source, then run `aicoding-auto-update --once`. Details are in `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "tests_failed": {
+      "kind": "action",
+      "meaning": "The tool's own test suite failed on the pinned commit, so it was not installed.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "tmux_build_failed": {
+      "kind": "action",
+      "meaning": "Building the pinned tmux from source failed.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "unsupported_platform": {
+      "kind": "action",
+      "meaning": "This CPU or OS has no Cursor release.",
+      "fix": "Nothing to do on this machine; Cursor stays unmanaged here."
+    },
+    "update_not_verified": {
+      "kind": "action",
+      "meaning": "A tool's update result was damaged or unreadable, so it counts as not verified.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "uv_install_failed": {
+      "kind": "action",
+      "meaning": "Installing uv failed.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "verified": {
+      "kind": "ok",
+      "meaning": "The installed version was checked and matches the target."
+    },
+    "wrapper_chmod_failed": {
+      "kind": "action",
+      "meaning": "The Playwright MCP wrapper script could not be made executable.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "wrapper_prepare_failed": {
+      "kind": "action",
+      "meaning": "The directory for the Playwright MCP wrapper could not be created.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "wrapper_write_failed": {
+      "kind": "action",
+      "meaning": "The Playwright MCP wrapper script could not be written.",
+      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    }
+  },
+  "patterns": {
+    "*_not_installed": {
+      "kind": "action",
+      "source_marker": "_not_installed",
+      "meaning": "The tool is not installed, so its managed config was not deployed.",
+      "fix": "Install the tool if you use it (then run `aicoding-sync --yes`); otherwise ignore this."
+    },
+    "*_update_not_verified": {
+      "kind": "action",
+      "source_marker": "_update_not_verified",
+      "meaning": "The tool's last update was not verified, so config that depends on it waits.",
+      "fix": "Run `aicoding-auto-update --once` so the tool update is verified, and fix that tool's own blocker if doctor lists one. Then run `aicoding-sync --yes`."
+    },
+    "*_shared_consumers_incompatible": {
+      "kind": "action",
+      "source_marker": "_shared_consumers_incompatible",
+      "meaning": "The fleet check for this tool's shared config folder failed, so its config is frozen on every container.",
+      "fix": "Clear the fleet check first: see \"Fleet proof\" above, stop idle containers and sync the ones missing tools, then run `aicoding-sync --yes`."
+    },
+    "*_config_probe_failed": {
+      "kind": "action",
+      "source_marker": "_config_probe_failed",
+      "meaning": "The tool did not respond to a quick check, so its config was not changed.",
+      "fix": "Check that the tool starts (for example `<tool> --version`), then run `aicoding-sync --yes`."
+    },
+    "*_shared_config_busy": {
+      "kind": "wait",
+      "source_marker": "_shared_config_busy",
+      "meaning": "Another container held the lock on this shared config folder.",
+      "fix": "Usually clears on the next pass. Otherwise run `aicoding-sync --yes`."
+    },
+    "*_runtime_unavailable": {
+      "kind": "action",
+      "source_marker": "_runtime_unavailable",
+      "meaning": "A runtime this component needs (go, npm, uv, python3) is missing.",
+      "fix": "Install that runtime, then run `aicoding-auto-update --once`."
+    },
+    "manual_rebuild_required_*": {
+      "kind": "action",
+      "source_marker": "manual_rebuild_required_",
+      "meaning": "A system dependency is missing inside the container and cannot be installed in the background.",
+      "fix": "Rebuild the container on the current devbox image (`dvw` rebuild)."
+    },
+    "*_timeout": {
+      "kind": "action",
+      "source_marker": "_timeout\"",
+      "meaning": "A system provisioning step ran out of time.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
+    "verification_failed:*": {
+      "kind": "action",
+      "source_marker": "verification_failed:",
+      "meaning": "System provisioning finished but the listed tools still look missing or outdated.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+    }
+  }
+}
