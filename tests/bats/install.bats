@@ -1713,6 +1713,93 @@ LDD
   [ ! -e "$TMPDIR/npx-calls" ]
 }
 
+# Replace the exact playwright-core CLI with one that prints apt-like progress,
+# records the APT_CONFIG it was given and optionally reports a held dpkg lock.
+_playwright_progress_core() {
+  cat > "$AICODING_DATA_DIR/versions/mcp-playwright/0.0.80/node_modules/playwright-core/cli.js" <<'CLI'
+const fs = require('fs');
+const home = process.env.HOME;
+fs.appendFileSync(home + '/playwright-exact-calls', 'core ' + process.argv.slice(2).join(' ') + '\n');
+if (process.env.APT_CONFIG) fs.writeFileSync(home + '/apt-config-seen', fs.readFileSync(process.env.APT_CONFIG));
+console.log('Reading package lists... stub-progress');
+if (process.env.PLAYWRIGHT_TEST_DEPS_LOCKED) {
+  console.error('E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 4242 (apt-get)');
+  process.exit(100);
+}
+CLI
+}
+
+@test "ensure_playwright_browsers shows install-deps progress and bounds the apt lock wait" {
+  _playwright_fixture missing
+  _playwright_progress_core
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"stub-progress"* ]]
+  grep -q 'DPkg::Lock::Timeout' "$HOME/apt-config-seen"
+  if ls "${TMPDIR}"/aicoding-apt-conf.* >/dev/null 2>&1; then false; fi
+}
+
+@test "ensure_playwright_browsers names the process holding the apt lock" {
+  _playwright_fixture missing
+  _playwright_progress_core
+  export PLAYWRIGHT_TEST_DEPS_LOCKED=1
+  _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
+  [[ "$output" == *"held by process 4242 (apt-get)"* ]]
+  [[ "$output" == *"aicoding-sync --yes"* ]]
+}
+
+# A PATH without node/npm (both live in /usr/bin here) for ensure_node tests.
+_nodeless_path() {
+  local d="$TMPDIR/nonode" t
+  mkdir -p "$d"
+  for t in bash sh dirname uname id cat rm mktemp grep env timeout chmod; do
+    ln -sf "$(command -v "$t")" "$d/$t"
+  done
+  printf '%s' "$TMPDIR/stubs:$d"
+}
+
+_nodesource_stubs() {
+  rm -f "$TMPDIR/stubs/npm"
+  cat > "$TMPDIR/stubs/curl" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" > "$TMPDIR/curl-args"
+[ -z "\${NODESOURCE_TEST_CURL_FAIL:-}" ] || exit 28
+out=
+while [ \$# -gt 0 ]; do [ "\$1" = -o ] && out=\$2; shift; done
+[ -n "\$out" ] || exit 2
+printf 'cat "\$APT_CONFIG" > "$TMPDIR/setup-apt-config"\n' > "\$out"
+EOF
+  cat > "$TMPDIR/stubs/apt-get" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$TMPDIR/apt-calls"
+EOF
+  cat > "$TMPDIR/stubs/sudo" <<'EOF'
+#!/bin/sh
+[ "${1:-}" != -E ] || shift
+exec "$@"
+EOF
+  chmod +x "$TMPDIR/stubs/curl" "$TMPDIR/stubs/apt-get" "$TMPDIR/stubs/sudo"
+}
+
+@test "ensure_node bounds the NodeSource download and its vendor apt run" {
+  _nodesource_stubs
+  _run_install_fn "$(_nodeless_path)" ensure_node
+  grep -q -- '--connect-timeout' "$TMPDIR/curl-args"
+  grep -q -- '--max-time' "$TMPDIR/curl-args"
+  grep -q -- '--retry' "$TMPDIR/curl-args"
+  grep -q 'DPkg::Lock::Timeout' "$TMPDIR/setup-apt-config"
+  grep -q 'Acquire::http::Timeout' "$TMPDIR/setup-apt-config"
+  grep -q 'install .*nodejs' "$TMPDIR/apt-calls"
+}
+
+@test "ensure_node reports a failed NodeSource download instead of running an empty script" {
+  _nodesource_stubs
+  export NODESOURCE_TEST_CURL_FAIL=1
+  _run_install_fn "$(_nodeless_path)" ensure_node
+  [[ "$output" == *"NodeSource setup script"* ]]
+  [ ! -e "$TMPDIR/setup-apt-config" ]
+}
+
 @test "ensure_playwright_browsers skips system installation when exact Chromium resolves" {
   _playwright_fixture resolved
   _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
