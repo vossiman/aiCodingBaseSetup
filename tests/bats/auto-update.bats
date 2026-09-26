@@ -431,18 +431,29 @@ EOF
   if kill -0 "$worker" 2>/dev/null; then false; fi
 }
 
+# Starts the fallback worker and returns once its first pass is inside a sync
+# that sleeps for $1 seconds, signalled by an explicit ready marker.
+start_slow_fallback_pass() {
+  printf '\nif [ -e "$TEST_ROOT/slow-sync" ]; then rm -f "$TEST_ROOT/slow-sync"; touch "$TEST_ROOT/slow-sync-running"; sleep %s; fi\n' "$1" \
+    >> "$TEST_ROOT/bin/aicoding-sync"
+  touch "$TEST_ROOT/slow-sync"
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  local i
+  for ((i=0; i<100; i++)); do
+    [ -e "$TEST_ROOT/slow-sync-running" ] && [ -s "$AICODING_STATE_DIR/auto-update/worker.pid" ] && return 0
+    sleep 0.1
+  done
+  echo "slow fallback pass never started" >&2
+  return 1
+}
+
 @test "busy healthy worker hands off to the timer instead of leaving no scheduler" {
   false_systemd_shim
   export AICODING_AUTO_UPDATE_INTERVAL=3600
   # Keep the first fallback pass inside sync past the bounded TERM wait.
-  printf '\nif [ -e "$TEST_ROOT/slow-sync" ]; then rm -f "$TEST_ROOT/slow-sync"; sleep 4; fi\n' \
-    >> "$TEST_ROOT/bin/aicoding-sync"
-  touch "$TEST_ROOT/slow-sync"
-  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
-  wait_for_lines 1
+  start_slow_fallback_pass 4
   local worker
   worker=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")
-  [ ! -e "$TEST_ROOT/slow-sync" ]
   kill -0 "$worker"
 
   cat > "$TEST_ROOT/bin/systemctl" <<'EOF2'
@@ -478,6 +489,48 @@ EOF2
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "$diag"; false; fi
   run flock -n "$AICODING_STATE_DIR/auto-update/worker.lock" true
   [ "$status" -eq 0 ]
+}
+
+@test "failed timer activation still leaves a successor after a signalled pass outlasts the wait" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600 AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT=1
+  start_slow_fallback_pass 8
+  local worker
+  worker=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")
+  kill -0 "$worker"
+
+  cat > "$TEST_ROOT/bin/systemctl" <<'EOF2'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TEST_ROOT/systemctl.calls"
+case "$*" in
+  '--user is-system-running') echo running ;;
+  '--user show --property=Version --value') echo 257 ;;
+  '--user enable --now aicoding-auto-update.timer') exit 1 ;;
+  '--user is-enabled aicoding-auto-update.timer') echo disabled ;;
+  '--user is-active aicoding-auto-update.timer') echo inactive ;;
+esac
+exit 0
+EOF2
+  cat > "$TEST_ROOT/bin/loginctl" <<'EOF2'
+#!/usr/bin/env bash
+echo yes
+EOF2
+  chmod +x "$TEST_ROOT/bin/systemctl" "$TEST_ROOT/bin/loginctl"
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  for _ in $(seq 200); do
+    kill -0 "$worker" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$worker" 2>/dev/null; then false; fi
+  local pid=
+  for _ in $(seq 80); do
+    pid=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid" 2>/dev/null || true)
+    [ -n "$pid" ] && [ "$pid" != "$worker" ] && kill -0 "$pid" 2>/dev/null && break
+    pid=
+    sleep 0.1
+  done
+  [ -n "$pid" ] || { cat "$AICODING_STATE_DIR/auto-update/enroll.log" 2>/dev/null; false; }
+  kill "$pid" 2>/dev/null || true
 }
 
 @test "healthy user manager transition removes a proven stale worker pid" {

@@ -462,11 +462,15 @@ aicoding_auto_update_enroll() {
   if [ "$stop_rc" -eq 5 ]; then
     # The signalled worker still holds worker.lock, and a successor started now
     # would exit on that lock before the old worker does, leaving no scheduler.
-    flock -w "$AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT" "$state/worker.lock" true || {
-      echo 'aicoding-auto-update: signalled worker did not exit; fallback deferred' >&2
+    # Past the deadline, stop blocking other enrollments but keep waiting:
+    # the old worker exits once its pass ends, and nothing else would replace it.
+    if ! flock -w "$AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT" "$state/worker.lock" true; then
+      echo 'aicoding-auto-update: signalled worker still busy; enrolling again once it exits' >&2
       exec {ensure_fd}>&-
-      return 1
-    }
+      flock "$state/worker.lock" true || return 1
+      aicoding_auto_update_enroll
+      return $?
+    fi
   fi
   export AICODING_AUTO_UPDATE_ENSURE_FD=$ensure_fd
   _aicoding_auto_start_worker
