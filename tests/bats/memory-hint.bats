@@ -44,6 +44,24 @@ wait_for_stub() {
   wait "$pid"
 }
 
+# wait_for_listen PORT [TIMEOUT_SECONDS]
+# Readiness handshake for the one-shot stubs: poll the kernel's socket table
+# for a LISTEN entry instead of connecting, which would use up the single
+# request handle_request() serves. Without it a client started under load
+# can connect before the stub has bound its port.
+wait_for_listen() {
+  local port="$1" timeout="${2:-10}" hex deadline
+  hex=$(printf '%04X' "$port")
+  deadline=$(( $(date +%s) + timeout ))
+  until grep -Eq "^ *[0-9]+: [0-9A-F]{8}:$hex 00000000:0000 0A " /proc/net/tcp; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "wait_for_listen: nothing listening on $port within ${timeout}s" >&2
+      return 1
+    fi
+    sleep 0.05
+  done
+}
+
 @test "short prompt: no output, exit 0, no network" {
   export MEMORY_ROUTER_URL="http://127.0.0.1:1"   # would fail if contacted
   run bash -c "printf 'fix bug' | '$CLI' --client hook:test"
@@ -89,6 +107,7 @@ srv.timeout = 10
 srv.handle_request()
 PY
   server=$!
+  wait_for_listen "$port"
   export MEMORY_ROUTER_URL="http://127.0.0.1:$port"
   run bash -c "printf 'which ports are in use on vossisrv' | '$CLI' --client hook:test"
   wait_for_stub "$server"
@@ -120,6 +139,7 @@ srv.timeout = 10
 srv.handle_request()
 PY
   server=$!
+  wait_for_listen "$port"
   export MEMORY_ROUTER_URL="http://127.0.0.1:$port"
   run bash -c "printf 'which ports are in use on vossisrv' | '$CLI'"
   wait_for_stub "$server"
@@ -144,6 +164,7 @@ srv.timeout = 10
 srv.handle_request()
 PY
   server=$!
+  wait_for_listen "$port"
   export MEMORY_ROUTER_URL="http://127.0.0.1:$port"
   run bash -c "printf 'which ports are in use on vossisrv' | '$CLI'"
   wait_for_stub "$server"
@@ -220,6 +241,7 @@ srv.timeout = 3
 srv.handle_request()  # returns after one request, or after the timeout
 PY
   server=$!
+  wait_for_listen "$port"
   export MEMORY_ROUTER_URL="http://127.0.0.1:$port"
   unset MEMORY_ROUTER_TEST_TOKEN
   run bash -c 'printf "what did we decide about backups" | "$1" --client test' _ "$MH"
@@ -262,6 +284,7 @@ class H(BaseHTTPRequestHandler):
 srv = HTTPServer(("127.0.0.1", port), H); srv.timeout = 3; srv.handle_request()
 PY
   sink=$!
+  wait_for_listen "$second"
   python3 - "$first" "$second" <<'PY' &
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -275,6 +298,7 @@ class H(BaseHTTPRequestHandler):
 srv = HTTPServer(("127.0.0.1", first), H); srv.timeout = 3; srv.handle_request()
 PY
   redirector=$!
+  wait_for_listen "$first"
   export MEMORY_ROUTER_URL="http://127.0.0.1:$first"
   run bash -c "printf 'which ports are in use on vossisrv' | '$CLI' --client hook:test"
   wait_for_stub "$redirector" || true
@@ -314,6 +338,7 @@ srv.timeout = 10
 srv.handle_request()
 PY
   server=$!
+  wait_for_listen "$port"
   export MEMORY_ROUTER_URL="http://127.0.0.1:$port"
   run bash -c "printf 'which ports are in use on vossisrv' | '$CLI' --client hook:test"
   wait_for_stub "$server"
@@ -347,6 +372,7 @@ srv.timeout = 3
 srv.handle_request()
 PY
   server=$!
+  wait_for_listen "$port"
   start=$(date +%s)
   wait_for_stub "$server" 15
   elapsed=$(( $(date +%s) - start ))

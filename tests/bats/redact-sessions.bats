@@ -462,7 +462,8 @@ EOF
   local t1; t1="$(date +%s%N)"
   [ "$status" -eq 0 ]
   [ $(( (t1 - t0) / 1000000 )) -lt 2000 ]
-  local i; for i in 1 2 3 4 5 6 7 8 9 10; do grep -q "$V1" "$f" || break; sleep 0.5; done
+  # The detached scrub is slow under parallel load; poll up to 30s, not 5s.
+  local i; for i in $(seq 60); do grep -q "$V1" "$f" || break; sleep 0.5; done
   [[ "$(cat "$f")" != *"$V1"* ]]
 }
 
@@ -585,16 +586,35 @@ db_has() { grep -q "$2" "$1" 2>/dev/null || grep -q "$2" "$1-wal" 2>/dev/null; }
   if source_candidates | grep -q -- '-wal$'; then false; fi
 }
 
+# Lock holders signal readiness through a file and hold until released, so
+# a loaded machine cannot run the sweep before the lock is taken or after
+# a fixed-length hold has already expired.
+wait_for_file() {
+  local n=0
+  until [ -e "$1" ]; do
+    [ "$n" -lt 600 ] || { echo "wait_for_file: $1 never appeared" >&2; return 1; }
+    sleep 0.05; n=$((n + 1))
+  done
+}
+
 @test "sqlite: busy db is deferred, not corrupted, and scrubbed by the next sweep" {
   mkdir -p "$HOME/.local/share/opencode"; local f="$HOME/.local/share/opencode/opencode.db"
   sqlite_opencode "$f"; old "$f"
-  python3 -c "import sqlite3,sys,time; c=sqlite3.connect(sys.argv[1]); c.execute('begin immediate'); time.sleep(3)" "$f" &
-  local holder=$!; sleep 0.5
+  local ready="$BATS_TEST_TMPDIR/held" release="$BATS_TEST_TMPDIR/release"
+  python3 -c "
+import os, sqlite3, sys, time
+c = sqlite3.connect(sys.argv[1]); c.execute('begin immediate')
+open(sys.argv[2], 'w').close()
+deadline = time.time() + 60
+while not os.path.exists(sys.argv[3]) and time.time() < deadline: time.sleep(0.05)
+" "$f" "$ready" "$release" &
+  local holder=$!
+  wait_for_file "$ready"
   # the holder connection freshens the -wal, so the quiet period must not mask the busy path
   REDACT_QUIET_SECONDS=0 REDACT_SQLITE_BUSY_MS=300 "$RS" --sweep
+  : > "$release"; wait "$holder"
   grep -qx "$f" "$STATE/deferred"
   grep -q 'sqlite busy file=' "$STATE/log"
-  wait "$holder"
   "$RS" --sweep
   if db_has "$f" "$V1"; then false; fi
 }
@@ -631,10 +651,14 @@ db_has() { grep -q "$2" "$1" 2>/dev/null || grep -q "$2" "$1-wal" 2>/dev/null; }
   local f="$HOME/.cursor/chats/w/c/store.db"
   sqlite_cursor "$f"; old "$f"
   mkdir -p "$STATE"
-  ( flock 9; sleep 4 ) 9>>"$STATE/lock" &
-  sleep 0.2
+  local ready="$BATS_TEST_TMPDIR/held" release="$BATS_TEST_TMPDIR/release"
+  ( flock 9; : > "$ready"; n=0
+    while [ ! -e "$release" ] && [ "$n" -lt 1200 ]; do sleep 0.05; n=$((n + 1)); done
+  ) 9>>"$STATE/lock" &
+  local holder=$!
+  wait_for_file "$ready"
   REDACT_SESSIONS_LOCK_WAIT=1 "$RS" --sweep
-  wait
+  : > "$release"; wait "$holder"
   grep -q "state lock busy file=$f" "$STATE/log"
   [ "$(grep -c "sqlite helper failed" "$STATE/log")" -eq 0 ]
   grep -qx "$f" "$STATE/deferred"
