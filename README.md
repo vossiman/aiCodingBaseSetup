@@ -301,6 +301,13 @@ local attempt/completion/next-run times, installed tool versions, and dated
 update results. When something is blocked, `aicoding-status --doctor` explains
 each recorded blocker and names the command that fixes it. To request a pass
 now, run `aicoding-auto-update --once`.
+
+Agent CLIs (Claude, Codex, OpenCode, Cursor) update through that same path,
+not their own updaters. `~/.local/bin/claude` is an aicoding wrapper around
+`~/.local/share/aicoding/current/claude`, so `claude update` downloads a build
+into `~/.local/share/claude/versions/` that never runs. Do not follow its
+suggestion to delete the wrapper: that removes the managed launcher.
+
 The tmux badges provide a compact reminder:
 
 | Badge | What moved on blueprint `main` | What happens next |

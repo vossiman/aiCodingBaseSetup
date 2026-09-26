@@ -49,7 +49,9 @@ Use the installed `kanban` MCP for ticket reads, claims, checkpoints, release,
 completion, comments, links, and follow-up filing. Its server instructions are
 the canonical workflow. Native lifecycle adapters bind the supplied work-session
 handle and release unfinished claims when a turn stops. `kanban-post` remains a
-credential-safe recovery CLI; it is not a status-transition bypass.
+credential-safe recovery CLI; it is not a status-transition bypass. Its enum
+values: status `backlog|todo|doing|done`, priority `low|normal|high` (default
+`normal`), swimlane `required|nice_to_have|waiting_for_feedback|needs_decision`.
 
 ## Secrets: never read them
 

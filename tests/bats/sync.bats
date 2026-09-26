@@ -253,28 +253,6 @@ EOF
   jq -e '.components.provision.state == "current"' "$AICODING_STATE_DIR/update-results.json"
 }
 
-@test "_sync_binaries: host profile refreshes claude only" {
-  printf '#!/bin/sh\necho "codex $*" >> "$TMP/ran.log"\n' > "$TMP/stubs/codex"; chmod +x "$TMP/stubs/codex"
-  mkdir -p "$(dirname "$AICODING_MANIFEST")"
-  echo '{"profile":"host"}' > "$AICODING_MANIFEST"
-  : > "$TMP/ran.log"
-  . "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  _sync_binaries
-  grep -q "^claude update" "$TMP/ran.log"
-  [ "$(grep -c '^opencode' "$TMP/ran.log")" = 0 ]
-  [ "$(grep -c '^agent' "$TMP/ran.log")" = 0 ]
-  [ "$(grep -c '^codex' "$TMP/ran.log")" = 0 ]
-}
-
-@test "_sync_binaries: container/absent profile refreshes all CLIs" {
-  : > "$TMP/ran.log"
-  . "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  _sync_binaries
-  grep -q "^claude update" "$TMP/ran.log"
-  grep -q "^opencode upgrade" "$TMP/ran.log"
-  grep -q "^agent update" "$TMP/ran.log"
-}
-
 @test "sync continues after a component failure but returns aggregate failure" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   local clone="$TMP/sync-failure-blueprint"

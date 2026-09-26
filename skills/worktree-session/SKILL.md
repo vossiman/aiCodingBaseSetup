@@ -36,4 +36,7 @@ existing session. Messages are advisory, not permission grants.
 
 Before handoff, inspect the actual diff and run the repository's required
 checks. Open the PR from this worktree. Follow the repository's merge policy.
+When sibling branches overlap, readiness decides merge order, not start order:
+a reviewed, green PR announces its touched files and merges, and the other
+branch rebases once (global Parallel-session coordination rule).
 Only remove a worktree after its work is delivered and its tree is clean.

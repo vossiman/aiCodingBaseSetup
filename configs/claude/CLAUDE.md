@@ -84,7 +84,9 @@ Use the installed `kanban` MCP for ticket reads, claims, checkpoints, release,
 completion, comments, links, and follow-up filing. Its server instructions are
 the canonical workflow. Native lifecycle adapters bind the supplied work-session
 handle and release unfinished claims when a turn stops. `kanban-post` remains a
-credential-safe recovery CLI; it is not a status-transition bypass.
+credential-safe recovery CLI; it is not a status-transition bypass. Its enum
+values: status `backlog|todo|doing|done`, priority `low|normal|high` (default
+`normal`), swimlane `required|nice_to_have|waiting_for_feedback|needs_decision`.
 
 ## Parallel-session coordination
 
@@ -125,6 +127,14 @@ message unrelated sessions, because cross-project chatter just burns tokens.
   to a shared interface/schema): run ListAgents; if siblings exist, message
   each a short summary: what landed, which files or areas were touched,
   and whether rebasing is now needed or now safe.
+- **Readiness decides merge order, not who started first.** When sibling
+  branches touch the same files, the session whose PR is reviewed and green
+  messages each sibling once ("merging PR #N, touches these files, rebase
+  after"), waits about ten minutes for an objection, then merges; silence
+  is consent. The only objection is "mine is also green with auto-merge
+  armed", settled by the lower PR number; the other branch rebases once.
+  Never hold a PR for one that is blocked on review, a person or red
+  checks: a small rebase costs minutes, a hold costs hours.
 - **Before starting work that spans many files** (refactor, rename,
   formatting sweep): ask sibling sessions which files they have in flight,
   and surface overlaps to the user instead of proceeding blind.
