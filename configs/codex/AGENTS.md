@@ -93,7 +93,9 @@ Use the installed `kanban` MCP for ticket reads, claims, checkpoints, release,
 completion, comments, links, and follow-up filing. Its server instructions are
 the canonical workflow. Native lifecycle adapters bind the supplied work-session
 handle and release unfinished claims when a turn stops. `kanban-post` remains a
-credential-safe recovery CLI; it is not a status-transition bypass.
+credential-safe recovery CLI; it is not a status-transition bypass. Its enum
+values: status `backlog|todo|doing|done`, priority `low|normal|high` (default
+`normal`), swimlane `required|nice_to_have|waiting_for_feedback|needs_decision`.
 
 All four CLIs enforce the secret-file restrictions above at the tool layer:
 Claude Code and Codex run the
@@ -137,3 +139,8 @@ other worktrees before broad changes, and surface overlapping work.
 Codex collaboration tools coordinate this session's own subagents. They do
 not message independent sessions or Claude Code. Use `review-by-harness` for
 a fresh independent reviewer; do not mistake that for cross-session messaging.
+When sibling branches touch the same files, readiness decides merge order,
+not who started first: a reviewed, green PR merges after announcing the
+touched files with whatever messaging is actually available, and the other
+branch rebases once. Never hold a PR for one that is blocked on review, a
+person or red checks.

@@ -301,8 +301,8 @@ ensure_claude_runtime_scope() {
 # blueprint clone may predate manifest_get_profile, and `container` is the safe
 # default because it is what every pre-profile clone actually was.
 #
-# Plumbing steps that touch machine state MUST consult this. Unlike
-# _sync_binaries, _sync_plumbing runs on EVERY profile, so a step that quietly
+# Plumbing steps that touch machine state MUST consult this. _sync_plumbing
+# runs on EVERY profile, so a step that quietly
 # reconfigures the box will do it to somebody's real desktop. Do not lean on a
 # `sudo -n` failing to provide the gate — a desktop user may have passwordless
 # sudo, and then it simply succeeds.
@@ -1501,29 +1501,6 @@ _ensure_codex_code_mode_host() {
   [ -d "$HOME/.codex/packages/standalone/releases" ] || return 0
   echo "ERROR: no codex-code-mode-host for codex $version under ~/.codex/packages/standalone/releases — Code Mode will fail closed" >&2
   return 0
-}
-
-_sync_binaries() {            # throttled network refresh
-  # Header per pass-through updater so error text is attributable — Cursor's
-  # binary is named `agent`, so its errors read as someone else's without one
-  # (2026-08-12: "[unauthenticated]" mistaken for codex). _update_codex needs
-  # no header: silent on success, self-labeled ERROR lines otherwise.
-  # Host profile (bare-metal thin clients): claude is the only CLI the
-  # core profile installs, so it's the only one to refresh.
-  local profile; profile=$(_sync_profile)
-  command -v claude   >/dev/null 2>&1 && { echo "--- claude update ---";    claude update    || true; }
-  if [ "$profile" != host ]; then
-    command -v opencode >/dev/null 2>&1 && { echo "--- opencode upgrade ---"; opencode upgrade || true; }
-    if command -v agent >/dev/null 2>&1; then
-      echo "--- cursor (agent update) ---"; agent update || true
-    elif command -v cursor-agent >/dev/null 2>&1; then
-      echo "--- cursor (cursor-agent update) ---"; cursor-agent update || true
-    fi
-    _update_codex || true
-    # After the version gate, not inside it: the pairing can be broken while
-    # codex is perfectly up to date (that is exactly how the image seed ships).
-    _ensure_codex_code_mode_host || true
-  fi
 }
 
 # Reconcile machine state that isn't a managed file: MCP registrations,

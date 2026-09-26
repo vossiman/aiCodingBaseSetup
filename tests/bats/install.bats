@@ -2059,8 +2059,8 @@ EOF
   # This is the only test in this file that runs the REAL sync.sh, so it owns
   # two obligations the rest of the file does not have:
   #
-  #  1. _sync_binaries (lib/sync.sh) runs `agent update` / `cursor-agent
-  #     update` / the codex updater whenever those binaries are on PATH.
+  #  1. The sync's component updater touches agent CLIs whenever those
+  #     binaries are on PATH.
   #     setup() deliberately leaves codex/agent/cursor-agent unstubbed so the
   #     dedicated ensure_codex / ensure_cursor_agent tests can stage their own
   #     present/absent scenarios, so the stubs go HERE rather than there.

@@ -22,8 +22,8 @@ escaping.
      message, so no frame dump can carry the request object into a log.
 
 Usage:
-  kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority P] [--swimlane KEY] [--due DATE]
-  kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority P] [--swimlane KEY] [--due DATE|none]
+  kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority low|normal|high] [--swimlane KEY] [--due DATE]
+  kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority low|normal|high] [--swimlane KEY] [--due DATE|none]
   kanban-post --done TICKET
   kanban-post --done TICKET --evidence TEXT [--reference TEXT ...]
   kanban-post --comment TICKET "text" | --comment TICKET --body TEXT
@@ -703,7 +703,8 @@ def main() -> int:
     p.add_argument("--repo", default=None)
     p.add_argument("--body", default=None)
     p.add_argument("--status", default=None)
-    p.add_argument("--priority", default=None)
+    p.add_argument("--priority", default=None, choices=("low", "normal", "high"),
+                   help="default normal")
     p.add_argument("--swimlane", default=None,
                    choices=("required", "nice_to_have", "waiting_for_feedback", "needs_decision"),
                    help="explicit classification; omitted new tickets default to needs_decision")

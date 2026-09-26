@@ -293,6 +293,15 @@ EOF
   [ ! -f "$TMPDIR/requests" ]
 }
 
+@test "an unknown --priority is refused locally and names the valid values" {
+  _start_api_server myrepo
+  _fake_checkout myrepo
+  run "$KP" "a title" --repo myrepo --priority medium
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"invalid choice: 'medium' (choose from low, normal, high)"* ]]
+  [ ! -f "$TMPDIR/requests" ]
+}
+
 @test "a --repo that does not match the checkout is refused, and says what would" {
   _start_api_server myrepo,devMachine
   _fake_checkout dataEnv

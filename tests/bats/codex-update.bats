@@ -192,7 +192,7 @@ _stage_release() {
     printf '#!/bin/sh\necho "%s $*" >> "$TMP/ran.log"\n' "$c" > "$TMP/stubs/$c"
     chmod +x "$TMP/stubs/$c"
   done
-  CODEX_LATEST="0.147.0" run _sync_binaries
+  CODEX_LATEST="0.147.0" run bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; _update_codex; _ensure_codex_code_mode_host'
   [ "$status" -eq 0 ]
   if grep -q "curl-installer" "$TMP/ran.log"; then false; fi   # no update ran
   [ -x "$TMP/.local/bin/codex-code-mode-host" ]
@@ -210,42 +210,3 @@ _stage_release() {
   [ "$(readlink "$TMP/.local/bin/codex")" = "$TMP/.codex/packages/standalone/current/bin/codex" ]
 }
 
-@test "_sync_binaries invokes the codex updater" {
-  # claude/opencode/agent logging stubs so _sync_binaries' other calls
-  # stay off the network (standing rule: agent CLIs are external binaries).
-  for c in claude opencode agent; do
-    printf '#!/bin/sh\necho "%s $*" >> "$TMP/ran.log"\n' "$c" > "$TMP/stubs/$c"
-    chmod +x "$TMP/stubs/$c"
-  done
-  run _sync_binaries
-  [ "$status" -eq 0 ]
-  grep -q "curl-installer" "$TMP/ran.log"   # codex path reached via _sync_binaries
-}
-
-@test "_sync_binaries labels each pass-through updater, codex stays self-labeled" {
-  # Cursor's binary is named `agent`, so unlabeled output is unattributable
-  # (2026-08-12: its "[unauthenticated]" error was mistaken for codex).
-  for c in claude opencode agent; do
-    printf '#!/bin/sh\necho "%s $*" >> "$TMP/ran.log"\n' "$c" > "$TMP/stubs/$c"
-    chmod +x "$TMP/stubs/$c"
-  done
-  CODEX_LATEST="0.147.0" run _sync_binaries   # codex up to date -> silent
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"--- claude update ---"* ]]
-  [[ "$output" == *"--- opencode upgrade ---"* ]]
-  [[ "$output" == *"--- cursor (agent update) ---"* ]]
-  [[ "$output" != *"--- codex"* ]]   # _update_codex self-labels its errors
-}
-
-@test "_sync_binaries: cursor-agent fallback gets its own label" {
-  # Restricted PATH (line-85 pattern) hides the dev box's real `agent` so
-  # the elif fallback is actually exercised; codex absent -> silent no-op.
-  for c in claude opencode cursor-agent; do
-    printf '#!/bin/sh\necho "%s $*" >> "$TMP/ran.log"\n' "$c" > "$TMP/stubs/$c"
-    chmod +x "$TMP/stubs/$c"
-  done
-  run env PATH="$TMP/stubs:/usr/bin:/bin" bash -c '. "$BLUEPRINT_ROOT/lib/sync.sh"; _sync_binaries'
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"--- cursor (cursor-agent update) ---"* ]]
-  [[ "$output" != *"--- cursor (agent update) ---"* ]]
-}
