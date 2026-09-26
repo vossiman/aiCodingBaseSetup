@@ -104,7 +104,8 @@ _aicoding_ci_bulk_runs() {
   runs=$(_aicoding_ci_api "repos/$_CI_REPO/actions/workflows/$_CI_WORKFLOW/runs?branch=main&event=push&per_page=100") \
     || return 1
   _aicoding_ci_runs_valid <<< "$runs" \
-    && jq -e 'all(.workflow_runs[]; .created_at | type == "string" and ((try fromdateiso8601 catch null) != null))' \
+    && jq -e '(.total_count | . == floor and . >= 0) and .total_count >= (.workflow_runs | length)
+      and all(.workflow_runs[]; .created_at | type == "string" and ((try fromdateiso8601 catch null) != null))' \
       <<< "$runs" >/dev/null 2>&1 || return 1
   printf '%s\n' "$runs"
 }

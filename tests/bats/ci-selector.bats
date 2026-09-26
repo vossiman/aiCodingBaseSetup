@@ -305,3 +305,16 @@ per_sha_calls() { grep -c 'head_sha=' "$GH_CALLED" || true; }
   [ "$output" = "$NEW" ]
   grep -q "head_sha=$NEW" "$GH_CALLED"
 }
+
+@test "a bulk page whose total_count cannot describe its runs falls back to exact queries" {
+  export GH_CALLED="$TMP/called"
+  dated_commits
+  local total
+  for total in 1 -1 2.5; do
+    bulk_runs "$total" "$NEW:completed:success:9:2026-09-22T10:05:00Z" "$OLD:completed:success:1:2026-09-18T00:00:00Z"
+    : > "$GH_CALLED"
+    run --separate-stderr select_sha
+    [ "$status" -eq 0 ]
+    grep -q "head_sha=$NEW" "$GH_CALLED"
+  done
+}
