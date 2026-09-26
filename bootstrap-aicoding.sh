@@ -44,7 +44,10 @@ bootstrap_prerequisites() {
     return 1
   }
   for command in bash curl jq tar timeout git gh flock setsid; do
-    command -v "$command" >/dev/null 2>&1 || return 1
+    command -v "$command" >/dev/null 2>&1 || {
+      echo "bootstrap-aicoding: $command still missing after installing prerequisites; check distro repositories" >&2
+      return 1
+    }
   done
 }
 bootstrap_prerequisites || exit $?

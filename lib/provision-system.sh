@@ -51,6 +51,32 @@ apt_install() {
   $SUDO env DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" install -y --no-install-recommends "$@"
 }
 
+# Vendor installers (NodeSource setup, playwright install-deps) run apt-get
+# themselves, so apt_install's -o options cannot reach them. APT_CONFIG adds
+# the same bounds, plus a bounded wait for a dpkg lock held by another run.
+_aicoding_bounded_apt_config() {
+  local conf
+  conf=$(mktemp "${TMPDIR:-/tmp}/aicoding-apt-conf.XXXXXX") || return 1
+  if ! printf '%s\n' \
+      'DPkg::Lock::Timeout "120";' \
+      'Acquire::http::Timeout "10";' \
+      'Acquire::https::Timeout "10";' \
+      'Acquire::Retries "1";' > "$conf" \
+      || ! chmod 0644 "$conf"; then
+    rm -f "$conf"
+    return 1
+  fi
+  printf '%s\n' "$conf"
+}
+
+_aicoding_apt_lock_busy() {
+  grep -qE 'Could not get lock|Unable to acquire the dpkg frontend lock|Unable to lock' "$1" 2>/dev/null
+}
+
+_aicoding_apt_lock_holder() {
+  grep -oE 'held by process [0-9]+( \([^)]*\))?' "$1" 2>/dev/null | head -1
+}
+
 # The smart Codex config planner is authored for Python 3.8 or newer. Require
 # a probe marker so a no-op command named python3 cannot satisfy the check.
 python3_at_least_3_8() {
@@ -149,7 +175,24 @@ ensure_node() {
   # Fall back to NodeSource (Node 20.x) — apt's npm is too old for modern packages
   if command -v curl &>/dev/null && command -v apt-get &>/dev/null; then
     info "Installing Node.js 20 via NodeSource"
-    curl -fsSL https://deb.nodesource.com/setup_20.x | $SUDO -E bash - >/dev/null
+    local setup conf= rc=0
+    local -a runner=()
+    [[ -z "$SUDO" ]] || runner=("$SUDO" -E)
+    setup=$(mktemp "${TMPDIR:-/tmp}/aicoding-nodesource.XXXXXX") || return 1
+    if curl -fsSL --connect-timeout 10 --max-time 120 --retry 2 --retry-delay 5 \
+        --retry-connrefused https://deb.nodesource.com/setup_20.x -o "$setup" </dev/null; then
+      conf=$(_aicoding_bounded_apt_config) || conf=
+      timeout --kill-after=30 900 ${runner[@]+"${runner[@]}"} env ${conf:+APT_CONFIG="$conf"} \
+        bash "$setup" </dev/null >/dev/null || rc=$?
+      case "$rc" in
+        0) ;;
+        124|137) warn "NodeSource setup timed out after 900s; falling back to the distro nodejs" ;;
+        *) warn "NodeSource setup failed (exit $rc); falling back to the distro nodejs" ;;
+      esac
+    else
+      warn "Could not download the NodeSource setup script (network timeout or error); falling back to the distro nodejs"
+    fi
+    rm -f "$setup" ${conf:+"$conf"}
     apt_install nodejs
   else
     err "No Node.js available and cannot bootstrap (need curl + apt-get)"
@@ -590,6 +633,40 @@ playwright_missing_libs() {
 # The dep check is deliberately independent of the download: a container whose
 # browser cache is already populated (restored volume, earlier provision) still
 # needs its libs checked.
+# Runs the exact playwright-core install-deps with its output visible, apt lock
+# waits bounded, and a failure that says what to do. Always returns 0: the
+# library recheck afterwards decides the outcome.
+_playwright_run_install_deps() {
+  local node_path=$1 core_cli=$2 conf= log rc=0 holder timeout_s=${AICODING_VENDOR_TIMEOUT:-600}
+  local -a runner=()
+  if [[ $(id -u) -ne 0 ]]; then
+    runner=("${SUDO:-sudo}")
+    [[ -z "${AICODING_SYNC_MODE:-}" ]] || runner+=(-n)
+  fi
+  log="${AICODING_STATE_DIR:-$HOME/.local/state/aicoding}/diagnostics/playwright-install-deps.log"
+  mkdir -p "$(dirname "$log")" 2>/dev/null && : > "$log" 2>/dev/null && chmod 600 "$log" 2>/dev/null \
+    || log=/dev/null
+  conf=$(_aicoding_bounded_apt_config) || conf=
+  info "Running playwright install-deps chromium (apt lock wait up to 120s, whole run up to ${timeout_s}s)"
+  timeout --kill-after=30 "$timeout_s" ${runner[@]+"${runner[@]}"} env PATH="$PATH" \
+      ${conf:+APT_CONFIG="$conf"} "$node_path" "$core_cli" install-deps chromium </dev/null 2>&1 \
+    | tee -a "$log" | sed -u 's/^/  install-deps: /' >&2 \
+    && rc=${PIPESTATUS[0]} || rc=${PIPESTATUS[0]}
+  [[ -z "$conf" ]] || rm -f "$conf"
+  [[ "$rc" -ne 0 ]] || return 0
+  if _aicoding_apt_lock_busy "$log"; then
+    holder=$(_aicoding_apt_lock_holder "$log") || holder=
+    warn "playwright install-deps could not get the apt/dpkg lock within 120s${holder:+ ($holder)}"
+    info "Wait for that apt/dpkg run to finish, then run: aicoding-sync --yes"
+  elif [[ "$rc" -eq 124 || "$rc" -eq 137 ]]; then
+    warn "playwright install-deps timed out after ${timeout_s}s"
+  else
+    warn "playwright install-deps failed (exit $rc)"
+  fi
+  [[ "$log" = /dev/null ]] || info "Full output: $log"
+  return 0
+}
+
 ensure_playwright_system_deps() {
   local bin missing current current_link core_cli node_path browser_target
   browser_target=$(_aicoding_playwright_active_target)
@@ -628,17 +705,8 @@ ensure_playwright_system_deps() {
   node_path=$(command -v node 2>/dev/null) || true
   if [[ ! -x "$core_cli" || -z "$node_path" ]]; then
     warn "Exact Playwright dependency installer is unavailable"
-  elif [[ $(id -u) -eq 0 ]]; then
-    timeout "${AICODING_VENDOR_TIMEOUT:-600}" "$node_path" "$core_cli" install-deps chromium </dev/null >/dev/null 2>&1 \
-      || warn "playwright install-deps failed"
-  elif [[ -n "${AICODING_SYNC_MODE:-}" ]]; then
-    timeout "${AICODING_VENDOR_TIMEOUT:-600}" ${SUDO:-sudo} -n env PATH="$PATH" \
-      "$node_path" "$core_cli" install-deps chromium </dev/null >/dev/null 2>&1 \
-      || warn "playwright install-deps failed"
   else
-    timeout "${AICODING_VENDOR_TIMEOUT:-600}" ${SUDO:-sudo} env PATH="$PATH" \
-      "$node_path" "$core_cli" install-deps chromium </dev/null >/dev/null 2>&1 \
-      || warn "playwright install-deps failed"
+    _playwright_run_install_deps "$node_path" "$core_cli"
   fi
   missing="$(playwright_missing_libs "$bin")" || {
     _aicoding_playwright_record blocked "$browser_target" browser_validation_unavailable || true

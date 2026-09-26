@@ -160,6 +160,26 @@ EOF
   if grep -qx -- '-n true' "$TEST_ROOT/restricted-sudo-calls"; then false; fi
 }
 
+@test "host prerequisite install names a command still missing after installation" {
+  local minimal="$TEST_ROOT/still-missing-path" command definitions="$TEST_ROOT/prerequisite-functions"
+  mkdir -p "$minimal"
+  for command in bash curl tar timeout git gh flock setsid apt-get; do
+    ln -s "$(command -v "$command")" "$minimal/$command"
+  done
+  sed '/^bootstrap_prerequisites || exit/,$d' "$BLUEPRINT_ROOT/bootstrap-aicoding.sh" > "$definitions"
+  cat > "$minimal/sudo" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$minimal/sudo"
+
+  run env PATH="$minimal" DEFINITIONS="$definitions" \
+    "$minimal/bash" -c 'set --; source "$DEFINITIONS"; profile=host; bootstrap_prerequisites'
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'jq still missing after installing prerequisites'* ]]
+}
+
 @test "container bootstrap requests a rebuild when its image lacks prerequisites" {
   local minimal="$TEST_ROOT/container-path" command
   mkdir -p "$minimal"
