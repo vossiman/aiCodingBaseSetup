@@ -111,27 +111,28 @@ except OSError as error:
 PY
 }
 
-# Prints a rejection reason on stdout and returns 1 when the cache is unsafe.
+# Prints a rejection detail on stdout and returns 1 when the cache is unsafe.
+# Details are not result reasons, so they use printf, not the scanned echo form.
 _codex_provenance_cache_safe() {
   local cache=$1 key origin fsck_rc=0 fsck_first cache_abs
-  if [ -L "$cache" ]; then echo cache_symlink; return 1; fi
-  if [ ! -d "$cache" ]; then echo cache_not_directory; return 1; fi
+  if [ -L "$cache" ]; then printf '%s\n' cache_symlink; return 1; fi
+  if [ ! -d "$cache" ]; then printf '%s\n' cache_not_directory; return 1; fi
   for key in shallow info/grafts objects/info/alternates objects/info/http-alternates; do
-    if [ -e "$cache/$key" ] || [ -L "$cache/$key" ]; then echo "graph_override:$key"; return 1; fi
+    if [ -e "$cache/$key" ] || [ -L "$cache/$key" ]; then printf '%s\n' "graph_override:$key"; return 1; fi
   done
   if [ "$(_codex_provenance_git --git-dir="$cache" rev-parse --is-bare-repository 2>/dev/null)" != true ]; then
-    echo not_bare_repository; return 1
+    printf '%s\n' not_bare_repository; return 1
   fi
   origin=$(_codex_provenance_git --git-dir="$cache" config --local --no-includes --get-all remote.origin.url) \
-    || { echo origin_unreadable; return 1; }
-  [ "$origin" = https://github.com/vossiman/aiCodingBaseSetup ] || { echo origin_mismatch; return 1; }
+    || { printf '%s\n' origin_unreadable; return 1; }
+  [ "$origin" = https://github.com/vossiman/aiCodingBaseSetup ] || { printf '%s\n' origin_mismatch; return 1; }
   while IFS= read -r key; do
     case "$key" in core.repositoryformatversion|core.filemode|core.bare|core.logallrefupdates|remote.origin.url|remote.origin.fetch) ;;
       *) printf 'unexpected_config_key:%s\n' "${key//[^A-Za-z0-9._-]/?}"; return 1 ;;
     esac
   done < <(_codex_provenance_git --git-dir="$cache" config --local --no-includes --name-only --list)
   if [ -n "$(_codex_provenance_git --git-dir="$cache" for-each-ref --format='%(refname)' refs/replace/)" ]; then
-    echo replace_refs_present; return 1
+    printf '%s\n' replace_refs_present; return 1
   fi
   fsck_first=$(_codex_provenance_git --git-dir="$cache" fsck --full --no-reflogs 2>&1 >/dev/null) || fsck_rc=$?
   if [ "$fsck_rc" -ne 0 ]; then
