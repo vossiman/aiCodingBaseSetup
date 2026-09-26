@@ -24,6 +24,16 @@ teardown() { rm -rf "$TMP"; }
   [ "$status" -eq 0 ]
 }
 
+@test "pattern markers in the catalog do not satisfy the stale check" {
+  mkdir -p "$TMP/root/lib" "$TMP/root/bin"
+  cat > "$TMP/root/lib/status-reasons.json" <<'EOF'
+{"schema":1,"reasons":{},"patterns":{"dynamic_*":{"source_marker":"catalog_only_marker"}}}
+EOF
+  run python3 "$CHECK" stale "$TMP/root"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"dynamic_*"* ]]
+}
+
 @test "catalog entries are well formed" {
   jq -e '.schema == 1
     and ([.reasons[], .patterns[]] | all(

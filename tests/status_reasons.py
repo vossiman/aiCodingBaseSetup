@@ -136,7 +136,8 @@ def check_static(root):
 def check_stale(root):
     cat = catalog(root)
     found = scan(root)
-    corpus = "\n".join(text for _, text in source_files(root))
+    catalog_path = root / "lib/status-reasons.json"
+    corpus = "\n".join(text for path, text in source_files(root) if path != catalog_path)
     stale = [r for r in cat["reasons"] if r not in found]
     for pattern, entry in cat.get("patterns", {}).items():
         marker = entry.get("source_marker", "")

@@ -383,8 +383,8 @@ def fleet_proof_path():
     return Path(os.environ.get("AICODING_SHARED_CONSUMERS_FILE", HOME / ".aicodingsetup/fleet/consumer-versions.json"))
 
 
-def fleet_proof_text():
-    if not any((HOME / name).exists() for name in FLEET_ROOTS):
+def fleet_proof_text(force=False):
+    if not force and not any((HOME / name).exists() for name in FLEET_ROOTS):
         return None
     path = fleet_proof_path()
     if not path.exists():
@@ -414,6 +414,40 @@ def fleet_proof_text():
         if not any(isinstance(c, dict) and c.get("id") == me for c in consumers):
             return "not listed: this container has not been probed yet"
     return f"valid until {local_time(earliest)}"
+
+
+def fleet_proof_roots():
+    roots = document(fleet_proof_path()).get("roots")
+    return [root for root in roots if isinstance(root, dict)] if isinstance(roots, list) else []
+
+
+def shared_fleet_root_confirmed():
+    configured = [Path(root) for root in os.environ.get("AICODING_SHARED_CONFIG_ROOTS", "").split(":") if root]
+    for name in FLEET_ROOTS:
+        candidate = HOME / name
+        try:
+            if candidate.is_mount():
+                return True
+            physical = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        for root in configured:
+            try:
+                if root.resolve(strict=True) == physical:
+                    return True
+            except OSError:
+                continue
+    return False
+
+
+def has_recorded_fleet_blocker(blockers):
+    for _, record in blockers:
+        reason = record.get("reason")
+        if reason == "claude_consumers_incompatible" or reason == "shared_registration_consumers_incompatible":
+            return True
+        if isinstance(reason, str) and reason.endswith("_shared_consumers_incompatible"):
+            return True
+    return False
 
 
 def tmux_restart_pending(proc_root=None):
@@ -527,12 +561,9 @@ def explain(reason, catalog):
 
 def fleet_groups():
     """Return [(roots, groups)] for incomplete roots; groups maps missing tools to container ids."""
-    roots = document(fleet_proof_path()).get("roots")
-    if not isinstance(roots, list):
-        return []
     merged = []
-    for root in roots:
-        if not isinstance(root, dict) or root.get("inventory_complete") is True:
+    for root in fleet_proof_roots():
+        if root.get("inventory_complete") is True:
             continue
         groups = {}
         consumers = root.get("consumers") if isinstance(root.get("consumers"), list) else []
@@ -556,7 +587,14 @@ def doctor():
     print("aicoding doctor: recorded blockers explained (last observations, not fresh checks)")
     problems = 0
     me = self_container_id()[:12]
-    fleet = fleet_proof_text()
+    records = document(Path(os.environ.get("AICODING_RESULTS_FILE", STATE / "update-results.json"))).get("components", {})
+    if not isinstance(records, dict):
+        records = {}
+    blockers = sorted((key, rec) for key, rec in records.items()
+                      if isinstance(rec, dict) and rec.get("state") in ("blocked", "conflict", "failed"))
+    fleet_blocked = has_recorded_fleet_blocker(blockers)
+    fleet_expected = bool(fleet_proof_roots()) or shared_fleet_root_confirmed() or fleet_blocked
+    fleet = fleet_proof_text(force=True) if fleet_expected else None
     if fleet is not None and not fleet.startswith("valid"):
         problems += 1
         print(f"\nFleet proof: {fleet}")
@@ -571,12 +609,7 @@ def doctor():
                 names = ", ".join(f"{i} (this container)" if me and i == me else i for i in sorted(ids))
                 print(f"    {len(ids)} {label}: {names}")
         print("  Fix: on the host, stop containers you no longer use; run `aicoding-sync --yes` in the rest.")
-    records = document(Path(os.environ.get("AICODING_RESULTS_FILE", STATE / "update-results.json"))).get("components", {})
-    if not isinstance(records, dict):
-        records = {}
     catalog = reason_catalog()
-    blockers = sorted((key, rec) for key, rec in records.items()
-                      if isinstance(rec, dict) and rec.get("state") in ("blocked", "conflict", "failed"))
     print("\nBlockers")
     if not blockers:
         print("  No recorded blockers. This does not establish that every tool is current.")

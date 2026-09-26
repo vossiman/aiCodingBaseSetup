@@ -37,6 +37,28 @@ _fleet() {
   [[ "$output" != *"claude:"* ]]
 }
 
+@test "doctor ignores a missing fleet proof for an ordinary local config directory" {
+  mkdir -p "$HOME/.claude"
+  run "$BIN" --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Fleet proof"* ]]
+}
+
+@test "doctor reports a missing fleet proof for a configured shared root" {
+  mkdir -p "$HOME/.claude"
+  export AICODING_SHARED_CONFIG_ROOTS="$HOME/.claude"
+  run "$BIN" --doctor
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Fleet proof: missing"* ]]
+}
+
+@test "doctor reports a missing fleet proof when a fleet blocker was recorded" {
+  aicoding_result_record config-claude blocked abc claude_consumers_incompatible
+  run "$BIN" --doctor
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Fleet proof: missing"* ]]
+}
+
 @test "doctor explains a catalogued blocker and exits 1" {
   aicoding_result_record mcp-registration-claude-kanban blocked abc registration_not_selected
   run "$BIN" --doctor
