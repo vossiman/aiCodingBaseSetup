@@ -78,7 +78,7 @@ _provision_smart_managed_files() {
     bucket=$(codex_smart_bucket "$plan")
     case "$bucket" in
       smart_error)
-        code=$(codex_smart_error_code "$plan")
+        code=$(codex_smart_error_text "$plan")
         warn "Codex config not updated ($code): $dest"
         _AICODING_INITIAL_CONFIG_DEFERRED=1
         _AICODING_PROVISION_SMART_ERRORS=$((_AICODING_PROVISION_SMART_ERRORS + 1))
@@ -89,7 +89,7 @@ _provision_smart_managed_files() {
       *)
         codex_smart_apply "$dest" "$SCRIPT_DIR/$source" "$source" "$context"
         result=$CODEX_SMART_RESULT
-        code=$(codex_smart_error_code "$result")
+        code=$(codex_smart_error_text "$result")
         if [[ -n "$code" ]]; then
           warn "Codex config not updated ($code): $dest"
           _AICODING_INITIAL_CONFIG_DEFERRED=1
@@ -452,7 +452,7 @@ reconcile_existing_install() {
   local smart_result smart_code
   for _d in "${!SMART_PLAN[@]}"; do
     smart_result=${SMART_APPLY_RESULT[$_d]:-${SMART_PLAN[$_d]}}
-    smart_code=$(codex_smart_error_code "$smart_result")
+    smart_code=$(codex_smart_error_text "$smart_result")
     if [[ -n "$smart_code" ]]; then
       warn "Codex config not updated ($smart_code): $_d"
       _AICODING_INITIAL_CONFIG_DEFERRED=1

@@ -6,6 +6,7 @@ raw template and ancestry to that selection; the runtime digest detects other
 release changes. This module never fetches or executes release-provided code.
 """
 from pathlib import Path
+import errno
 import hashlib
 import os
 import re
@@ -18,7 +19,16 @@ TEMPLATE_PATH = "configs/codex/config.toml"
 
 
 class ProvenanceFailure(Exception):
-    pass
+    """``code`` is the stable public code; ``detail`` names the failed check.
+
+    Details carry fixed check names plus paths relative to the public
+    provenance cache, never file contents or caller configuration.
+    """
+
+    def __init__(self, code, detail=None):
+        super().__init__(code)
+        self.code = code
+        self.detail = detail
 
 
 def canonical_origin(origin):
@@ -46,12 +56,12 @@ def git_environment():
     return env
 
 
-def cache_git(cache, *args):
+def cache_git(cache, *args, stderr=subprocess.DEVNULL):
     try:
         return subprocess.run(
             ["git", "--no-replace-objects", "-c", "protocol.allow=never",
              "-c", "core.commitGraph=false", "--git-dir=" + str(cache), *args],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=stderr,
             env=git_environment(), timeout=30)
     except (OSError, subprocess.TimeoutExpired):
         raise ProvenanceFailure("revision_unavailable")
@@ -69,44 +79,76 @@ def _regular_tree(root, code):
                 raise ProvenanceFailure(code)
 
 
+def _errno_name(error):
+    return errno.errorcode.get(error.errno or 0, "EIO")
+
+
+def _cache_failure(detail):
+    return ProvenanceFailure("invalid_provenance_cache", "verify/" + detail)
+
+
 def validate_cache(cache):
     if cache is None or not cache.exists():
         raise ProvenanceFailure("revision_unavailable")
-    _regular_tree(cache, "invalid_provenance_cache")
+    try:
+        _regular_tree(cache, "invalid_provenance_cache")
+    except ProvenanceFailure:
+        raise _cache_failure("cache_entry_not_regular")
     for parent in (cache.absolute(), *cache.absolute().parents):
         if parent.is_symlink():
-            raise ProvenanceFailure("invalid_provenance_cache")
+            raise _cache_failure("path_symlink")
     for directory, dirs, files in os.walk(str(cache)):
         for path in [Path(directory)] + [Path(directory) / name for name in dirs + files]:
-            metadata = path.lstat()
-            if metadata.st_uid != os.getuid() or metadata.st_mode & 0o022:
-                raise ProvenanceFailure("invalid_provenance_cache")
+            try:
+                metadata = path.lstat()
+            except OSError as error:
+                raise _cache_failure("cache_entry_vanished:%s:%s" % (
+                    _errno_name(error), os.path.relpath(str(path), str(cache))))
+            relative = os.path.relpath(str(path), str(cache))
+            if metadata.st_uid != os.getuid():
+                raise _cache_failure("cache_entry_foreign_owner:" + relative)
+            if metadata.st_mode & 0o022:
+                raise _cache_failure("cache_entry_writable:%04o:%s" % (
+                    stat.S_IMODE(metadata.st_mode), relative))
     for relative in ("shallow", "info/grafts", "objects/info/alternates", "objects/info/http-alternates"):
         if (cache / relative).exists():
-            raise ProvenanceFailure("invalid_provenance_cache")
+            raise _cache_failure("graph_override:" + relative)
     if any((cache / "objects").rglob("*.promisor")):
-        raise ProvenanceFailure("invalid_provenance_cache")
+        raise _cache_failure("promisor_pack")
     config = cache_git(cache, "config", "--local", "--no-includes", "--list")
     if config.returncode:
-        raise ProvenanceFailure("invalid_provenance_cache")
+        raise _cache_failure("config_unreadable")
     for line in config.stdout.decode("utf-8").splitlines():
         key, _, value = line.partition("=")
         if (key not in {"core.repositoryformatversion", "core.filemode", "core.bare",
                         "core.logallrefupdates", "remote.origin.url", "remote.origin.fetch"}
                 or key == "core.repositoryformatversion" and value != "0"):
-            raise ProvenanceFailure("invalid_provenance_cache")
+            raise _cache_failure("unexpected_config_key:" + re.sub(r"[^A-Za-z0-9._-]", "?", key))
     bare = cache_git(cache, "rev-parse", "--is-bare-repository")
+    if bare.returncode or bare.stdout.strip() != b"true":
+        raise _cache_failure("not_bare_repository")
     origin = cache_git(cache, "config", "--local", "--no-includes", "--get", "remote.origin.url")
+    if origin.returncode or canonical_origin(origin.stdout.decode("utf-8").strip()) != CANONICAL_ORIGIN:
+        raise _cache_failure("origin_mismatch")
     replace = cache_git(cache, "for-each-ref", "--format=%(refname)", "refs/replace/")
-    if (bare.returncode or bare.stdout.strip() != b"true" or origin.returncode
-            or canonical_origin(origin.stdout.decode("utf-8").strip()) != CANONICAL_ORIGIN
-            or replace.returncode or replace.stdout.strip()):
-        raise ProvenanceFailure("invalid_provenance_cache")
+    if replace.returncode or replace.stdout.strip():
+        raise _cache_failure("replace_refs_present")
     # cat-file/show do not themselves verify every object's content hash.
     # Validate the full graph before trusting ancestry, with no alternate,
     # replacement, promisor or commit-graph lookup paths in play.
-    if cache_git(cache, "fsck", "--full", "--no-reflogs", "--no-dangling").returncode:
-        raise ProvenanceFailure("invalid_provenance_cache")
+    fsck = cache_git(cache, "fsck", "--full", "--no-reflogs", "--no-dangling", stderr=subprocess.PIPE)
+    if fsck.returncode:
+        lines = fsck.stderr.decode("utf-8", "replace").splitlines()
+        first = next((line for line in lines if re.match(r"(error|fatal|missing|broken)", line)),
+                     lines[0] if lines else "")
+        # Git names objects by absolute path; keep only the cache-relative part.
+        for root in dict.fromkeys((str(cache.resolve()), str(cache.absolute()), str(cache))):
+            first = first.replace(root + "/", "").replace(root, ".")
+        home = os.path.expanduser("~")
+        if home not in ("", "/"):
+            first = first.replace(home, "~")
+        raise _cache_failure("fsck_failed:%d:%s" % (
+            fsck.returncode, re.sub(r"[^A-Za-z0-9 ._:/~-]", "?", first)[:120]))
 
 
 def verify_release(root, template, template_raw, cache):

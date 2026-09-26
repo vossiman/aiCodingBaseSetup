@@ -630,7 +630,7 @@ _sync_print_smart_details() {
     [[ "${BUCKETS[$dest]:-}" != blocked ]] || continue
     plan=${SMART_PLAN[$dest]:-}
     [[ -n "$plan" ]] || continue
-    code=$(codex_smart_error_code "$plan")
+    code=$(codex_smart_error_text "$plan")
     if [[ -n "$code" ]]; then
       printf '  ERROR: Codex config merge failed for %s (%s)\n' "$dest" "$code" >&2
       continue
@@ -698,12 +698,38 @@ _sync_collect_smart_decisions() {
   done
 }
 
+# First Codex smart-merge error text ("code: detail"), optionally limited to
+# one config component, for recorded results. Empty when none failed.
+_sync_smart_error_detail() {
+  local want=${1:-} d result text
+  while IFS= read -r d; do
+    [[ -n "$d" ]] || continue
+    if [[ -n "$want" ]] && [[ "$(_aicoding_config_component "$d" 2>/dev/null)" != "$want" ]]; then
+      continue
+    fi
+    result=${SMART_APPLY_RESULT[$d]:-${SMART_PLAN[$d]:-}}
+    [[ -n "$result" ]] || continue
+    text=$(codex_smart_error_text "$result")
+    if [[ -n "$text" ]]; then printf '%s\n' "$text"; return 0; fi
+  done < <(printf '%s\n' "${!SMART_PLAN[@]}" | sort)
+}
+
+# Which harness preparations deferred provisioning, and the first smart-merge
+# error behind them, so a blocked provision record names its cause.
+_sync_provision_deferral_detail() {
+  local keys smart
+  keys=$(printf '%s\n' "${!_SYNC_DEFERRED_PROVISION_COMPONENTS[@]}" | sed '/^$/d' | sort | paste -sd, -)
+  [[ -n "$keys" ]] || return 0
+  smart=$(_sync_smart_error_detail)
+  printf 'deferred by %s%s\n' "$keys" "${smart:+ (codex merge: $smart)}"
+}
+
 # Record a component only after considering EVERY destination in its inventory.
 # A successful tool install or aggregate config receipt is not recovery evidence:
 # another destination for that same harness may still be blocked or conflicted.
 # $2 lists buckets whose application completed; an empty list means no-op only.
 _sync_record_config_results() {
-  local target=$1 applied=" ${2:-} " d component bucket rank result state reason
+  local target=$1 applied=" ${2:-} " d component bucket rank result state reason detail
   command -v aicoding_result_record >/dev/null 2>&1 || return 0
   command -v _aicoding_config_component >/dev/null 2>&1 || return 0
   [ "$target" != unknown ] || return 0
@@ -761,7 +787,9 @@ _sync_record_config_results() {
           4) state=conflict; reason=managed_config_conflict ;;
           5) state=failed; reason=managed_config_apply_failed ;;
         esac
-        aicoding_result_record "$component" "$state" "$target" "$reason" || true
+        detail=
+        [ "${ranks[$component]}" -ne 5 ] || detail=$(_sync_smart_error_detail "$component")
+        aicoding_result_record "$component" "$state" "$target" "$reason" "" "$detail" || true
         ;;
     esac
   done
@@ -955,7 +983,8 @@ _sync_reconcile() {
       _SYNC_DEFERRED_PROVISION_COMPONENTS[codex]=1
       _SYNC_PASS_DEFERRED=1
       command -v aicoding_result_record >/dev/null 2>&1 \
-        && aicoding_result_record config failed "$NEW_COMMIT" managed_config_apply_failed || true
+        && aicoding_result_record config failed "$NEW_COMMIT" managed_config_apply_failed "" \
+          "$(_sync_smart_error_detail)" || true
       if [[ "$mode" != boot && "$mode" != first ]]; then return 1; fi
       return 0
     elif [ "$blocked_count" -gt 0 ]; then
@@ -1103,7 +1132,7 @@ _sync_reconcile() {
     smart_config_changed=$(printf '%s' "$smart_result" | jq -r '.config_changed')
     smart_state_changed=$(printf '%s' "$smart_result" | jq -r '.state_changed')
     if [[ -n "$smart_code" ]]; then
-      printf '  ERROR: Codex config merge failed for %s (%s)\n' "$d" "$smart_code" >&2
+      printf '  ERROR: Codex config merge failed for %s (%s)\n' "$d" "$(codex_smart_error_text "$smart_result")" >&2
     elif (( $(printf '%s' "$smart_result" | jq '.conflicts | length') > 0 )); then
       if [[ "$smart_config_changed" == true ]]; then
         echo "      applied safe Codex updates; conflicting settings kept local: $d"
@@ -1146,7 +1175,8 @@ _sync_reconcile() {
     if [ "$commit_rc" -ne 0 ]; then
       aicoding_result_record config failed "$NEW_COMMIT" manifest_write_failed || true
     elif [ "$apply_rc" -ne 0 ] || [ "$smart_error_count" -gt 0 ]; then
-      aicoding_result_record config failed "$NEW_COMMIT" managed_config_apply_failed || true
+      aicoding_result_record config failed "$NEW_COMMIT" managed_config_apply_failed "" \
+        "$(_sync_smart_error_detail)" || true
     elif [ "$conflict_count" -gt 0 ]; then
       aicoding_result_record config conflict "$NEW_COMMIT" managed_config_conflict || true
     elif [ "$blocked_count" -eq 0 ] && [ "$NEW_COMMIT" != unknown ]; then
@@ -1719,7 +1749,8 @@ _sync_provision() {
   else
     _SYNC_PASS_DEFERRED=1
     command -v aicoding_result_record >/dev/null 2>&1 \
-      && aicoding_result_record provision blocked "$target" preparation_deferred || true
+      && aicoding_result_record provision blocked "$target" preparation_deferred "" \
+        "$(_sync_provision_deferral_detail)" || true
   fi
   return "$rc"
 }

@@ -179,3 +179,108 @@ $PROV_SHA" ]
   '
   [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
+
+prepare_detail() {
+  run bash -c '. "$BLUEPRINT_ROOT/lib/codex-provenance.sh"; _codex_provenance_prepare "$PROV_SHA"; rc=$?; printf "%s|%s\n" "$CODEX_PROVENANCE_ERROR" "$CODEX_PROVENANCE_DETAIL"; exit "$rc"'
+}
+
+@test "provenance rejection names a group-writable cache entry and its stage" {
+  seed_cache
+  chmod 0664 "$AICODING_STATE_DIR/code-provenance/aicoding.git/HEAD"
+  prepare_detail
+  [ "$status" -ne 0 ]
+  [ "$output" = "invalid_provenance_cache|initial/cache_entry_writable:0664:aicoding.git/HEAD" ]
+}
+@test "provenance rejection names graph overrides, config keys and non-regular entries" {
+  seed_cache
+  touch "$AICODING_STATE_DIR/code-provenance/aicoding.git/shallow"
+  prepare_detail
+  [ "$output" = "invalid_provenance_cache|initial/graph_override:shallow" ]
+  rm "$AICODING_STATE_DIR/code-provenance/aicoding.git/shallow"
+  git --git-dir="$AICODING_STATE_DIR/code-provenance/aicoding.git" config user.name Someone
+  prepare_detail
+  [ "$output" = "invalid_provenance_cache|initial/unexpected_config_key:user.name" ]
+  git --git-dir="$AICODING_STATE_DIR/code-provenance/aicoding.git" config --unset user.name
+  ln -s /dev/null "$AICODING_STATE_DIR/code-provenance/aicoding.git/stray"
+  prepare_detail
+  [ "$output" = "invalid_provenance_cache|initial/cache_entry_not_regular:aicoding.git/stray" ]
+}
+@test "provenance rejection reports fsck failure with its first error line" {
+  seed_cache
+  rm -f "$AICODING_STATE_DIR"/code-provenance/aicoding.git/objects/pack/*.pack
+  prepare_detail
+  [ "$status" -ne 0 ]
+  [[ "$output" == "invalid_provenance_cache|initial/fsck_failed:"* ]] || { echo "$output"; false; }
+}
+@test "provenance rejection after the lock is attributed to the locked stage" {
+  seed_cache
+  git --git-dir="$AICODING_STATE_DIR/code-provenance/aicoding.git" update-ref -d "refs/aicoding/qualified/$PROV_SHA"
+  run bash -c '
+    . "$BLUEPRINT_ROOT/lib/codex-provenance.sh"
+    _real_paths_safe=$(declare -f _codex_provenance_paths_safe)
+    eval "${_real_paths_safe/_codex_provenance_paths_safe/_real_paths_safe}"
+    _codex_provenance_paths_safe() {
+      echo call >> "$HOME/paths-safe-calls"
+      if [ "$(wc -l < "$HOME/paths-safe-calls")" -ge 3 ]; then echo "cache_entry_vanished:ENOENT:aicoding.git/objects/pack/tmp_pack_x"; return 1; fi
+      _real_paths_safe "$@"
+    }
+    AICODINGSETUP_SKIP_NETWORK=0 _codex_provenance_prepare "$PROV_SHA"; rc=$?
+    printf "%s|%s\n" "$CODEX_PROVENANCE_ERROR" "$CODEX_PROVENANCE_DETAIL"; exit "$rc"'
+  [ "$status" -ne 0 ]
+  [ "$output" = "invalid_provenance_cache|locked/cache_entry_vanished:ENOENT:aicoding.git/objects/pack/tmp_pack_x" ]
+}
+@test "provenance success and non-cache failures carry no stale detail" {
+  seed_cache
+  prepare_detail
+  [ "$status" -eq 0 ]
+  [ "$output" = "|" ]
+  git --git-dir="$AICODING_STATE_DIR/code-provenance/aicoding.git" update-ref -d "refs/aicoding/qualified/$PROV_SHA"
+  run bash -c '. "$BLUEPRINT_ROOT/lib/codex-provenance.sh"; CODEX_PROVENANCE_DETAIL=stale; AICODINGSETUP_SKIP_NETWORK=1 _codex_provenance_prepare "$PROV_SHA"; printf "%s|%s\n" "$CODEX_PROVENANCE_ERROR" "$CODEX_PROVENANCE_DETAIL"'
+  [ "$output" = "revision_unavailable|" ]
+}
+@test "provenance adapter carries the rejection detail into the merge result and log text" {
+  seed_cache
+  chmod 0664 "$AICODING_STATE_DIR/code-provenance/aicoding.git/HEAD"
+  mkdir -p "$PROV_TMP/release"
+  printf '%s\n' "$PROV_SHA" > "$PROV_TMP/release/.aicoding-version"
+  export AICODING_BLUEPRINT_CLONE="$PROV_TMP/release"
+  run bash -c '
+    . "$BLUEPRINT_ROOT/lib/codex-merge.sh"
+    _render_managed_source() { touch "$HOME/rendered"; }
+    _codex_smart_invoke plan "$HOME/config.toml" "$HOME/template.toml"
+    printf "%s\n" "$CODEX_SMART_RESULT" | jq -c .error
+    codex_smart_error_text "$CODEX_SMART_RESULT"
+  '
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = '{"code":"invalid_provenance_cache","detail":"initial/cache_entry_writable:0664:aicoding.git/HEAD"}' ]
+  [ "${lines[1]}" = "invalid_provenance_cache: initial/cache_entry_writable:0664:aicoding.git/HEAD" ]
+  [ ! -e "$HOME/rendered" ]
+}
+@test "provenance fsck detail names cache objects relative to the cache, never absolute paths" {
+  seed_cache
+  run bash -c '
+    . "$BLUEPRINT_ROOT/lib/codex-provenance.sh"
+    _real_git=$(declare -f _codex_provenance_git)
+    eval "${_real_git/_codex_provenance_git/_real_provenance_git}"
+    _codex_provenance_git() {
+      case " $* " in
+        *" fsck "*)
+          printf "error: packfile %s/objects/pack/pack-1.pack cannot be accessed\n" "${1#--git-dir=}" >&2
+          return 1 ;;
+      esac
+      _real_provenance_git "$@"
+    }
+    _codex_provenance_prepare "$PROV_SHA"
+    printf "%s|%s\n" "$CODEX_PROVENANCE_ERROR" "$CODEX_PROVENANCE_DETAIL"'
+  [ "$output" = "invalid_provenance_cache|initial/fsck_failed:1:error: packfile objects/pack/pack-1.pack cannot be accessed" ] || { echo "$output"; false; }
+}
+@test "provenance names a regular-file state ancestor as not a directory, not a symlink" {
+  export PROV_TMP
+  mkdir -p "$PROV_TMP/root"
+  touch "$PROV_TMP/root/file"
+  run bash -c '. "$BLUEPRINT_ROOT/lib/codex-provenance.sh"; AICODING_STATE_DIR="$PROV_TMP/root/file/state" _codex_provenance_prepare "$PROV_SHA"; printf "%s|%s\n" "$CODEX_PROVENANCE_ERROR" "$CODEX_PROVENANCE_DETAIL"'
+  [ "$output" = "invalid_provenance_cache|initial/state_path_not_directory:$PROV_TMP/root/file" ] || { echo "$output"; false; }
+  ln -s "$PROV_TMP/root" "$PROV_TMP/link"
+  run bash -c '. "$BLUEPRINT_ROOT/lib/codex-provenance.sh"; AICODING_STATE_DIR="$PROV_TMP/link/state" _codex_provenance_prepare "$PROV_SHA"; printf "%s|%s\n" "$CODEX_PROVENANCE_ERROR" "$CODEX_PROVENANCE_DETAIL"'
+  [ "$output" = "invalid_provenance_cache|initial/state_path_symlink:$PROV_TMP/link" ] || { echo "$output"; false; }
+}
