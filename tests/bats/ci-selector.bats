@@ -17,7 +17,9 @@ root=os.environ['CI_FIXTURE']
 called=os.environ.get('GH_CALLED')
 if called:
     open(called,'a').write(endpoint+'\n')
-if endpoint.startswith('repos/vossiman/aiCodingBaseSetup/actions/workflows/tests.yml/runs?'):
+if endpoint.startswith('repos/vossiman/aiCodingBaseSetup/actions/workflows/tests.yml/runs?') and 'head_sha=' not in endpoint:
+    name='runs-bulk'
+elif endpoint.startswith('repos/vossiman/aiCodingBaseSetup/actions/workflows/tests.yml/runs?'):
     sha=endpoint.split('head_sha=')[1].split('&')[0]; name='runs-'+sha
 elif endpoint == 'repos/vossiman/aiCodingBaseSetup/actions/workflows/tests.yml': name='workflow'
 elif endpoint.startswith('repos/vossiman/dvw/actions/workflows/ci.yml/runs?'):
@@ -218,4 +220,88 @@ EOF
   run bash -uc '. "$BLUEPRINT_ROOT/lib/ci-selector.sh"; aicoding_select_ci_sha'
   [ "$status" -eq 2 ]
   [[ "$output" == *"unknown component"* ]]
+}
+
+bulk_runs() {
+  # bulk_runs <total_count> <sha:status:conclusion:run_number:created_at>...
+  local total=$1; shift
+  printf '%s\n' "$@" | jq -R 'split(":") as $f | {id:($f[3]|tonumber),run_number:($f[3]|tonumber),run_attempt:1,
+    workflow_id:330421083,head_sha:$f[0],head_branch:"main",event:"push",status:$f[1],
+    conclusion:(if $f[2] == "null" then null else $f[2] end),created_at:($f[4:]|join(":"))}' \
+    | jq -s --argjson total "$total" '{total_count:$total,workflow_runs:.}' > "$CI_FIXTURE/runs-bulk"
+}
+dated_commits() {
+  jq -n --arg new "$NEW" --arg old "$OLD" \
+    '[{sha:$new,commit:{committer:{date:"2026-09-20T10:00:00Z"}}},{sha:$old,commit:{committer:{date:"2026-09-19T10:00:00Z"}}}]' \
+    > "$CI_FIXTURE/commits"
+}
+per_sha_calls() { grep -c 'head_sha=' "$GH_CALLED" || true; }
+
+@test "one bulk runs request qualifies the newest covered commit" {
+  export GH_CALLED="$TMP/called"
+  dated_commits
+  bulk_runs 2 "$NEW:completed:success:9:2026-09-20T10:05:00Z" "$OLD:completed:success:8:2026-09-19T10:05:00Z"
+  run --separate-stderr select_sha
+  [ "$status" -eq 0 ]
+  [ "$output" = "$NEW" ]
+  [ "$(per_sha_calls)" -eq 0 ]
+  [ "$(grep -c '/runs?' "$GH_CALLED")" -eq 1 ]
+}
+
+@test "bulk selection keeps latest-run semantics: a newer pending run blocks an older success" {
+  export GH_CALLED="$TMP/called"
+  dated_commits
+  bulk_runs 3 "$NEW:in_progress:null:10:2026-09-20T11:00:00Z" "$NEW:completed:success:9:2026-09-20T10:05:00Z" \
+    "$OLD:completed:success:8:2026-09-19T10:05:00Z"
+  run --separate-stderr select_sha
+  [ "$status" -eq 0 ]
+  [ "$output" = "$OLD" ]
+  [ "$(per_sha_calls)" -eq 0 ]
+}
+
+@test "bulk selection ignores runs from another workflow identity" {
+  export GH_CALLED="$TMP/called"
+  dated_commits
+  bulk_runs 2 "$NEW:completed:success:9:2026-09-20T10:05:00Z" "$OLD:completed:success:8:2026-09-19T10:05:00Z"
+  jq '.workflow_runs[0].workflow_id = 1' "$CI_FIXTURE/runs-bulk" > "$TMP/b" && mv "$TMP/b" "$CI_FIXTURE/runs-bulk"
+  run --separate-stderr select_sha
+  [ "$status" -eq 0 ]
+  [ "$output" = "$OLD" ]
+}
+
+@test "a truncated bulk page that may miss a commit's runs falls back to the exact query" {
+  export GH_CALLED="$TMP/called"
+  dated_commits
+  # 500 runs exist; the page's oldest run is younger than NEW's commit time plus a day.
+  bulk_runs 500 "$NEW:completed:failure:9:2026-09-20T10:05:00Z"
+  run --separate-stderr select_sha
+  [ "$status" -eq 0 ]
+  [ "$output" = "$NEW" ]
+  grep -q "head_sha=$NEW" "$GH_CALLED"
+}
+
+@test "a truncated bulk page still answers commits it provably covers" {
+  export GH_CALLED="$TMP/called"
+  dated_commits
+  bulk_runs 500 "$NEW:completed:success:9:2026-09-22T10:05:00Z" "$OLD:completed:success:1:2026-09-18T00:00:00Z"
+  run --separate-stderr select_sha
+  [ "$status" -eq 0 ]
+  [ "$output" = "$NEW" ]
+  [ "$(per_sha_calls)" -eq 0 ]
+}
+
+@test "malformed or undated bulk runs fall back to exact queries" {
+  export GH_CALLED="$TMP/called"
+  dated_commits
+  printf '{"total_count":1,"workflow_runs":[{"id":1}]}\n' > "$CI_FIXTURE/runs-bulk"
+  run --separate-stderr select_sha
+  [ "$status" -eq 0 ]
+  [ "$output" = "$NEW" ]
+  grep -q "head_sha=$NEW" "$GH_CALLED"
+  bulk_runs 1 "$NEW:completed:failure:9:not-a-date"
+  : > "$GH_CALLED"
+  run --separate-stderr select_sha
+  [ "$status" -eq 0 ]
+  [ "$output" = "$NEW" ]
+  grep -q "head_sha=$NEW" "$GH_CALLED"
 }
