@@ -43,6 +43,7 @@ case "$*" in
     : > "$HOME/.fixture-logfire-added"
     ;;
   'mcp get context7'|'mcp get playwright') exit 1 ;;
+  'mcp get kanban') echo "Command: $HOME/.local/bin/kanban-mcp" ;;
 esac
 STUB
   chmod +x "$TMPDIR/stubs/claude"

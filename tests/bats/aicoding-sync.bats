@@ -29,6 +29,7 @@ setup() {
 case "$*" in
   --version) printf '2.1.0\n' ;;
   "mcp get logfire") printf '  URL: https://logfire-eu.pydantic.dev/mcp\n' ;;
+  "mcp get kanban") printf 'Command: %s/.local/bin/kanban-mcp\n' "$HOME" ;;
 esac
 exit 0
 EOF
