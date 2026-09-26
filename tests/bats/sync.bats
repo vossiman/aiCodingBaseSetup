@@ -588,7 +588,7 @@ EOF
   echo '{"schema_version":1,"files":{},"blueprint_commit":"old"}' > "$AICODING_MANIFEST"
   _sync_source_update_libraries "$clone"
   aicoding_config_is_compatible() {
-    [ "$1" = "$codex_dest" ] || { echo fixture_incompatible; return 1; }
+    [ "$1" = "$codex_dest" ] || { echo claude_not_installed; return 1; }
   }
   _mixed_reconcile() {
     local rc=0

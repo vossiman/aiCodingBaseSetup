@@ -2,6 +2,7 @@
 """Read-only local status. Never import updater code or execute MCP servers."""
 import concurrent.futures
 import datetime
+import fnmatch
 import json
 import math
 import os
@@ -9,6 +10,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import time
 
 
@@ -359,6 +361,9 @@ def installed(tool):
 
 
 FLEET_ROOTS = (".claude", ".codex", ".cursor")
+# Tools dvw's fleet probe must report as compatible for every container
+# (dvw catalog-service/app/probe.py CAPABILITY_NAMES).
+FLEET_CAPABILITIES = ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright", "mcp-kanban")
 
 
 def self_container_id():
@@ -374,10 +379,14 @@ def self_container_id():
     return match.group(1) if match else ""
 
 
-def fleet_proof_text():
-    if not any((HOME / name).exists() for name in FLEET_ROOTS):
+def fleet_proof_path():
+    return Path(os.environ.get("AICODING_SHARED_CONSUMERS_FILE", HOME / ".aicodingsetup/fleet/consumer-versions.json"))
+
+
+def fleet_proof_text(force=False):
+    if not force and not any((HOME / name).exists() for name in FLEET_ROOTS):
         return None
-    path = Path(os.environ.get("AICODING_SHARED_CONSUMERS_FILE", HOME / ".aicodingsetup/fleet/consumer-versions.json"))
+    path = fleet_proof_path()
     if not path.exists():
         return "missing (catalog not publishing, or a new container is being checked)"
     proof = document(path)
@@ -397,13 +406,48 @@ def fleet_proof_text():
     for r in roots:
         consumers = r.get("consumers") if isinstance(r.get("consumers"), list) else []
         if r.get("inventory_complete") is not True:
-            verified = sum(1 for c in consumers if isinstance(c, dict) and c.get("components"))
+            verified = sum(1 for c in consumers if isinstance(c, dict) and isinstance(c.get("components"), dict)
+                           and all(name in c["components"] for name in FLEET_CAPABILITIES))
             return f"incomplete for {clean(r.get('shared_root'))}: {verified} of {len(consumers)} containers verified"
         if not me:
             return "not listed: own container id unknown"
         if not any(isinstance(c, dict) and c.get("id") == me for c in consumers):
             return "not listed: this container has not been probed yet"
     return f"valid until {local_time(earliest)}"
+
+
+def fleet_proof_roots():
+    roots = document(fleet_proof_path()).get("roots")
+    return [root for root in roots if isinstance(root, dict)] if isinstance(roots, list) else []
+
+
+def shared_fleet_root_confirmed():
+    configured = [Path(root) for root in os.environ.get("AICODING_SHARED_CONFIG_ROOTS", "").split(":") if root]
+    for name in FLEET_ROOTS:
+        candidate = HOME / name
+        try:
+            if candidate.is_mount():
+                return True
+            physical = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        for root in configured:
+            try:
+                if root.resolve(strict=True) == physical:
+                    return True
+            except OSError:
+                continue
+    return False
+
+
+def has_recorded_fleet_blocker(blockers):
+    for _, record in blockers:
+        reason = record.get("reason")
+        if reason == "claude_consumers_incompatible" or reason == "shared_registration_consumers_incompatible":
+            return True
+        if isinstance(reason, str) and reason.endswith("_shared_consumers_incompatible"):
+            return True
+    return False
 
 
 def tmux_restart_pending(proc_root=None):
@@ -495,5 +539,93 @@ def main():
     print("Scope: supported coding tools and managed blueprint provisioning; not an OS updater.")
 
 
+UNKNOWN_FIX = "Retry with `aicoding-auto-update --once` and read `~/.local/state/aicoding/auto-update/worker.log`."
+
+
+def reason_catalog():
+    doc = document(Path(__file__).resolve().parent / "status-reasons.json")
+    reasons = doc.get("reasons") if isinstance(doc.get("reasons"), dict) else {}
+    patterns = doc.get("patterns") if isinstance(doc.get("patterns"), dict) else {}
+    return reasons, patterns
+
+
+def explain(reason, catalog):
+    reasons, patterns = catalog
+    if isinstance(reasons.get(reason), dict):
+        return reasons[reason]
+    matches = [p for p in patterns if isinstance(patterns[p], dict) and fnmatch.fnmatchcase(reason, p)]
+    if not matches:
+        return None
+    return patterns[max(matches, key=lambda p: len(p.replace("*", "")))]
+
+
+def fleet_groups():
+    """Return [(roots, groups)] for incomplete roots; groups maps missing tools to container ids."""
+    merged = []
+    for root in fleet_proof_roots():
+        if root.get("inventory_complete") is True:
+            continue
+        groups = {}
+        consumers = root.get("consumers") if isinstance(root.get("consumers"), list) else []
+        for consumer in consumers:
+            if not isinstance(consumer, dict):
+                continue
+            components = consumer.get("components") if isinstance(consumer.get("components"), dict) else {}
+            missing = tuple(c for c in FLEET_CAPABILITIES if c not in components)
+            groups.setdefault(missing, []).append(clean(consumer.get("id", "?"))[:12])
+        name = clean(root.get("shared_root", "?"))
+        for entry in merged:
+            if entry[1] == groups:
+                entry[0].append(name)
+                break
+        else:
+            merged.append(([name], groups))
+    return merged
+
+
+def doctor():
+    print("aicoding doctor: recorded blockers explained (last observations, not fresh checks)")
+    problems = 0
+    me = self_container_id()[:12]
+    records = document(Path(os.environ.get("AICODING_RESULTS_FILE", STATE / "update-results.json"))).get("components", {})
+    if not isinstance(records, dict):
+        records = {}
+    blockers = sorted((key, rec) for key, rec in records.items()
+                      if isinstance(rec, dict) and rec.get("state") in ("blocked", "conflict", "failed"))
+    fleet_blocked = has_recorded_fleet_blocker(blockers)
+    fleet_expected = bool(fleet_proof_roots()) or shared_fleet_root_confirmed() or fleet_blocked
+    fleet = fleet_proof_text(force=True) if fleet_expected else None
+    if fleet is not None and not fleet.startswith("valid"):
+        problems += 1
+        print(f"\nFleet proof: {fleet}")
+        print("  Shared config and Claude MCP registrations stay frozen on every container until all pass.")
+        for roots, groups in fleet_groups():
+            total = sum(len(ids) for ids in groups.values())
+            print(f"  {', '.join(roots)}: {len(groups.get((), []))} of {total} containers pass")
+            for missing, ids in sorted(groups.items(), key=lambda g: (-len(g[0]), g[0])):
+                if not missing:
+                    continue
+                label = "probed nothing" if len(missing) == len(FLEET_CAPABILITIES) else f"missing {', '.join(missing)}"
+                names = ", ".join(f"{i} (this container)" if me and i == me else i for i in sorted(ids))
+                print(f"    {len(ids)} {label}: {names}")
+        print("  Fix: on the host, stop containers you no longer use; run `aicoding-sync --yes` in the rest.")
+    catalog = reason_catalog()
+    print("\nBlockers")
+    if not blockers:
+        print("  No recorded blockers. This does not establish that every tool is current.")
+    for key, rec in blockers:
+        problems += 1
+        reason = clean(rec.get("reason", "")) or "unknown"
+        entry = explain(reason, catalog)
+        print(f"  {clean(key)}: {clean(rec.get('state'))} ({reason}), {local_time(rec.get('attempted_at'))}")
+        if entry is None:
+            print("    Why: this reason is not in the doctor catalog yet (lib/status-reasons.json).")
+            print(f"    Fix: {UNKNOWN_FIX}")
+        else:
+            print(f"    Why: {clean(entry.get('meaning', ''))}")
+            print(f"    Fix: {clean(entry.get('fix', UNKNOWN_FIX))}")
+    return 1 if problems else 0
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(doctor() if sys.argv[1:] == ["--doctor"] else main())

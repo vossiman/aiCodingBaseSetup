@@ -50,6 +50,9 @@ long as people and agents follow it.
   - **Never accept a silent serial run.** run.sh warns loudly when GNU
     parallel is missing; if the suite feels slow, check the warning and the
     per-test `--timing` output before blaming the machine.
+- **A new result reason code needs an entry in `lib/status-reasons.json`** (what it
+  means, what fixes it) so `aicoding-status --doctor` can explain it. The
+  static scan and the run.sh audit fail the suite otherwise.
 - Tests must never write into `$BLUEPRINT_ROOT` (the real checkout); use the
   `blueprint_copy` helper. Mutations look fine serially but poison parallel
   runs and killed runs leak edits into the working tree.

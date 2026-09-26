@@ -349,6 +349,7 @@ _print_tmux() {
 
 case "${1:-}" in
   '')         exec python3 "$(dirname "$(dirname "$(readlink -f "$0")")")/lib/status-report.py" ;;
+  --doctor)   exec python3 "$(dirname "$(dirname "$(readlink -f "$0")")")/lib/status-report.py" --doctor ;;
   --refresh)  _maybe_refresh ;;
   # --refresh-attach: tmux client-attached hook. Force a check past the idle
   # TTL, but keep a short min-interval so reconnect storms (5 attaches in 4
@@ -361,9 +362,10 @@ case "${1:-}" in
   --banner)   _refresh_detached; _print_banner ;;
   --tmux)     _refresh_detached; _print_tmux ;;
   --print)    _print_banner ;;
-  -h|--help)  echo "usage: aicoding-status [--refresh|--banner|--tmux|--print]"
+  -h|--help)  echo "usage: aicoding-status [--doctor|--refresh|--banner|--tmux|--print]"
               echo "Without options: read-only scheduler, update outcomes, and installed tool status."
+              echo "--doctor: explain each recorded blocker and the command that fixes it; exits 1 when any remain."
               echo "Trigger an update: aicoding-auto-update --once" ;;
-  *)          echo "usage: aicoding-status [--refresh|--banner|--tmux|--print]" >&2; exit 2 ;;
+  *)          echo "usage: aicoding-status [--doctor|--refresh|--banner|--tmux|--print]" >&2; exit 2 ;;
 esac
 exit 0
