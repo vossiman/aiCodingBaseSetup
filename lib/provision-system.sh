@@ -650,12 +650,12 @@ _playwright_run_install_deps() {
   info "Running playwright install-deps chromium (apt lock wait up to 120s, whole run up to ${timeout_s}s)"
   timeout --kill-after=30 "$timeout_s" ${runner[@]+"${runner[@]}"} env PATH="$PATH" \
       ${conf:+APT_CONFIG="$conf"} "$node_path" "$core_cli" install-deps chromium </dev/null 2>&1 \
-    | tee -a "$log" | sed -u 's/^/  install-deps: /' >&2
-  rc=${PIPESTATUS[0]}
+    | tee -a "$log" | sed -u 's/^/  install-deps: /' >&2 \
+    && rc=${PIPESTATUS[0]} || rc=${PIPESTATUS[0]}
   [[ -z "$conf" ]] || rm -f "$conf"
   [[ "$rc" -ne 0 ]] || return 0
   if _aicoding_apt_lock_busy "$log"; then
-    holder=$(_aicoding_apt_lock_holder "$log")
+    holder=$(_aicoding_apt_lock_holder "$log") || holder=
     warn "playwright install-deps could not get the apt/dpkg lock within 120s${holder:+ ($holder)}"
     info "Wait for that apt/dpkg run to finish, then run: aicoding-sync --yes"
   elif [[ "$rc" -eq 124 || "$rc" -eq 137 ]]; then

@@ -1722,6 +1722,10 @@ const home = process.env.HOME;
 fs.appendFileSync(home + '/playwright-exact-calls', 'core ' + process.argv.slice(2).join(' ') + '\n');
 if (process.env.APT_CONFIG) fs.writeFileSync(home + '/apt-config-seen', fs.readFileSync(process.env.APT_CONFIG));
 console.log('Reading package lists... stub-progress');
+if (process.env.PLAYWRIGHT_TEST_DEPS_LOCKED_NO_HOLDER) {
+  console.error('E: Could not get lock /var/lib/dpkg/lock-frontend');
+  process.exit(100);
+}
 if (process.env.PLAYWRIGHT_TEST_DEPS_LOCKED) {
   console.error('E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 4242 (apt-get)');
   process.exit(100);
@@ -1745,6 +1749,15 @@ CLI
   export PLAYWRIGHT_TEST_DEPS_LOCKED=1
   _run_install_fn "$(_isolated_path)" ensure_playwright_browsers
   [[ "$output" == *"held by process 4242 (apt-get)"* ]]
+  [[ "$output" == *"aicoding-sync --yes"* ]]
+}
+
+@test "ensure_playwright_browsers reports a held apt lock under install.sh's strict shell options" {
+  _playwright_fixture missing
+  _playwright_progress_core
+  export PLAYWRIGHT_TEST_DEPS_LOCKED_NO_HOLDER=1
+  _run_install_fn_strict "$(_isolated_path)" ensure_playwright_browsers
+  [[ "$output" == *"could not get the apt/dpkg lock"* ]]
   [[ "$output" == *"aicoding-sync --yes"* ]]
 }
 
