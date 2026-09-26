@@ -124,7 +124,7 @@ STUB
   cp "$TMP/package/dist-package/cursor-agent" "$TMP/stubs/cursor-agent"
   run aicoding_installed_components
   [ "$status" -eq 0 ]
-  [ "$output" = $'aicoding\ncursor' ]
+  [ "$output" = $'aicoding\ncursor\nmcp-kanban' ]
   run aicoding_config_is_compatible "$HOME/.cursor/mcp.json"
   [ "$status" -ne 0 ]
   [ "$output" = cursor_update_not_verified ]

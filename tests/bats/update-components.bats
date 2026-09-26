@@ -33,7 +33,32 @@ EOF
 
   run aicoding_installed_components
   [ "$status" -eq 0 ]
-  [ "$output" = $'aicoding\nclaude\ncodex\npi' ]
+  [ "$output" = $'aicoding\nclaude\ncodex\npi\nmcp-kanban' ]
+}
+
+@test "pinned Kanban MCP is selected for a harness before it is ever installed" {
+  _tool opencode '1.2.3'
+
+  run aicoding_installed_components
+  [ "$status" -eq 0 ]
+  [ "$output" = $'aicoding\nopencode\nmcp-kanban' ]
+}
+
+@test "pinned Kanban MCP is not selected without a harness that consumes it" {
+  _tool pi '0.73.1'
+
+  run aicoding_installed_components
+  [ "$status" -eq 0 ]
+  [ "$output" = $'aicoding\npi' ]
+}
+
+@test "Kanban MCP without a blueprint pin is not bootstrapped" {
+  _tool claude '2.1.50 (Claude Code)'
+  _aicoding_kanban_pinned_revision() { return 1; }
+
+  run aicoding_installed_components
+  [ "$status" -eq 0 ]
+  [ "$output" = $'aicoding\nclaude' ]
 }
 
 @test "installed component discovery rejects Windows binaries reached through WSL mounts" {
