@@ -89,6 +89,14 @@ _aicoding_mcp_selected() {
       grep -Eq '^\[mcp_servers\.kanban\][[:space:]]*$' "$HOME/.codex/config.toml" 2>/dev/null && return 0
       jq -e '.mcp.kanban // .mcpServers.kanban' "$HOME/.config/opencode/opencode.json" >/dev/null 2>&1 && return 0
       jq -e '.mcpServers.kanban' "$HOME/.cursor/mcp.json" >/dev/null 2>&1 && return 0
+      # Managed configs require the pinned Kanban MCP, so a consuming harness
+      # must bootstrap it; otherwise no sync ever stages it and configs block.
+      _aicoding_kanban_pinned_revision >/dev/null 2>&1 || return 1
+      _aicoding_command_is_linux claude && return 0
+      _aicoding_command_is_linux codex && return 0
+      _aicoding_command_is_linux opencode && return 0
+      _aicoding_command_is_linux agent && return 0
+      _aicoding_command_is_linux cursor-agent && return 0
       ;;
   esac
   return 1
