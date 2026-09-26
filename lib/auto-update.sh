@@ -144,6 +144,7 @@ _aicoding_auto_recover_shared_lock_worker_locked() {
     # No active sync can start while this lock is held. Only now send TERM;
     # a recovery deadline therefore cannot strand a TERM-pending busy worker.
     _aicoding_auto_stop_worker || rc=$?
+    [ "$rc" -ne 5 ] || rc=3
   else
     rc=3
   fi
@@ -402,7 +403,8 @@ _aicoding_auto_stop_worker() {
     sleep 0.1
   done
   [ -z "$replacement_fd" ] || exec {replacement_fd}>&-
-  return 3
+  # TERM was delivered; a busy worker runs its trap once the current pass ends.
+  return 5
 }
 
 aicoding_auto_update_enroll() {
@@ -436,9 +438,13 @@ aicoding_auto_update_enroll() {
     fi
     sleep 1
   done
+  local stop_rc=0
   if _aicoding_auto_user_manager_available; then
     if _aicoding_auto_enable_linger && _aicoding_auto_stage_systemd; then
-      if _aicoding_auto_stop_worker && _aicoding_auto_enable_systemd; then
+      _aicoding_auto_stop_worker || stop_rc=$?
+      # A TERM-pending busy worker exits after its pass; the timer's own run
+      # is rejected by run.lock until then, so enabling now loses no pass.
+      if { [ "$stop_rc" -eq 0 ] || [ "$stop_rc" -eq 5 ]; } && _aicoding_auto_enable_systemd; then
         exec {ensure_fd}>&-
         return 0
       fi
@@ -452,6 +458,19 @@ aicoding_auto_update_enroll() {
     echo 'aicoding-auto-update: enabled timer state cannot be verified; fallback deferred' >&2
     exec {ensure_fd}>&-
     return 1
+  fi
+  if [ "$stop_rc" -eq 5 ]; then
+    # The signalled worker still holds worker.lock, and a successor started now
+    # would exit on that lock before the old worker does, leaving no scheduler.
+    # Past the deadline, stop blocking other enrollments but keep waiting:
+    # the old worker exits once its pass ends, and nothing else would replace it.
+    if ! flock -w "$AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT" "$state/worker.lock" true; then
+      echo 'aicoding-auto-update: signalled worker still busy; enrolling again once it exits' >&2
+      exec {ensure_fd}>&-
+      flock "$state/worker.lock" true || return 1
+      aicoding_auto_update_enroll
+      return $?
+    fi
   fi
   export AICODING_AUTO_UPDATE_ENSURE_FD=$ensure_fd
   _aicoding_auto_start_worker
