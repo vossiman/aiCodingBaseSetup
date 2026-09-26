@@ -298,7 +298,9 @@ EOF
   _fake_checkout myrepo
   run "$KP" "a title" --repo myrepo --priority medium
   [ "$status" -ne 0 ]
-  [[ "$output" == *"invalid choice: 'medium' (choose from low, normal, high)"* ]]
+  # argparse quotes choices on Python <3.14 and not on 3.14+; assert each part.
+  [[ "$output" == *"invalid choice: 'medium'"* ]]
+  [[ "$output" =~ choose\ from\ \'?low\'?,\ \'?normal\'?,\ \'?high\'? ]]
   [ ! -f "$TMPDIR/requests" ]
 }
 
