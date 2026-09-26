@@ -1,5 +1,7 @@
 #!/usr/bin/env bats
 setup() {
+  # Entries created by tests must not trip the writable-entry check first.
+  umask 022
   PROV_TMP=$(mktemp -d)
   export HOME="$PROV_TMP/home" AICODING_STATE_DIR="$PROV_TMP/state"
   mkdir -p "$HOME" "$PROV_TMP/source"

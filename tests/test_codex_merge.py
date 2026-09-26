@@ -16,6 +16,8 @@ import unittest
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
+# Fixture files must not trip the cache writable-entry check under a 0002 umask.
+os.umask(0o022)
 
 
 ROOT = Path(__file__).resolve().parents[1]

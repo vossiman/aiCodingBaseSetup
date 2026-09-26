@@ -334,8 +334,10 @@ STUB
         git add "$name"; git commit -qm "$name $shape"
         git push -q -f origin HEAD:refs/pull/1/head )
       run "$SKILL/run.sh" 1 "$REPO" --harness claude --model claude-opus-5 --review-only
-      [ "$status" -ne 0 ]
-      [[ "$output" == *"refusing unsafe instruction path $name"* ]]
+      # Print the case and run.sh's own output on failure: this assertion has
+      # flaked once under the parallel suite without a reproducible cause.
+      [ "$status" -ne 0 ] && [[ "$output" == *"refusing unsafe instruction path $name"* ]] \
+        || { echo "case $name/$shape: status=$status output=$output"; false; }
       local cw="$REPO/.claude/worktrees/review-pr1-claude"
       git -C "$cw" diff --quiet HEAD
       [ ! -e "$cw/.review-round/AGENTS.md.kind" ]
