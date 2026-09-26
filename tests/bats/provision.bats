@@ -303,3 +303,25 @@ EOF
   run install_claude_mcps
   [ "$status" -eq 1 ]
 }
+
+@test "scheduled provision registers kanban even when Claude has no registration yet" {
+  _managed_launcher kanban-mcp mcp-kanban a71a8bd
+  aicoding_result_record claude current 2.1.50 installed 2.1.50
+  cat > "$TMP/stubs/claude" <<'EOF2'
+#!/bin/sh
+echo "$*" >> "$TMP/claude-calls"
+case "$*" in
+  '--version') echo '2.1.50 (Claude Code)' ;;
+  'mcp get kanban')
+    [ -f "$TMP/added" ] || exit 1
+    printf 'Command: %s/.local/bin/kanban-mcp\n' "$HOME" ;;
+  'mcp add kanban -s user -- '*'/kanban-mcp') : > "$TMP/added" ;;
+esac
+EOF2
+  chmod +x "$TMP/stubs/claude"
+  run _provision_reconcile_selected_exact_mcp kanban mcp-kanban kanban-mcp
+  [ "$status" -eq 0 ]
+  [ -f "$TMP/added" ]
+  jq -e '.components["mcp-registration-claude-kanban"].state == "updated"' \
+    "$AICODING_STATE_DIR/update-results.json"
+}
