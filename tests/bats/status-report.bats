@@ -234,6 +234,18 @@ JSON
   if [[ "$blockers" == *"config-cursor:"* ]]; then false; fi
 }
 
+@test "saved failure detail is shown on unresolved rows only" {
+  cat > "$AICODING_RESULTS_FILE" <<'JSON'
+{"schema":1,"components":{
+  "config-codex":{"state":"failed","attempted_at":"2024-01-01T00:00:00Z","reason":"managed_config_apply_failed","detail":"invalid_provenance_cache: initial/cache_entry_writable:0664:aicoding.git/HEAD"},
+  "config-cursor":{"state":"current","successful_version":"x","attempted_at":"2024-01-01T00:00:00Z","reason":"verified","detail":"stale-should-not-show"}}}
+JSON
+  run "$BIN"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"config-codex: failed — managed config apply failed (invalid_provenance_cache: initial/cache_entry_writable:0664:aicoding.git/HEAD);"* ]]
+  if [[ "$output" == *stale-should-not-show* ]]; then false; fi
+}
+
 @test "malformed state degrades to unknown without breaking status" {
   printf '{broken\n' > "$AUTO/run.json"
   printf '{broken\n' > "$AICODING_RESULTS_FILE"

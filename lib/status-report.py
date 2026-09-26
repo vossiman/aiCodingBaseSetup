@@ -480,6 +480,9 @@ def result_text(record):
     success_text = ""
     if success and record.get("state") in ("failed", "blocked", "conflict"):
         success_text = f"; last successful version {clean(success)} at {local_time(record.get('succeeded_at'))}"
+    detail = record.get("detail")
+    if detail and record.get("state") in ("failed", "blocked", "conflict"):
+        reason = f"{reason} ({clean(detail)})"
     return (f"{clean(record.get('state', 'unknown'))} — {reason}; "
             f"{local_time(stamp)} ({freshness(stamp)}; recorded, not rechecked){target_text}{success_text}")
 

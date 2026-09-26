@@ -7,8 +7,10 @@
 _AICODING_CODEX_MERGE_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
 _codex_smart_error_json() {
-  jq -nc --arg code "$1" --arg action "${2:-plan}" \
-    '{config_changed:false,state_changed:false,conflicts:[],error:{code:$code},unmanaged:false,token:null,changes:[],adoption_notices:[]}
+  jq -nc --arg code "$1" --arg action "${2:-plan}" --arg detail "${3:-}" \
+    '{config_changed:false,state_changed:false,conflicts:[],
+      error:({code:$code} + if $detail == "" then {} else {detail:$detail} end),
+      unmanaged:false,token:null,changes:[],adoption_notices:[]}
      + if $action == "apply" then {applied:false} else {} end'
 }
 
@@ -69,7 +71,7 @@ _codex_smart_invoke() {
     fi
     release_sha=$(cat "$AICODING_BLUEPRINT_CLONE/.aicoding-version")
     if ! _codex_provenance_prepare "$release_sha"; then
-      CODEX_SMART_RESULT=$(_codex_smart_error_json "$CODEX_PROVENANCE_ERROR" "$action")
+      CODEX_SMART_RESULT=$(_codex_smart_error_json "$CODEX_PROVENANCE_ERROR" "$action" "$CODEX_PROVENANCE_DETAIL")
       return 0
     fi
     provenance_git=$CODEX_PROVENANCE_GIT
@@ -152,6 +154,15 @@ codex_smart_bucket() {
 
 codex_smart_error_code() {
   printf '%s' "$1" | jq -r '.error.code // empty' 2>/dev/null
+}
+
+# "<code>" or "<code>: <detail>" for logs and recorded results; single line.
+codex_smart_error_text() {
+  printf '%s' "$1" | jq -r '
+    if (.error.code // "") == "" then empty
+    elif (.error.detail | type) == "string" and .error.detail != ""
+    then "\(.error.code): \(.error.detail)" else .error.code end
+    | gsub("[\u0000-\u001f\u007f]"; "?") | .[0:200]' 2>/dev/null
 }
 
 codex_smart_path_text() {

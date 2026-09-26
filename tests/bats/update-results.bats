@@ -47,3 +47,15 @@ teardown() { rm -rf "$TMP"; }
   [ "$status" -eq 9 ]
   [ ! -e "$AICODING_STATE_DIR/update-results.json" ]
 }
+
+@test "result detail is kept on failures and dropped by the next record" {
+  aicoding_result_record config-codex failed abc managed_config_apply_failed "" \
+    $'invalid_provenance_cache: initial/cache_entry_writable:0664:aicoding.git/HEAD\x01'
+  jq -e '.components["config-codex"].detail == "invalid_provenance_cache: initial/cache_entry_writable:0664:aicoding.git/HEAD?"' \
+    "$AICODING_STATE_DIR/update-results.json"
+  aicoding_result_record config-codex failed abc managed_config_apply_failed
+  jq -e '.components["config-codex"] | has("detail") | not' "$AICODING_STATE_DIR/update-results.json"
+  aicoding_result_record config-codex blocked abc partial_config_blocked "" "why"
+  aicoding_result_record config-codex current abc reconciliation_verified abc "ignored"
+  jq -e '.components["config-codex"] | has("detail") | not' "$AICODING_STATE_DIR/update-results.json"
+}

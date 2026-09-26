@@ -1175,7 +1175,8 @@ class GitlessProvenanceTests(CliFixture):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content)
                 completed, payload = self.release_cli(release, cache)
-                self.assertEqual(payload["error"], {"code": "invalid_provenance_cache"})
+                self.assertEqual(payload["error"], {"code": "invalid_provenance_cache",
+                                                   "detail": "verify/graph_override:" + relative})
                 self.assertFalse(self.dest.exists())
                 path.unlink()
 
@@ -1184,7 +1185,8 @@ class GitlessProvenanceTests(CliFixture):
         original_mode = cache.stat().st_mode & 0o777
         cache.chmod(0o777)
         completed, payload = self.release_cli(release, cache)
-        self.assertEqual(payload["error"], {"code": "invalid_provenance_cache"})
+        self.assertEqual(payload["error"], {"code": "invalid_provenance_cache",
+                                           "detail": "verify/cache_entry_writable:0777:."})
         cache.chmod(original_mode)
         self.assertFalse(self.dest.exists())
 
@@ -1194,7 +1196,8 @@ class GitlessProvenanceTests(CliFixture):
         corrupt.parent.mkdir(exist_ok=True)
         corrupt.write_bytes(b"not a git object")
         completed, payload = self.release_cli(release, cache)
-        self.assertEqual(payload["error"], {"code": "invalid_provenance_cache"})
+        self.assertEqual(payload["error"]["code"], "invalid_provenance_cache")
+        self.assertTrue(payload["error"]["detail"].startswith("verify/fsck_failed:"))
         self.assertFalse(self.dest.exists())
 
     def test_gitless_cache_missing_and_divergent_preserve_state(self):
@@ -1233,6 +1236,64 @@ class GitlessProvenanceTests(CliFixture):
         completed, payload = self.release_cli(release, cache)
         self.assertEqual(completed.returncode, 0, payload)
         self.assertTrue(payload["applied"])
+
+
+class ProvenanceDetailTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        source = self.tmp / "source"
+        subprocess.run(["git", "init", "-q", str(source)], check=True)
+        subprocess.run(["git", "-C", str(source), "-c", "user.name=T", "-c", "user.email=t@example.invalid",
+                        "commit", "--allow-empty", "-qm", "initial"], check=True)
+        self.cache = self.tmp / "aicoding.git"
+        old = os.umask(0o077)
+        try:
+            subprocess.run(["git", "clone", "-q", "--bare", "--no-local", str(source), str(self.cache)], check=True)
+        finally:
+            os.umask(old)
+        subprocess.run(["git", "--git-dir", str(self.cache), "remote", "set-url", "origin",
+                        "https://github.com/vossiman/aiCodingBaseSetup"], check=True)
+
+    def failure(self):
+        from codex_release_provenance import ProvenanceFailure, validate_cache
+        with self.assertRaises(ProvenanceFailure) as raised:
+            validate_cache(self.cache)
+        return raised.exception
+
+    def test_valid_cache_passes(self):
+        from codex_release_provenance import validate_cache
+        validate_cache(self.cache)
+
+    def test_writable_entry_is_named_relative_to_cache(self):
+        os.chmod(self.cache / "HEAD", 0o664)
+        failure = self.failure()
+        self.assertEqual(str(failure), "invalid_provenance_cache")
+        self.assertEqual(failure.detail, "verify/cache_entry_writable:0664:HEAD")
+
+    def test_unexpected_config_key_names_only_the_key(self):
+        subprocess.run(["git", "--git-dir", str(self.cache), "config", "user.name", "secret value"], check=True)
+        self.assertEqual(self.failure().detail, "verify/unexpected_config_key:user.name")
+
+    def test_fsck_failure_reports_first_error_line(self):
+        for pack in (self.cache / "objects" / "pack").glob("*.pack"):
+            pack.unlink()
+        self.assertTrue(self.failure().detail.startswith("verify/fsck_failed:"))
+
+    def test_merge_engine_forwards_detail_in_error_payload(self):
+        import codex_merge_state
+        from codex_release_provenance import ProvenanceFailure
+
+        def reject(*_args):
+            raise ProvenanceFailure("invalid_provenance_cache", "verify/graph_override:shallow")
+
+        request = Request(action="plan", source=self.tmp / "s", template=self.tmp / "t",
+                          dest=self.tmp / "d", clone=self.tmp, profile="host")
+        with patch.object(codex_merge_state, "verify_release", reject):
+            with self.assertRaises(codex_merge_state.RequestFailure) as raised:
+                codex_merge_state._discover_provenance(request, b"")
+        self.assertEqual(raised.exception.diagnostic,
+                         {"code": "invalid_provenance_cache", "detail": "verify/graph_override:shallow"})
 
 
 if __name__ == "__main__":

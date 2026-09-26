@@ -170,7 +170,9 @@ def _discover_provenance(request: Request, template_raw: bytes) -> Dict[str, Any
         try:
             revision = verify_release(clone, request.template, template_raw, request.provenance_git)
         except ProvenanceFailure as failure:
-            raise RequestFailure(str(failure))
+            if failure.detail:
+                raise RequestFailure(failure.code, detail=failure.detail)
+            raise RequestFailure(failure.code)
         return {"origin": CANONICAL_ORIGIN, "revision": revision,
                 "template_sha256": "sha256:" + hashlib.sha256(template_raw).hexdigest(),
                 "source_kind": "tracking", "profile": request.profile}

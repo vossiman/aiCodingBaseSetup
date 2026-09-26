@@ -24,17 +24,21 @@ _aicoding_reason_audit() {
   printf '%s\n' "$1" >> "$AICODING_REASON_AUDIT" 2>/dev/null || true
 }
 
-# aicoding_result_record COMPONENT STATE TARGET REASON [SUCCESS_VERSION]
+# aicoding_result_record COMPONENT STATE TARGET REASON [SUCCESS_VERSION] [DETAIL]
+# DETAIL (single line, <=200 chars) is kept only on failed/blocked/conflict
+# records; every new record drops any earlier detail.
 aicoding_result_record() {
-  local component=${1:-} state=${2:-} target=${3:-} reason=${4:-} success=${5:-}
+  local component=${1:-} state=${2:-} target=${3:-} reason=${4:-} success=${5:-} detail=${6:-}
   [[ "$component" =~ ^[A-Za-z0-9._-]+$ ]] || return 2
   case "$state" in updated|current|conflict|blocked|failed) ;; *) return 2 ;; esac
   [[ "$reason" != *$'\n'* && ${#reason} -le 200 ]] || return 2
   case "$state" in
-    updated|current) [ -n "$success" ] || return 2 ;;
+    updated|current) [ -n "$success" ] || return 2; detail= ;;
     *) success= ;;
   esac
   [ -z "${AICODING_REASON_AUDIT:-}" ] || _aicoding_reason_audit "$reason"
+  detail=${detail//[$'\001'-$'\037'$'\177']/?}
+  detail=${detail:0:200}
 
   local dir lock now old tmp fd
   dir=$(dirname "$AICODING_RESULTS_FILE")
@@ -53,20 +57,20 @@ aicoding_result_record() {
     printf '%s' "$old" | jq \
       --arg c "$component" --arg t "$now" --arg s "$state" \
       --arg target "$target" --arg reason "$reason" --arg success "$success" \
-      '.attempted_at=$t | .components[$c] = ((.components[$c] // {}) + {
+      '.attempted_at=$t | .components[$c] = (((.components[$c] // {}) | del(.detail)) + {
         attempted_at:$t, successful_version:$success, target_version:($target|if .=="" then null else . end),
         state:$s, reason:$reason, succeeded_at:$t
       })' >"$tmp" || { rm -f "$tmp"; exec {fd}>&-; return 1; }
   else
     printf '%s' "$old" | jq \
       --arg c "$component" --arg t "$now" --arg s "$state" \
-      --arg target "$target" --arg reason "$reason" \
-      '.attempted_at=$t | .components[$c] = ((.components[$c] // {
+      --arg target "$target" --arg reason "$reason" --arg detail "$detail" \
+      '.attempted_at=$t | .components[$c] = (((.components[$c] // {
         successful_version:null, succeeded_at:null
-      }) + {
+      }) | del(.detail)) + {
         attempted_at:$t, target_version:($target|if .=="" then null else . end),
         state:$s, reason:$reason
-      })' >"$tmp" || { rm -f "$tmp"; exec {fd}>&-; return 1; }
+      } + (if $detail == "" then {} else {detail:$detail} end))' >"$tmp" || { rm -f "$tmp"; exec {fd}>&-; return 1; }
   fi
   chmod 0600 "$tmp" 2>/dev/null || true
   local mv_rc=0
