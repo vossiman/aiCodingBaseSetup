@@ -258,12 +258,21 @@ prepare_detail() {
 }
 @test "provenance fsck detail names cache objects relative to the cache, never absolute paths" {
   seed_cache
-  chmod 000 "$AICODING_STATE_DIR"/code-provenance/aicoding.git/objects/pack/*.pack
-  prepare_detail
-  chmod 400 "$AICODING_STATE_DIR"/code-provenance/aicoding.git/objects/pack/*.pack
-  [ "$status" -ne 0 ]
-  [[ "$output" == "invalid_provenance_cache|initial/fsck_failed:"*"error: packfile objects/pack/pack-"*".pack cannot be accessed" ]] || { echo "$output"; false; }
-  if [[ "$output" == *"$PROV_TMP"* ]]; then echo "$output"; false; fi
+  run bash -c '
+    . "$BLUEPRINT_ROOT/lib/codex-provenance.sh"
+    _real_git=$(declare -f _codex_provenance_git)
+    eval "${_real_git/_codex_provenance_git/_real_provenance_git}"
+    _codex_provenance_git() {
+      case " $* " in
+        *" fsck "*)
+          printf "error: packfile %s/objects/pack/pack-1.pack cannot be accessed\n" "${1#--git-dir=}" >&2
+          return 1 ;;
+      esac
+      _real_provenance_git "$@"
+    }
+    _codex_provenance_prepare "$PROV_SHA"
+    printf "%s|%s\n" "$CODEX_PROVENANCE_ERROR" "$CODEX_PROVENANCE_DETAIL"'
+  [ "$output" = "invalid_provenance_cache|initial/fsck_failed:1:error: packfile objects/pack/pack-1.pack cannot be accessed" ] || { echo "$output"; false; }
 }
 @test "provenance names a regular-file state ancestor as not a directory, not a symlink" {
   export PROV_TMP

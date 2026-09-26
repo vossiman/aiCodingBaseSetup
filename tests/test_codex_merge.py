@@ -1281,13 +1281,18 @@ class ProvenanceDetailTests(unittest.TestCase):
         self.assertTrue(self.failure().detail.startswith("verify/fsck_failed:"))
 
     def test_fsck_detail_is_relative_to_the_cache(self):
-        packs = list((self.cache / "objects" / "pack").glob("*.pack"))
-        for pack in packs:
-            pack.chmod(0)
-        self.addCleanup(lambda: [pack.chmod(0o400) for pack in packs])
-        detail = self.failure().detail
-        self.assertIn("packfile objects/pack/pack-", detail)
-        self.assertNotIn(str(self.tmp), detail)
+        import codex_release_provenance
+        real = codex_release_provenance.cache_git
+
+        def fake(cache, *args, **kwargs):
+            if "fsck" in args:
+                message = "error: packfile %s/objects/pack/pack-1.pack cannot be accessed\n" % cache.resolve()
+                return subprocess.CompletedProcess(args, 1, b"", message.encode())
+            return real(cache, *args, **kwargs)
+
+        with patch.object(codex_release_provenance, "cache_git", fake):
+            detail = self.failure().detail
+        self.assertEqual(detail, "verify/fsck_failed:1:error: packfile objects/pack/pack-1.pack cannot be accessed")
 
     def test_merge_engine_forwards_detail_in_error_payload(self):
         import codex_merge_state
