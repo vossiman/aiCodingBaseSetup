@@ -1280,6 +1280,15 @@ class ProvenanceDetailTests(unittest.TestCase):
             pack.unlink()
         self.assertTrue(self.failure().detail.startswith("verify/fsck_failed:"))
 
+    def test_fsck_detail_is_relative_to_the_cache(self):
+        packs = list((self.cache / "objects" / "pack").glob("*.pack"))
+        for pack in packs:
+            pack.chmod(0)
+        self.addCleanup(lambda: [pack.chmod(0o400) for pack in packs])
+        detail = self.failure().detail
+        self.assertIn("packfile objects/pack/pack-", detail)
+        self.assertNotIn(str(self.tmp), detail)
+
     def test_merge_engine_forwards_detail_in_error_payload(self):
         import codex_merge_state
         from codex_release_provenance import ProvenanceFailure

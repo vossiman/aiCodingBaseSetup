@@ -141,8 +141,14 @@ def validate_cache(cache):
         lines = fsck.stderr.decode("utf-8", "replace").splitlines()
         first = next((line for line in lines if re.match(r"(error|fatal|missing|broken)", line)),
                      lines[0] if lines else "")
+        # Git names objects by absolute path; keep only the cache-relative part.
+        for root in dict.fromkeys((str(cache.resolve()), str(cache.absolute()), str(cache))):
+            first = first.replace(root + "/", "").replace(root, ".")
+        home = os.path.expanduser("~")
+        if home not in ("", "/"):
+            first = first.replace(home, "~")
         raise _cache_failure("fsck_failed:%d:%s" % (
-            fsck.returncode, re.sub(r"[^A-Za-z0-9 ._:/-]", "?", first)[:120]))
+            fsck.returncode, re.sub(r"[^A-Za-z0-9 ._:/~-]", "?", first)[:120]))
 
 
 def verify_release(root, template, template_raw, cache):

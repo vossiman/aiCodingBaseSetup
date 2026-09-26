@@ -256,3 +256,22 @@ prepare_detail() {
   [ "${lines[1]}" = "invalid_provenance_cache: initial/cache_entry_writable:0664:aicoding.git/HEAD" ]
   [ ! -e "$HOME/rendered" ]
 }
+@test "provenance fsck detail names cache objects relative to the cache, never absolute paths" {
+  seed_cache
+  chmod 000 "$AICODING_STATE_DIR"/code-provenance/aicoding.git/objects/pack/*.pack
+  prepare_detail
+  chmod 400 "$AICODING_STATE_DIR"/code-provenance/aicoding.git/objects/pack/*.pack
+  [ "$status" -ne 0 ]
+  [[ "$output" == "invalid_provenance_cache|initial/fsck_failed:"*"error: packfile objects/pack/pack-"*".pack cannot be accessed" ]] || { echo "$output"; false; }
+  if [[ "$output" == *"$PROV_TMP"* ]]; then echo "$output"; false; fi
+}
+@test "provenance names a regular-file state ancestor as not a directory, not a symlink" {
+  export PROV_TMP
+  mkdir -p "$PROV_TMP/root"
+  touch "$PROV_TMP/root/file"
+  run bash -c '. "$BLUEPRINT_ROOT/lib/codex-provenance.sh"; AICODING_STATE_DIR="$PROV_TMP/root/file/state" _codex_provenance_prepare "$PROV_SHA"; printf "%s|%s\n" "$CODEX_PROVENANCE_ERROR" "$CODEX_PROVENANCE_DETAIL"'
+  [ "$output" = "invalid_provenance_cache|initial/state_path_not_directory:$PROV_TMP/root/file" ] || { echo "$output"; false; }
+  ln -s "$PROV_TMP/root" "$PROV_TMP/link"
+  run bash -c '. "$BLUEPRINT_ROOT/lib/codex-provenance.sh"; AICODING_STATE_DIR="$PROV_TMP/link/state" _codex_provenance_prepare "$PROV_SHA"; printf "%s|%s\n" "$CODEX_PROVENANCE_ERROR" "$CODEX_PROVENANCE_DETAIL"'
+  [ "$output" = "invalid_provenance_cache|initial/state_path_symlink:$PROV_TMP/link" ] || { echo "$output"; false; }
+}

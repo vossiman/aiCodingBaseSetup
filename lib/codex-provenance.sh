@@ -58,7 +58,12 @@ try:
             reject("state_dir_chmod_failed:" + errno.errorcode.get(error.errno, "EIO") + ":" + show(p))
 except OSError as error:
     code = errno.errorcode.get(error.errno, "EIO")
-    kind = "state_path_symlink" if error.errno in (errno.ELOOP, errno.ENOTDIR) else "state_path_open_failed:" + code
+    if error.errno == errno.ELOOP:
+        kind = "state_path_symlink"
+    elif error.errno == errno.ENOTDIR:
+        kind = "state_path_symlink" if os.path.islink(str(current)) else "state_path_not_directory"
+    else:
+        kind = "state_path_open_failed:" + code
     reject(kind + ":" + show(current))
 finally:
     if fd is not None: os.close(fd)
@@ -108,7 +113,7 @@ PY
 
 # Prints a rejection reason on stdout and returns 1 when the cache is unsafe.
 _codex_provenance_cache_safe() {
-  local cache=$1 key origin fsck_rc=0 fsck_first
+  local cache=$1 key origin fsck_rc=0 fsck_first cache_abs
   if [ -L "$cache" ]; then echo cache_symlink; return 1; fi
   if [ ! -d "$cache" ]; then echo cache_not_directory; return 1; fi
   for key in shallow info/grafts objects/info/alternates objects/info/http-alternates; do
@@ -131,7 +136,14 @@ _codex_provenance_cache_safe() {
   fsck_first=$(_codex_provenance_git --git-dir="$cache" fsck --full --no-reflogs 2>&1 >/dev/null) || fsck_rc=$?
   if [ "$fsck_rc" -ne 0 ]; then
     fsck_first=$(printf '%s\n' "$fsck_first" | grep -m1 -E '^(error|fatal|missing|broken)' || printf '%s\n' "$fsck_first" | head -n1)
-    fsck_first=${fsck_first//[^A-Za-z0-9 ._:\/-]/?}
+    # Git names objects by absolute path; keep only the cache-relative part.
+    cache_abs=$(cd -- "$cache" 2>/dev/null && pwd -P) || cache_abs=$cache
+    fsck_first=${fsck_first//"$cache_abs/"/}
+    fsck_first=${fsck_first//"$cache/"/}
+    fsck_first=${fsck_first//"$cache_abs"/.}
+    fsck_first=${fsck_first//"$cache"/.}
+    [ -z "${HOME:-}" ] || [ "$HOME" = / ] || fsck_first=${fsck_first//"$HOME"/\~}
+    fsck_first=${fsck_first//[^A-Za-z0-9 ._:\/~-]/?}
     printf 'fsck_failed:%s:%s\n' "$fsck_rc" "${fsck_first:0:120}"
     return 1
   fi
