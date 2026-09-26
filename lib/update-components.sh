@@ -763,10 +763,16 @@ _aicoding_npm_tree_ignores_scripts_safely() {
     return 2
   fi
   while IFS= read -r -d '' manifest; do
+    key=${manifest#"$root/"}; key=${key%/package.json}
+    # npm runs hooks only for installed package roots. A package.json a
+    # package ships inside dist/ or test fixtures is inert data. Every root
+    # must be a lock entry, so an implicit install still fails closed.
+    [[ "$key" =~ (^|/)node_modules/(@[^/]+/)?[^/@][^/]*$ ]] || continue
+    jq -e --arg key "$key" '.packages | has($key)' "$root/package-lock.json" \
+      >/dev/null 2>&1 || { rc=1; break; }
     jq -e '(.scripts // {}) as $s
       | all(["preinstall","install","postinstall"][];
           ($s[.] // "") == "")' "$manifest" >/dev/null 2>&1 || {
-      key=${manifest#"$root/"}; key=${key%/package.json}
       _aicoding_npm_optional_refresh_is_bundled "$root" "$key" || { rc=1; break; }
     }
     if ! jq -e '(.scripts // {}) as $s
@@ -775,7 +781,6 @@ _aicoding_npm_tree_ignores_scripts_safely() {
       # Publisher/local-source preparation does not run for a named registry
       # package. Require registry provenance before accepting its prebuilt
       # bytes; git/link/unknown sources may still need that preparation.
-      key=${manifest#"$root/"}; key=${key%/package.json}
       jq -e --arg key "$key" '.packages[$key]
         | (.link != true)
           and (.resolved | type == "string" and startswith("https://registry.npmjs.org/"))

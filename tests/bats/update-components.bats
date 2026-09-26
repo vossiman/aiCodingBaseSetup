@@ -659,10 +659,14 @@ if [ "$package" = context7 ]; then
     mkdir -p "$prefix/node_modules/lifecycle-dep"
     printf '{"name":"lifecycle-dep","version":"1.0.0","scripts":{"install":"node install.js"}}\n' \
       > "$prefix/node_modules/lifecycle-dep/package.json"
+    jq '.packages["node_modules/lifecycle-dep"]={"version":"1.0.0","hasInstallScript":true,"integrity":"sha512-fixture"}' \
+      "$prefix/package-lock.json" > "$prefix/lock.tmp" && mv "$prefix/lock.tmp" "$prefix/package-lock.json"
   fi
   if [ -n "${MCP_DEP_PAYLOAD:-}" ]; then
     mkdir -p "$prefix/node_modules/stable-dep"
     printf '{"name":"stable-dep","version":"1.0.0"}\n' > "$prefix/node_modules/stable-dep/package.json"
+    jq '.packages["node_modules/stable-dep"]={"version":"1.0.0","integrity":"sha512-fixture"}' \
+      "$prefix/package-lock.json" > "$prefix/lock.tmp" && mv "$prefix/lock.tmp" "$prefix/package-lock.json"
     printf '%s\n' "$MCP_DEP_PAYLOAD" > "$prefix/node_modules/stable-dep/index.js"
   fi
   printf '#!/bin/sh\nexit 0\n' > "$dir/dist/index.js"

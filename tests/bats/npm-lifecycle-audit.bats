@@ -44,6 +44,54 @@ teardown() { rm -rf "$AUDIT_TMP"; }
   [ "$status" -ne 0 ]
 }
 
+@test "install hooks in a package's shipped fixture manifests do not block" {
+  printf '{"name":"published"}\n' > "$AUDIT_ROOT/node_modules/published/package.json"
+  mkdir -p "$AUDIT_ROOT/node_modules/published/dist/test/fixtures/hooked" \
+    "$AUDIT_ROOT/node_modules/published/test/fixture"
+  printf '{"scripts":{"install":"build","prepare":"build"}}\n' \
+    > "$AUDIT_ROOT/node_modules/published/dist/test/fixtures/hooked/package.json"
+  printf '{"scripts":{"postinstall":"build"}}\n' \
+    > "$AUDIT_ROOT/node_modules/published/test/fixture/package.json"
+  run _aicoding_npm_tree_ignores_scripts_safely "$AUDIT_ROOT"
+  [ "$status" -eq 0 ]
+}
+
+@test "an installed scoped package with install hooks still blocks beside inert fixtures" {
+  printf '{"name":"published"}\n' > "$AUDIT_ROOT/node_modules/published/package.json"
+  mkdir -p "$AUDIT_ROOT/node_modules/published/fixtures/x" "$AUDIT_ROOT/node_modules/@scope/real"
+  printf '{"scripts":{"install":"build"}}\n' > "$AUDIT_ROOT/node_modules/published/fixtures/x/package.json"
+  printf '{"scripts":{"postinstall":"build"}}\n' > "$AUDIT_ROOT/node_modules/@scope/real/package.json"
+  jq '.packages["node_modules/@scope/real"]={"resolved":"https://registry.npmjs.org/@scope/real/-/real-1.0.0.tgz","integrity":"sha512-fixture"}' \
+    "$AUDIT_ROOT/package-lock.json" > "$AUDIT_TMP/lock" && mv "$AUDIT_TMP/lock" "$AUDIT_ROOT/package-lock.json"
+  run _aicoding_npm_tree_ignores_scripts_safely "$AUDIT_ROOT"
+  [ "$status" -eq 1 ]
+}
+
+@test "a nested installed package with install hooks still blocks" {
+  printf '{"name":"published"}\n' > "$AUDIT_ROOT/node_modules/published/package.json"
+  mkdir -p "$AUDIT_ROOT/node_modules/published/node_modules/inner"
+  printf '{"scripts":{"preinstall":"build"}}\n' > "$AUDIT_ROOT/node_modules/published/node_modules/inner/package.json"
+  jq '.packages["node_modules/published/node_modules/inner"]={"resolved":"https://registry.npmjs.org/inner/-/inner-1.0.0.tgz","integrity":"sha512-fixture"}' \
+    "$AUDIT_ROOT/package-lock.json" > "$AUDIT_TMP/lock" && mv "$AUDIT_TMP/lock" "$AUDIT_ROOT/package-lock.json"
+  run _aicoding_npm_tree_ignores_scripts_safely "$AUDIT_ROOT"
+  [ "$status" -eq 1 ]
+}
+
+@test "an installed package root missing from the lock is an implicit install" {
+  printf '{"name":"published"}\n' > "$AUDIT_ROOT/node_modules/published/package.json"
+  mkdir -p "$AUDIT_ROOT/node_modules/stowaway"
+  printf '{"name":"stowaway"}\n' > "$AUDIT_ROOT/node_modules/stowaway/package.json"
+  run _aicoding_npm_tree_ignores_scripts_safely "$AUDIT_ROOT"
+  [ "$status" -eq 1 ]
+}
+
+@test "a malformed lock cannot pass lifecycle inspection" {
+  printf '{"name":"published"}\n' > "$AUDIT_ROOT/node_modules/published/package.json"
+  printf 'not json\n' > "$AUDIT_ROOT/package-lock.json"
+  run _aicoding_npm_tree_ignores_scripts_safely "$AUDIT_ROOT"
+  [ "$status" -ne 0 ]
+}
+
 @test "unreadable package inventory cannot pass lifecycle inspection" {
   printf '{}\n' > "$AUDIT_ROOT/node_modules/published/package.json"
   find() { return 1; }
