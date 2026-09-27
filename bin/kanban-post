@@ -576,7 +576,7 @@ def complete_without_claim(ticket: str, evidence: str, references: list[str]) ->
     return 0 if status < 400 else 1
 
 
-def run_kanban_work(operation: str, payload: dict, *, optional: bool = False) -> dict | None:
+def run_kanban_work(operation: str, payload: dict, *, missing_ok: bool = False) -> dict | None:
     try:
         result = subprocess.run(
             ["kanban-work", "--json", operation],
@@ -587,18 +587,15 @@ def run_kanban_work(operation: str, payload: dict, *, optional: bool = False) ->
         if not isinstance(envelope, dict):
             raise ValueError("non-object envelope")
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError) as error:
-        if optional:
-            return None
         die(f"kanban-work failed: {type(error).__name__}")
     if result.returncode != 0 or not envelope.get("ok"):
-        if optional:
-            return None
         detail = envelope.get("error", {})
+        # Only an unknown handle means "no session"; any other failure fails closed.
+        if missing_ok and isinstance(detail, dict) and detail.get("code") == 404:
+            return None
         message = detail.get("message") if isinstance(detail, dict) else None
         die(message or "kanban-work rejected the operation")
     if not isinstance(envelope.get("data"), dict):
-        if optional:
-            return None
         die("kanban-work returned an invalid success envelope")
     return envelope
 
@@ -859,10 +856,12 @@ def main() -> int:
                     "--done --evidence cannot be combined with "
                     + ", ".join(incompatible)
                 )
+            if not a.evidence.strip():
+                p.error("--evidence must not be blank")
             handle = a.work_handle or os.environ.get("KANBAN_WORK_HANDLE")
             claim = None
             if handle:
-                current = run_kanban_work("lookup", {"handle": handle}, optional=not a.work_handle)
+                current = run_kanban_work("lookup", {"handle": handle}, missing_ok=not a.work_handle)
                 candidate = current["data"].get("active_claim") if current else None
                 if isinstance(candidate, dict):
                     targets = {str(candidate.get("ticket", "")).upper()}
