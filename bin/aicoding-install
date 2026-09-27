@@ -47,7 +47,7 @@ _aicoding_install_validate_source() {
   [ -d "$source" ] || return 2
   [ "$(cat "$source/.aicoding-version" 2>/dev/null)" = "$version" ] || return 2
   [ "$(cat "$source/.aicoding-bootstrap-version" 2>/dev/null)" = 1 ] || return 2
-  for file in bin/aicoding-install bin/aicoding-auto-update bin/aicoding-sync bin/aicoding-status bin/aicoding-select lib/runtime.sh lib/auto-update.sh lib/ci-selector.sh; do
+  for file in bin/aicoding-install bin/aicoding-auto-update bin/aicoding-sync bin/aicoding-status bin/aicoding-select lib/runtime.sh lib/sigchld.sh lib/auto-update.sh lib/ci-selector.sh; do
     [ -f "$source/$file" ] && bash -n "$source/$file" || return 1
   done
 }

@@ -173,3 +173,10 @@ EOF
   [ "$status" -eq 0 ] || { echo "$output"; false; }
   [[ "$(cat "$AICODING_TEST_DISPATCH")" == *"--profile minimal-pi"* ]]
 }
+
+@test "unattended enrollment rejects a source without the SIGCHLD reset helper" {
+  rm "$SOURCE/lib/sigchld.sh"
+  run run_enroll
+  [ "$status" -ne 0 ]
+  [ ! -e "$AICODING_TEST_INSTALL_MARKER/calls" ]
+}
