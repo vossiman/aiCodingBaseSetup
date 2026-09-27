@@ -71,18 +71,23 @@ calling the native updater. All other arguments pass through unchanged.
 ("update already running; request deferred"), so the command is safe to run
 at any time.
 
-### 3. Launchers refresh without a version change
+### 3. "Current" means the managed release, not whatever is on PATH
 
-A launcher is only rewritten when a release is activated. If the installed
-Claude already matches the target, `aicoding_update_claude` returns early and
-existing machines would keep the old wrapper until the next Claude release.
+Today `aicoding_update_claude` returns early when `claude --version` equals
+the target. On a fresh machine the native installer usually installs exactly
+that version, and `current/claude` does not exist yet, so the early return
+leaves the native launcher and its updater in charge until the next Claude
+release. Launchers are also only rewritten on activation, so existing
+machines would keep the old wrapper until then.
 
-On that `current` path, when `current/claude` already points at
-`versions/claude/<target>`, call the existing activation for the same version.
-`aicoding_activate_version` already has a reconcile branch for an
-already-active release that rewrites changed launchers without moving
-`current` or `previous` (lib/runtime.sh, "Reconcile launchers for an
-already-active release"). Unchanged launchers are a no-op.
+The early return therefore applies only when `current/claude` already
+resolves to `versions/claude/<target>`. In that case it still calls the
+existing activation for the same version: `aicoding_activate_version` has a
+reconcile branch for an already-active release that rewrites changed
+launchers without moving `current` or `previous` (lib/runtime.sh, "Reconcile
+launchers for an already-active release"); unchanged launchers are a no-op.
+In every other case (native install of the same version, no managed release,
+stale pointer) the normal staging and activation path runs.
 
 ### 4. Staging ignores the switch
 
@@ -107,6 +112,16 @@ still the live `claude` (first install before aicoding takes over, or a legacy
 launcher). Failure to remove is a warning, never a component failure.
 `~/.local/share/claude` itself and any other contents are untouched.
 
+The first activation preserved the native launcher as
+`~/.local/bin/claude.pre-aicoding`, a symlink into this tree
+(lib/runtime.sh:426,456). The runtime only reads it to roll back that same
+first activation (lib/runtime.sh:314); managed rollback uses
+`previous/claude`. When the guards pass, cleanup first removes that backup if,
+and only if, it is a symlink whose target lies inside
+`~/.local/share/claude/versions`. A backup that is a regular file or points
+elsewhere is kept, and the tree is then kept too, so nothing it references is
+ever left dangling.
+
 ### Profiles
 
 - `container` and `host` both run `aicoding_update_installed_components`
@@ -129,11 +144,13 @@ bats (TDD, red first):
 4. Launchers of other components carry neither the variables nor the
    interception.
 5. `aicoding_update_claude` on the already-current path rewrites an outdated
-   `claude` launcher without changing `current`/`previous`.
+   `claude` launcher without changing `current`/`previous`; a native install
+   of the target version with no managed release is staged and activated.
 6. The staged installer does not see `DISABLE_AUTOUPDATER`.
-7. Cleanup removes the directory when all guards hold, and keeps it when the
-   launcher is unmanaged, `current/claude` is missing, or a process executes
-   from inside it.
+7. Cleanup removes the directory and a `claude.pre-aicoding` symlink into it
+   when all guards hold, and keeps both when the launcher is unmanaged,
+   `current/claude` is missing, a process executes from inside it, or the
+   backup is a regular file or points elsewhere.
 
 Manual, after merge and one sync on a container and on the desktop host:
 
