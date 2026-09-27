@@ -5,7 +5,13 @@
 . "$(dirname "${BASH_SOURCE[0]}")/playwright-results.sh"
 
 # --- Environment Detection ---
+# Tests force the answer with AICODING_ENV_TYPE=container|wsl|linux (run.sh
+# pins linux, as on CI, so a WSL dev box runs the same suite); production
+# never sets it.
 detect_environment() {
+  case "${AICODING_ENV_TYPE:-}" in
+    container|wsl|linux) echo "$AICODING_ENV_TYPE"; return ;;
+  esac
   if [[ -f /.dockerenv ]] || [[ -f /run/.containerenv ]] \
      || [[ -n "${REMOTE_CONTAINERS:-}" ]] || [[ -n "${DEVCONTAINER:-}" ]] \
      || [[ -n "${CODESPACES:-}" ]]; then
