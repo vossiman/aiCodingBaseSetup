@@ -16,7 +16,7 @@ from typing import Callable
 
 from .bridge import Bridge
 from .events import EventIngestor
-from .legacy import DENIAL, parse_legacy_complete, prepare_legacy_complete
+from .legacy import DENIAL, claimed_legacy_complete, looks_like_legacy_complete
 from .schema import (
     BridgeError,
     READ_TOOLS,
@@ -431,7 +431,6 @@ class ClaudeCodexAdapter:
             mcp_tool = self._mcp_tool(tool_name)
             updated = None
             prepared_command = None
-            verified_shell_input = None
             if mcp_tool is not None:
                 if mcp_tool in READ_TOOLS:
                     pass
@@ -442,14 +441,10 @@ class ClaudeCodexAdapter:
                     raise BridgeError(422, "unknown Kanban MCP tool")
             elif tool_name in SHELL_TOOLS and isinstance(tool_input, dict):
                 command = tool_input.get("command")
-                if isinstance(command, str):
-                    prepared_command = parse_legacy_complete(command)
-                    if prepared_command is not None:
-                        verified_shell_input = self._validated_shell_input(harness, tool_input)
+                if looks_like_legacy_complete(command):
+                    prepared_command = command
 
-            requires_correlation = (
-                mcp_tool is not None and mcp_tool not in READ_TOOLS
-            ) or prepared_command is not None
+            requires_correlation = mcp_tool is not None and mcp_tool not in READ_TOOLS
             try:
                 session_id, agent_id = self._native(payload)
                 native_call_id = _bounded(payload.get("tool_use_id"), "tool_use_id")
@@ -465,14 +460,15 @@ class ClaudeCodexAdapter:
                     execution.identity, native_call_id, mcp_tool, normalized, self.now()
                 )
             elif prepared_command is not None:
-                prepared = prepare_legacy_complete(
-                    execution.identity, native_call_id, tool_input["command"],
+                prepared = claimed_legacy_complete(
+                    execution.identity, native_call_id, prepared_command,
                     store=self.store, now=self.now(),
                 )
-                updated = {
-                    **verified_shell_input,
-                    "command": shlex.join(prepared.rewritten_argv),
-                }
+                if prepared is not None:
+                    updated = {
+                        **self._validated_shell_input(harness, tool_input),
+                        "command": shlex.join(prepared.rewritten_argv),
+                    }
             lifecycle = self._record(
                 harness, "tool_start", execution,
                 _event_id("tool-start", harness, session_id, agent_id, native_call_id),
@@ -1108,10 +1104,8 @@ class OpenCodeAdapter:
         mcp_tool = self._mcp_tool(tool_name)
         args = payload.get("args")
         command = args.get("command") if tool_name == "bash" and isinstance(args, dict) else None
-        prepared_command = parse_legacy_complete(command) if isinstance(command, str) else None
-        requires_identity = (
-            mcp_tool is not None and mcp_tool not in READ_TOOLS
-        ) or prepared_command is not None
+        prepared_command = command if looks_like_legacy_complete(command) else None
+        requires_identity = mcp_tool is not None and mcp_tool not in READ_TOOLS
         session_id = payload.get("sessionID")
         call_id = payload.get("callID")
         if not isinstance(session_id, str) or not session_id.strip() or not isinstance(
@@ -1133,10 +1127,11 @@ class OpenCodeAdapter:
             )
             output["args"] = normalized_dict(mcp_tool, args)
         elif prepared_command is not None:
-            prepared = prepare_legacy_complete(
+            prepared = claimed_legacy_complete(
                 execution.identity, call_id, command, store=self.store, now=self.now()
             )
-            output["args"] = {"command": shlex.join(prepared.rewritten_argv)}
+            if prepared is not None:
+                output["args"] = {"command": shlex.join(prepared.rewritten_argv)}
 
         lifecycle = self._record(
             "tool_start", execution,

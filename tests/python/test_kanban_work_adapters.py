@@ -461,6 +461,7 @@ class AdapterTests(unittest.TestCase):
         started = self.start("codex")
         self.store.record_bound(started["handle"], "backend-session", "kanban", "worker")
         self.store.set_claim(started["handle"], CLAIM, "KANBAN-2")
+        self.prompt("codex")
         command = "kanban-post --done KANBAN-2 --evidence ok"
         invalid = [
             {"command": command, "description": "not in Codex 0.154.0 PreToolUse"},
@@ -488,22 +489,22 @@ class AdapterTests(unittest.TestCase):
         self.assertIn("Use the Kanban MCP complete_ticket tool",
                       result.output["hookSpecificOutput"]["permissionDecisionReason"])
 
-    def test_completion_like_shell_rejections_are_actionable_and_unrelated_commands_pass(self):
+    def test_unclaimed_completion_commands_pass_through_unchanged(self):
         started = self.start("codex")
         self.prompt("codex")
-        invalid = [
+        commands = [
+            "kanban-post --done KANBAN-2 --evidence ok",
             "KANBAN_WORK_HANDLE=x kanban-post --done KANBAN-2 --evidence ok",
             "kanban-post --done KANBAN-2 --evidence $HOME",
             "kanban-post --done KANBAN-2 --evidence ok; echo bad",
             "kanban-post --done KANBAN-2 --evidence ok --unknown flag",
         ]
-        for index, command in enumerate(invalid):
+        for index, command in enumerate(commands):
             with self.subTest(command=command):
-                result = self.pre("codex", "Bash", {"command": command}, call=f"bad-{index}")
+                result = self.pre("codex", "Bash", {"command": command}, call=f"plain-{index}")
                 output = result.output["hookSpecificOutput"]
-                self.assertEqual(output["permissionDecision"], "deny")
-                self.assertIn("Use the Kanban MCP complete_ticket tool",
-                              output["permissionDecisionReason"])
+                self.assertEqual(output["permissionDecision"], "allow")
+                self.assertNotIn("updatedInput", output)
         ordinary = self.pre("codex", "Bash", {"command": "git status --short"}, call="ordinary")
         self.assertEqual(ordinary.output["hookSpecificOutput"]["permissionDecision"], "allow")
         self.assertFalse(self.store.has_any_permit())

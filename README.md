@@ -79,6 +79,11 @@ allowlist could never keep up. The optional qualification preflight
 (`tools/qualify-kanban-clients`) is informational and gates nothing. See
 [the qualification notes](docs/kanban-mcp-qualification.md).
 
+`kanban-post --done TICKET --evidence TEXT` completes through the session's
+claim when it holds one. Without a claim it posts the evidence as a comment
+first, then sets the ticket to Done, so a session whose hooks did not register
+can still close work.
+
 ### Claude Code Plugins (Marketplace)
 
 - superpowers (brainstorming, TDD, plans, code review, debugging)

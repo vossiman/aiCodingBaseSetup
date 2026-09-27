@@ -563,7 +563,20 @@ def run_json_mode(operation: str) -> int:
         return 1
 
 
-def run_kanban_work(operation: str, payload: dict) -> dict:
+def complete_without_claim(ticket: str, evidence: str, references: list[str]) -> int:
+    """No claim for this ticket: record the evidence first, so Done never lacks it."""
+    body = "Completion evidence:\n\n" + evidence
+    if references:
+        body += "\n\nReferences:\n" + "\n".join(f"- {ref}" for ref in references)
+    status, out = call("POST", f"/api/tickets/{ticket}/comments", {"body": body})
+    if status < 400:
+        status, out = call("PATCH", f"/api/tickets/{ticket}", {"status": "done"})
+    print(status)
+    emit(out)
+    return 0 if status < 400 else 1
+
+
+def run_kanban_work(operation: str, payload: dict, *, optional: bool = False) -> dict | None:
     try:
         result = subprocess.run(
             ["kanban-work", "--json", operation],
@@ -574,12 +587,18 @@ def run_kanban_work(operation: str, payload: dict) -> dict:
         if not isinstance(envelope, dict):
             raise ValueError("non-object envelope")
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError) as error:
+        if optional:
+            return None
         die(f"kanban-work failed: {type(error).__name__}")
     if result.returncode != 0 or not envelope.get("ok"):
+        if optional:
+            return None
         detail = envelope.get("error", {})
         message = detail.get("message") if isinstance(detail, dict) else None
         die(message or "kanban-work rejected the operation")
     if not isinstance(envelope.get("data"), dict):
+        if optional:
+            return None
         die("kanban-work returned an invalid success envelope")
     return envelope
 
@@ -841,17 +860,21 @@ def main() -> int:
                     + ", ".join(incompatible)
                 )
             handle = a.work_handle or os.environ.get("KANBAN_WORK_HANDLE")
-            if not handle:
-                die("--done --evidence requires a bound native work session; use the Kanban MCP")
-            current = run_kanban_work("lookup", {"handle": handle})
-            claim = current["data"].get("active_claim")
-            targets = set()
-            if isinstance(claim, dict):
-                targets.add(str(claim.get("ticket", "")).upper())
-                if claim.get("ticket_id"):
-                    targets.add(str(claim["ticket_id"]).upper())
-            if a.done.upper() not in targets:
-                die("--done target is not the bound session's current claim; use the Kanban MCP")
+            claim = None
+            if handle:
+                current = run_kanban_work("lookup", {"handle": handle}, optional=not a.work_handle)
+                candidate = current["data"].get("active_claim") if current else None
+                if isinstance(candidate, dict):
+                    targets = {str(candidate.get("ticket", "")).upper()}
+                    if candidate.get("ticket_id"):
+                        targets.add(str(candidate["ticket_id"]).upper())
+                    if a.done.upper() not in targets:
+                        die("--done target is not the bound session's current claim; use the Kanban MCP")
+                    claim = candidate
+            if claim is None:
+                if a.work_handle:
+                    die("--done --evidence found no active claim for the bound session")
+                return complete_without_claim(a.done, a.evidence, a.reference or [])
             claim_id = claim.get("id")
             if not isinstance(claim_id, str) or not claim_id:
                 die("kanban-work returned an invalid active claim")

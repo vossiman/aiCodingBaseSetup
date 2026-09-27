@@ -27,6 +27,7 @@ setup() {
   # refuses to read the store when an override is present. The store above
   # stays for the tests that assert on its absence or emptiness.
   export KANBAN_TEST_TOKEN="$FAKE_TOKEN"
+  unset KANBAN_WORK_HANDLE
 }
 
 teardown() {
@@ -143,6 +144,8 @@ class H(http.server.BaseHTTPRequestHandler):
             registered.add(payload["name"])
             return self._reply(201, {"name": payload["name"], "archived": False})
         if self.command == "POST" and self.path.endswith("/comments"):
+            if "/MISSING-1/" in self.path:
+                return self._reply(404, {"detail": "Ticket not found"})
             return self._reply(201, {"id": "new-comment", **payload})
         if self.command == "POST" and self.path == "/api/tickets":
             if payload.get("status") == "nonesuch":
@@ -400,14 +403,26 @@ EOF
   grep -q 'PATCH /api/tickets/abc123 .*"status": "done"' "$TMPDIR/requests"
 }
 
-@test "--done with evidence requires an explicitly bound native work session" {
+@test "--done with evidence and no work session records evidence, then sets Done" {
   _start_api_server myrepo
   _fake_kanban_work
-  run "$KP" --done MYREPO-1 --evidence "tests pass"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"requires a bound native work session"* ]]
+  run "$KP" --done MYREPO-1 --evidence "tests pass" --reference "PR #7"
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
   [ ! -f "$KANBAN_FAKE_LOG" ]
-  [ ! -f "$TMPDIR/requests" ]
+  run cat "$TMPDIR/requests"
+  [ "${#lines[@]}" -eq 2 ]
+  [[ "${lines[0]}" == "POST /api/tickets/MYREPO-1/comments "*"tests pass"*"PR #7"* ]]
+  [[ "${lines[1]}" == 'PATCH /api/tickets/MYREPO-1 {"status": "done"}' ]]
+}
+
+@test "--done with evidence does not set Done when the evidence comment fails" {
+  _start_api_server myrepo
+  _fake_kanban_work
+  run "$KP" --done MISSING-1 --evidence "tests pass"
+  [ "$status" -ne 0 ]
+  run cat "$TMPDIR/requests"
+  [ "${#lines[@]}" -eq 1 ]
+  [[ "${lines[0]}" == "POST "* ]]
 }
 
 @test "--done with evidence rejects every legacy mutation argument before bridge lookup" {
