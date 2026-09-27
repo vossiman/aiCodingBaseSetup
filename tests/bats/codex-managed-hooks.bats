@@ -21,8 +21,14 @@ setup() {
   printf '#!/bin/sh\nexit 0\n' > "$TMPDIR_T/bin/codex"; chmod +x "$TMPDIR_T/bin/codex"
   # A MINIMAL PATH: the real codex lives in ~/.local/bin, so leaving the
   # inherited PATH in place would defeat the "codex not installed" case.
-  # tomllib needs Python 3.11+; /usr/bin/python3 can be older (Ubuntu 22.04: 3.10).
-  TEST_PYTHON=$(command -v python3)
+  # tomllib needs Python 3.11+; either the caller's python3 or /usr/bin's may be older.
+  TEST_PYTHON=
+  for candidate in "$(command -v python3)" /usr/bin/python3; do
+    if [ -x "$candidate" ] && "$candidate" -c 'import tomllib' 2>/dev/null; then
+      TEST_PYTHON=$candidate
+      break
+    fi
+  done
   export PATH="$TMPDIR_T/bin:/usr/bin:/bin"
 
   . "$BLUEPRINT_ROOT/lib/provision-system.sh" >/dev/null 2>&1
@@ -209,7 +215,7 @@ EOF
   ensure_codex_managed_hooks
   cmp "$BLUEPRINT_ROOT/configs/claude/hooks/memory-hint.sh" "$CODEX_MANAGED_DIR/hooks/memory-hint.sh"
   cmp "$BLUEPRINT_ROOT/configs/claude/hooks/check-archived-docs.sh" "$CODEX_MANAGED_DIR/hooks/check-archived-docs.sh"
-  "$TEST_PYTHON" -c 'import tomllib' 2>/dev/null || skip "python3 with tomllib unavailable (needs 3.11+)"
+  [ -n "$TEST_PYTHON" ] || skip "python3 with tomllib unavailable (needs 3.11+)"
   run "$TEST_PYTHON" -c '
 import sys, tomllib
 with open(sys.argv[1], "rb") as f: hooks=tomllib.load(f)["hooks"]
@@ -224,6 +230,7 @@ assert any(h["command"].endswith("check-archived-docs.sh") for group in hooks["S
   [ -x "$CODEX_MANAGED_DIR/hooks/kanban-work-hook.sh" ]
   cmp "$BLUEPRINT_ROOT/configs/claude/hooks/kanban-work-hook.sh" \
     "$CODEX_MANAGED_DIR/hooks/kanban-work-hook.sh"
+  [ -n "$TEST_PYTHON" ] || skip "python3 with tomllib unavailable (needs 3.11+)"
   run "$TEST_PYTHON" - "$REQ" <<'PY'
 import sys, tomllib
 with open(sys.argv[1], "rb") as stream:
