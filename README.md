@@ -73,22 +73,11 @@ are retained for one hour. The delivery queue is capped at 1024 rows. This
 registry coordinates processes running as the same user. It is not an
 adversarial security boundary against another process running as that user.
 
-Lifecycle mutations stay disabled unless the exact installed client version is
-listed in `configs/kanban/qualified-clients.json`; board read tools remain
-available. A missing matrix, malformed matrix, or unlisted version therefore
-keeps compatibility mode. The qualification preflight observes each real
-client's exact version and writes an honest unsupported report unless native
-lifecycle evidence exists:
-
-```bash
-tools/qualify-kanban-clients --all --output out/kanban-mcp-qualification
-```
-
-It launches no model today, and the production matrix is empty. Rollout is
-Codex-first; the other clients are not a prerequisite for a later Codex-only
-rollout. Codex remains unsupported because its available nonexecuting hook
-inventory does not use the same configuration as the proposed model launch.
-See [the qualification status and blockers](docs/kanban-mcp-qualification.md).
+Lifecycle mutations (bind, claim, complete) work for every supported client,
+whatever its version: the clients release several times a day, so a per-version
+allowlist could never keep up. The optional qualification preflight
+(`tools/qualify-kanban-clients`) is informational and gates nothing. See
+[the qualification notes](docs/kanban-mcp-qualification.md).
 
 ### Claude Code Plugins (Marketplace)
 

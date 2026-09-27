@@ -15,9 +15,6 @@ setup() {
 printf 'Kanban workflow fixture\n'
 EOF
   chmod +x "$HOME/bin/kanban-mcp"
-  MATRIX="$HOME/qualified.json"
-  printf '%s\n' '{"clients":{"cursor":{"versions":["2026.09.10-fd3934a"]}}}' > "$MATRIX"
-  export AICODING_KANBAN_QUALIFIED_CLIENTS="$MATRIX"
   HOOK="$BLUEPRINT_ROOT/configs/claude/hooks/kanban-work-hook.sh"
 }
 

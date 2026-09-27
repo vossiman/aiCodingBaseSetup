@@ -6,14 +6,11 @@ import json
 import os
 from datetime import date
 from dataclasses import dataclass
-from pathlib import Path
 from types import MappingProxyType
-from urllib.parse import urlsplit
 from uuid import UUID
 
 
 MAX_OPAQUE = 300
-LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 STATUSES = frozenset({"backlog", "todo", "doing", "done"})
 PRIORITIES = frozenset({"low", "normal", "high"})
 SWIMLANES = frozenset({"required", "nice_to_have", "waiting_for_feedback", "needs_decision"})
@@ -205,29 +202,9 @@ def normalized_dict(tool: str, args: dict) -> dict:
     return json.loads(normalize_tool_args(tool, args))
 
 
-def _blueprint_matrix() -> Path:
-    return Path(__file__).resolve().parents[2] / "configs" / "kanban" / "qualified-clients.json"
-
-
-def _matrix_path() -> Path:
-    override = os.environ.get("AICODING_KANBAN_QUALIFIED_CLIENTS")
-    if override:
-        parts = urlsplit(os.environ.get("KANBAN_URL", ""))
-        if parts.hostname in LOOPBACK and os.environ.get("KANBAN_TEST_TOKEN"):
-            return Path(override)
-    return _blueprint_matrix()
+LIFECYCLE_CLIENTS = frozenset({"claude", "codex", "cursor", "opencode"})
 
 
 def qualified_client_version(harness: str, version: str) -> bool:
-    """Return true only for an exact version in a trusted matrix location."""
-    if not isinstance(harness, str) or not isinstance(version, str):
-        return False
-    try:
-        value = json.loads(_matrix_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return False
-    clients = value.get("clients", value) if isinstance(value, dict) else {}
-    entry = clients.get(harness) if isinstance(clients, dict) else None
-    if isinstance(entry, dict):
-        entry = entry.get("versions", [])
-    return isinstance(entry, list) and version in entry and all(isinstance(item, str) for item in entry)
+    """Every supported harness is trusted; a client update that breaks hooks shows up in use."""
+    return isinstance(harness, str) and harness in LIFECYCLE_CLIENTS

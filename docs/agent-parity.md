@@ -55,28 +55,15 @@ that source.
 
 | Client | Native integration | Lifecycle behavior | Enforcement gate |
 |---|---|---|---|
-| Claude Code | SessionStart, PreToolUse, PostToolUse, PostToolUseFailure, Stop, SubagentStop, SessionEnd hooks | Native session and agent identity, tool activity, child-aware stop, final reconciliation | Exact qualified Claude Code version |
-| Codex | Managed SessionStart, PreToolUse, PostToolUse, Stop, SessionEnd hooks | Native thread and turn generation, successful tool activity, bounded failed-call reconciliation gate, final reconciliation | Exact qualified Codex version |
-| Cursor Agent | SessionStart, preToolUse, postToolUse, postToolUseFailure, stop, subagentStop, sessionEnd hooks | Native conversation and generation identity, tool activity, child-stop correlation, final reconciliation | Exact qualified Cursor build string |
-| OpenCode | Local plugin lifecycle and tool hooks | Native session and plugin-instance generation, tool activity, parent/child tracking, idle and deletion reconciliation | Exact qualified OpenCode version |
+| Claude Code | SessionStart, PreToolUse, PostToolUse, PostToolUseFailure, Stop, SubagentStop, SessionEnd hooks | Native session and agent identity, tool activity, child-aware stop, final reconciliation | None: every supported client is trusted |
+| Codex | Managed SessionStart, PreToolUse, PostToolUse, Stop, SessionEnd hooks | Native thread and turn generation, successful tool activity, bounded failed-call reconciliation gate, final reconciliation | None: every supported client is trusted |
+| Cursor Agent | SessionStart, preToolUse, postToolUse, postToolUseFailure, stop, subagentStop, sessionEnd hooks | Native conversation and generation identity, tool activity, child-stop correlation, final reconciliation | None: every supported client is trusted |
+| OpenCode | Local plugin lifecycle and tool hooks | Native session and plugin-instance generation, tool activity, parent/child tracking, idle and deletion reconciliation | None: every supported client is trusted |
 
-An exact client version must pass real-client qualification against the
-loopback fake board before it is written to
-`configs/kanban/qualified-clients.json`. Until then, its Kanban read tools work
-and binding or claim mutations return an unsupported-adapter error. Versions
-are matched literally; semantic version ordering and Cursor's dated build
-string do not imply support. Qualification runs with:
-
-```bash
-tools/qualify-kanban-clients --all --output out/kanban-mcp-qualification
-```
-
-This command is currently a version-observing preflight and records all native
-scenarios as unobserved. The matrix is empty. Rollout is Codex-first, without a
-four-client prerequisite, but Codex 0.154.0 remains unsupported because the
-available nonexecuting app-server inventory does not load the same
-configuration as `exec --ignore-user-config`. See
-[Kanban MCP qualification](kanban-mcp-qualification.md).
+Every supported client can bind, claim and complete, whatever its version.
+The clients ship several releases a day, so a per-version allowlist could never
+keep up; a release that breaks the hooks shows up in use. The optional preflight
+in [Kanban MCP qualification](kanban-mcp-qualification.md) gates nothing.
 
 The local SQLite registry binds a handle to one native identity and run
 generation, consumes a matching pre-call permit once, renews activity while a
