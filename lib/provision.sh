@@ -506,6 +506,14 @@ install_claude_mcps() {
 }
 
 # --- Claude Code marketplace plugins ---
+# Print the user-scope version of an installed plugin; fail when absent or
+# when the registry is missing or unreadable (the CLI path then decides).
+_claude_plugin_version() {
+  jq -er --arg p "$1" \
+    '[.plugins[$p][]? | select(.scope == "user")][0].version // empty' \
+    "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null
+}
+
 install_claude_plugins() {
   local inherited_receipt=${AICODING_REQUIRE_UPDATE_RECEIPT:-0}
   local AICODING_REQUIRE_UPDATE_RECEIPT=$inherited_receipt
@@ -559,6 +567,22 @@ install_claude_plugins() {
         fi
         continue ;;
     esac
+    # Claude's own registry says what is installed; spawning the CLI once per
+    # plugin on every sync only re-confirmed it (and could hang doing so).
+    if [ "${AICODING_SYNC_FULL:-0}" != 1 ] && _claude_plugin_version "$plugin" >/dev/null; then
+      _PROVISION_TASK_LABEL=${plugin%@*} _PROVISION_TASK_START=$(_aicoding_ui_now)
+      _provision_task_done ok "installed ($(_claude_plugin_version "$plugin"))"
+      continue
+    fi
+    if [ "${AICODING_SYNC_FULL:-0}" = 1 ] && _claude_plugin_version "$plugin" >/dev/null; then
+      if _provision_task "${plugin%@*}" updating claude plugin update "$plugin"; then
+        _provision_task_done ok "$(_claude_plugin_version "$plugin" || echo updated)"
+      else
+        _provision_task_done fail "$_PROVISION_TASK_REASON"
+        rc=1
+      fi
+      continue
+    fi
     if _provision_task "${plugin%@*}" installing claude plugin install "$plugin"; then
       case "$_PROVISION_TASK_LAST" in
         *"already installed"*) _provision_task_done ok "up to date" ;;
@@ -573,6 +597,7 @@ install_claude_plugins() {
     fi
   done
   for plugin in "${RETIRED_PLUGINS[@]}"; do
+    _claude_plugin_version "$plugin" >/dev/null || [ ! -f "$HOME/.claude/plugins/installed_plugins.json" ] || continue
     if _provision_task "${plugin%@*}" removing claude plugin uninstall "$plugin"; then
       _provision_task_done ok "removed (retired)"
     elif aicoding_ui_active; then
@@ -609,7 +634,8 @@ install_codex_plugins() {
   header "Codex Plugins"
   local plugin="superpowers@openai-curated-remote" installed result package link old
   local codex_home="${CODEX_HOME:-$HOME/.codex}"
-  if ! result=$(_provision_run codex plugin add "$plugin" --json 2>/dev/null); then
+  if ! result=$(AICODING_UI_LABEL=superpowers AICODING_UI_DEFER_RESULT=1 aicoding_progress_run "codex: adding $plugin" \
+      _aicoding_progress_quiet_stderr _provision_run codex plugin add "$plugin" --json); then
     warn "Could not install/update $plugin — retry with: codex plugin add $plugin"
     _provision_soft_failure; return $?
   fi
