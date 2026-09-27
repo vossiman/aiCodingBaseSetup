@@ -39,6 +39,9 @@ export CODEX_MANAGED_DIR="${TMPDIR:-/tmp}/aicoding-bats-etc-codex"
 #     ConnectTimeout turn that into a fast, fail-open miss → cached-clone
 #     fallback, which the tests already expect.
 export AICODINGSETUP_SKIP_NETWORK=1
+# Detect the environment as CI does. On a WSL dev box install.sh would
+# otherwise refuse the container installer and fail ~100 tests.
+export AICODING_ENV_TYPE=linux
 export GIT_TERMINAL_PROMPT=0
 # Point the lfs-autopull probe at a nonexistent file so install.sh runs inside
 # tests never touch the container's real /usr/local/share script or write lfs
