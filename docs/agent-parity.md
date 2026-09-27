@@ -62,8 +62,7 @@ that source.
 
 Every supported client can bind, claim and complete, whatever its version.
 The clients ship several releases a day, so a per-version allowlist could never
-keep up; a release that breaks the hooks shows up in use. The optional preflight
-in [Kanban MCP qualification](kanban-mcp-qualification.md) gates nothing.
+keep up; a release that breaks the hooks shows up in use.
 
 The local SQLite registry binds a handle to one native identity and run
 generation, consumes a matching pre-call permit once, renews activity while a
