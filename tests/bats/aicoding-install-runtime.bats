@@ -18,6 +18,7 @@ setup() {
   cp "$BLUEPRINT_ROOT/bin/aicoding-auto-update" "$SOURCE/bin/"
   cp "$BLUEPRINT_ROOT/lib/runtime.sh" "$SOURCE/lib/"
   cp "$BLUEPRINT_ROOT/lib/auto-update.sh" "$SOURCE/lib/"
+  cp "$BLUEPRINT_ROOT/lib/sigchld.sh" "$SOURCE/lib/"
   cp "$BLUEPRINT_ROOT/lib/ci-selector.sh" "$SOURCE/lib/"
   cp "$BLUEPRINT_ROOT/configs/systemd/"* "$SOURCE/configs/systemd/"
   for name in aicoding-sync aicoding-status aicoding-select; do
