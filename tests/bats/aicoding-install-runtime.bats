@@ -18,6 +18,7 @@ setup() {
   cp "$BLUEPRINT_ROOT/bin/aicoding-auto-update" "$SOURCE/bin/"
   cp "$BLUEPRINT_ROOT/lib/runtime.sh" "$SOURCE/lib/"
   cp "$BLUEPRINT_ROOT/lib/auto-update.sh" "$SOURCE/lib/"
+  cp "$BLUEPRINT_ROOT/lib/sigchld.sh" "$SOURCE/lib/"
   cp "$BLUEPRINT_ROOT/lib/ci-selector.sh" "$SOURCE/lib/"
   cp "$BLUEPRINT_ROOT/configs/systemd/"* "$SOURCE/configs/systemd/"
   for name in aicoding-sync aicoding-status aicoding-select; do
@@ -171,4 +172,11 @@ EOF
   run "$BLUEPRINT_ROOT/bin/aicoding-install" </dev/null
   [ "$status" -eq 0 ] || { echo "$output"; false; }
   [[ "$(cat "$AICODING_TEST_DISPATCH")" == *"--profile minimal-pi"* ]]
+}
+
+@test "unattended enrollment rejects a source without the SIGCHLD reset helper" {
+  rm "$SOURCE/lib/sigchld.sh"
+  run run_enroll
+  [ "$status" -ne 0 ]
+  [ ! -e "$AICODING_TEST_INSTALL_MARKER/calls" ]
 }

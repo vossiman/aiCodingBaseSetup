@@ -15,6 +15,7 @@ setup() {
   mkdir -p "$TEST_ROOT/runtime/bin" "$TEST_ROOT/runtime/lib" "$TEST_ROOT/runtime/configs/systemd"
   cp "$BLUEPRINT_ROOT/bin/aicoding-auto-update" "$TEST_ROOT/runtime/bin/"
   cp "$BLUEPRINT_ROOT/lib/auto-update.sh" "$TEST_ROOT/runtime/lib/"
+  cp "$BLUEPRINT_ROOT/lib/sigchld.sh" "$TEST_ROOT/runtime/lib/"
   cp "$BLUEPRINT_ROOT/configs/systemd/"* "$TEST_ROOT/runtime/configs/systemd/"
   chmod +x "$TEST_ROOT/runtime/bin/aicoding-auto-update"
   ln -s "$TEST_ROOT/runtime/bin/aicoding-auto-update" "$TEST_ROOT/aicoding-auto-update"

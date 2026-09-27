@@ -490,7 +490,7 @@ _sync_validate_blueprint_release() {
   local root=$1 sha=$2 file
   [ "$(cat "$root/.aicoding-version" 2>/dev/null)" = "$sha" ] || return 1
   [ "$(cat "$root/.aicoding-bootstrap-version" 2>/dev/null)" = 1 ] || return 1
-  for file in bin/aicoding-sync lib/sync.sh lib/blueprint-deploy.sh lib/update-results.sh lib/update-components.sh; do
+  for file in bin/aicoding-sync lib/sigchld.sh lib/sync.sh lib/blueprint-deploy.sh lib/update-results.sh lib/update-components.sh; do
     [ -f "$root/$file" ] && bash -n "$root/$file" || return 1
   done
   [ -x "$root/bin/aicoding-sync" ]

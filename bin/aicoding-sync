@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -uo pipefail
 SCRIPT_REAL=$(readlink -f "$0"); SCRIPT_DIR=$(dirname "$(dirname "$SCRIPT_REAL")")
+. "$SCRIPT_DIR/lib/sigchld.sh"
+aicoding_reset_inherited_sigchld "$SCRIPT_REAL" "$@"
 
 # The scheduled entrypoint is incapable of prompting, including in code
 # reached after a refresh exec.
