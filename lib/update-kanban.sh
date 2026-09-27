@@ -127,7 +127,11 @@ aicoding_update_kanban_mcp() {
       aicoding_result_record mcp-kanban failed "$revision" existing_release_invalid
       return 1
     }
-    printf 'INFO: mcp-kanban: reusing verified release %s\n' "$revision" >&2
+    if declare -F aicoding_ui_active >/dev/null && aicoding_ui_active; then
+      AICODING_UI_NOTE="current (${revision:0:7})"
+    else
+      printf 'INFO: mcp-kanban: reusing verified release %s\n' "$revision" >&2
+    fi
     _aicoding_finish_kanban_mcp_release "$revision" "$release"
     return $?
   fi

@@ -1,19 +1,41 @@
 # Progress for slow pure operations. Sourced by runtime/updater libraries.
 # Run external commands or read-only functions here: the operation executes in
 # a subshell, so callers needing shell-state mutations must call them directly.
-aicoding_progress_run() (
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ui.sh"
+
+aicoding_progress_run() {
+  # Section titles are parent-shell state; print a pending one before the
+  # subshell starts, or the subshell would print it and the parent again.
+  if aicoding_ui_active && [ -z "${AICODING_UI_SPINNING:-}" ]; then _aicoding_ui_flush_section; fi
+  _aicoding_progress_run_impl "$@"
+}
+
+_aicoding_progress_run_impl() (
   local label=$1 owner=$BASHPID ticker operation= started=$SECONDS rc=0 interval
+  local ui=plain ui_started display
   shift
+  # On a terminal the outermost task owns one spinner line; nested tasks stay
+  # silent so they cannot scribble over it.
+  if aicoding_ui_active; then
+    if [ -n "${AICODING_UI_SPINNING:-}" ]; then ui=nested; else ui=tty; fi
+    export AICODING_UI_SPINNING=1
+  fi
+  display=${AICODING_UI_LABEL:-${label% (timeout *)}}
+  ui_started=$(_aicoding_ui_now)
   interval=${AICODING_PROGRESS_INTERVAL:-15}
   [[ "$interval" =~ ^[0-9]+([.][0-9]+)?$ ]] && [[ ! "$interval" =~ ^0+([.]0+)?$ ]] || interval=15
-  printf 'INFO: %s — starting\n' "$label" >&2
-  (
+  [ "$ui" = tty ] && interval=0.1
+  [ "$ui" = plain ] && printf 'INFO: %s — starting\n' "$label" >&2
+  # The ticker must be the direct background child so killing $ticker stops it.
+  if [ "$ui" = nested ]; then ticker=; else (
     # A ticker must never retain installer/update locks. Close its copies,
     # without flock -u (which would unlock the parent's open description).
-    local fd target state sleeper=
+    # The terminal UI descriptor is a tty dup, not a lock, so it stays.
+    local fd target state sleeper= frame=0
     for target in /proc/$BASHPID/fd/*; do
       fd=${target##*/}
       [[ "$fd" =~ ^[0-9]+$ ]] && [ "$fd" -gt 2 ] || continue
+      [ "$ui" = tty ] && [ "$fd" = "$AICODING_UI_FD" ] && continue
       eval "exec ${fd}>&-" 2>/dev/null || true
     done
     trap 'if [ -n "$sleeper" ]; then kill "$sleeper" 2>/dev/null || true; wait "$sleeper" 2>/dev/null || true; fi; exit 0' TERM INT HUP
@@ -27,11 +49,16 @@ aicoding_progress_run() (
       else
         exit 0
       fi
-      printf 'INFO: %s — still running (%ss elapsed)\n' "$label" "$((SECONDS - started))" >&2
+      if [ "$ui" = tty ]; then
+        aicoding_ui_spin "$((frame++))" "$display" "${AICODING_UI_VERB:-}" "$ui_started"
+      else
+        printf 'INFO: %s — still running (%ss elapsed)\n' "$label" "$((SECONDS - started))" >&2
+      fi
     done
   ) </dev/null &
   ticker=$!
-  trap 'kill "$ticker" 2>/dev/null || true; wait "$ticker" 2>/dev/null || true' EXIT
+  fi
+  trap 'if [ -n "$ticker" ]; then kill "$ticker" 2>/dev/null || true; wait "$ticker" 2>/dev/null || true; fi' EXIT
   # Monitor mode gives this one background job its own process group, including
   # descendants of shell functions. Disable notifications immediately afterward.
   # This permits cancellation of the whole operation without signaling callers.
@@ -60,6 +87,21 @@ aicoding_progress_run() (
   if [ "$rc" -ne 0 ]; then
     kill -TERM -- "-$operation" 2>/dev/null || true
     kill -KILL -- "-$operation" 2>/dev/null || true
+  fi
+  if [ "$ui" != plain ]; then
+    if [ -n "$ticker" ]; then kill "$ticker" 2>/dev/null || true; wait "$ticker" 2>/dev/null || true; fi
+    ticker=
+    [ "$ui" = tty ] || exit "$rc"
+    if [ -n "${AICODING_UI_DEFER_RESULT:-}" ]; then
+      aicoding_ui_clear
+    else
+      case "$rc" in
+        0) aicoding_ui_line ok "$display" "" "$(aicoding_ui_elapsed "$ui_started")" ;;
+        124|137) aicoding_ui_line fail "$display" "timed out" "$(aicoding_ui_elapsed "$ui_started")" ;;
+        *) aicoding_ui_line fail "$display" "failed (exit $rc)" "$(aicoding_ui_elapsed "$ui_started")" ;;
+      esac
+    fi
+    exit "$rc"
   fi
   case "$rc" in
     0) printf 'INFO: %s — completed (%ss)\n' "$label" "$((SECONDS - started))" >&2 ;;

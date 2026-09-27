@@ -623,6 +623,11 @@ _sync_print_smart_details() {
   # Compatibility can block any managed destination, including non-smart files.
   while IFS= read -r dest; do
     [[ -n "$dest" && "${BUCKETS[$dest]}" == blocked ]] || continue
+    if declare -F aicoding_ui_active >/dev/null && aicoding_ui_active; then
+      aicoding_ui_section "Config"
+      aicoding_ui_line warn "$dest" "blocked by tool compatibility, not applied"
+      continue
+    fi
     printf '      blocked by tool compatibility (no changes applied): %s\n' "$dest"
   done < <(printf '%s\n' "${!BUCKETS[@]}" | sort)
   while IFS= read -r dest; do
@@ -944,11 +949,24 @@ _sync_reconcile() {
   fi
 
   if [[ "$mode" == dry-run ]]; then
-    for b in up_to_date will_update will_update_owned drifted_but_aligned \
-             drifted_and_updating restore new_file new_file_existing to_remove merge \
-             smart_update smart_conflict smart_error smart_retired blocked; do
-      echo "  ${COUNT[$b]} $b"
-    done
+    if declare -F aicoding_ui_active >/dev/null && aicoding_ui_active; then
+      local parts=()
+      for b in up_to_date will_update will_update_owned drifted_but_aligned \
+               drifted_and_updating restore new_file new_file_existing to_remove merge \
+               smart_update smart_conflict smart_error smart_retired blocked; do
+        (( COUNT[$b] > 0 )) && parts+=("${COUNT[$b]} ${b//_/ }")
+      done
+      local joined
+      joined=$(printf ' · %s' "${parts[@]}")
+      aicoding_ui_section "Config (dry run)"
+      aicoding_ui_line info "${joined:3}"
+    else
+      for b in up_to_date will_update will_update_owned drifted_but_aligned \
+               drifted_and_updating restore new_file new_file_existing to_remove merge \
+               smart_update smart_conflict smart_error smart_retired blocked; do
+        echo "  ${COUNT[$b]} $b"
+      done
+    fi
     _sync_print_smart_details
     _sync_has_smart_errors && return 1
     return 0
@@ -1619,6 +1637,7 @@ _sync_provision() {
   # this process.
   if [ -f "$blueprint_lib/provision-integrations.sh" ]; then
     . "$blueprint_lib/provision-integrations.sh"
+    declare -F aicoding_ui_group >/dev/null && aicoding_ui_group "Command-line tools"
     install_dvw_probe_symlink || rc=1
     # Same self-heal for the other agent-facing CLIs install.sh symlinks:
     # a ~/.local/bin that lost them, or predates one, otherwise only
@@ -1635,6 +1654,7 @@ _sync_provision() {
     install_kuma_admin_symlink || rc=1
     install_redact_transcript_symlink || rc=1
     install_redact_sessions_symlinks || rc=1
+    declare -F aicoding_ui_group_end >/dev/null && aicoding_ui_group_end
     # install.sh enrolls the scheduler at install time. Legacy installs never
     # did, and activation above only now gave them the launcher, so a sync
     # converges enrollment the same way. Idempotent; skipped offline.
@@ -1854,6 +1874,7 @@ aicoding_sync() {
   done
 
   _sync_source_update_libraries "${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+  declare -F aicoding_ui_begin >/dev/null && aicoding_ui_begin
 
   # An unattended pass advances only to an exact main SHA whose required CI
   # succeeded. Selection failure keeps the existing installation active.
@@ -1945,5 +1966,6 @@ aicoding_sync() {
   if [ "$overall_rc" -eq 0 ] && [ "${_SYNC_PASS_DEFERRED:-0}" -eq 1 ]; then
     echo 'aicoding-sync: completed with deferrals'
   fi
+  declare -F aicoding_ui_summary >/dev/null && aicoding_ui_summary "$overall_rc"
   return "$overall_rc"
 }
