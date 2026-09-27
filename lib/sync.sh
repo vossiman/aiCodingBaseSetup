@@ -1865,6 +1865,9 @@ aicoding_sync() {
   # Parse the FIRST recognized flag; no flag = interactive.
   local mode=interactive arg
   for arg in "$@"; do
+    [ "$arg" = --full ] && export AICODING_SYNC_FULL=1
+  done
+  for arg in "$@"; do
     case "$arg" in
       --dry-run) mode=dry-run; break ;;
       --yes)     mode=yes;     break ;;

@@ -42,8 +42,9 @@ fi
 for arg in "${AICODING_REMAINING_ARGS[@]}"; do
   case "$arg" in
     -h|--help)
-      echo "usage: aicoding-sync [--blueprint PATH] [--dry-run|--yes|--boot|--first]"
+      echo "usage: aicoding-sync [--blueprint PATH] [--dry-run|--yes|--boot|--first] [--full]"
       echo "  --blueprint PATH  use this local Git checkout verbatim (never fetch or reset it)"
+      echo "  --full            also refresh already-installed Claude plugins to their latest version"
       echo "                    use the same checkout clean at origin/main to return to origin/main tracking"
       exit 0
       ;;
