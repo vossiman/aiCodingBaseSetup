@@ -16,20 +16,6 @@ setup() {
   [[ "$output" == *"--client"* ]]
 }
 
-@test "tracked client matrix starts with no fixture-qualified clients" {
-  run python3 - <<'PY'
-import json
-from pathlib import Path
-
-matrix = json.loads(Path("configs/kanban/qualified-clients.json").read_text())
-assert matrix == {
-    "schema": 1,
-    "clients": {"claude": [], "codex": [], "cursor": [], "opencode": []},
-}
-PY
-  [ "$status" -eq 0 ]
-}
-
 @test "focused preflight exits unsupported and labels unobserved native evidence" {
   reports="$BATS_TEST_TMPDIR/reports"
   run tools/qualify-kanban-clients --client codex --output "$reports"

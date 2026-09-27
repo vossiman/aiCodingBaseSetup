@@ -1,9 +1,0 @@
-{
-  "schema": 1,
-  "clients": {
-    "claude": [],
-    "codex": [],
-    "cursor": [],
-    "opencode": []
-  }
-}

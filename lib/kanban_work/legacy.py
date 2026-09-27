@@ -144,3 +144,24 @@ def prepare_legacy_complete(identity: NativeIdentity, native_call_id: str, comma
     finally:
         if owned_store:
             store.close()
+
+
+
+def looks_like_legacy_complete(command: str) -> bool:
+    return isinstance(command, str) and _looks_like(command)
+
+
+def claimed_legacy_complete(identity: NativeIdentity, native_call_id: str, command: str, *,
+                            store: Store | None = None,
+                            now: datetime | None = None) -> PreparedLegacyComplete | None:
+    """None when the session holds no claim: kanban-post then completes without one."""
+    owned_store = store is None
+    store = store or Store()
+    try:
+        execution = store.execution_for_identity(identity)
+        if execution is None or store.active_claim(execution.handle) is None:
+            return None
+        return prepare_legacy_complete(identity, native_call_id, command, store=store, now=now)
+    finally:
+        if owned_store:
+            store.close()

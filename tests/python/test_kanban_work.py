@@ -228,22 +228,10 @@ class SchemaTests(unittest.TestCase):
             with self.subTest(tool=tool, args=args), self.assertRaises(BridgeError):
                 normalize_tool_args(tool, args)
 
-    def test_client_qualification_is_exact_and_override_is_loopback_test_only(self):
-        with tempfile.TemporaryDirectory() as td:
-            matrix = Path(td) / "matrix.json"
-            matrix.write_text(json.dumps({"codex": ["0.154.0"], "claude": {"versions": ["2.1.268"]}}))
-            env = {"AICODING_KANBAN_QUALIFIED_CLIENTS": str(matrix),
-                   "KANBAN_URL": "http://127.0.0.1:8123", "KANBAN_TEST_TOKEN": "fake"}
-            with mock.patch.dict(os.environ, env, clear=False):
-                self.assertTrue(qualified_client_version("codex", "0.154.0"))
-                self.assertFalse(qualified_client_version("codex", "0.154.1"))
-                self.assertFalse(qualified_client_version("cursor", "0.154.0"))
-            for bad_env in (
-                {"AICODING_KANBAN_QUALIFIED_CLIENTS": str(matrix), "KANBAN_URL": "https://example.test", "KANBAN_TEST_TOKEN": "fake"},
-                {"AICODING_KANBAN_QUALIFIED_CLIENTS": str(matrix), "KANBAN_URL": "http://localhost:1", "KANBAN_TEST_TOKEN": ""},
-            ):
-                with mock.patch.dict(os.environ, bad_env, clear=False):
-                    self.assertFalse(qualified_client_version("codex", "0.154.0"))
+    def test_every_supported_harness_is_lifecycle_capable(self):
+        for harness in ("claude", "codex", "cursor", "opencode"):
+            self.assertTrue(qualified_client_version(harness, "any"))
+        self.assertFalse(qualified_client_version("unknown", "1.0"))
 
 
 class StoreTests(unittest.TestCase):

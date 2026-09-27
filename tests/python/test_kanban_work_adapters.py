@@ -38,15 +38,7 @@ class AdapterTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.state = self.root / "state" / "kanban-work.sqlite3"
-        self.matrix = self.root / "qualified.json"
-        self.matrix.write_text(json.dumps({
-            "clients": {
-                "claude": {"versions": ["2.1.268"]},
-                "codex": {"versions": ["0.154.0"]},
-            }
-        }))
         self.env = mock.patch.dict(os.environ, {
-            "AICODING_KANBAN_QUALIFIED_CLIENTS": str(self.matrix),
             "KANBAN_URL": "http://127.0.0.1:8765",
             "KANBAN_TEST_TOKEN": "fixture-only-token",
             "AICODINGSETUP_SKIP_NETWORK": "1",
@@ -186,23 +178,6 @@ class AdapterTests(unittest.TestCase):
         self.assertFalse(kwargs["shell"])
         self.assertNotIn("KANBAN_TEST_TOKEN", kwargs["env"])
         self.assertNotIn("KANBAN_TOKEN", kwargs["env"])
-
-    def test_exact_candidate_matrix_requires_loopback_and_fake_token(self):
-        capable = self.start("claude", session="qualified")
-        self.assertTrue(self.store.get_execution(capable["handle"]).lifecycle_capable)
-
-        cases = [
-            ({"KANBAN_URL": "https://kanban.dataprospectors.at"}, "remote"),
-            ({"KANBAN_TEST_TOKEN": ""}, "no-token"),
-        ]
-        for changes, session in cases:
-            with self.subTest(session=session), mock.patch.dict(os.environ, changes, clear=False):
-                started = self.start("claude", session=session)
-                self.assertFalse(self.store.get_execution(started["handle"]).lifecycle_capable)
-
-        self.versions["claude"] = "2.1.269"
-        mismatched = self.start("claude", session="mismatch")
-        self.assertFalse(self.store.get_execution(mismatched["handle"]).lifecycle_capable)
 
     def test_two_sessions_same_checkout_and_peer_handle_never_authorize_each_other(self):
         first = self.start("claude", session="native-a")
@@ -486,6 +461,7 @@ class AdapterTests(unittest.TestCase):
         started = self.start("codex")
         self.store.record_bound(started["handle"], "backend-session", "kanban", "worker")
         self.store.set_claim(started["handle"], CLAIM, "KANBAN-2")
+        self.prompt("codex")
         command = "kanban-post --done KANBAN-2 --evidence ok"
         invalid = [
             {"command": command, "description": "not in Codex 0.154.0 PreToolUse"},
@@ -513,31 +489,29 @@ class AdapterTests(unittest.TestCase):
         self.assertIn("Use the Kanban MCP complete_ticket tool",
                       result.output["hookSpecificOutput"]["permissionDecisionReason"])
 
-    def test_completion_like_shell_rejections_are_actionable_and_unrelated_commands_pass(self):
+    def test_unclaimed_completion_commands_pass_through_unchanged(self):
         started = self.start("codex")
         self.prompt("codex")
-        invalid = [
+        commands = [
+            "kanban-post --done KANBAN-2 --evidence ok",
             "KANBAN_WORK_HANDLE=x kanban-post --done KANBAN-2 --evidence ok",
             "kanban-post --done KANBAN-2 --evidence $HOME",
             "kanban-post --done KANBAN-2 --evidence ok; echo bad",
             "kanban-post --done KANBAN-2 --evidence ok --unknown flag",
         ]
-        for index, command in enumerate(invalid):
+        for index, command in enumerate(commands):
             with self.subTest(command=command):
-                result = self.pre("codex", "Bash", {"command": command}, call=f"bad-{index}")
+                result = self.pre("codex", "Bash", {"command": command}, call=f"plain-{index}")
                 output = result.output["hookSpecificOutput"]
-                self.assertEqual(output["permissionDecision"], "deny")
-                self.assertIn("Use the Kanban MCP complete_ticket tool",
-                              output["permissionDecisionReason"])
+                self.assertEqual(output["permissionDecision"], "allow")
+                self.assertNotIn("updatedInput", output)
         ordinary = self.pre("codex", "Bash", {"command": "git status --short"}, call="ordinary")
         self.assertEqual(ordinary.output["hookSpecificOutput"]["permissionDecision"], "allow")
         self.assertFalse(self.store.has_any_permit())
         self.assertTrue(self.store.tool_operation(started["handle"], "ordinary")["active"])
 
-    def test_unqualified_codex_leaves_ordinary_legacy_commands_available(self):
-        self.versions["codex"] = "0.0.0"
-        started = self.start("codex")
-        self.assertFalse(self.store.get_execution(started["handle"]).lifecycle_capable)
+    def test_codex_leaves_ordinary_legacy_commands_available(self):
+        self.start("codex")
         commands = [
             'kanban-post "follow-up" --repo aiCodingBaseSetup',
             "kanban-post --comment AICODINGBASESETUP-2 progress",
@@ -589,12 +563,7 @@ class CursorAdapterTests(unittest.TestCase):
         self.checkout = self.root / "checkout"
         self.checkout.mkdir()
         self.state = self.root / "state" / "kanban-work.sqlite3"
-        self.matrix = self.root / "qualified.json"
-        self.matrix.write_text(json.dumps({
-            "clients": {"cursor": {"versions": [self.VERSION]}}
-        }))
         self.env = mock.patch.dict(os.environ, {
-            "AICODING_KANBAN_QUALIFIED_CLIENTS": str(self.matrix),
             "KANBAN_URL": "http://127.0.0.1:8765",
             "KANBAN_TEST_TOKEN": "fixture-only-token",
             "AICODINGSETUP_SKIP_NETWORK": "1",
@@ -664,14 +633,6 @@ class CursorAdapterTests(unittest.TestCase):
         execution = self.store.get_execution(result.lifecycle["handle"])
         self.assertEqual(execution.native_session_id, "conv-a")
         self.assertIsNone(execution.subagent_id)
-
-    def test_unlisted_cursor_version_remains_read_only(self):
-        payload = self.payload(
-            "sessionStart", session_id="conv-b", conversation="conv-b",
-            cursor_version="2026.09.11-unlisted", is_background_agent=False,
-        )
-        result = self.adapter.adapt("sessionStart", payload)
-        self.assertFalse(self.store.get_execution(result.lifecycle["handle"]).lifecycle_capable)
 
     def test_generation_changes_order_prompts_without_retargeting_the_run(self):
         started = self.start().lifecycle
@@ -908,10 +869,8 @@ class CursorAdapterTests(unittest.TestCase):
         ordinary = self.pre("Shell", {"command": "git status --short"}, call="ordinary")
         self.assertEqual(ordinary.output["permission"], "allow")
 
-    def test_unqualified_cursor_leaves_ordinary_legacy_commands_available(self):
-        self.matrix.write_text(json.dumps({"clients": {"cursor": {"versions": []}}}))
-        started = self.start().lifecycle
-        self.assertFalse(self.store.get_execution(started["handle"]).lifecycle_capable)
+    def test_cursor_leaves_ordinary_legacy_commands_available(self):
+        self.start()
         commands = [
             'kanban-post "follow-up" --repo aiCodingBaseSetup',
             "kanban-post --comment AICODINGBASESETUP-2 progress",
@@ -934,12 +893,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.checkout = self.root / "checkout"
         self.checkout.mkdir()
         self.state = self.root / "state" / "kanban-work.sqlite3"
-        self.matrix = self.root / "qualified.json"
-        self.matrix.write_text(json.dumps({
-            "clients": {"opencode": {"versions": [self.VERSION]}}
-        }))
         self.env = mock.patch.dict(os.environ, {
-            "AICODING_KANBAN_QUALIFIED_CLIENTS": str(self.matrix),
             "KANBAN_URL": "http://127.0.0.1:8765",
             "KANBAN_TEST_TOKEN": "fixture-only-token",
             "AICODINGSETUP_SKIP_NETWORK": "1",
@@ -1009,7 +963,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
             "info": self.info("ses-unlisted"), "clientVersion": "1.18.31",
             "instanceID": self.INSTANCE, "directory": str(self.checkout),
         })
-        self.assertFalse(
+        self.assertTrue(
             self.store.get_execution(unlisted.lifecycle["handle"]).lifecycle_capable
         )
         missing = self.adapter.adapt("session.created", {
@@ -1017,7 +971,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
             "info": self.info("ses-missing-version"), "clientVersion": None,
             "instanceID": self.INSTANCE, "directory": str(self.checkout),
         })
-        self.assertFalse(
+        self.assertTrue(
             self.store.get_execution(missing.lifecycle["handle"]).lifecycle_capable
         )
 
@@ -1170,10 +1124,8 @@ class OpenCodeAdapterTests(unittest.TestCase):
         ordinary = self.before("bash", {"command": "git status --short"}, call="ordinary")
         self.assertEqual(ordinary.output, {})
 
-    def test_unqualified_opencode_leaves_ordinary_legacy_commands_available(self):
-        self.matrix.write_text(json.dumps({"clients": {"opencode": {"versions": []}}}))
-        started = self.created().lifecycle
-        self.assertFalse(self.store.get_execution(started["handle"]).lifecycle_capable)
+    def test_opencode_leaves_ordinary_legacy_commands_available(self):
+        self.created()
         commands = [
             'kanban-post "follow-up" --repo aiCodingBaseSetup',
             "kanban-post --comment AICODINGBASESETUP-2 progress",

@@ -27,6 +27,7 @@ setup() {
   # refuses to read the store when an override is present. The store above
   # stays for the tests that assert on its absence or emptiness.
   export KANBAN_TEST_TOKEN="$FAKE_TOKEN"
+  unset KANBAN_WORK_HANDLE
 }
 
 teardown() {
@@ -95,7 +96,13 @@ operation = sys.argv[2]
 payload = json.load(sys.stdin)
 with open(os.environ["KANBAN_FAKE_LOG"], "a") as stream:
     stream.write(json.dumps({"operation": operation, "payload": payload}, sort_keys=True) + "\n")
-if operation == "lookup":
+if operation == "lookup" and os.environ.get("KANBAN_FAKE_LOOKUP") == "unknown":
+    print(json.dumps({"ok": False, "error": {"code": 404, "message": "unknown work handle"}}))
+    raise SystemExit(1)
+elif operation == "lookup" and os.environ.get("KANBAN_FAKE_LOOKUP") == "broken":
+    print(json.dumps({"ok": False, "error": {"code": 503, "message": "registry unavailable"}}))
+    raise SystemExit(1)
+elif operation == "lookup":
     claim = {
         "id": "claim-fixture", "ticket": os.environ.get("KANBAN_FAKE_TICKET", "MYREPO-1")
     }
@@ -143,6 +150,8 @@ class H(http.server.BaseHTTPRequestHandler):
             registered.add(payload["name"])
             return self._reply(201, {"name": payload["name"], "archived": False})
         if self.command == "POST" and self.path.endswith("/comments"):
+            if "/MISSING-1/" in self.path:
+                return self._reply(404, {"detail": "Ticket not found"})
             return self._reply(201, {"id": "new-comment", **payload})
         if self.command == "POST" and self.path == "/api/tickets":
             if payload.get("status") == "nonesuch":
@@ -400,14 +409,57 @@ EOF
   grep -q 'PATCH /api/tickets/abc123 .*"status": "done"' "$TMPDIR/requests"
 }
 
-@test "--done with evidence requires an explicitly bound native work session" {
+@test "--done with evidence and no work session records evidence, then sets Done" {
   _start_api_server myrepo
   _fake_kanban_work
+  run "$KP" --done MYREPO-1 --evidence "tests pass" --reference "PR #7"
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  [ ! -f "$KANBAN_FAKE_LOG" ]
+  run cat "$TMPDIR/requests"
+  [ "${#lines[@]}" -eq 2 ]
+  [[ "${lines[0]}" == "POST /api/tickets/MYREPO-1/comments "*"tests pass"*"PR #7"* ]]
+  [[ "${lines[1]}" == 'PATCH /api/tickets/MYREPO-1 {"status": "done"}' ]]
+}
+
+@test "--done with evidence treats an unknown session handle as no session" {
+  _start_api_server myrepo
+  _fake_kanban_work
+  export KANBAN_WORK_HANDLE="handle-hint" KANBAN_FAKE_LOOKUP=unknown
+  run "$KP" --done MYREPO-1 --evidence "tests pass"
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  run cat "$TMPDIR/requests"
+  [ "${#lines[@]}" -eq 2 ]
+  [[ "${lines[1]}" == 'PATCH /api/tickets/MYREPO-1 {"status": "done"}' ]]
+}
+
+@test "--done with evidence fails closed when the claim lookup errors" {
+  _start_api_server myrepo
+  _fake_kanban_work
+  export KANBAN_WORK_HANDLE="handle-hint" KANBAN_FAKE_LOOKUP=broken
   run "$KP" --done MYREPO-1 --evidence "tests pass"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"requires a bound native work session"* ]]
-  [ ! -f "$KANBAN_FAKE_LOG" ]
+  [[ "$output" == *"registry unavailable"* ]]
   [ ! -f "$TMPDIR/requests" ]
+}
+
+@test "--done with blank evidence is rejected before any request" {
+  _start_api_server myrepo
+  _fake_kanban_work
+  run "$KP" --done MYREPO-1 --evidence "   "
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"must not be blank"* ]]
+  [ ! -f "$TMPDIR/requests" ]
+  [ ! -f "$KANBAN_FAKE_LOG" ]
+}
+
+@test "--done with evidence does not set Done when the evidence comment fails" {
+  _start_api_server myrepo
+  _fake_kanban_work
+  run "$KP" --done MISSING-1 --evidence "tests pass"
+  [ "$status" -ne 0 ]
+  run cat "$TMPDIR/requests"
+  [ "${#lines[@]}" -eq 1 ]
+  [[ "${lines[0]}" == "POST "* ]]
 }
 
 @test "--done with evidence rejects every legacy mutation argument before bridge lookup" {

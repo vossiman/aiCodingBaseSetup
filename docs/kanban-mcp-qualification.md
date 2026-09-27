@@ -16,11 +16,10 @@ tools/qualify-kanban-clients --all --output out/kanban-mcp-qualification
 tools/qualify-kanban-clients --client codex --output out/kanban-mcp-qualification
 ```
 
-The command exits nonzero while any selected client is unsupported. Exact
-versions enter `configs/kanban/qualified-clients.json` only after a real native
-run proves every required scenario against the fake board. That matrix is
-currently empty, so read tools remain available and lifecycle mutations stay
-in compatibility mode.
+The command exits nonzero while any selected client is unsupported. Its report
+is informational only: lifecycle mutations are enabled for every supported
+client regardless of version, because the clients release too often for a
+per-version allowlist.
 
 The rollout scope is Codex-first. Claude Code, Cursor, and OpenCode are not a
 prerequisite for a later Codex-only rollout, and all remain unsupported until
