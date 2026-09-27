@@ -1265,6 +1265,147 @@ EOF
   jq -e '.components.claude.reason == "existing_release_invalid"' "$AICODING_STATE_DIR/update-results.json"
 }
 
+_claude_npm_target() {
+  cat > "$TMP/stubs/npm" <<EOF
+#!/bin/sh
+[ "\$1" = view ] && { echo '"$1"'; exit 0; }
+exit 1
+EOF
+  chmod +x "$TMP/stubs/npm"
+}
+
+_claude_installer_stub() {
+  cat > "$TMP/stubs/curl" <<EOF
+#!/bin/sh
+cat <<'INSTALLER'
+#!/bin/sh
+version=\$1
+printf '%s\n' "\${DISABLE_AUTOUPDATER-unset}|\${FORCE_AUTOUPDATE_PLUGINS-unset}" > "$TMP/installer-env"
+mkdir -p "\$HOME/.local/share/claude/versions"
+printf '#!/bin/sh\necho "%s (Claude Code)"\n' "\$version" > "\$HOME/.local/share/claude/versions/\$version"
+chmod +x "\$HOME/.local/share/claude/versions/\$version"
+INSTALLER
+EOF
+  chmod +x "$TMP/stubs/curl"
+}
+
+_managed_claude_release() {
+  local v=$1
+  mkdir -p "$AICODING_DATA_DIR/versions/claude/$v/bin" "$AICODING_DATA_DIR/current"
+  printf '#!/bin/sh\necho "%s (Claude Code)"\n' "$v" > "$AICODING_DATA_DIR/versions/claude/$v/bin/claude"
+  chmod +x "$AICODING_DATA_DIR/versions/claude/$v/bin/claude"
+  ln -sfn "../versions/claude/$v" "$AICODING_DATA_DIR/current/claude"
+  cat > "$HOME/.local/bin/claude" <<EOF
+#!/usr/bin/env bash
+# Managed by aicoding immutable runtime.
+current=$AICODING_DATA_DIR/current/claude
+relative=bin/claude
+release=\$(readlink -f -- "\$current") || exit 1
+[ -x "\$release/\$relative" ] || exit 1
+exec "\$release/\$relative" "\$@"
+EOF
+  chmod +x "$HOME/.local/bin/claude"
+}
+
+_native_claude_tree() {
+  mkdir -p "$HOME/.local/share/claude/versions"
+  printf '#!/bin/sh\necho "%s (Claude Code)"\n' "$1" > "$HOME/.local/share/claude/versions/$1"
+  chmod +x "$HOME/.local/share/claude/versions/$1"
+}
+
+_no_curl() {
+  printf '#!/bin/sh\nexit 99\n' > "$TMP/stubs/curl"
+  chmod +x "$TMP/stubs/curl"
+}
+
+@test "Claude enrolls a native install of the target version instead of reporting it current" {
+  _native_claude_tree 2.1.50
+  ln -s "../share/claude/versions/2.1.50" "$HOME/.local/bin/claude"
+  _claude_npm_target 2.1.50
+  _claude_installer_stub
+  run aicoding_update_claude
+  [ "$status" -eq 0 ]
+  [ "$(readlink "$AICODING_DATA_DIR/current/claude")" = "../versions/claude/2.1.50" ]
+  grep -qF '# Managed by aicoding immutable runtime.' "$HOME/.local/bin/claude"
+}
+
+@test "Claude refreshes an outdated launcher for the already-active release" {
+  _managed_claude_release 2.1.50
+  mkdir -p "$AICODING_DATA_DIR/previous"
+  ln -sfn ../versions/claude/2.1.40 "$AICODING_DATA_DIR/previous/claude"
+  _claude_npm_target 2.1.50
+  _no_curl
+  run aicoding_update_claude
+  [ "$status" -eq 0 ]
+  grep -q 'DISABLE_AUTOUPDATER' "$HOME/.local/bin/claude"
+  [ "$(readlink "$AICODING_DATA_DIR/current/claude")" = "../versions/claude/2.1.50" ]
+  [ "$(readlink "$AICODING_DATA_DIR/previous/claude")" = "../versions/claude/2.1.40" ]
+  jq -e '.components.claude.state == "current"' "$AICODING_STATE_DIR/update-results.json"
+}
+
+@test "Claude's staged installer never inherits the built-in updater switch" {
+  _tool claude '2.1.49 (Claude Code)'
+  _claude_npm_target 2.1.50
+  _claude_installer_stub
+  DISABLE_AUTOUPDATER=1 FORCE_AUTOUPDATE_PLUGINS=1 run aicoding_update_claude
+  [ "$status" -eq 0 ]
+  [ "$(cat "$TMP/installer-env")" = "unset|unset" ]
+}
+
+@test "Claude removes the unused native download tree and its backup link once managed" {
+  _managed_claude_release 2.1.50
+  _native_claude_tree 2.1.49
+  printf 'keep\n' > "$HOME/.local/share/claude/other"
+  ln -s "$HOME/.local/share/claude/versions/2.1.49" "$HOME/.local/bin/claude.pre-aicoding"
+  _claude_npm_target 2.1.50
+  _no_curl
+  run aicoding_update_claude
+  [ "$status" -eq 0 ]
+  [ ! -e "$HOME/.local/share/claude/versions" ]
+  [ ! -L "$HOME/.local/bin/claude.pre-aicoding" ]
+  [ -f "$HOME/.local/share/claude/other" ]
+}
+
+@test "Claude keeps the native tree when the live launcher is not aicoding's" {
+  _native_claude_tree 2.1.50
+  ln -s "../share/claude/versions/2.1.50" "$HOME/.local/bin/claude"
+  mkdir -p "$AICODING_DATA_DIR/versions/claude/2.1.50/bin" "$AICODING_DATA_DIR/current"
+  ln -sfn ../versions/claude/2.1.50 "$AICODING_DATA_DIR/current/claude"
+  run _aicoding_claude_prune_native_tree
+  [ -x "$HOME/.local/share/claude/versions/2.1.50" ]
+}
+
+@test "Claude keeps the native tree without a valid managed release" {
+  _managed_claude_release 2.1.50
+  rm -f "$AICODING_DATA_DIR/current/claude"
+  _native_claude_tree 2.1.49
+  run _aicoding_claude_prune_native_tree
+  [ -x "$HOME/.local/share/claude/versions/2.1.49" ]
+}
+
+@test "Claude keeps the native tree while a process runs from it" {
+  _managed_claude_release 2.1.50
+  _native_claude_tree 2.1.49
+  cp "$(command -v bash)" "$HOME/.local/share/claude/versions/sleeper"
+  "$HOME/.local/share/claude/versions/sleeper" -c 'sleep 30; :' &
+  local pid=$! tries=0
+  until [ "$(readlink -f "/proc/$pid/exe" 2>/dev/null)" = "$(readlink -f "$HOME/.local/share/claude/versions/sleeper")" ] \
+      || [ "$tries" -ge 50 ]; do sleep 0.1; tries=$((tries + 1)); done
+  run _aicoding_claude_prune_native_tree
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  [ -x "$HOME/.local/share/claude/versions/2.1.49" ]
+}
+
+@test "Claude keeps the native tree when its backup launcher is not a link into it" {
+  _managed_claude_release 2.1.50
+  _native_claude_tree 2.1.49
+  printf '#!/bin/sh\n' > "$HOME/.local/bin/claude.pre-aicoding"
+  run _aicoding_claude_prune_native_tree
+  [ -x "$HOME/.local/share/claude/versions/2.1.49" ]
+  [ -f "$HOME/.local/bin/claude.pre-aicoding" ]
+}
+
 @test "dvw exact staged source invokes only its unattended managed adapter" {
   _tool dvw 'dvw 1.0.0'
   local sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

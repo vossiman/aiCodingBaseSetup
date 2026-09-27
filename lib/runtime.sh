@@ -156,6 +156,25 @@ _aicoding_runtime_write_wrapper() {
   {
     printf '%s\n' '#!/usr/bin/env bash' '# Managed by aicoding immutable runtime.'
     printf 'current=%s\nrelative=%s\n' "$quoted_current" "$quoted_relative"
+    if [ "$relative" = bin/claude ] && [ "${current##*/}" = claude ]; then
+      # aicoding owns Claude updates; the built-in updater only fills an
+      # unused tree. Scoped here, not in the shared settings.json.
+      printf '%s\n' \
+        'case "${1:-}" in' \
+        '  update|upgrade)' \
+        '    updater="$HOME/.local/bin/aicoding-auto-update"' \
+        '    [ -x "$updater" ] || updater=$(command -v aicoding-auto-update 2>/dev/null) || updater=' \
+        '    if [ -z "$updater" ]; then' \
+        "      echo 'claude: updates are managed by aicoding, but aicoding-auto-update is not installed' >&2" \
+        '      exit 1' \
+        '    fi' \
+        "    echo 'claude: updates are managed by aicoding; running aicoding-auto-update --once' >&2" \
+        '    exec "$updater" --once' \
+        '    ;;' \
+        'esac' \
+        'export DISABLE_AUTOUPDATER="${DISABLE_AUTOUPDATER:-1}"' \
+        'export FORCE_AUTOUPDATE_PLUGINS="${FORCE_AUTOUPDATE_PLUGINS:-1}"'
+    fi
     printf '%s\n' \
       'release=$(readlink -f -- "$current") || exit 1' \
       '[ -x "$release/$relative" ] || exit 1' \

@@ -535,3 +535,63 @@ launcher_pairs() {
   [ "$status" -ne 0 ]
   [ ! -e "$AICODING_DATA_DIR/current/aicoding" ]
 }
+
+_claude_launcher() {
+  mkdir -p "$TEST_ROOT/rel/bin" "$TEST_ROOT/stubs"
+  cat > "$TEST_ROOT/rel/bin/claude" <<'BIN'
+#!/usr/bin/env bash
+printf 'release:%s|DAU=%s|FAP=%s\n' "$*" "${DISABLE_AUTOUPDATER-unset}" "${FORCE_AUTOUPDATE_PLUGINS-unset}"
+BIN
+  chmod +x "$TEST_ROOT/rel/bin/claude"
+  mkdir -p "$AICODING_DATA_DIR/current"
+  ln -sfn "$TEST_ROOT/rel" "$AICODING_DATA_DIR/current/claude"
+  _aicoding_runtime_write_wrapper "$HOME/.local/bin/claude" "$AICODING_DATA_DIR/current/claude" bin/claude
+}
+
+_stub_auto_update() {
+  cat > "$HOME/.local/bin/aicoding-auto-update" <<'BIN'
+#!/usr/bin/env bash
+printf 'updater:%s\n' "$*"
+BIN
+  chmod +x "$HOME/.local/bin/aicoding-auto-update"
+}
+
+@test "the managed claude launcher switches off Claude's own updater by default" {
+  _claude_launcher
+  run env -u DISABLE_AUTOUPDATER -u FORCE_AUTOUPDATE_PLUGINS "$HOME/.local/bin/claude" doctor
+  [ "$status" -eq 0 ]
+  [ "$output" = "release:doctor|DAU=1|FAP=1" ]
+  run env DISABLE_AUTOUPDATER=0 FORCE_AUTOUPDATE_PLUGINS=0 "$HOME/.local/bin/claude" --version
+  [ "$output" = "release:--version|DAU=0|FAP=0" ]
+}
+
+@test "claude update and claude upgrade run the aicoding updater instead of the release" {
+  _claude_launcher
+  _stub_auto_update
+  local sub
+  for sub in update upgrade; do
+    run "$HOME/.local/bin/claude" "$sub"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"updates are managed by aicoding; running aicoding-auto-update --once"* ]]
+    [[ "$output" == *"updater:--once"* ]]
+    [[ "$output" != *"release:"* ]]
+  done
+  run "$HOME/.local/bin/claude" update-foo
+  [ "$output" = "release:update-foo|DAU=1|FAP=1" ]
+  run "$HOME/.local/bin/claude" -p update
+  [ "$output" = "release:-p update|DAU=1|FAP=1" ]
+}
+
+@test "claude update fails clearly when the aicoding updater is missing" {
+  _claude_launcher
+  run env PATH=/usr/bin:/bin "$HOME/.local/bin/claude" update
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"aicoding-auto-update is not installed"* ]]
+  [[ "$output" != *"release:"* ]]
+}
+
+@test "launchers of other components carry no Claude update handling" {
+  mkdir -p "$TEST_ROOT/other"
+  _aicoding_runtime_write_wrapper "$TEST_ROOT/other/codex" "$AICODING_DATA_DIR/current/codex" bin/codex
+  if grep -qE 'DISABLE_AUTOUPDATER|aicoding-auto-update' "$TEST_ROOT/other/codex"; then false; fi
+}
