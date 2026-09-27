@@ -27,6 +27,8 @@ RETIRED_PLUGINS=(
   "logfire@claude-plugins-official"
 )
 
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/update-progress.sh"
+
 # Logging fallbacks — install.sh defines colored variants; sync.sh doesn't,
 # so plain-echo versions fill in. declare -F (not command -v) so a same-named
 # binary on PATH (e.g. texinfo's `info`) can't satisfy the check.
@@ -57,33 +59,24 @@ _provision_deferred() {
 _provision_run() {
   if [ -n "${AICODING_SYNC_MODE:-}" ]; then
     # -k: a claude process wedged on exit can ignore SIGTERM forever.
-    timeout -k 10 "${AICODING_PROVISION_TIMEOUT:-120}" "$@" </dev/null
+    timeout -k "${AICODING_PROVISION_KILL_AFTER:-10}" "${AICODING_PROVISION_TIMEOUT:-120}" "$@" </dev/null
   else
     "$@"
   fi
 }
 
-# One status line per task. On a terminal it spins with a live timer while the
-# command runs, so a stall names the exact task and how long it has hung.
-# Off a terminal (logs, CI) it prints the command first for the same reason.
+# One status line per task, via the shared progress engine: on a terminal a
+# spinner with a live timer, then the result; in logs, the command up front so
+# a stall names itself. Output goes to a file, never a pipe, so a leftover
+# child holding the pipe open cannot block the reader.
 _provision_task() {
-  local label=$1 verb=$2; shift 2
-  local out pid rc=0 i=0 start=${EPOCHREALTIME:-$SECONDS}
-  local frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
-  _PROVISION_TASK_LABEL=$label _PROVISION_TASK_START=$start
+  local label=$1 verb=$2 out rc=0; shift 2
+  _PROVISION_TASK_LABEL=$label _PROVISION_TASK_START=$(_aicoding_ui_now)
   _PROVISION_TASK_LAST= _PROVISION_TASK_REASON= _PROVISION_TASK_TIMED_OUT=
   out=$(mktemp) || return 1
-  if [ -t 1 ]; then
-    # Output goes to a file, not a pipe: a leftover child holding a pipe open
-    # would block the reader even after the command itself was killed.
-    _provision_run "$@" >"$out" 2>&1 &
-    pid=$!
-    while kill -0 "$pid" 2>/dev/null; do
-      printf '\r\033[K  \033[36m%s\033[0m %-24s \033[2m%s… %s\033[0m' \
-        "${frames[i++ % 10]}" "$label" "$verb" "$(_provision_task_elapsed)"
-      sleep 0.1
-    done
-    wait "$pid" || rc=$?
+  if aicoding_ui_active; then
+    AICODING_UI_LABEL=$label AICODING_UI_VERB="$verb…" AICODING_UI_DEFER_RESULT=1 \
+      aicoding_progress_run "$label: $*" _provision_run "$@" >"$out" 2>&1 || rc=$?
   else
     printf '  … %s: %s\n' "$label" "$*"
     _provision_run "$@" >"$out" 2>&1 || rc=$?
@@ -93,33 +86,22 @@ _provision_task() {
   case "$rc" in
     0) ;;
     124|137) _PROVISION_TASK_TIMED_OUT=1
-      _PROVISION_TASK_REASON="timed out after ${AICODING_PROVISION_TIMEOUT:-120}s ($1 $2 $3)" ;;
+      _PROVISION_TASK_REASON="$3 timed out after ${AICODING_PROVISION_TIMEOUT:-120}s" ;;
     *) _PROVISION_TASK_REASON="${_PROVISION_TASK_LAST:-exit $rc}" ;;
   esac
   return "$rc"
 }
 
-_provision_task_elapsed() {
-  local now=${EPOCHREALTIME:-$SECONDS}
-  LC_ALL=C awk -v a="${_PROVISION_TASK_START/,/.}" -v b="${now/,/.}" \
-    'BEGIN { d = b - a; if (d < 10) printf "%.1fs", d; else printf "%ds", d }'
-}
-
-# Replace the spinner line with the result: ok | skip | fail, then a note.
+# Print the result line for the last task: ok | skip | fail, then a note.
 _provision_task_done() {
-  local state=$1 note=$2 mark color
-  case "$state" in
-    ok)   mark='✔' color=32 ;;
-    skip) mark='·' color=2 ;;
-    *)    mark='✖' color=31 ;;
-  esac
-  [ -t 1 ] && printf '\r\033[K' || color=
-  if [ -n "$color" ]; then
-    printf '  \033[%sm%s\033[0m %-24s %s \033[2m%s\033[0m\n' \
-      "$color" "$mark" "$_PROVISION_TASK_LABEL" "$note" "$(_provision_task_elapsed)"
-  else
-    printf '  %s %-24s %s %s\n' "$mark" "$_PROVISION_TASK_LABEL" "$note" "$(_provision_task_elapsed)"
+  local state=$1 note=$2 took mark
+  took=$(aicoding_ui_elapsed "$_PROVISION_TASK_START")
+  if aicoding_ui_active; then
+    aicoding_ui_line "$state" "$_PROVISION_TASK_LABEL" "$note" "$took"
+    return 0
   fi
+  case "$state" in ok) mark='✔' ;; skip) mark='·' ;; *) mark='✖' ;; esac
+  printf '  %s %-24s %s %s\n' "$mark" "$_PROVISION_TASK_LABEL" "$note" "$took"
 }
 
 _provision_record_blocked() {
@@ -550,7 +532,7 @@ install_claude_plugins() {
         registration_rc=0
         _provision_reconcile_selected_exact_mcp playwright mcp-playwright playwright-mcp --browser chromium \
           || registration_rc=$?
-        _PROVISION_TASK_LABEL=${plugin%@*} _PROVISION_TASK_START=${EPOCHREALTIME:-$SECONDS}
+        _PROVISION_TASK_LABEL=${plugin%@*} _PROVISION_TASK_START=$(_aicoding_ui_now)
         if [ "$registration_rc" -eq 0 ]; then
           _provision_task_done skip "managed as MCP"
         elif [ "$registration_rc" -eq 3 ]; then
@@ -565,7 +547,7 @@ install_claude_plugins() {
         registration_rc=0
         _provision_reconcile_selected_exact_mcp context7 mcp-context7 context7-mcp \
           || registration_rc=$?
-        _PROVISION_TASK_LABEL=${plugin%@*} _PROVISION_TASK_START=${EPOCHREALTIME:-$SECONDS}
+        _PROVISION_TASK_LABEL=${plugin%@*} _PROVISION_TASK_START=$(_aicoding_ui_now)
         if [ "$registration_rc" -eq 0 ]; then
           _provision_task_done skip "managed as MCP"
         elif [ "$registration_rc" -eq 3 ]; then
@@ -593,8 +575,8 @@ install_claude_plugins() {
   for plugin in "${RETIRED_PLUGINS[@]}"; do
     if _provision_task "${plugin%@*}" removing claude plugin uninstall "$plugin"; then
       _provision_task_done ok "removed (retired)"
-    else
-      _provision_task_done skip "not installed"
+    elif aicoding_ui_active; then
+      aicoding_ui_clear
     fi
   done
   [ "$rc" -eq 0 ] || { _provision_soft_failure; return $?; }

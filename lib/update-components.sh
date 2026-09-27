@@ -873,7 +873,11 @@ aicoding_update_npm_entry_component() {
       "$final/node_modules/$package/package.json") || return 1
     relative_bin="node_modules/$package/$entry"
     [ "$component" != mcp-playwright ] || relative_bin=bin/playwright-mcp
-    printf 'INFO: %s: reusing verified release %s\n' "$component" "$target" >&2
+    if declare -F aicoding_ui_active >/dev/null && aicoding_ui_active; then
+      AICODING_UI_NOTE="current ($target)"
+    else
+      printf 'INFO: %s: reusing verified release %s\n' "$component" "$target" >&2
+    fi
     _aicoding_finish_npm_entry_release "$component" "$target" "$final" "$command_name" "$relative_bin"
     return $?
   fi
@@ -1210,6 +1214,26 @@ aicoding_update_ai_usage() {
 
 aicoding_update_component() {
   local AICODING_PROGRESS_COMPONENT=$1 component_rc=0 started=$SECONDS
+  if declare -F aicoding_ui_active >/dev/null && aicoding_ui_active; then
+    # One line per component: sub-steps spin under their own labels and
+    # clear themselves; the component then prints a single result.
+    local ui_started note
+    ui_started=$(_aicoding_ui_now)
+    AICODING_UI_NOTE=
+    aicoding_ui_section "Tools"
+    _aicoding_ui_flush_section
+    AICODING_UI_DEFER_RESULT=1 _aicoding_update_component_impl "$@" || component_rc=$?
+    note=$AICODING_UI_NOTE
+    if [ "$component_rc" -eq 0 ]; then
+      aicoding_ui_line ok "$1" "${note:-up to date}" "$(aicoding_ui_elapsed "$ui_started")"
+    elif declare -F _aicoding_component_attempt_deferred >/dev/null \
+        && _aicoding_component_attempt_deferred "$1"; then
+      aicoding_ui_line skip "$1" "deferred" "$(aicoding_ui_elapsed "$ui_started")"
+    else
+      aicoding_ui_line fail "$1" "update failed (exit $component_rc)" "$(aicoding_ui_elapsed "$ui_started")"
+    fi
+    return "$component_rc"
+  fi
   printf 'INFO: Updating %s\n' "$1" >&2
   _aicoding_update_component_impl "$@" || component_rc=$?
   printf 'INFO: %s update attempt finished (%ss, exit %s)\n' "$1" "$((SECONDS - started))" "$component_rc" >&2
