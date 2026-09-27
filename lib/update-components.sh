@@ -1010,10 +1010,51 @@ _aicoding_finish_npm_entry_release() {
   esac
 }
 
+# Staging must not depend on how Claude treats the launcher's updater switch.
+_aicoding_without_claude_update_switch() (
+  unset DISABLE_AUTOUPDATER FORCE_AUTOUPDATE_PLUGINS
+  "$@"
+)
+
 # Anthropic's native installer accepts an exact version argument. Download the
 # installer, run it with an isolated HOME, validate the staged binary, then
 # copy only that binary into the immutable managed release.
 aicoding_update_claude() {
+  local rc=0
+  _aicoding_update_claude_release || rc=$?
+  _aicoding_claude_prune_native_tree || true
+  return "$rc"
+}
+
+# The native tree under ~/.local/share/claude/versions is only filled by
+# Claude's own updater, which the managed launcher switches off. Remove it only
+# when the aicoding launcher and release are live and nothing executes from it.
+_aicoding_claude_prune_native_tree() {
+  local tree="$HOME/.local/share/claude/versions" launcher="$HOME/.local/bin/claude"
+  local backup="$HOME/.local/bin/claude.pre-aicoding" current exe proc real_tree target
+  [ -d "$tree" ] && [ ! -L "$tree" ] || return 0
+  [ -f "$launcher" ] && [ ! -L "$launcher" ] || return 0
+  grep -qF '# Managed by aicoding immutable runtime.' "$launcher" 2>/dev/null || return 0
+  current=$(readlink -f -- "$AICODING_DATA_DIR/current/claude" 2>/dev/null) || return 0
+  [ -x "$current/bin/claude" ] || return 0
+  real_tree=$(readlink -f -- "$tree") || return 0
+  for proc in /proc/[0-9]*; do
+    exe=$(readlink -f -- "$proc/exe" 2>/dev/null) || continue
+    case "$exe" in "$real_tree"/*) return 0 ;; esac
+  done
+  if [ -e "$backup" ] || [ -L "$backup" ]; then
+    [ -L "$backup" ] || return 0
+    target=$(readlink -- "$backup")
+    case "$target" in /*) ;; *) target="$(dirname -- "$backup")/$target" ;; esac
+    target=$(realpath -m -- "$target")
+    case "$target" in "$real_tree"/*) ;; *) return 0 ;; esac
+    rm -f -- "$backup" || return 0
+  fi
+  rm -rf -- "$tree" || echo "aicoding: could not remove unused $tree" >&2
+  return 0
+}
+
+_aicoding_update_claude_release() {
   local installed target stage staged_home staged_bin final actual installer
   installed=$(_aicoding_version_from_command claude) || true
   target=$(_aicoding_npm_target @anthropic-ai/claude-code) || true
@@ -1021,7 +1062,13 @@ aicoding_update_claude() {
     aicoding_result_record claude failed "" target_version_unavailable
     return 1
   fi
-  if [ "$installed" = "$target" ]; then
+  # Current means the managed release, not a native install of the same
+  # version. Reactivating it reconciles an outdated launcher in place.
+  if [ "$installed" = "$target" ] \
+      && [ "$(readlink -- "$AICODING_DATA_DIR/current/claude" 2>/dev/null)" = "../versions/claude/$target" ]; then
+    if ! _aicoding_activate_vendor_release claude "$target" claude bin/claude; then
+      aicoding_result_record claude failed "$target" activation_failed; return 1
+    fi
     aicoding_result_record claude current "$target" current "$installed"
     return 0
   fi
@@ -1036,7 +1083,7 @@ aicoding_update_claude() {
   if ! HOME="$staged_home" CLAUDE_CONFIG_DIR="$staged_home/.claude" \
       XDG_CONFIG_HOME="$staged_home/.config" XDG_DATA_HOME="$staged_home/.local/share" \
       XDG_CACHE_HOME="$staged_home/.cache" XDG_STATE_HOME="$staged_home/.local/state" \
-      aicoding_progress_run "claude: staging runtime (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" bash "$installer" "$target" </dev/null; then
+      _aicoding_without_claude_update_switch aicoding_progress_run "claude: staging runtime (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" bash "$installer" "$target" </dev/null; then
     rm -rf "$stage"; aicoding_result_record claude failed "$target" stage_install_failed; return 1
   fi
   staged_bin="$staged_home/.local/share/claude/versions/$target"
@@ -1044,7 +1091,7 @@ aicoding_update_claude() {
   actual=$(HOME="$staged_home" CLAUDE_CONFIG_DIR="$staged_home/.claude" \
     XDG_CONFIG_HOME="$staged_home/.config" XDG_DATA_HOME="$staged_home/.local/share" \
     XDG_CACHE_HOME="$staged_home/.cache" XDG_STATE_HOME="$staged_home/.local/state" \
-    _aicoding_version_from_command "$staged_bin") || true
+    _aicoding_without_claude_update_switch _aicoding_version_from_command "$staged_bin") || true
   if [ "$actual" != "$target" ]; then
     rm -rf "$stage"; aicoding_result_record claude failed "$target" staged_version_mismatch; return 1
   fi

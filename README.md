@@ -304,9 +304,13 @@ now, run `aicoding-auto-update --once`.
 
 Agent CLIs (Claude, Codex, OpenCode, Cursor) update through that same path,
 not their own updaters. `~/.local/bin/claude` is an aicoding wrapper around
-`~/.local/share/aicoding/current/claude`, so `claude update` downloads a build
-into `~/.local/share/claude/versions/` that never runs. Do not follow its
-suggestion to delete the wrapper: that removes the managed launcher.
+`~/.local/share/aicoding/current/claude`. It switches Claude's built-in
+background updater off (`DISABLE_AUTOUPDATER=1`, keeping plugin auto-update
+with `FORCE_AUTOUPDATE_PLUGINS=1`), and `claude update` or `claude upgrade`
+runs `aicoding-auto-update --once` instead, on containers and host-profile
+machines alike. `claude doctor` reports the switch. Once the managed release
+is live, the updater removes the unused `~/.local/share/claude/versions/`
+tree that the built-in updater used to fill.
 
 The tmux badges provide a compact reminder:
 
