@@ -530,8 +530,7 @@ def main():
         print(f"  {clean(key)}: {result_text(records.get(key))}")
     if tmux_restart_pending():
         print("  tmux: updated, active after restart (the running server keeps the previous binary)")
-    blockers = [(key, record) for key, record in records.items() if isinstance(record, dict)
-                and record.get("state") in ("blocked", "conflict", "failed")]
+    blockers = unresolved(records)
     print("\nUnresolved recorded blockers — last observation, not a fresh check")
     if blockers:
         for key, record in sorted(blockers):
@@ -560,6 +559,34 @@ def explain(reason, catalog):
     if not matches:
         return None
     return patterns[max(matches, key=lambda p: len(p.replace("*", "")))]
+
+
+def superseded(key, record, records):
+    """A tool-verification wait ends once that tool's own update succeeds later."""
+    if not key.startswith("provision-") or not str(record.get("reason", "")).endswith("_update_not_verified"):
+        return False
+    tool = records.get(key[len("provision-"):])
+    if not isinstance(tool, dict) or tool.get("state") not in ("current", "updated"):
+        return False
+    done, seen = epoch(tool.get("succeeded_at")), epoch(record.get("attempted_at"))
+    return done is not None and seen is not None and done >= seen
+
+
+def unresolved(records):
+    return sorted((key, rec) for key, rec in records.items()
+                  if isinstance(rec, dict) and rec.get("state") in ("blocked", "conflict", "failed")
+                  and not superseded(key, rec, records))
+
+
+def provision_actionable():
+    """Exit 0 when an unresolved blocker is actionable here (kind action, or uncatalogued)."""
+    records = document(Path(os.environ.get("AICODING_RESULTS_FILE", STATE / "update-results.json"))).get("components", {})
+    catalog = reason_catalog()
+    for _key, rec in unresolved(records if isinstance(records, dict) else {}):
+        entry = explain(clean(rec.get("reason", "")) or "unknown", catalog)
+        if entry is None or entry.get("kind") == "action":
+            return 0
+    return 1
 
 
 def fleet_groups():
@@ -593,8 +620,7 @@ def doctor():
     records = document(Path(os.environ.get("AICODING_RESULTS_FILE", STATE / "update-results.json"))).get("components", {})
     if not isinstance(records, dict):
         records = {}
-    blockers = sorted((key, rec) for key, rec in records.items()
-                      if isinstance(rec, dict) and rec.get("state") in ("blocked", "conflict", "failed"))
+    blockers = unresolved(records)
     fleet_blocked = has_recorded_fleet_blocker(blockers)
     fleet_expected = bool(fleet_proof_roots()) or shared_fleet_root_confirmed() or fleet_blocked
     fleet = fleet_proof_text(force=True) if fleet_expected else None
@@ -631,4 +657,6 @@ def doctor():
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--provision-actionable"]:
+        sys.exit(provision_actionable())
     sys.exit(doctor() if sys.argv[1:] == ["--doctor"] else main())

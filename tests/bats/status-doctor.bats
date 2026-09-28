@@ -120,3 +120,17 @@ _fleet() {
   run "$BIN" --help
   [[ "$output" == *"--doctor"* ]]
 }
+
+@test "doctor and status drop a tool-verification blocker once that tool succeeded later" {
+  jq -n '{schema:1,components:{
+    "provision-claude":{state:"blocked",reason:"claude_update_not_verified",attempted_at:"2026-09-28T10:44:44Z"},
+    claude:{state:"updated",reason:"installed",successful_version:"2.1.283",succeeded_at:"2026-09-28T10:45:38Z"},
+    "provision-codex":{state:"blocked",reason:"codex_update_not_verified",attempted_at:"2026-09-28T10:44:44Z"},
+    codex:{state:"updated",reason:"installed",successful_version:"0.158.0",succeeded_at:"2026-09-28T10:40:00Z"}}}' \
+    > "$AICODING_RESULTS_FILE"
+  run "$BIN" --doctor
+  [[ "$output" != *"provision-claude"* ]]
+  [[ "$output" == *"provision-codex"* ]]
+  run "$BIN"
+  [[ "$(sed -n '/Unresolved recorded blockers/,$p' <<< "$output")" != *"provision-claude"* ]]
+}
