@@ -249,6 +249,26 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+@test "Claude settings do not wait for context7 or playwright registrations nobody selected" {
+  for component in mcp-context7 mcp-playwright mcp-kanban; do
+    aicoding_result_record "$component" current 1.0.0 installed 1.0.0
+  done
+  _aicoding_active_kanban_mcp_valid() { return 0; }
+  aicoding_result_record mcp-registration-claude-context7 blocked 1.0.0 registration_not_selected
+  aicoding_result_record mcp-registration-claude-playwright blocked 1.0.0 registration_not_selected
+  aicoding_result_record mcp-registration-claude-kanban current 1.0.0 registration_verified 1.0.0
+  run aicoding_exact_mcp_config_ready "$HOME/.claude/settings.json"
+  [ "$status" -eq 0 ]
+  aicoding_result_record mcp-registration-claude-kanban blocked 1.0.0 registration_not_selected
+  run aicoding_exact_mcp_config_cause "$HOME/.claude/settings.json"
+  [ "$status" -ne 0 ]
+  [ "$output" = "mcp-registration-claude-kanban: blocked registration_not_selected" ]
+  aicoding_result_record mcp-registration-claude-kanban current 1.0.0 registration_verified 1.0.0
+  aicoding_result_record mcp-registration-claude-context7 blocked 1.0.0 registration_conflict
+  run aicoding_exact_mcp_config_cause "$HOME/.claude/settings.json"
+  [ "$output" = "mcp-registration-claude-context7: blocked registration_conflict" ]
+}
+
 @test "Cursor hook config does not depend on unrelated exact MCP packages" {
   _tool agent 'agent 1.2.3'
   aicoding_result_record cursor current 1.2.3 installed 1.2.3
