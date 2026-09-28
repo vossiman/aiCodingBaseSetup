@@ -918,7 +918,10 @@ _sync_reconcile() {
         BUCKETS[$d]=blocked
         blocked_count=$((blocked_count + 1))
         component=$(_aicoding_config_component "$d")
+        # Several destinations can share one component: reason and detail
+        # are replaced as a pair so the last reason never keeps a stale cause.
         blocked_reasons[$component]=$reason
+        blocked_details[$component]=
         if [[ "$reason" == mcp_exact_version_staging_unavailable ]]; then
           blocked_details[$component]=$(aicoding_exact_mcp_config_cause "$d") || true
         fi
