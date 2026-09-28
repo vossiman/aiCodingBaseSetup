@@ -286,3 +286,23 @@ prepare_detail() {
   run bash -c '. "$BLUEPRINT_ROOT/lib/codex-provenance.sh"; AICODING_STATE_DIR="$PROV_TMP/link/state" _codex_provenance_prepare "$PROV_SHA"; printf "%s|%s\n" "$CODEX_PROVENANCE_ERROR" "$CODEX_PROVENANCE_DETAIL"'
   [ "$output" = "invalid_provenance_cache|initial/state_path_symlink:$PROV_TMP/link" ] || { echo "$output"; false; }
 }
+@test "provenance git never starts detached auto-maintenance" {
+  # git >= 2.47 runs `git maintenance run --auto --detach` after fetch; its
+  # geometric repack deleted a fresh pack while fsck read it (2026-09-28).
+  mkdir -p "$PROV_TMP/bin"
+  cat > "$PROV_TMP/bin/git" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >> "$HOME/git-arguments"
+SH
+  chmod +x "$PROV_TMP/bin/git"
+  export PROV_BIN="$PROV_TMP/bin"
+  run bash -c '
+    export PATH="$PROV_BIN:$PATH"
+    . "$BLUEPRINT_ROOT/lib/codex-provenance.sh"
+    _codex_provenance_fetch /fixture/evidence.git "$PROV_SHA"
+    _codex_provenance_git --git-dir=/fixture/evidence.git fsck
+  '
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  [ "$(grep -cx 'maintenance.auto=false' "$HOME/git-arguments")" -eq 2 ]
+  [ "$(grep -cx 'gc.auto=0' "$HOME/git-arguments")" -eq 2 ]
+}

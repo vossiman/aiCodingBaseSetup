@@ -7,7 +7,8 @@ _codex_provenance_git() (
   for variable in ${!GIT_@}; do unset "$variable"; done
   export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1
   command git -c core.hooksPath=/dev/null -c protocol.file.allow=never -c protocol.ext.allow=never \
-    -c transfer.fsckObjects=true -c fetch.fsckObjects=true "$@"
+    -c transfer.fsckObjects=true -c fetch.fsckObjects=true \
+    -c maintenance.auto=false -c gc.auto=0 "$@"
 )
 
 # Rejection reasons: each check that returns 3 names itself. Paths are the
@@ -212,8 +213,11 @@ _codex_provenance_fetch() (
   local variable
   for variable in ${!GIT_@}; do unset "$variable"; done
   export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1
+  # Detached auto-maintenance after fetch repacks while fsck still reads the
+  # packs it deletes.
   command timeout --foreground 120 git -c core.hooksPath=/dev/null -c protocol.file.allow=never \
     -c protocol.ext.allow=never -c transfer.fsckObjects=true -c fetch.fsckObjects=true \
+    -c maintenance.auto=false -c gc.auto=0 \
     --git-dir="$1" fetch --quiet --no-tags https://github.com/vossiman/aiCodingBaseSetup "$2" </dev/null >/dev/null 2>&1
 )
 
