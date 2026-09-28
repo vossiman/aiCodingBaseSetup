@@ -14,7 +14,25 @@ teardown() { rm -rf "$TMP"; }
     test "$(cat "$TMP/result")" = result
     grep -q "fixture: download" "$TMP/progress"
     grep -q "still running" "$TMP/progress"
-    grep -q "completed" "$TMP/progress"
+    grep -q "OK: fixture: download (" "$TMP/progress"
+    if grep -q "timeout 2s" "$TMP/progress"; then exit 1; fi
+  '
+  [ "$status" -eq 0 ]
+}
+
+@test "plain progress follows AICODING_LOG_FD while failures stay on stderr" {
+  run bash -c '
+    . "$BLUEPRINT_ROOT/lib/update-progress.sh"
+    exec {AICODING_LOG_FD}>"$TMP/log"; export AICODING_LOG_FD
+    aicoding_progress_run "fixture: fetch (timeout 2s)" bash -c "sleep 0.35; printf result" >"$TMP/result" 2>"$TMP/err"
+    test "$(cat "$TMP/result")" = result || exit 1
+    test ! -s "$TMP/err" || exit 2
+    grep -q "still running" "$TMP/log" || exit 3
+    grep -qx "  OK: fixture: fetch (0s)" "$TMP/log" || exit 4
+    if grep -q "starting" "$TMP/log"; then exit 5; fi
+    aicoding_progress_run "fixture: broken" bash -c "exit 7" 2>"$TMP/err"
+    test "$?" = 7 || exit 6
+    grep -q "WARN: fixture: broken — failed" "$TMP/err" || exit 7
   '
   [ "$status" -eq 0 ]
 }

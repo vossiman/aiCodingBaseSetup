@@ -59,7 +59,7 @@ teardown() {
     . "$BLUEPRINT_ROOT/lib/update-progress.sh"
     aicoding_ui_active && exit 3
     aicoding_progress_run "fixture: step" true 2>"$TMP/progress"
-    grep -q "INFO: fixture: step — completed" "$TMP/progress"
+    grep -q "OK: fixture: step (" "$TMP/progress"
   '
   [ "$status" -eq 0 ]
 }

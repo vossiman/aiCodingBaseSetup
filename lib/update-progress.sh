@@ -3,6 +3,17 @@
 # a subshell, so callers needing shell-state mutations must call them directly.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ui.sh"
 
+# Routine progress goes to AICODING_LOG_FD when a caller opened one next to
+# its log lines, else stderr so a step's stdout result stays clean. devpod
+# tags every stderr line as a warning; failures still belong there.
+aicoding_progress_log() {
+  if [ -n "${AICODING_LOG_FD:-}" ] && { : >&"$AICODING_LOG_FD"; } 2>/dev/null; then
+    printf '%s\n' "$*" >&"$AICODING_LOG_FD"
+  else
+    printf '%s\n' "$*" >&2
+  fi
+}
+
 aicoding_progress_run() {
   # Section titles are parent-shell state; print a pending one before the
   # subshell starts, or the subshell would print it and the parent again.
@@ -22,10 +33,9 @@ _aicoding_progress_run_impl() (
   fi
   display=${AICODING_UI_LABEL:-${label% (timeout *)}}
   ui_started=$(_aicoding_ui_now)
-  interval=${AICODING_PROGRESS_INTERVAL:-15}
-  [[ "$interval" =~ ^[0-9]+([.][0-9]+)?$ ]] && [[ ! "$interval" =~ ^0+([.]0+)?$ ]] || interval=15
+  interval=${AICODING_PROGRESS_INTERVAL:-30}
+  [[ "$interval" =~ ^[0-9]+([.][0-9]+)?$ ]] && [[ ! "$interval" =~ ^0+([.]0+)?$ ]] || interval=30
   [ "$ui" = tty ] && interval=0.1
-  [ "$ui" = plain ] && printf 'INFO: %s — starting\n' "$label" >&2
   # The ticker must be the direct background child so killing $ticker stops it.
   if [ "$ui" = nested ]; then ticker=; else (
     # A ticker must never retain installer/update locks. Close its copies,
@@ -36,6 +46,7 @@ _aicoding_progress_run_impl() (
       fd=${target##*/}
       [[ "$fd" =~ ^[0-9]+$ ]] && [ "$fd" -gt 2 ] || continue
       [ "$ui" = tty ] && [ "$fd" = "$AICODING_UI_FD" ] && continue
+      [ "$fd" = "${AICODING_LOG_FD:-}" ] && continue
       eval "exec ${fd}>&-" 2>/dev/null || true
     done
     trap 'if [ -n "$sleeper" ]; then kill "$sleeper" 2>/dev/null || true; wait "$sleeper" 2>/dev/null || true; fi; exit 0' TERM INT HUP
@@ -52,7 +63,7 @@ _aicoding_progress_run_impl() (
       if [ "$ui" = tty ]; then
         aicoding_ui_spin "$((frame++))" "$display" "${AICODING_UI_VERB:-}" "$ui_started"
       else
-        printf 'INFO: %s — still running (%ss elapsed)\n' "$label" "$((SECONDS - started))" >&2
+        aicoding_progress_log "INFO: $display still running ($((SECONDS - started))s)"
       fi
     done
   ) </dev/null &
@@ -104,7 +115,7 @@ _aicoding_progress_run_impl() (
     exit "$rc"
   fi
   case "$rc" in
-    0) printf 'INFO: %s — completed (%ss)\n' "$label" "$((SECONDS - started))" >&2 ;;
+    0) aicoding_progress_log "  OK: $display ($((SECONDS - started))s)" ;;
     124|137) printf 'WARN: %s — timed out or terminated (%ss, exit %s)\n' "$label" "$((SECONDS - started))" "$rc" >&2 ;;
     *) printf 'WARN: %s — failed (%ss, exit %s)\n' "$label" "$((SECONDS - started))" "$rc" >&2 ;;
   esac

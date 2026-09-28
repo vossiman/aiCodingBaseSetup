@@ -130,7 +130,7 @@ aicoding_update_kanban_mcp() {
     if declare -F aicoding_ui_active >/dev/null && aicoding_ui_active; then
       AICODING_UI_NOTE="current (${revision:0:7})"
     else
-      printf 'INFO: mcp-kanban: reusing verified release %s\n' "$revision" >&2
+      aicoding_progress_log "INFO: mcp-kanban: reusing verified release $revision"
     fi
     _aicoding_finish_kanban_mcp_release "$revision" "$release"
     return $?
