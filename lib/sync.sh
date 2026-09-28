@@ -793,6 +793,7 @@ _sync_record_config_results() {
           5) state=failed; reason=managed_config_apply_failed ;;
         esac
         detail=
+        [ "${ranks[$component]}" -ne 3 ] || detail=${blocked_details[$component]:-}
         [ "${ranks[$component]}" -ne 5 ] || detail=$(_sync_smart_error_detail "$component")
         aicoding_result_record "$component" "$state" "$target" "$reason" "" "$detail" || true
         ;;
@@ -877,7 +878,7 @@ _sync_reconcile() {
   done
 
   local blocked_count=0 reason component
-  local -A blocked_reasons=() recovery_components=()
+  local -A blocked_reasons=() blocked_details=() recovery_components=()
   # Recheck prerequisites for a no-op only when retiring an unresolved receipt.
   # Otherwise unchanged config must not introduce update work for absent tools.
   if [ -f "${AICODING_RESULTS_FILE:-}" ]; then
@@ -918,6 +919,9 @@ _sync_reconcile() {
         blocked_count=$((blocked_count + 1))
         component=$(_aicoding_config_component "$d")
         blocked_reasons[$component]=$reason
+        if [[ "$reason" == mcp_exact_version_staging_unavailable ]]; then
+          blocked_details[$component]=$(aicoding_exact_mcp_config_cause "$d") || true
+        fi
         case "$component" in
           config-*) _SYNC_DEFERRED_PROVISION_COMPONENTS[${component#config-}]=1 ;;
         esac
@@ -927,7 +931,8 @@ _sync_reconcile() {
     unset AICODING_REQUIRE_SHARED_COMPATIBILITY
     if command -v aicoding_result_record >/dev/null 2>&1; then
       for component in "${!blocked_reasons[@]}"; do
-        aicoding_result_record "$component" blocked "$NEW_COMMIT" "${blocked_reasons[$component]}" || true
+        aicoding_result_record "$component" blocked "$NEW_COMMIT" "${blocked_reasons[$component]}" "" \
+          "${blocked_details[$component]:-}" || true
       done
     fi
   fi

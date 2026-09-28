@@ -647,6 +647,8 @@ def doctor():
         reason = clean(rec.get("reason", "")) or "unknown"
         entry = explain(reason, catalog)
         print(f"  {clean(key)}: {clean(rec.get('state'))} ({reason}), {local_time(rec.get('attempted_at'))}")
+        if rec.get("detail"):
+            print(f"    Detail: {clean(rec.get('detail'))}")
         if entry is None:
             print("    Why: this reason is not in the doctor catalog yet (lib/status-reasons.json).")
             print(f"    Fix: {UNKNOWN_FIX}")

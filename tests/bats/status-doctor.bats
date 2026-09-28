@@ -134,3 +134,10 @@ _fleet() {
   run "$BIN"
   [[ "$(sed -n '/Unresolved recorded blockers/,$p' <<< "$output")" != *"provision-claude"* ]]
 }
+
+@test "doctor prints a blocker's recorded detail" {
+  aicoding_result_record config-claude blocked target mcp_exact_version_staging_unavailable "" \
+    "mcp-kanban: blocked exact_package_not_staged"
+  run "$BIN" --doctor
+  [[ "$output" == *"Detail: mcp-kanban: blocked exact_package_not_staged"* ]]
+}

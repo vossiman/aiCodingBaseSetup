@@ -7,7 +7,7 @@ setup() {
   . "$BLUEPRINT_ROOT/lib/sync.sh"
   . "$BLUEPRINT_ROOT/lib/update-results.sh"
   . "$BLUEPRINT_ROOT/lib/update-components.sh"
-  declare -gA BUCKETS=() FILE_MODE=() APPLY_FAILURES=() SMART_APPLY_RESULT=() SMART_PLAN=() blocked_reasons=()
+  declare -gA BUCKETS=() FILE_MODE=() APPLY_FAILURES=() SMART_APPLY_RESULT=() SMART_PLAN=() blocked_reasons=() blocked_details=()
   target=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   first="$HOME/.claude/settings.json"
   second="$HOME/.claude/CLAUDE.md"
@@ -164,4 +164,14 @@ STUB
   [ "${_SYNC_DEFERRED_PROVISION_COMPONENTS[claude]:-0}" = 0 ]
   [ "$(jq -c '.components["config-claude"]' "$AICODING_RESULTS_FILE")" = "$before" ]
   jq -e '.components.config.state == "current"' "$AICODING_RESULTS_FILE"
+}
+
+@test "a blocked config receipt carries the recorded cause as its detail" {
+  BUCKETS[$first]=blocked
+  blocked_reasons[config-claude]=mcp_exact_version_staging_unavailable
+  blocked_details[config-claude]="mcp-kanban: blocked exact_package_not_staged"
+  _sync_record_config_results "$target" ''
+  jq -e '.components["config-claude"] | .state == "blocked"
+    and .reason == "mcp_exact_version_staging_unavailable"
+    and .detail == "mcp-kanban: blocked exact_package_not_staged"' "$AICODING_RESULTS_FILE"
 }

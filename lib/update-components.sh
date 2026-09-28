@@ -194,27 +194,41 @@ _aicoding_exact_mcp_config_allows() {
 # that cannot be migrated. Shared config additionally requires every
 # inventoried consumer to report every package ready for that destination.
 aicoding_exact_mcp_config_ready() {
+  aicoding_exact_mcp_config_cause "$1" >/dev/null
+}
+
+# Print "<component>: <why>" for the first component that keeps an exact MCP
+# config from being ready, and return 1; print nothing and return 0 when ready.
+aicoding_exact_mcp_config_cause() {
   local dest=$1 component
-  [ -f "$AICODING_RESULTS_FILE" ] || return 1
   for component in mcp-context7 mcp-playwright mcp-kanban; do
-    case "$(jq -r --arg c "$component" '.components[$c].state // empty' "$AICODING_RESULTS_FILE" 2>/dev/null)" in
-      current|updated) ;;
-      *) return 1 ;;
-    esac
-    [ "$component" != mcp-kanban ] || _aicoding_active_kanban_mcp_valid || return 1
-    _aicoding_shared_consumers_require "$component" "" "$dest" || return 1
+    _aicoding_mcp_receipt_ready "$component" || return 1
+    if [ "$component" = mcp-kanban ] && ! _aicoding_active_kanban_mcp_valid; then
+      echo "mcp-kanban: active launcher invalid"; return 1
+    fi
+    _aicoding_shared_consumers_require "$component" "" "$dest" \
+      || { echo "$component: fleet proof incomplete"; return 1; }
   done
   case "$dest" in
     "$HOME/.claude/settings.json")
       for component in mcp-registration-claude-context7 mcp-registration-claude-playwright \
           mcp-registration-claude-kanban; do
-        case "$(jq -r --arg c "$component" '.components[$c].state // empty' "$AICODING_RESULTS_FILE" 2>/dev/null)" in
-          current|updated) ;;
-          *) return 1 ;;
-        esac
+        _aicoding_mcp_receipt_ready "$component" || return 1
       done
       ;;
   esac
+}
+
+_aicoding_mcp_receipt_ready() {
+  local component=$1 receipt
+  receipt=$(jq -r --arg c "$component" \
+    '.components[$c] // empty | "\(.state // "") \(.reason // "")"' "$AICODING_RESULTS_FILE" 2>/dev/null) || receipt=
+  case "$receipt" in
+    current\ *|updated\ *) return 0 ;;
+    "") echo "$component: no receipt" ;;
+    *) echo "$component: ${receipt% }" ;;
+  esac
+  return 1
 }
 
 # Print the canonical root only when a destination belongs to a configured or
