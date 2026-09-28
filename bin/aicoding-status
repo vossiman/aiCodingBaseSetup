@@ -153,6 +153,14 @@ _image_built_date() { jq -r '.built // empty' "${AICODING_IMAGE_RELEASE_FILE:-/e
 # Catches the weekly cron / manual-dispatch publishes that change no image/
 # sources. ISO dates compare correctly as strings; fail-open when either
 # side is missing.
+# Exit 1 only on a clear "nothing actionable"; any other failure keeps the badge.
+_provision_actionable() {
+  local rc=0
+  python3 "$(dirname "$(dirname "$(readlink -f "$0")")")/lib/status-report.py" \
+    --provision-actionable >/dev/null 2>&1 || rc=$?
+  [ "$rc" -ne 1 ]
+}
+
 _published_newer() {
   local newest built
   newest=$(jq -r '.latest_tag // empty' "$STATE/image.json" 2>/dev/null)
@@ -174,7 +182,10 @@ _behind_extra() {
       target=$(_provision_target)
       stamp=$(_provision_stamp)
       if [ "$target" = "$active" ]; then
-        case "$result" in blocked|failed|conflict) echo provision-blocked ;; *) [ "$stamp" = "$active" ] || echo install ;; esac
+        case "$result" in
+          blocked|failed|conflict) _provision_actionable && echo provision-blocked ;;
+          *) [ "$stamp" = "$active" ] || echo install ;;
+        esac
       elif [ "$stamp" != "$active" ]; then
         echo install
       fi
@@ -188,7 +199,10 @@ _behind_extra() {
     fi
     if [ "$provision_behind" -eq 1 ] && ! _provision_result_current; then
       result=$(_provision_result)
-      case "$result" in blocked|failed|conflict) echo provision-blocked ;; *) echo install ;; esac
+      case "$result" in
+        blocked|failed|conflict) _provision_actionable && echo provision-blocked ;;
+        *) echo install ;;
+      esac
     fi
   fi
   if [ "$profile" = container ]; then

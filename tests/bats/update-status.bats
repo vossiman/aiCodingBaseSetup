@@ -696,3 +696,45 @@ STUB
   [ "$status" -eq 0 ]
   [ "$(cache | jq -r .latest | cut -c1-7)" = "3333333" ]
 }
+
+# ⬆provision! means "something to do in this container": only blockers whose
+# catalogued kind is action light it; waits and the deferral aggregate do not.
+_provision_fixture() {
+  local active=2727272727272727272727272727272727272727
+  unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE \
+    AICODING_UPDATE_TESTONLY_INSTALLED_FILE
+  export AICODING_MANIFEST="$TMP/manifest.json"
+  export AICODING_RESULTS_FILE="$TMP/results.json"
+  _activate_gitless_aicoding "$active"
+  jq -n --arg a "$active" '{blueprint_commit:$a,provision_commit:$a,profile:"container"}' > "$AICODING_MANIFEST"
+  mkdir -p "$AICODING_UPDATE_STATE"
+  jq -n --arg a "$active" '{tool:"aicoding",latest:$a}' > "$AICODING_UPDATE_STATE/aicoding.json"
+  jq -n --arg a "$active" '{schema:1,components:{
+      provision:{state:"blocked",reason:"preparation_deferred",target_version:$a},
+      "provision-claude":{state:"blocked",reason:"claude_update_not_verified"}}}' > "$AICODING_RESULTS_FILE"
+}
+
+@test "provision badge: only wait-kind blockers light nothing" {
+  _provision_fixture
+  run "$BIN" --tmux
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"provision!"* ]]
+  run "$BIN" --banner
+  [[ "$output" != *"provisioning blocked"* ]]
+}
+
+@test "provision badge: one action-kind blocker lights it" {
+  _provision_fixture
+  jq '.components.config={state:"conflict",reason:"managed_config_conflict"}' \
+    "$AICODING_RESULTS_FILE" > "$TMP/r" && mv "$TMP/r" "$AICODING_RESULTS_FILE"
+  run "$BIN" --tmux
+  [[ "$output" == *"⬆provision!"* ]]
+}
+
+@test "provision badge: an uncatalogued reason still lights it" {
+  _provision_fixture
+  jq '.components.config={state:"failed",reason:"never_heard_of_this"}' \
+    "$AICODING_RESULTS_FILE" > "$TMP/r" && mv "$TMP/r" "$AICODING_RESULTS_FILE"
+  run "$BIN" --tmux
+  [[ "$output" == *"⬆provision!"* ]]
+}

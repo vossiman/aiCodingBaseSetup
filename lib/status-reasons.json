@@ -501,7 +501,7 @@
       "fix": "Install the tool if you use it (then run `aicoding-sync --yes`); otherwise ignore this."
     },
     "*_update_not_verified": {
-      "kind": "action",
+      "kind": "wait",
       "source_marker": "_update_not_verified",
       "meaning": "The tool's last update was not verified, so config that depends on it waits.",
       "fix": "Run `aicoding-auto-update --once` so the tool update is verified, and fix that tool's own blocker if doctor lists one. Then run `aicoding-sync --yes`."

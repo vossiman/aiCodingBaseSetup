@@ -122,11 +122,11 @@ this container". Reclassifications:
 | Reason | Today | New |
 |---|---|---|
 | `*_update_not_verified` | action | wait (resolves next pass) |
-| `manual_rebuild_required_*` | action | wait (the ⬆rebuild badge covers it) |
+| `manual_rebuild_required_*` | action | action (kept: ⬆rebuild only tracks image age, so a missing capability on a current image would otherwise show nothing) |
 | `claude_consumers_incompatible`, `*_shared_consumers_incompatible` | action | removed by change 2 |
 | `mcp_exact_version_staging_unavailable` | action | follows its root cause, see 5 |
 
-Everything else keeps its kind. `managed_config_conflict` stays `action`.
+A `provision-<tool>` blocker with reason `<tool>_update_not_verified` counts as resolved once that tool's own receipt succeeded at or after the blocker was recorded. Provisioning is skipped while the tool's config is deferred, so change 3 alone cannot overwrite it. Everything else keeps its kind. `managed_config_conflict` stays `action`.
 The static reason scan already requires every reason to be catalogued, so a
 new reason cannot ship without deciding whether it badges.
 
