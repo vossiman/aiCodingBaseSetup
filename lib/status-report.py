@@ -409,11 +409,38 @@ def fleet_proof_text(force=False):
             verified = sum(1 for c in consumers if isinstance(c, dict) and isinstance(c.get("components"), dict)
                            and all(name in c["components"] for name in FLEET_CAPABILITIES))
             return f"incomplete for {clean(r.get('shared_root'))}: {verified} of {len(consumers)} containers verified"
+        lagging = incompatible_consumers(consumers)
+        if lagging:
+            return f"incompatible for {clean(r.get('shared_root'))}: " + "; ".join(lagging)
         if not me:
             return "not listed: own container id unknown"
         if not any(isinstance(c, dict) and c.get("id") == me for c in consumers):
             return "not listed: this container has not been probed yet"
     return f"valid until {local_time(earliest)}"
+
+
+FLEET_MINIMUM = {"codex": (0, 148, 0)}
+
+
+def incompatible_consumers(consumers):
+    """Containers that would not read the current shared config; reported, never enforced."""
+    found = []
+    for consumer in consumers:
+        if not isinstance(consumer, dict) or not isinstance(consumer.get("components"), dict):
+            continue
+        problems = []
+        for name, facts in sorted(consumer["components"].items()):
+            if not isinstance(facts, dict):
+                continue
+            if facts.get("config_compatible") is not True:
+                problems.append(f"{clean(name)} config incompatible")
+            floor = FLEET_MINIMUM.get(name)
+            parts = re.match(r"(\d+)\.(\d+)\.(\d+)", str(facts.get("version", "")))
+            if floor and parts and tuple(map(int, parts.groups())) < floor:
+                problems.append(f"{clean(name)} {clean(facts.get('version'))} older than {'.'.join(map(str, floor))}")
+        if problems:
+            found.append(f"{clean(consumer.get('id', '?'))[:12]} ({', '.join(problems)})")
+    return found
 
 
 def fleet_proof_roots():

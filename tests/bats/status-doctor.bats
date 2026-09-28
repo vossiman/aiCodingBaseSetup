@@ -94,7 +94,9 @@ _fleet() {
 
 @test "doctor stays quiet about the fleet when the proof is complete" {
   _fleet
-  jq '.roots[0].inventory_complete = true | .roots[0].consumers = [.roots[0].consumers[0]]' \
+  jq '.roots[0].inventory_complete = true | .roots[0].consumers = [.roots[0].consumers[0]]
+      | .roots[0].consumers[0].components |= with_entries(.value = {version: "1.0.0", config_compatible: true})
+      | .roots[0].consumers[0].components.codex.version = "0.158.0"' \
     "$AICODING_SHARED_CONSUMERS_FILE" > "$TMP/f" && mv "$TMP/f" "$AICODING_SHARED_CONSUMERS_FILE"
   run "$BIN" --doctor
   [ "$status" -eq 0 ]
@@ -160,4 +162,23 @@ _fleet() {
   [[ "$output" != *"consumers_incompatible"* ]]
   run python3 "$BLUEPRINT_ROOT/lib/status-report.py" --provision-actionable
   [ "$status" -eq 1 ]
+}
+
+@test "doctor warns when a complete fleet reports an incompatible consumer" {
+  _fleet
+  jq '.roots[0].inventory_complete = true
+      | .roots[0].consumers = [.roots[0].consumers[0]]
+      | .roots[0].consumers[0].components = {
+          claude: {version: "2.1.0", config_compatible: true},
+          codex: {version: "0.140.0", config_compatible: true},
+          cursor: {version: "2026.09.26", config_compatible: false},
+          "mcp-context7": {version: "4.1.1", config_compatible: true},
+          "mcp-playwright": {version: "0.0.82", config_compatible: true},
+          "mcp-kanban": {version: "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3", config_compatible: true}}' \
+    "$AICODING_SHARED_CONSUMERS_FILE" > "$TMP/f" && mv "$TMP/f" "$AICODING_SHARED_CONSUMERS_FILE"
+  run "$BIN" --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Fleet proof (warning only): incompatible"*"aaaaaaaaaaaa"* ]]
+  [[ "$output" == *"codex 0.140.0 older than 0.148.0"* ]]
+  [[ "$output" == *"cursor config incompatible"* ]]
 }
