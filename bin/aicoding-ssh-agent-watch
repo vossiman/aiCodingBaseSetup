@@ -58,12 +58,23 @@ run_loop() {
   done
 }
 
+# sync calls --ensure while holding its writer locks; a daemon that inherits
+# those descriptors keeps the locks held for its whole lifetime.
+_close_inherited_fds() {
+  local path fd
+  for path in /proc/"$BASHPID"/fd/[0-9]*; do
+    fd=${path##*/}
+    [ "$fd" -gt 2 ] && [ "$fd" != 255 ] && eval "exec $fd>&-"
+  done 2>/dev/null
+  return 0
+}
+
 ensure_running() {
   # Match the daemon (cmdline ends in the script name), NOT this --ensure call.
   if pgrep -f 'aicoding-ssh-agent-watch$' >/dev/null 2>&1; then
     return 0
   fi
-  nohup "$0" >/dev/null 2>&1 &
+  ( _close_inherited_fds; exec nohup "$0" </dev/null >/dev/null 2>&1 ) &
   disown 2>/dev/null || true
 }
 
