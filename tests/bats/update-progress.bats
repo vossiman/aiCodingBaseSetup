@@ -20,19 +20,39 @@ teardown() { rm -rf "$TMP"; }
   [ "$status" -eq 0 ]
 }
 
-@test "plain progress follows AICODING_LOG_FD while failures stay on stderr" {
+@test "plain progress follows the recorded log while failures stay on stderr" {
   run bash -c '
     . "$BLUEPRINT_ROOT/lib/update-progress.sh"
-    exec {AICODING_LOG_FD}>"$TMP/log"; export AICODING_LOG_FD
-    aicoding_progress_run "fixture: fetch (timeout 2s)" bash -c "sleep 0.35; printf result" >"$TMP/result" 2>"$TMP/err"
+    {
+      aicoding_progress_log_here
+      aicoding_progress_run "fixture: fetch (timeout 2s)" bash -c "sleep 0.35; printf result" >"$TMP/result" 2>"$TMP/err"
+    } >"$TMP/log"
     test "$(cat "$TMP/result")" = result || exit 1
     test ! -s "$TMP/err" || exit 2
     grep -q "still running" "$TMP/log" || exit 3
-    grep -qx "  OK: fixture: fetch (0s)" "$TMP/log" || exit 4
+    grep -qxE "  OK: fixture: fetch \([0-9]+s\)" "$TMP/log" || exit 4
     if grep -q "starting" "$TMP/log"; then exit 5; fi
     aicoding_progress_run "fixture: broken" bash -c "exit 7" 2>"$TMP/err"
     test "$?" = 7 || exit 6
     grep -q "WARN: fixture: broken — failed" "$TMP/err" || exit 7
+  '
+  [ "$status" -eq 0 ]
+}
+
+@test "a detached daemon does not hold the recorded log open or write to it" {
+  command -v setsid >/dev/null || skip "setsid unavailable"
+  run bash -c '
+    started=$SECONDS
+    bash -c "
+      . \"\$BLUEPRINT_ROOT/lib/update-progress.sh\"
+      aicoding_progress_log_here
+      setsid bash -c \". \\\"\$BLUEPRINT_ROOT/lib/update-progress.sh\\\"; aicoding_progress_log daemon-line; sleep 5\" </dev/null >/dev/null 2>&1 &
+      sleep 0.3
+      aicoding_progress_log parent-line
+    " | cat >"$TMP/log"
+    test $((SECONDS - started)) -lt 3 || exit 1
+    grep -qx parent-line "$TMP/log" || exit 2
+    if grep -q daemon-line "$TMP/log"; then exit 3; fi
   '
   [ "$status" -eq 0 ]
 }
