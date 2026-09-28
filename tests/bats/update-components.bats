@@ -208,6 +208,30 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+@test "MCP staging cause names the first component that is not ready" {
+  local codex_config="$HOME/.codex/config.toml"
+  export AICODING_REQUIRE_UPDATE_RECEIPT=1
+  run aicoding_exact_mcp_config_cause "$codex_config"
+  [ "$status" -ne 0 ]
+  [ "$output" = "mcp-context7: no receipt" ]
+  aicoding_result_record mcp-context7 current 1.0.0 installed 1.0.0
+  aicoding_result_record mcp-playwright current 1.0.0 installed 1.0.0
+  aicoding_result_record mcp-kanban blocked 1.0.0 exact_package_not_staged
+  run aicoding_exact_mcp_config_cause "$codex_config"
+  [ "$status" -ne 0 ]
+  [ "$output" = "mcp-kanban: blocked exact_package_not_staged" ]
+  aicoding_result_record mcp-kanban current 1.0.0 installed 1.0.0
+  _aicoding_active_kanban_mcp_valid() { return 1; }
+  run aicoding_exact_mcp_config_cause "$codex_config"
+  [ "$output" = "mcp-kanban: active launcher invalid" ]
+  _aicoding_active_kanban_mcp_valid() { return 0; }
+  run aicoding_exact_mcp_config_cause "$HOME/.claude/settings.json"
+  [ "$output" = "mcp-registration-claude-context7: no receipt" ]
+  run aicoding_exact_mcp_config_cause "$codex_config"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 @test "Claude registration readiness is separate from package readiness for other harnesses" {
   for component in mcp-context7 mcp-playwright mcp-kanban; do
     aicoding_result_record "$component" current 1.0.0 installed 1.0.0

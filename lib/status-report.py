@@ -583,10 +583,21 @@ def provision_actionable():
     records = document(Path(os.environ.get("AICODING_RESULTS_FILE", STATE / "update-results.json"))).get("components", {})
     catalog = reason_catalog()
     for _key, rec in unresolved(records if isinstance(records, dict) else {}):
-        entry = explain(clean(rec.get("reason", "")) or "unknown", catalog)
+        entry = explain(effective_reason(rec), catalog)
         if entry is None or entry.get("kind") == "action":
             return 0
     return 1
+
+
+def effective_reason(rec):
+    """The MCP staging reason wraps "<component>: <state> <reason>"; judge the inner reason."""
+    reason = clean(rec.get("reason", "")) or "unknown"
+    if reason != "mcp_exact_version_staging_unavailable":
+        return reason
+    words = clean(rec.get("detail", "")).partition(": ")[2].split()
+    if len(words) == 2 and words[0] in ("blocked", "conflict", "failed"):
+        return words[1]
+    return reason
 
 
 def fleet_groups():
@@ -647,6 +658,8 @@ def doctor():
         reason = clean(rec.get("reason", "")) or "unknown"
         entry = explain(reason, catalog)
         print(f"  {clean(key)}: {clean(rec.get('state'))} ({reason}), {local_time(rec.get('attempted_at'))}")
+        if rec.get("detail"):
+            print(f"    Detail: {clean(rec.get('detail'))}")
         if entry is None:
             print("    Why: this reason is not in the doctor catalog yet (lib/status-reasons.json).")
             print(f"    Fix: {UNKNOWN_FIX}")

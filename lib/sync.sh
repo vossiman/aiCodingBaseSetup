@@ -729,6 +729,22 @@ _sync_provision_deferral_detail() {
   printf 'deferred by %s%s\n' "$keys" "${smart:+ (codex merge: $smart)}"
 }
 
+# Several destinations can share one component receipt. Reason and detail are
+# replaced as a pair, and an MCP staging reason (whose cause may only be a
+# wait) never replaces another destination's reason, which is actionable.
+_sync_note_config_blocker() {
+  local component=$1 reason=$2 dest=$3 mcp=mcp_exact_version_staging_unavailable
+  if [[ "$reason" == "$mcp" && -n "${blocked_reasons[$component]:-}" \
+      && "${blocked_reasons[$component]}" != "$mcp" ]]; then
+    return 0
+  fi
+  blocked_reasons[$component]=$reason
+  blocked_details[$component]=
+  if [[ "$reason" == "$mcp" ]]; then
+    blocked_details[$component]=$(aicoding_exact_mcp_config_cause "$dest") || true
+  fi
+}
+
 # Record a component only after considering EVERY destination in its inventory.
 # A successful tool install or aggregate config receipt is not recovery evidence:
 # another destination for that same harness may still be blocked or conflicted.
@@ -793,6 +809,7 @@ _sync_record_config_results() {
           5) state=failed; reason=managed_config_apply_failed ;;
         esac
         detail=
+        [ "${ranks[$component]}" -ne 3 ] || detail=${blocked_details[$component]:-}
         [ "${ranks[$component]}" -ne 5 ] || detail=$(_sync_smart_error_detail "$component")
         aicoding_result_record "$component" "$state" "$target" "$reason" "" "$detail" || true
         ;;
@@ -877,7 +894,7 @@ _sync_reconcile() {
   done
 
   local blocked_count=0 reason component
-  local -A blocked_reasons=() recovery_components=()
+  local -A blocked_reasons=() blocked_details=() recovery_components=()
   # Recheck prerequisites for a no-op only when retiring an unresolved receipt.
   # Otherwise unchanged config must not introduce update work for absent tools.
   if [ -f "${AICODING_RESULTS_FILE:-}" ]; then
@@ -917,7 +934,7 @@ _sync_reconcile() {
         BUCKETS[$d]=blocked
         blocked_count=$((blocked_count + 1))
         component=$(_aicoding_config_component "$d")
-        blocked_reasons[$component]=$reason
+        _sync_note_config_blocker "$component" "$reason" "$d"
         case "$component" in
           config-*) _SYNC_DEFERRED_PROVISION_COMPONENTS[${component#config-}]=1 ;;
         esac
@@ -927,7 +944,8 @@ _sync_reconcile() {
     unset AICODING_REQUIRE_SHARED_COMPATIBILITY
     if command -v aicoding_result_record >/dev/null 2>&1; then
       for component in "${!blocked_reasons[@]}"; do
-        aicoding_result_record "$component" blocked "$NEW_COMMIT" "${blocked_reasons[$component]}" || true
+        aicoding_result_record "$component" blocked "$NEW_COMMIT" "${blocked_reasons[$component]}" "" \
+          "${blocked_details[$component]:-}" || true
       done
     fi
   fi

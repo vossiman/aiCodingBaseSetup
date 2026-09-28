@@ -134,3 +134,26 @@ _fleet() {
   run "$BIN"
   [[ "$(sed -n '/Unresolved recorded blockers/,$p' <<< "$output")" != *"provision-claude"* ]]
 }
+
+@test "doctor prints a blocker's recorded detail" {
+  aicoding_result_record config-claude blocked target mcp_exact_version_staging_unavailable "" \
+    "mcp-kanban: blocked exact_package_not_staged"
+  run "$BIN" --doctor
+  [[ "$output" == *"Detail: mcp-kanban: blocked exact_package_not_staged"* ]]
+}
+
+@test "provision actionability follows the recorded MCP cause" {
+  local report="$BLUEPRINT_ROOT/lib/status-report.py"
+  aicoding_result_record config-codex blocked target mcp_exact_version_staging_unavailable "" \
+    "mcp-kanban: blocked offline_exact_package_not_ready"
+  run python3 "$report" --provision-actionable
+  [ "$status" -eq 1 ]
+  aicoding_result_record config-codex blocked target mcp_exact_version_staging_unavailable "" \
+    "mcp-kanban: failed build_failed"
+  run python3 "$report" --provision-actionable
+  [ "$status" -eq 0 ]
+  aicoding_result_record config-codex blocked target mcp_exact_version_staging_unavailable "" \
+    "mcp-kanban: active launcher invalid"
+  run python3 "$report" --provision-actionable
+  [ "$status" -eq 0 ]
+}
