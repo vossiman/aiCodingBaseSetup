@@ -135,7 +135,6 @@ aicoding_config_is_compatible() {
       _aicoding_update_receipt_allows codex || { echo codex_update_not_verified; return 1; }
       _aicoding_exact_mcp_config_allows "$dest" \
         || { echo mcp_exact_version_staging_unavailable; return 1; }
-      _aicoding_shared_consumers_allow codex 0.148.0 "$HOME/.codex" || { echo codex_shared_consumers_incompatible; return 1; }
       _aicoding_command_is_linux codex || { echo codex_not_installed; return 1; }
       version=$(_aicoding_version_from_command codex) || true
       _aicoding_version_at_least "$version" 0.148.0 || { echo codex_requires_0.148; return 1; }
@@ -144,7 +143,6 @@ aicoding_config_is_compatible() {
       _aicoding_update_receipt_allows opencode || { echo opencode_update_not_verified; return 1; }
       _aicoding_exact_mcp_config_allows "$dest" \
         || { echo mcp_exact_version_staging_unavailable; return 1; }
-      _aicoding_shared_consumers_allow opencode "" "$HOME/.config/opencode" || { echo opencode_shared_consumers_incompatible; return 1; }
       _aicoding_command_is_linux opencode || { echo opencode_not_installed; return 1; }
       timeout "${AICODING_PROBE_TIMEOUT:-15}" opencode debug config </dev/null >/dev/null 2>&1 \
         || { echo opencode_config_probe_failed; return 1; }
@@ -161,13 +159,11 @@ aicoding_config_is_compatible() {
         _aicoding_exact_mcp_config_allows "$dest" \
           || { echo mcp_exact_version_staging_unavailable; return 1; }
       fi
-      _aicoding_shared_consumers_allow cursor "" "$HOME/.cursor" || { echo cursor_shared_consumers_incompatible; return 1; }
       timeout "${AICODING_PROBE_TIMEOUT:-15}" "$command_name" --version </dev/null >/dev/null 2>&1 \
         || { echo cursor_config_probe_failed; return 1; }
       ;;
     "$HOME/.pi/agent/extensions/"*)
       _aicoding_update_receipt_allows pi || { echo pi_update_not_verified; return 1; }
-      _aicoding_shared_consumers_allow pi "" "$HOME/.pi" || { echo pi_shared_consumers_incompatible; return 1; }
       _aicoding_command_is_linux pi || { echo pi_not_installed; return 1; }
       timeout "${AICODING_PROBE_TIMEOUT:-15}" pi --version </dev/null >/dev/null 2>&1 \
         || { echo pi_config_probe_failed; return 1; }
@@ -176,7 +172,6 @@ aicoding_config_is_compatible() {
       _aicoding_update_receipt_allows claude || { echo claude_update_not_verified; return 1; }
       _aicoding_exact_mcp_config_allows "$dest" \
         || { echo mcp_exact_version_staging_unavailable; return 1; }
-      _aicoding_shared_consumers_allow claude "" "$HOME/.claude" || { echo claude_shared_consumers_incompatible; return 1; }
       _aicoding_command_is_linux claude || { echo claude_not_installed; return 1; }
       timeout "${AICODING_PROBE_TIMEOUT:-15}" claude --version </dev/null >/dev/null 2>&1 \
         || { echo claude_config_probe_failed; return 1; }
@@ -206,8 +201,6 @@ aicoding_exact_mcp_config_cause() {
     if [ "$component" = mcp-kanban ] && ! _aicoding_active_kanban_mcp_valid; then
       echo "mcp-kanban: active launcher invalid"; return 1
     fi
-    _aicoding_shared_consumers_require "$component" "" "$dest" \
-      || { echo "$component: fleet proof incomplete"; return 1; }
   done
   case "$dest" in
     "$HOME/.claude/settings.json")
@@ -271,78 +264,6 @@ aicoding_config_shared_root() {
 }
 
 aicoding_config_is_shared() { aicoding_config_shared_root "$1" >/dev/null; }
-
-# The container id is the only identity the catalog and this container share.
-# Docker bind-mounts /etc/hostname from /var/lib/docker/containers/<id>/, and
-# the blueprint sets --hostname to the workspace name, so hostname cannot serve.
-# Only the actual hostname mount counts: the root field must end in
-# .../containers/<id>/hostname AND the mount point field must be exactly
-# /etc/hostname. With Docker-in-Docker, mountinfo also lists inner
-# containers' own /containers/<id>/hostname paths mounted at other, inner
-# mount points, so matching the root field alone is not enough.
-_aicoding_self_container_id() {
-  if [ -n "${AICODING_SELF_CONTAINER_ID:-}" ]; then
-    printf '%s\n' "$AICODING_SELF_CONTAINER_ID"; return 0
-  fi
-  grep -m1 -oE '/containers/[0-9a-f]{64}/hostname /etc/hostname ' "${AICODING_MOUNTINFO:-/proc/self/mountinfo}" 2>/dev/null \
-    | grep -oE '[0-9a-f]{64}'
-}
-
-# The dvw catalog on the host publishes the fleet proof: every running devpod
-# container, the host source of its shared config mounts, and the component
-# versions its probe verified. A shared root opens only when that proof is
-# fresh, complete for the root, lists this container, and every consumer
-# reports the component compatible; anything else keeps the change deferred.
-_aicoding_shared_consumers_allow() {
-  local component=$1 minimum=${2:-} destination=${3:-} registry shared_root shared_rc self_id
-  registry=${AICODING_SHARED_CONSUMERS_FILE:-$HOME/.aicodingsetup/fleet/consumer-versions.json}
-  [ "${AICODING_REQUIRE_SHARED_COMPATIBILITY:-0}" != 1 ] && return 0
-  if shared_root=$(aicoding_config_shared_root "$destination"); then
-    :
-  else
-    shared_rc=$?
-    [ "$shared_rc" -eq 1 ] && return 0
-    return 1
-  fi
-  local now version
-  [ -f "$registry" ] || return 1
-  self_id=$(_aicoding_self_container_id) || self_id=""
-  [ -n "$self_id" ] || return 1
-  now=$(date +%s)
-  jq -e --arg c "$component" --arg root "$shared_root" --arg self "$self_id" --argjson now "$now" '
-    .schema == 1 and (.roots | type == "array")
-    and (.generated_at | type == "number")
-    and (.newest_container_started_at | type == "number")
-    and .generated_at > .newest_container_started_at
-    and ([.roots[] | select(.shared_root == $root)] | length == 1)
-    and ([.roots[] | select(.shared_root == $root)][0] as $r
-      | $r.inventory_complete == true
-      and ($r.expires_at | type == "number" and . > $now)
-      and ($r.consumers | type == "array" and length > 0)
-      and any($r.consumers[]; .id == $self)
-      and all($r.consumers[];
-      (.id | type == "string" and length > 0)
-      and (.components[$c].config_compatible == true)
-      and (.components[$c].version | type == "string")
-      and (if $c == "mcp-kanban"
-        then (.components[$c].version | test("^[0-9a-f]{40}$"))
-        else (.components[$c].version | test("^[0-9]+\\.[0-9]+\\.[0-9]+"))
-      end)
-    ))' "$registry" >/dev/null 2>&1 || return 1
-  [ -z "$minimum" ] && return 0
-  while IFS= read -r version; do
-    _aicoding_version_at_least "$version" "$minimum" || return 1
-  done < <(jq -r --arg c "$component" --arg root "$shared_root" \
-    '.roots[] | select(.shared_root == $root) | .consumers[].components[$c].version' "$registry")
-}
-
-# Mutation/readiness call sites use this wrapper so shared-root authorization
-# follows the destination itself and cannot be disabled by a caller unsetting a
-# temporary reconcile flag.
-_aicoding_shared_consumers_require() {
-  AICODING_REQUIRE_SHARED_COMPATIBILITY=1 \
-    _aicoding_shared_consumers_allow "$@"
-}
 
 _aicoding_update_receipt_allows() {
   [ "${AICODING_REQUIRE_UPDATE_RECEIPT:-0}" != 1 ] && return 0
@@ -420,10 +341,6 @@ _aicoding_reconcile_claude_mcp_registration() {
   claude_version=$(_aicoding_version_from_command claude) || true
   [ -n "$claude_version" ] \
     || { _aicoding_record_deferred "$registration_component" blocked "$version" claude_version_unavailable; return 1; }
-  _aicoding_shared_consumers_require claude "" "$HOME/.claude" \
-    || { _aicoding_record_deferred "$registration_component" blocked "$version" claude_consumers_incompatible; return 1; }
-  _aicoding_shared_consumers_require "$component" "" "$HOME/.claude" \
-    || { _aicoding_record_deferred "$registration_component" blocked "$version" shared_registration_consumers_incompatible; return 1; }
   if declare -F aicoding_shared_locks_acquire >/dev/null 2>&1; then
     aicoding_shared_locks_acquire "$HOME/.claude/settings.json" \
       || { _aicoding_record_deferred "$registration_component" blocked "$version" shared_registration_busy; return 1; }

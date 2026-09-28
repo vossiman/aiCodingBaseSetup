@@ -44,19 +44,13 @@ _fleet() {
   [[ "$output" != *"Fleet proof"* ]]
 }
 
-@test "doctor reports a missing fleet proof for a configured shared root" {
+@test "doctor warns about a missing fleet proof for a configured shared root without failing" {
   mkdir -p "$HOME/.claude"
   export AICODING_SHARED_CONFIG_ROOTS="$HOME/.claude"
   run "$BIN" --doctor
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"Fleet proof: missing"* ]]
-}
-
-@test "doctor reports a missing fleet proof when a fleet blocker was recorded" {
-  aicoding_result_record config-claude blocked abc claude_consumers_incompatible
-  run "$BIN" --doctor
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"Fleet proof: missing"* ]]
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Fleet proof (warning only): missing"* ]]
+  [[ "$output" == *"do not wait for this"* ]]
 }
 
 @test "doctor explains a catalogued blocker and exits 1" {
@@ -91,7 +85,7 @@ _fleet() {
 @test "doctor lists fleet containers grouped by what they miss" {
   _fleet
   run "$BIN" --doctor
-  [ "$status" -eq 1 ]
+  [ "$status" -eq 0 ]
   [[ "$output" == *"1 of 4 containers pass"* ]]
   [[ "$output" == *"2 probed nothing"*"cccccccccccc"*"dddddddddddd"* ]]
   [[ "$output" == *"1 missing mcp-kanban: bbbbbbbbbbbb"* ]]
@@ -156,4 +150,14 @@ _fleet() {
     "mcp-kanban: active launcher invalid"
   run python3 "$report" --provision-actionable
   [ "$status" -eq 0 ]
+}
+
+@test "a retired fleet-gate blocker left on disk is neither listed nor badged" {
+  aicoding_result_record mcp-registration-claude-kanban blocked abc claude_consumers_incompatible
+  aicoding_result_record provision-codex blocked "" codex_shared_consumers_incompatible
+  run "$BIN" --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"consumers_incompatible"* ]]
+  run python3 "$BLUEPRINT_ROOT/lib/status-report.py" --provision-actionable
+  [ "$status" -eq 1 ]
 }

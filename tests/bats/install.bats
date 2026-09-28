@@ -302,34 +302,6 @@ STUB
   grep -q '^approval_policy = "never"$' "$shared_root/config.toml"
 }
 
-@test "legacy Claude provisioning defers shared mutation without consumer evidence" {
-  local shared_root="$TMPDIR/shared-claude"
-  mkdir -p "$shared_root"
-  ln -s "$shared_root" "$HOME/.claude"
-  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
-  export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/missing-consumers.json"
-  export AICODING_RESULTS_FILE="$TMPDIR/results.json"
-  cat > "$TMPDIR/stubs/claude" <<'STUB'
-#!/bin/sh
-echo "$*" >> "$TMPDIR/claude-calls"
-[ "$*" != --version ] || printf '2.1.0\n'
-exit 0
-STUB
-  chmod +x "$TMPDIR/stubs/claude"
-  export _AICODINGSETUP_NVS_STRIPPED=1
-  source "$BLUEPRINT_ROOT/install.sh"
-  _provision_ensure_update_components
-  aicoding_result_record claude current 2.1.0 verified 2.1.0
-
-  run install_claude_plugins
-
-  [ "$status" -eq 0 ]
-  if grep -q '^plugin ' "$TMPDIR/claude-calls" 2>/dev/null; then false; fi
-  jq -e '.components["provision-claude"].state == "blocked"
-    and .components["provision-claude"].reason == "claude_shared_consumers_incompatible"' \
-    "$AICODING_RESULTS_FILE"
-}
-
 @test "legacy guarded Codex provisioning defers on writer lock contention" {
   local shared_root="$TMPDIR/shared-codex" expires
   mkdir -p "$shared_root"

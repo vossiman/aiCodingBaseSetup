@@ -94,7 +94,7 @@ ensure_aicoding_auto_update() {
   # the calling sync's handoff to the detached scheduler and pin its passes.
   env -u AICODING_SYNC_REEXECED -u AICODING_SELECTED_AICODING_SHA -u _SYNC_REFRESHED \
     -u AICODING_BLUEPRINT_CLONE -u AICODING_BLUEPRINT_LOCAL -u AICODING_SYNC_MODE \
-    -u AICODING_REQUIRE_UPDATE_RECEIPT -u AICODING_REQUIRE_SHARED_COMPATIBILITY \
+    -u AICODING_REQUIRE_UPDATE_RECEIPT \
     "$command" --ensure </dev/null || { warn "could not ensure automatic updater"; return 1; }
   ok "automatic updater enrollment requested"
 }
