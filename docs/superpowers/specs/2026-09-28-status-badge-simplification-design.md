@@ -1,6 +1,6 @@
 # Status badge simplification
 
-Date: 2026-09-28. Status: draft for review.
+Date: 2026-09-28. Status: approved (user, 2026-09-28), not yet implemented.
 
 ## Problem
 
@@ -89,12 +89,11 @@ Change:
   stop being recorded. Their `status-reasons.json` entries go away with
   them.
 
-**Decision for the user:** this accepts that an old container may, for up
-to one updater interval, read a config written for a newer tool. The
-alternative is to keep the gate but ignore consumers whose last probe is
-older than N minutes (treat idle containers as absent). That keeps the
-protection but keeps the dependency on dvw's catalog and adds another
-threshold. Recommendation: remove the gate.
+**Decision (user, 2026-09-28): remove the gate.** This accepts that an old
+container may, for up to one updater interval, read a config written for a
+newer tool. The rejected alternative was to keep the gate but treat
+consumers whose last probe is older than N minutes as absent: it keeps the
+dependency on dvw's catalog and adds another threshold.
 
 ### 3. Tool steps record success, so stale blockers clear
 
