@@ -812,7 +812,7 @@ aicoding_update_npm_entry_component() {
     if declare -F aicoding_ui_active >/dev/null && aicoding_ui_active; then
       AICODING_UI_NOTE="current ($target)"
     else
-      printf 'INFO: %s: reusing verified release %s\n' "$component" "$target" >&2
+      aicoding_progress_log "INFO: $component: reusing verified release $target"
     fi
     _aicoding_finish_npm_entry_release "$component" "$target" "$final" "$command_name" "$relative_bin"
     return $?
@@ -1170,9 +1170,15 @@ aicoding_update_component() {
     fi
     return "$component_rc"
   fi
-  printf 'INFO: Updating %s\n' "$1" >&2
   _aicoding_update_component_impl "$@" || component_rc=$?
-  printf 'INFO: %s update attempt finished (%ss, exit %s)\n' "$1" "$((SECONDS - started))" "$component_rc" >&2
+  if [ "$component_rc" -eq 0 ]; then
+    aicoding_progress_log "  OK: $1 updated ($((SECONDS - started))s)"
+  elif declare -F _aicoding_component_attempt_deferred >/dev/null \
+      && _aicoding_component_attempt_deferred "$1"; then
+    aicoding_progress_log "INFO: $1 deferred ($((SECONDS - started))s)"
+  else
+    printf 'WARN: %s update failed (%ss, exit %s)\n' "$1" "$((SECONDS - started))" "$component_rc" >&2
+  fi
   return "$component_rc"
 }
 
