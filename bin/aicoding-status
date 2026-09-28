@@ -72,12 +72,13 @@ _registry() {
   if [ -n "${AICODING_UPDATE_TESTONLY_TOOL:-}" ]; then
     local t
     for t in $AICODING_UPDATE_TESTONLY_TOOL; do
-      printf '%s|%s|main|_installed_testonly\n' "$t" "$AICODING_UPDATE_TESTONLY_REMOTE"
+      printf '%s|%s|main|_installed_testonly|%s\n' "$t" "$AICODING_UPDATE_TESTONLY_REMOTE" \
+        "${AICODING_UPDATE_TESTONLY_SELECTOR:-}"
     done
     return
   fi
   cat <<EOF
-aicoding|https://github.com/vossiman/aiCodingBaseSetup|main|_installed_aicoding
+aicoding|https://github.com/vossiman/aiCodingBaseSetup|main|_installed_aicoding|aicoding
 EOF
 }
 _apply_cmd() {
@@ -200,10 +201,18 @@ _behind_extra() {
 # invariant). The installed side is deliberately NOT read here.
 _refresh_all() {
   mkdir -p "$STATE"
-  local name remote branch ifn latest tmp
-  while IFS='|' read -r name remote branch ifn; do
+  local name remote branch ifn selector latest tmp
+  while IFS='|' read -r name remote branch ifn selector; do
     [ -z "$name" ] && continue
-    latest=$(timeout "$NET_TIMEOUT" git ls-remote "$remote" "$branch" 2>/dev/null | awk 'NR==1{print $1}')
+    # The updater installs only CI-qualified commits, so badge against the
+    # same selection; raw main would light the badge on every merge.
+    if [ -n "$selector" ]; then
+      latest=$(timeout 90 "${AICODING_SELECT_CMD:-$(dirname "$(readlink -f "$0")")/aicoding-select}" \
+        "$selector" 2>/dev/null </dev/null) || latest=
+      [[ "$latest" =~ ^[0-9a-f]{40}$ ]] || latest=
+    else
+      latest=$(timeout "$NET_TIMEOUT" git ls-remote "$remote" "$branch" 2>/dev/null | awk 'NR==1{print $1}')
+    fi
     # Transient fetch failure — keep the prior known latest rather than
     # clobbering it and hiding the CTA.
     if [ -z "$latest" ] && [ -f "$STATE/$name.json" ]; then
@@ -284,8 +293,8 @@ _refresh_detached() {
 # is what lets a stuck badge self-heal on the next tick after any manifest
 # write, whether or not the writer invalidated the cache.
 _behind_tools() {
-  local name remote branch ifn latest installed
-  while IFS='|' read -r name remote branch ifn; do
+  local name remote branch ifn selector latest installed
+  while IFS='|' read -r name remote branch ifn selector; do
     [ -z "$name" ] && continue
     [ -f "$STATE/$name.json" ] || continue
     latest=$(jq -r '.latest // empty' "$STATE/$name.json" 2>/dev/null)
