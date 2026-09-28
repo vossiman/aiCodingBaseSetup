@@ -39,10 +39,7 @@ declare -F header >/dev/null || header() { echo "=== $* ==="; }
 declare -F err    >/dev/null || err()    { echo "ERROR: $*"; }
 
 # Step progress belongs with the log lines above, on stdout.
-if [ -z "${AICODING_LOG_FD:-}" ] || ! { : >&"$AICODING_LOG_FD"; } 2>/dev/null; then
-  exec {AICODING_LOG_FD}>&1
-  export AICODING_LOG_FD
-fi
+_aicoding_progress_log_valid || aicoding_progress_log_here
 
 # Installers remain fail-open for people running install.sh. Unattended sync
 # needs truthful aggregate status, so known failures propagate in that mode.

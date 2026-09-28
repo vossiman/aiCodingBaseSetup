@@ -3,15 +3,52 @@
 # a subshell, so callers needing shell-state mutations must call them directly.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ui.sh"
 
-# Routine progress goes to AICODING_LOG_FD when a caller opened one next to
-# its log lines, else stderr so a step's stdout result stays clean. devpod
-# tags every stderr line as a warning; failures still belong there.
+_aicoding_progress_session() {
+  local stat
+  stat=$(<"/proc/$BASHPID/stat") 2>/dev/null || return 1
+  stat=${stat##*) }
+  set -- $stat
+  printf '%s' "$4"
+}
+
+# Record the current stdout as the destination for routine progress. It is
+# kept by owner and identity, never as an open descriptor: an inherited one
+# would hold devpod's output pipe open in every daemon started later, and
+# devpod waits for that pipe to close. Detached workers (another session)
+# ignore it.
+aicoding_progress_log_here() {
+  AICODING_LOG_PID=$BASHPID
+  AICODING_LOG_TARGET=$(readlink "/proc/$AICODING_LOG_PID/fd/1" 2>/dev/null) || AICODING_LOG_TARGET=
+  AICODING_LOG_SESSION=$(_aicoding_progress_session) || AICODING_LOG_SESSION=
+  export AICODING_LOG_PID AICODING_LOG_TARGET AICODING_LOG_SESSION
+}
+
+# While a command's stdout is redirected, bash keeps the original in a saved
+# descriptor, so look for the target among all of the owner's descriptors.
+_aicoding_progress_log_path() {
+  [ -n "${AICODING_LOG_PID:-}" ] && [ -n "${AICODING_LOG_TARGET:-}" ] || return 1
+  [ "$(_aicoding_progress_session)" = "${AICODING_LOG_SESSION:-}" ] || return 1
+  local fd
+  for fd in "/proc/$AICODING_LOG_PID/fd/1" "/proc/$AICODING_LOG_PID/fd/"*; do
+    if [ "$(readlink "$fd" 2>/dev/null)" = "$AICODING_LOG_TARGET" ]; then
+      printf '%s' "$fd"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_aicoding_progress_log_valid() { _aicoding_progress_log_path >/dev/null; }
+
+# Routine progress goes to the recorded log, else stderr so a step's stdout
+# result stays clean. devpod tags every stderr line as a warning; failures
+# still belong there.
 aicoding_progress_log() {
-  if [ -n "${AICODING_LOG_FD:-}" ] && { : >&"$AICODING_LOG_FD"; } 2>/dev/null; then
-    printf '%s\n' "$*" >&"$AICODING_LOG_FD"
-  else
-    printf '%s\n' "$*" >&2
+  local path
+  if path=$(_aicoding_progress_log_path) && { printf '%s\n' "$*" >>"$path"; } 2>/dev/null; then
+    return 0
   fi
+  printf '%s\n' "$*" >&2
 }
 
 aicoding_progress_run() {
@@ -46,7 +83,6 @@ _aicoding_progress_run_impl() (
       fd=${target##*/}
       [[ "$fd" =~ ^[0-9]+$ ]] && [ "$fd" -gt 2 ] || continue
       [ "$ui" = tty ] && [ "$fd" = "$AICODING_UI_FD" ] && continue
-      [ "$fd" = "${AICODING_LOG_FD:-}" ] && continue
       eval "exec ${fd}>&-" 2>/dev/null || true
     done
     trap 'if [ -n "$sleeper" ]; then kill "$sleeper" 2>/dev/null || true; wait "$sleeper" 2>/dev/null || true; fi; exit 0' TERM INT HUP
