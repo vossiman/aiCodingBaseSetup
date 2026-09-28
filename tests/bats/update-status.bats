@@ -265,7 +265,8 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE
   export AICODING_MANIFEST="$TMP/manifest.json"
   jq -n '{blueprint_commit:"2222222222222222222222222222222222222222"}' > "$AICODING_MANIFEST"
-  FAKE_LATEST=1111111111111111111111111111111111111111 "$BIN" --refresh
+  selector_stub
+  FAKE_SELECTED=1111111111111111111111111111111111111111 "$BIN" --refresh
   run "$BIN" --tmux
   [[ "$output" == *"⬆sync"* ]]
   [[ "$output" != *"⬆aicoding"* ]]
@@ -651,4 +652,47 @@ STUB
   run "$BIN" --tmux
   [ "$status" -eq 0 ]
   [[ "$output" != *"⬆rebuild"* ]]
+}
+
+# A selector-backed tool badges only against the CI-qualified commit, so a
+# merge whose CI is still running does not light ⬆sync.
+selector_stub() {
+  cat > "$TMP/stubs/select" <<'STUB'
+#!/bin/sh
+[ -n "${FAKE_SELECT_FAIL:-}" ] && exit 2
+printf '%s\n' "$FAKE_SELECTED"
+STUB
+  chmod +x "$TMP/stubs/select"
+  export AICODING_UPDATE_TESTONLY_SELECTOR=demo
+  export AICODING_SELECT_CMD="$TMP/stubs/select"
+}
+
+@test "selector: main ahead but not CI-qualified -> no badge" {
+  selector_stub
+  echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  FAKE_LATEST=1111111111111111111111111111111111111111 \
+    FAKE_SELECTED=2222222222222222222222222222222222222222 run "$BIN" --refresh
+  [ "$status" -eq 0 ]
+  [ "$(cache | jq -r .latest | cut -c1-7)" = "2222222" ]
+  run "$BIN" --banner
+  [ -z "$output" ]
+}
+
+@test "selector: a newer CI-qualified commit -> badge" {
+  selector_stub
+  echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  FAKE_SELECTED=3333333333333333333333333333333333333333 run "$BIN" --refresh
+  [ "$(cache | jq -r .latest | cut -c1-7)" = "3333333" ]
+  run "$BIN" --banner
+  echo "$output" | grep -q "behind"
+}
+
+@test "selector: selection failure keeps the prior known latest" {
+  selector_stub
+  echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
+  FAKE_SELECTED=3333333333333333333333333333333333333333 "$BIN" --refresh
+  touch -d '-2 hours' "$AICODING_UPDATE_STATE/demo.json"
+  FAKE_SELECT_FAIL=1 run "$BIN" --refresh
+  [ "$status" -eq 0 ]
+  [ "$(cache | jq -r .latest | cut -c1-7)" = "3333333" ]
 }
