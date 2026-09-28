@@ -409,11 +409,38 @@ def fleet_proof_text(force=False):
             verified = sum(1 for c in consumers if isinstance(c, dict) and isinstance(c.get("components"), dict)
                            and all(name in c["components"] for name in FLEET_CAPABILITIES))
             return f"incomplete for {clean(r.get('shared_root'))}: {verified} of {len(consumers)} containers verified"
+        lagging = incompatible_consumers(consumers)
+        if lagging:
+            return f"incompatible for {clean(r.get('shared_root'))}: " + "; ".join(lagging)
         if not me:
             return "not listed: own container id unknown"
         if not any(isinstance(c, dict) and c.get("id") == me for c in consumers):
             return "not listed: this container has not been probed yet"
     return f"valid until {local_time(earliest)}"
+
+
+FLEET_MINIMUM = {"codex": (0, 148, 0)}
+
+
+def incompatible_consumers(consumers):
+    """Containers that would not read the current shared config; reported, never enforced."""
+    found = []
+    for consumer in consumers:
+        if not isinstance(consumer, dict) or not isinstance(consumer.get("components"), dict):
+            continue
+        problems = []
+        for name, facts in sorted(consumer["components"].items()):
+            if not isinstance(facts, dict):
+                continue
+            if facts.get("config_compatible") is not True:
+                problems.append(f"{clean(name)} config incompatible")
+            floor = FLEET_MINIMUM.get(name)
+            parts = re.match(r"(\d+)\.(\d+)\.(\d+)", str(facts.get("version", "")))
+            if floor and parts and tuple(map(int, parts.groups())) < floor:
+                problems.append(f"{clean(name)} {clean(facts.get('version'))} older than {'.'.join(map(str, floor))}")
+        if problems:
+            found.append(f"{clean(consumer.get('id', '?'))[:12]} ({', '.join(problems)})")
+    return found
 
 
 def fleet_proof_roots():
@@ -440,14 +467,11 @@ def shared_fleet_root_confirmed():
     return False
 
 
-def has_recorded_fleet_blocker(blockers):
-    for _, record in blockers:
-        reason = record.get("reason")
-        if reason == "claude_consumers_incompatible" or reason == "shared_registration_consumers_incompatible":
-            return True
-        if isinstance(reason, str) and reason.endswith("_shared_consumers_incompatible"):
-            return True
-    return False
+def retired(reason):
+    """Fleet-gate reasons (removed 2026-09-28) can no longer be produced; old receipts are obsolete."""
+    reason = str(reason or "")
+    return reason in ("claude_consumers_incompatible", "shared_registration_consumers_incompatible") \
+        or reason.endswith("_shared_consumers_incompatible")
 
 
 def tmux_restart_pending(proc_root=None):
@@ -575,7 +599,7 @@ def superseded(key, record, records):
 def unresolved(records):
     return sorted((key, rec) for key, rec in records.items()
                   if isinstance(rec, dict) and rec.get("state") in ("blocked", "conflict", "failed")
-                  and not superseded(key, rec, records))
+                  and not superseded(key, rec, records) and not retired(rec.get("reason")))
 
 
 def provision_actionable():
@@ -632,13 +656,12 @@ def doctor():
     if not isinstance(records, dict):
         records = {}
     blockers = unresolved(records)
-    fleet_blocked = has_recorded_fleet_blocker(blockers)
-    fleet_expected = bool(fleet_proof_roots()) or shared_fleet_root_confirmed() or fleet_blocked
+    fleet_expected = bool(fleet_proof_roots()) or shared_fleet_root_confirmed()
     fleet = fleet_proof_text(force=True) if fleet_expected else None
     if fleet is not None and not fleet.startswith("valid"):
-        problems += 1
-        print(f"\nFleet proof: {fleet}")
-        print("  Shared config and Claude MCP registrations stay frozen on every container until all pass.")
+        print(f"\nFleet proof (warning only): {fleet}")
+        print("  Shared config updates do not wait for this. A lagging container may read newer")
+        print("  config until its own updater catches up (at most one six-hour pass, or on start).")
         for roots, groups in fleet_groups():
             total = sum(len(ids) for ids in groups.values())
             print(f"  {', '.join(roots)}: {len(groups.get((), []))} of {total} containers pass")
@@ -648,7 +671,7 @@ def doctor():
                 label = "probed nothing" if len(missing) == len(FLEET_CAPABILITIES) else f"missing {', '.join(missing)}"
                 names = ", ".join(f"{i} (this container)" if me and i == me else i for i in sorted(ids))
                 print(f"    {len(ids)} {label}: {names}")
-        print("  Fix: on the host, stop containers you no longer use; run `aicoding-sync --yes` in the rest.")
+        print("  Tidy up: on the host, stop containers you no longer use.")
     catalog = reason_catalog()
     print("\nBlockers")
     if not blockers:

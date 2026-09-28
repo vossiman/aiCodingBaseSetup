@@ -906,10 +906,6 @@ _sync_reconcile() {
   fi
   if [ "$mode" != dry-run ] && command -v aicoding_config_is_compatible >/dev/null 2>&1; then
     export AICODING_REQUIRE_UPDATE_RECEIPT=1
-    # The compatibility helper resolves each destination and treats confirmed
-    # local roots as a no-op. Always request shared authorization here so a
-    # manual/first pass cannot bypass fleet evidence for an actual shared root.
-    export AICODING_REQUIRE_SHARED_COMPATIBILITY=1
     for d in "${!BUCKETS[@]}"; do
       case "${BUCKETS[$d]}" in
         up_to_date)
@@ -941,7 +937,6 @@ _sync_reconcile() {
       fi
     done
     unset AICODING_REQUIRE_UPDATE_RECEIPT
-    unset AICODING_REQUIRE_SHARED_COMPATIBILITY
     if command -v aicoding_result_record >/dev/null 2>&1; then
       for component in "${!blocked_reasons[@]}"; do
         aicoding_result_record "$component" blocked "$NEW_COMMIT" "${blocked_reasons[$component]}" "" \

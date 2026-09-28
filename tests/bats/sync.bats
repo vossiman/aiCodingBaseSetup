@@ -622,7 +622,7 @@ EOF
   [ ! -e "$CLASSIFY_MARKER" ]
 }
 
-@test "every config-writing mode carries tool receipts and shared compatibility authorization" {
+@test "every config-writing mode carries tool receipt authorization" {
   local clone="$TMP/shared-gate-blueprint" dest="$HOME/.codex/config.toml"
   rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$clone/"
   cat >> "$clone/lib/blueprint-deploy.sh" <<EOF
@@ -638,11 +638,8 @@ EOF
   printf 'old\n' > "$dest"
   aicoding_config_is_shared() { return 0; }
   aicoding_config_is_compatible() {
-    printf '%s:%s\n' "${AICODING_REQUIRE_UPDATE_RECEIPT:-0}" \
-      "${AICODING_REQUIRE_SHARED_COMPATIBILITY:-0}" >> "$TMP/compat-calls"
-    [ "${AICODING_REQUIRE_UPDATE_RECEIPT:-0}" = 1 ] \
-      && [ "${AICODING_REQUIRE_SHARED_COMPATIBILITY:-0}" = 1 ] \
-      || { echo shared_authorization_missing; return 1; }
+    printf '%s\n' "${AICODING_REQUIRE_UPDATE_RECEIPT:-0}" >> "$TMP/compat-calls"
+    [ "${AICODING_REQUIRE_UPDATE_RECEIPT:-0}" = 1 ] || { echo receipt_authorization_missing; return 1; }
   }
 
   local sync_mode
@@ -651,7 +648,7 @@ EOF
     printf 'old\n' > "$dest"
     run _sync_reconcile "$sync_mode"
     [ "$status" -eq 0 ]
-    [ "$(cat "$TMP/compat-calls")" = 1:1 ]
+    [ "$(cat "$TMP/compat-calls")" = 1 ]
     grep -q '^model' "$dest"
   done
 }

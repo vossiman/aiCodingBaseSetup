@@ -172,27 +172,6 @@ EOF
   printf '%s\n' "$output" | grep -Fxq kanban
 }
 
-@test "scheduled tool readiness enforces shared inventory without a caller flag" {
-  aicoding_result_record claude current 2.1.50 installed 2.1.50
-  mkdir -p "$HOME/.claude"
-  export AICODING_SHARED_CONFIG_ROOTS="$(readlink -f "$HOME/.claude")"
-  export AICODING_SHARED_CONSUMERS_FILE="$TMP/missing-consumers.json"
-  unset AICODING_REQUIRE_SHARED_COMPATIBILITY
-  # This unit isolates consumer evidence; installer coverage exercises the
-  # real writer-lock boundary and lock-contention deferral separately.
-  aicoding_shared_locks_acquire() { return 0; }
-  cat > "$TMP/stubs/claude" <<'EOF'
-#!/bin/sh
-echo '2.1.50 (Claude Code)'
-EOF
-  chmod +x "$TMP/stubs/claude"
-
-  run _provision_tool_ready claude claude "" "$HOME/.claude"
-  [ "$status" -ne 0 ]
-  jq -e '.components["provision-claude"].reason == "claude_shared_consumers_incompatible"' \
-    "$AICODING_STATE_DIR/update-results.json"
-}
-
 @test "scheduled exact registration cannot bypass a missing Claude receipt" {
   _managed_launcher context7-mcp mcp-context7 4.1.0
   cat > "$TMP/stubs/claude" <<'EOF'
@@ -212,30 +191,6 @@ EOF
   [ "$status" -ne 0 ]
   [ ! -e "$TMP/mutated" ]
   jq -e '.components["mcp-registration-claude-context7"].reason == "claude_update_not_verified"' \
-    "$AICODING_STATE_DIR/update-results.json"
-}
-
-@test "scheduled Claude MCP migration enforces shared inventory before mutation" {
-  _managed_launcher context7-mcp mcp-context7 4.1.0
-  aicoding_result_record claude current 2.1.50 installed 2.1.50
-  mkdir -p "$HOME/.claude"
-  export AICODING_SHARED_CONFIG_ROOTS="$(readlink -f "$HOME/.claude")"
-  export AICODING_SHARED_CONSUMERS_FILE="$TMP/missing-consumers.json"
-  unset AICODING_REQUIRE_SHARED_COMPATIBILITY
-  cat > "$TMP/stubs/claude" <<'EOF'
-#!/bin/sh
-echo "$*" >> "$TMP/claude-calls"
-case "$*" in
-  '--version') echo '2.1.50 (Claude Code)' ;;
-  'mcp get context7') printf 'Command: npx\nArgs: -y @upstash/context7-mcp\n' ;;
-esac
-EOF
-  chmod +x "$TMP/stubs/claude"
-
-  run _provision_reconcile_exact_mcp context7 mcp-context7 context7-mcp
-  [ "$status" -ne 0 ]
-  if grep -q 'mcp remove\|mcp add' "$TMP/claude-calls"; then false; fi
-  jq -e '.components["mcp-registration-claude-context7"].reason == "claude_consumers_incompatible"' \
     "$AICODING_STATE_DIR/update-results.json"
 }
 

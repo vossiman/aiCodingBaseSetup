@@ -104,11 +104,6 @@
       "meaning": "No CI-qualified commit could be selected (GitHub unreachable or no green build yet).",
       "fix": "Check network access to the download source, then run `aicoding-auto-update --once`. Details are in `~/.local/state/aicoding/auto-update/worker.log`."
     },
-    "claude_consumers_incompatible": {
-      "kind": "action",
-      "meaning": "The fleet check for the shared `~/.claude` failed, so Claude MCP registrations are frozen on every container.",
-      "fix": "Clear the fleet check first: see \"Fleet proof\" above, stop idle containers and sync the ones missing tools, then run `aicoding-sync --yes`."
-    },
     "claude_version_unavailable": {
       "kind": "action",
       "meaning": "The Claude CLI did not report its version.",
@@ -348,11 +343,6 @@
       "meaning": "Another process held the lock on the shared Claude settings.",
       "fix": "Usually clears on the next pass. Otherwise run `aicoding-sync --yes`."
     },
-    "shared_registration_consumers_incompatible": {
-      "kind": "action",
-      "meaning": "Not every container sharing `~/.claude` has a compatible version of this MCP, so its registration is frozen.",
-      "fix": "Clear the fleet check first: see \"Fleet proof\" above, stop idle containers and sync the ones missing tools, then run `aicoding-sync --yes`."
-    },
     "source_cleanup_failed": {
       "kind": "action",
       "meaning": "The downloaded source could not be removed after staging.",
@@ -505,12 +495,6 @@
       "source_marker": "_update_not_verified",
       "meaning": "The tool's last update was not verified, so config that depends on it waits.",
       "fix": "Run `aicoding-auto-update --once` so the tool update is verified, and fix that tool's own blocker if doctor lists one. Then run `aicoding-sync --yes`."
-    },
-    "*_shared_consumers_incompatible": {
-      "kind": "action",
-      "source_marker": "_shared_consumers_incompatible",
-      "meaning": "The fleet check for this tool's shared config folder failed, so its config is frozen on every container.",
-      "fix": "Clear the fleet check first: see \"Fleet proof\" above, stop idle containers and sync the ones missing tools, then run `aicoding-sync --yes`."
     },
     "*_config_probe_failed": {
       "kind": "action",

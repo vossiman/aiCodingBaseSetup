@@ -38,7 +38,6 @@ _aicoding_initial_config_ready() {
   fi
   if declare -F aicoding_config_is_compatible >/dev/null 2>&1 \
       && reason=$(AICODING_REQUIRE_UPDATE_RECEIPT=1 \
-        AICODING_REQUIRE_SHARED_COMPATIBILITY=1 \
         aicoding_config_is_compatible "$dest"); then
     return 0
   fi

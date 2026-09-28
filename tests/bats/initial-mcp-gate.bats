@@ -135,43 +135,6 @@ EOF
   grep -q 'codex_requires_0.148' "$TEST_ROOT/warnings"
 }
 
-@test "first deployment requires shared Claude consumer evidence" {
-  _load_real_compatibility_guard
-  cat > "$TEST_ROOT/bin/claude" <<'EOF'
-#!/bin/sh
-echo '2.1.50 (Claude Code)'
-EOF
-  chmod +x "$TEST_ROOT/bin/claude"
-  mkdir -p "$HOME/.claude"
-  local shared_root expires
-  shared_root=$(readlink -f "$HOME/.claude")
-  expires=$(( $(date +%s) + 3600 ))
-  export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
-  export AICODING_SHARED_CONSUMERS_FILE="$TEST_ROOT/consumers.json"
-  export AICODING_SELF_CONTAINER_ID=known
-  jq -n --arg root "$shared_root" --argjson expires "$expires" \
-    '{schema:1,generated_at:($expires - 60),newest_container_started_at:0,roots:[{
-    shared_root:$root,inventory_complete:true,expires_at:$expires,consumers:[{
-      id:"known",components:{
-        "mcp-context7":{version:"1.0.0",config_compatible:true},
-        "mcp-playwright":{version:"1.0.0",config_compatible:true},
-        "mcp-kanban":{version:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",config_compatible:true}
-      }
-    }]
-  }]}' > "$AICODING_SHARED_CONSUMERS_FILE"
-  aicoding_result_record claude current 2.1.50 installed 2.1.50
-  _record_exact_mcp_receipts
-  local component
-  for component in mcp-registration-claude-context7 mcp-registration-claude-playwright \
-      mcp-registration-claude-kanban; do
-    aicoding_result_record "$component" current 1.0.0 registration_verified 1.0.0
-  done
-
-  run _aicoding_initial_config_ready "$HOME/.claude/settings.json"
-  [ "$status" -ne 0 ]
-  grep -q 'claude_shared_consumers_incompatible' "$TEST_ROOT/warnings"
-}
-
 @test "exact MCP config readiness requires the immutable Kanban launcher" {
   _load_real_compatibility_guard
   _record_exact_mcp_receipts

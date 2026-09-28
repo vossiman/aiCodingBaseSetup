@@ -44,19 +44,13 @@ _fleet() {
   [[ "$output" != *"Fleet proof"* ]]
 }
 
-@test "doctor reports a missing fleet proof for a configured shared root" {
+@test "doctor warns about a missing fleet proof for a configured shared root without failing" {
   mkdir -p "$HOME/.claude"
   export AICODING_SHARED_CONFIG_ROOTS="$HOME/.claude"
   run "$BIN" --doctor
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"Fleet proof: missing"* ]]
-}
-
-@test "doctor reports a missing fleet proof when a fleet blocker was recorded" {
-  aicoding_result_record config-claude blocked abc claude_consumers_incompatible
-  run "$BIN" --doctor
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"Fleet proof: missing"* ]]
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Fleet proof (warning only): missing"* ]]
+  [[ "$output" == *"do not wait for this"* ]]
 }
 
 @test "doctor explains a catalogued blocker and exits 1" {
@@ -91,7 +85,7 @@ _fleet() {
 @test "doctor lists fleet containers grouped by what they miss" {
   _fleet
   run "$BIN" --doctor
-  [ "$status" -eq 1 ]
+  [ "$status" -eq 0 ]
   [[ "$output" == *"1 of 4 containers pass"* ]]
   [[ "$output" == *"2 probed nothing"*"cccccccccccc"*"dddddddddddd"* ]]
   [[ "$output" == *"1 missing mcp-kanban: bbbbbbbbbbbb"* ]]
@@ -100,7 +94,9 @@ _fleet() {
 
 @test "doctor stays quiet about the fleet when the proof is complete" {
   _fleet
-  jq '.roots[0].inventory_complete = true | .roots[0].consumers = [.roots[0].consumers[0]]' \
+  jq '.roots[0].inventory_complete = true | .roots[0].consumers = [.roots[0].consumers[0]]
+      | .roots[0].consumers[0].components |= with_entries(.value = {version: "1.0.0", config_compatible: true})
+      | .roots[0].consumers[0].components.codex.version = "0.158.0"' \
     "$AICODING_SHARED_CONSUMERS_FILE" > "$TMP/f" && mv "$TMP/f" "$AICODING_SHARED_CONSUMERS_FILE"
   run "$BIN" --doctor
   [ "$status" -eq 0 ]
@@ -156,4 +152,33 @@ _fleet() {
     "mcp-kanban: active launcher invalid"
   run python3 "$report" --provision-actionable
   [ "$status" -eq 0 ]
+}
+
+@test "a retired fleet-gate blocker left on disk is neither listed nor badged" {
+  aicoding_result_record mcp-registration-claude-kanban blocked abc claude_consumers_incompatible
+  aicoding_result_record provision-codex blocked "" codex_shared_consumers_incompatible
+  run "$BIN" --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"consumers_incompatible"* ]]
+  run python3 "$BLUEPRINT_ROOT/lib/status-report.py" --provision-actionable
+  [ "$status" -eq 1 ]
+}
+
+@test "doctor warns when a complete fleet reports an incompatible consumer" {
+  _fleet
+  jq '.roots[0].inventory_complete = true
+      | .roots[0].consumers = [.roots[0].consumers[0]]
+      | .roots[0].consumers[0].components = {
+          claude: {version: "2.1.0", config_compatible: true},
+          codex: {version: "0.140.0", config_compatible: true},
+          cursor: {version: "2026.09.26", config_compatible: false},
+          "mcp-context7": {version: "4.1.1", config_compatible: true},
+          "mcp-playwright": {version: "0.0.82", config_compatible: true},
+          "mcp-kanban": {version: "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3", config_compatible: true}}' \
+    "$AICODING_SHARED_CONSUMERS_FILE" > "$TMP/f" && mv "$TMP/f" "$AICODING_SHARED_CONSUMERS_FILE"
+  run "$BIN" --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Fleet proof (warning only): incompatible"*"aaaaaaaaaaaa"* ]]
+  [[ "$output" == *"codex 0.140.0 older than 0.148.0"* ]]
+  [[ "$output" == *"cursor config incompatible"* ]]
 }

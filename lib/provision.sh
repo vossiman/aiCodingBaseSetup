@@ -320,8 +320,6 @@ _provision_tool_ready() {
   [ -n "$version" ] || { _provision_tool_blocked "provision-$component" "${component}_version_unavailable"; return $?; }
   [ -z "$minimum" ] || _aicoding_version_at_least "$version" "$minimum" \
     || { _provision_tool_blocked "provision-$component" "${component}_runtime_incompatible"; return $?; }
-  _aicoding_shared_consumers_require "$component" "$minimum" "$root" \
-    || { _provision_tool_blocked "provision-$component" "${component}_shared_consumers_incompatible"; return $?; }
   # Otherwise a block from an earlier pass outlives the condition behind it.
   command -v aicoding_result_record >/dev/null 2>&1 \
     && aicoding_result_record "provision-$component" current "$version" verified "$version" || true
