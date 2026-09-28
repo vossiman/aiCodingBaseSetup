@@ -175,3 +175,17 @@ STUB
     and .reason == "mcp_exact_version_staging_unavailable"
     and .detail == "mcp-kanban: blocked exact_package_not_staged"' "$AICODING_RESULTS_FILE"
 }
+
+@test "an MCP staging cause never replaces another destination's reason" {
+  local cursor_root="$HOME/.cursor"
+  aicoding_exact_mcp_config_cause() { echo "mcp-kanban: blocked offline_exact_package_not_ready"; return 1; }
+  _sync_note_config_blocker config-cursor cursor_config_probe_failed "$cursor_root/hooks.json"
+  _sync_note_config_blocker config-cursor mcp_exact_version_staging_unavailable "$cursor_root/mcp.json"
+  [ "${blocked_reasons[config-cursor]}" = cursor_config_probe_failed ]
+  [ -z "${blocked_details[config-cursor]}" ]
+  _sync_note_config_blocker config-claude mcp_exact_version_staging_unavailable "$first"
+  [ "${blocked_details[config-claude]}" = "mcp-kanban: blocked offline_exact_package_not_ready" ]
+  _sync_note_config_blocker config-claude claude_config_probe_failed "$first"
+  [ "${blocked_reasons[config-claude]}" = claude_config_probe_failed ]
+  [ -z "${blocked_details[config-claude]}" ]
+}

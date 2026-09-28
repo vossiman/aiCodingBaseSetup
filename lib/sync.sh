@@ -729,6 +729,22 @@ _sync_provision_deferral_detail() {
   printf 'deferred by %s%s\n' "$keys" "${smart:+ (codex merge: $smart)}"
 }
 
+# Several destinations can share one component receipt. Reason and detail are
+# replaced as a pair, and an MCP staging reason (whose cause may only be a
+# wait) never replaces another destination's reason, which is actionable.
+_sync_note_config_blocker() {
+  local component=$1 reason=$2 dest=$3 mcp=mcp_exact_version_staging_unavailable
+  if [[ "$reason" == "$mcp" && -n "${blocked_reasons[$component]:-}" \
+      && "${blocked_reasons[$component]}" != "$mcp" ]]; then
+    return 0
+  fi
+  blocked_reasons[$component]=$reason
+  blocked_details[$component]=
+  if [[ "$reason" == "$mcp" ]]; then
+    blocked_details[$component]=$(aicoding_exact_mcp_config_cause "$dest") || true
+  fi
+}
+
 # Record a component only after considering EVERY destination in its inventory.
 # A successful tool install or aggregate config receipt is not recovery evidence:
 # another destination for that same harness may still be blocked or conflicted.
@@ -918,13 +934,7 @@ _sync_reconcile() {
         BUCKETS[$d]=blocked
         blocked_count=$((blocked_count + 1))
         component=$(_aicoding_config_component "$d")
-        # Several destinations can share one component: reason and detail
-        # are replaced as a pair so the last reason never keeps a stale cause.
-        blocked_reasons[$component]=$reason
-        blocked_details[$component]=
-        if [[ "$reason" == mcp_exact_version_staging_unavailable ]]; then
-          blocked_details[$component]=$(aicoding_exact_mcp_config_cause "$d") || true
-        fi
+        _sync_note_config_blocker "$component" "$reason" "$d"
         case "$component" in
           config-*) _SYNC_DEFERRED_PROVISION_COMPONENTS[${component#config-}]=1 ;;
         esac
