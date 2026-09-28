@@ -738,3 +738,18 @@ _provision_fixture() {
   run "$BIN" --tmux
   [[ "$output" == *"⬆provision!"* ]]
 }
+
+@test "provision badge: the verdict is cached until the results file changes" {
+  _provision_fixture
+  local real; real=$(command -v python3)
+  printf '#!/bin/sh\necho x >> "%s/python-calls"\nexec "%s" "$@"\n' "$TMP" "$real" > "$TMP/stubs/python3"
+  chmod +x "$TMP/stubs/python3"
+  "$BIN" --tmux >/dev/null
+  "$BIN" --tmux >/dev/null
+  [ "$(wc -l < "$TMP/python-calls")" -eq 1 ]
+  jq '.components.config={state:"conflict",reason:"managed_config_conflict"}' \
+    "$AICODING_RESULTS_FILE" > "$TMP/r" && mv "$TMP/r" "$AICODING_RESULTS_FILE"
+  run "$BIN" --tmux
+  [[ "$output" == *"⬆provision!"* ]]
+  [ "$(wc -l < "$TMP/python-calls")" -eq 2 ]
+}

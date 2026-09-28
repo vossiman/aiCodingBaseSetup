@@ -154,11 +154,21 @@ _image_built_date() { jq -r '.built // empty' "${AICODING_IMAGE_RELEASE_FILE:-/e
 # sources. ISO dates compare correctly as strings; fail-open when either
 # side is missing.
 # Exit 1 only on a clear "nothing actionable"; any other failure keeps the badge.
+# tmux calls this every few seconds, so the verdict is cached per results-file
+# state and release, and python only runs when either changes.
 _provision_actionable() {
-  local rc=0
-  python3 "$(dirname "$(dirname "$(readlink -f "$0")")")/lib/status-report.py" \
-    --provision-actionable >/dev/null 2>&1 || rc=$?
-  [ "$rc" -ne 1 ]
+  local lib key cache="$STATE/.provision-actionable" rc=0
+  lib="$(dirname "$(dirname "$(readlink -f "$0")")")/lib"
+  key="$(stat -c '%y %s %i' "$AICODING_RESULTS_FILE" 2>/dev/null)|$lib"
+  if [ -f "$cache" ] && [ "$(head -n 1 "$cache" 2>/dev/null)" = "$key" ]; then
+    rc=$(sed -n 2p "$cache" 2>/dev/null)
+  else
+    python3 "$lib/status-report.py" --provision-actionable >/dev/null 2>&1 || rc=$?
+    mkdir -p "$STATE" 2>/dev/null \
+      && printf '%s\n%s\n' "$key" "$rc" > "$cache.$$" 2>/dev/null \
+      && mv -f "$cache.$$" "$cache" 2>/dev/null || rm -f "$cache.$$" 2>/dev/null
+  fi
+  [ "$rc" != 1 ]
 }
 
 _published_newer() {
