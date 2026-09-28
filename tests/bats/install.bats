@@ -429,6 +429,32 @@ STUB
   jq -e '.components["provision-codex"].reason == "codex_update_not_verified"' "$AICODING_RESULTS_FILE"
 }
 
+@test "tool readiness replaces an earlier blocked receipt once the tool verifies" {
+  mkdir -p "$HOME/.codex"
+  export AICODING_RESULTS_FILE="$TMPDIR/results.json"
+  cat > "$TMPDIR/stubs/codex" <<'STUB'
+#!/bin/sh
+[ "$*" != --version ] || printf 'codex-cli 0.200.0\n'
+exit 0
+STUB
+  chmod +x "$TMPDIR/stubs/codex"
+  export _AICODINGSETUP_NVS_STRIPPED=1
+  source "$BLUEPRINT_ROOT/install.sh"
+  _provision_ensure_update_components
+  export AICODING_PERSISTENT_ENROLLMENT=0 AICODING_SYNC_MODE=boot
+  unset AICODING_REQUIRE_UPDATE_RECEIPT
+  _provision_record_blocked provision-codex codex_update_not_verified
+  aicoding_result_record codex updated 0.200.0 installed 0.200.0
+
+  run _provision_tool_ready codex codex 0.148.0 "$HOME/.codex"
+
+  [ "$status" -eq 0 ]
+  jq -e '.components["provision-codex"].state == "current"
+    and .components["provision-codex"].reason == "verified"
+    and .components["provision-codex"].successful_version == "0.200.0"' \
+    "$AICODING_RESULTS_FILE"
+}
+
 @test "a shared guard does not make later confirmed-local legacy provisioning strict" {
   local shared_root="$TMPDIR/shared-claude" expires
   mkdir -p "$shared_root"
