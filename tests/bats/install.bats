@@ -1978,6 +1978,18 @@ EOF
   if echo "$output" | grep -q "bak"; then false; fi
 }
 
+@test "report_unmanaged: ignores kanban-work-hook.sh and Claude Code's synced skills dir" {
+  export _AICODINGSETUP_NVS_STRIPPED=1   # or sourcing re-execs $0, which is bats
+  source "$BLUEPRINT_ROOT/install.sh"
+  mkdir -p "$CLAUDE_DIR/hooks" "$CLAUDE_DIR/skills/synced/some-bucket" "$CLAUDE_DIR/skills/my-own-skill"
+  printf '#!/bin/sh\n' > "$CLAUDE_DIR/hooks/kanban-work-hook.sh"
+  run report_unmanaged
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"my-own-skill"* ]]
+  if echo "$output" | grep -q "kanban-work-hook"; then false; fi
+  if echo "$output" | grep -q "'synced'"; then false; fi
+}
+
 @test "install.sh symlinks the clipboard-bridge shims (xclip, wl-paste)" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   for name in xclip wl-paste; do
