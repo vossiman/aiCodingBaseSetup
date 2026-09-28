@@ -225,6 +225,7 @@ EOF
   run aicoding_exact_mcp_config_cause "$codex_config"
   [ "$output" = "mcp-kanban: active launcher invalid" ]
   _aicoding_active_kanban_mcp_valid() { return 0; }
+  _aicoding_claude_mcp_selected() { return 0; }
   run aicoding_exact_mcp_config_cause "$HOME/.claude/settings.json"
   [ "$output" = "mcp-registration-claude-context7: no receipt" ]
   run aicoding_exact_mcp_config_cause "$codex_config"
@@ -265,8 +266,16 @@ EOF
   [ "$output" = "mcp-registration-claude-kanban: blocked registration_not_selected" ]
   aicoding_result_record mcp-registration-claude-kanban current 1.0.0 registration_verified 1.0.0
   aicoding_result_record mcp-registration-claude-context7 blocked 1.0.0 registration_conflict
+  _aicoding_claude_mcp_selected() { return 0; }
   run aicoding_exact_mcp_config_cause "$HOME/.claude/settings.json"
   [ "$output" = "mcp-registration-claude-context7: blocked registration_conflict" ]
+  # A stale "not selected" receipt must not win once the plugin is enabled:
+  # settings.json would switch the plugin off before a registration exists.
+  aicoding_result_record mcp-registration-claude-context7 blocked 1.0.0 registration_not_selected
+  _aicoding_claude_mcp_selected() { [ "$1" = context7 ]; }
+  run aicoding_exact_mcp_config_cause "$HOME/.claude/settings.json"
+  [ "$status" -ne 0 ]
+  [ "$output" = "mcp-registration-claude-context7: blocked registration_not_selected" ]
 }
 
 @test "Cursor hook config does not depend on unrelated exact MCP packages" {

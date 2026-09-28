@@ -204,12 +204,12 @@ aicoding_exact_mcp_config_cause() {
   done
   case "$dest" in
     "$HOME/.claude/settings.json")
-      # settings.json references only kanban (its hooks). A context7 or
-      # playwright registration the user never made (plugins provide them)
-      # is not a dependency of the file.
+      # settings.json switches the context7/playwright plugins off, so their
+      # direct registrations must exist first, unless neither a registration
+      # nor an enabled plugin exists now (checked live, not from a receipt).
       for component in mcp-registration-claude-context7 mcp-registration-claude-playwright; do
-        [ "$(jq -r --arg c "$component" '.components[$c].reason // empty' "$AICODING_RESULTS_FILE" 2>/dev/null)" \
-          = registration_not_selected ] && continue
+        _aicoding_mcp_receipt_ready "$component" >/dev/null && continue
+        _aicoding_claude_mcp_selected "${component#mcp-registration-claude-}" || continue
         _aicoding_mcp_receipt_ready "$component" || return 1
       done
       _aicoding_mcp_receipt_ready mcp-registration-claude-kanban || return 1
