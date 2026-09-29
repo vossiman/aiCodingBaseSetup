@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# t3-migrate: move a container-local ~/.t3 onto the t3-envs mount.
+#   --export (old container), rebuild, --restore (new container), --confirm.
+set -uo pipefail
+. "$(dirname "$(readlink -f "$0")")/../lib/t3.sh"
+t3_cmd_migrate "$@"

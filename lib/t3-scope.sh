@@ -4,7 +4,7 @@
 
 t3_stat() {
   local line rest
-  read -r line < "/proc/$1/stat" 2>/dev/null || return 1
+  read -r line 2>/dev/null < "/proc/$1/stat" || return 1
   rest=${line##*) }
   read -r -a _t3f <<< "$rest"
   T3S_PPID=${_t3f[1]} T3S_SID=${_t3f[3]} T3S_START=${_t3f[19]}
@@ -28,10 +28,10 @@ t3_proc_env_value() {
 # comm, except for node and bun launchers, where the script name says more.
 t3_proc_name() {
   local comm; local -a a
-  read -r comm < "/proc/$1/comm" 2>/dev/null || return 1
+  read -r comm 2>/dev/null < "/proc/$1/comm" || return 1
   case "$comm" in
     node|bun|MainThread)
-      mapfile -d '' -t a < "/proc/$1/cmdline" 2>/dev/null
+      mapfile -d '' -t a 2>/dev/null < "/proc/$1/cmdline"
       [ -n "${a[1]:-}" ] && { printf '%s\n' "${a[1]##*/}"; return 0; } ;;
   esac
   printf '%s\n' "$comm"
