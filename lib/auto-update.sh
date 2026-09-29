@@ -5,6 +5,7 @@
 : "${AICODING_AUTO_UPDATE_MIN_BACKOFF:=300}"
 : "${AICODING_AUTO_UPDATE_MAX_BACKOFF:=3600}"
 : "${AICODING_AUTO_UPDATE_RECOVERY_TIMEOUT:=120}"
+: "${AICODING_AUTO_UPDATE_WAKE_CHECK:=300}"
 
 _aicoding_auto_positive_integer() { [[ "$1" =~ ^[1-9][0-9]*$ ]]; }
 
@@ -294,7 +295,8 @@ _aicoding_auto_user_manager_available() {
   state=$(timeout 10 systemctl --user is-system-running 2>/dev/null) || return 1
   case "$state" in running|degraded|starting) ;; *) return 1 ;; esac
   version=$(timeout 10 systemctl --user show --property=Version --value 2>/dev/null) || return 1
-  [[ "$version" =~ ^[0-9]+([.][0-9]+)*$ ]]
+  # Distributions append a package suffix, e.g. Ubuntu's 249.11-0ubuntu3.22.
+  [[ "$version" =~ ^[0-9]+([.][0-9]+)*([-~+][0-9A-Za-z.~+-]*)?$ ]]
 }
 
 _aicoding_auto_stage_systemd() {
@@ -504,6 +506,7 @@ aicoding_auto_update_worker() {
   _aicoding_auto_positive_integer "$AICODING_AUTO_UPDATE_INTERVAL" || return 2
   _aicoding_auto_positive_integer "$AICODING_AUTO_UPDATE_MIN_BACKOFF" || return 2
   _aicoding_auto_positive_integer "$AICODING_AUTO_UPDATE_MAX_BACKOFF" || return 2
+  _aicoding_auto_positive_integer "$AICODING_AUTO_UPDATE_WAKE_CHECK" || return 2
   [ "$AICODING_AUTO_UPDATE_MIN_BACKOFF" -le "$AICODING_AUTO_UPDATE_MAX_BACKOFF" ] || return 2
 
   local state lock_fd pid_file next_file success_file log now due delay backoff rc sleep_pid=
@@ -553,6 +556,9 @@ aicoding_auto_update_worker() {
       continue
     fi
     delay=$((due - now))
+    # sleep counts only while the host is awake. Recheck the wall clock in
+    # bounded steps so a pass that fell due during suspend runs soon after.
+    [ "$delay" -le "$AICODING_AUTO_UPDATE_WAKE_CHECK" ] || delay=$AICODING_AUTO_UPDATE_WAKE_CHECK
     sleep "$delay" & sleep_pid=$!
     wait "$sleep_pid" || true
     sleep_pid=

@@ -340,11 +340,53 @@ EOF
   [ -s "$AICODING_STATE_DIR/auto-update/last-attempt" ]
 }
 
-@test "monotonic timer keeps startup catch-up without an ineffective Persistent directive" {
+@test "wall-clock timer catches up after suspend and downtime" {
+  # Monotonic timers pause while the host sleeps (systemd.timer(5)), so a
+  # suspended laptop never ran a pass that fell due while it slept.
   local timer="$TEST_ROOT/runtime/configs/systemd/aicoding-auto-update.timer"
   grep -q '^OnBootSec=' "$timer"
-  grep -q '^OnUnitActiveSec=' "$timer"
-  if grep -q '^Persistent=' "$timer"; then false; fi
+  grep -q '^OnCalendar=' "$timer"
+  grep -qx 'Persistent=true' "$timer"
+  if grep -q '^OnUnitActiveSec=' "$timer"; then false; fi
+}
+
+@test "fallback worker notices a due pass the wall clock reached while suspended" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600 AICODING_AUTO_UPDATE_WAKE_CHECK=1
+  mkdir -p "$AICODING_STATE_DIR/auto-update"
+  printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$AICODING_STATE_DIR/auto-update/next-due"
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  for _ in $(seq 40); do [ -s "$AICODING_STATE_DIR/auto-update/worker.pid" ] && break; sleep 0.05; done
+  sleep 0.3
+  [ ! -s "$AICODING_TEST_ATTEMPTS" ]
+  # A resumed host finds the due time already behind the wall clock.
+  printf '1\n' > "$AICODING_STATE_DIR/auto-update/next-due"
+  wait_for_lines 1 40
+}
+
+@test "a distribution-suffixed user manager version still enrolls the timer" {
+  cat > "$TEST_ROOT/bin/systemctl" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  '--user is-system-running') echo running ;;
+  '--user show --property=Version --value') echo 249.11-0ubuntu3.22 ;;
+  '--user is-enabled aicoding-auto-update.timer') echo enabled ;;
+  '--user is-active aicoding-auto-update.timer') echo active ;;
+esac
+exit 0
+EOF
+  cat > "$TEST_ROOT/bin/loginctl" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *'show-user'* ]]; then echo yes; fi
+exit 0
+EOF
+  chmod +x "$TEST_ROOT/bin/systemctl" "$TEST_ROOT/bin/loginctl"
+
+  run "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  [ "$status" -eq 0 ]
+  for _ in $(seq 40); do [ -f "$HOME/.config/systemd/user/aicoding-auto-update.timer" ] && break; sleep 0.05; done
+  [ -f "$HOME/.config/systemd/user/aicoding-auto-update.timer" ] || { cat "$AICODING_STATE_DIR/auto-update/enroll.log"; false; }
+  [ ! -s "$AICODING_TEST_ATTEMPTS" ]
 }
 
 @test "a verified user manager with linger installs and enables the persistent timer" {
