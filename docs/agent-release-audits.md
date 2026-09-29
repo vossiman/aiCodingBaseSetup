@@ -146,6 +146,19 @@ checkpoint, measured against how `configs/` actually uses each tool.
 Settings adopted outside an audit window. Listed here so a future audit
 recognises them as deliberate rather than drift.
 
+### OpenCode default model `openai/gpt-6.1-sol` (2026-09-29, opencode 1.18.33)
+
+Replaces `anthropic/claude-opus-5`, kept in the 1.18.18 audit on cost. That
+id resolves only when OpenCode has an Anthropic provider signed in, and the
+devboxes have none (`opencode models` lists only `opencode/*`,
+`moonshotai/*` and `openai/*`). Every `opencode run` without `-m` failed
+with `ProviderModelNotFoundError`, shown as "Unexpected server error".
+`openai/gpt-6.1-sol` is the owner's choice (the newest Sol OpenCode lists)
+and works with the OpenAI login these machines already have. The merge deploy puts the blueprint's
+`model` over the user's, so this is the value every devbox ends up with.
+Pick another model per session with `-m` or `/models` in the TUI.
+(AICODINGBASESETUP-85)
+
 ### `CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT=0` (2026-08-28, claude 2.1.250)
 
 Forces Claude Code's **long** system-prompt preset on every model. Claude
