@@ -124,6 +124,18 @@ class PureMergeTests(unittest.TestCase):
         self.assertEqual(take.config_text, "x = 3\n")
         self.assertEqual(take.conflicts, [])
 
+    def test_mcp_server_moving_between_stdio_and_http_is_replaced_whole(self):
+        old = '[mcp_servers.kanban]\ncommand = "kanban-mcp"\nrequired = true\n'
+        new = '[mcp_servers.kanban]\nurl = "https://kanban.example/mcp"\nrequired = false\n'
+        base = self.baseline(old).acknowledged
+        clean = plan_merge(old, new, acknowledged=base)
+        self.assertEqual(clean.conflicts, [])
+        self.assertEqual(clean.config_text, new)
+        edited = old.replace('"kanban-mcp"', '"/opt/custom/kanban"')
+        kept = plan_merge(edited, new, acknowledged=base)
+        self.assertEqual(kept.conflicts, [{"path": ["mcp_servers", "kanban"]}])
+        self.assertEqual(kept.config_text, edited)
+
     def test_nested_removals_and_type_changes_compare_the_parent(self):
         table_base = self.baseline("[service]\nport = 80\n").acknowledged
 

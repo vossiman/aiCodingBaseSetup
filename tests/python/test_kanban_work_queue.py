@@ -147,6 +147,17 @@ class QueueTests(unittest.TestCase):
             })
         self.assertIsNone(self.store.native_event("claude", "start-2"))
 
+    def test_missing_credential_drops_lifecycle_work_instead_of_retrying_forever(self):
+        def refused(operation, payload, *, timeout=30):
+            raise BridgeError(401, "KANBAN_TOKEN is not set in the secrets store")
+        self.queue.transport = refused
+        handle, generation = self.start()
+        self.event("stop", handle, generation, "stop-1")
+        self.event("activity", handle, generation, "prompt-1")
+        self.queue.drain(3000)
+        self.assertEqual(self.queue.pending(), [])
+        self.assertEqual(self.store.unsettled_stops(handle), [])
+
     # -- activity ------------------------------------------------------------
 
     def test_activity_renews_without_knowing_the_claim(self):
@@ -159,6 +170,20 @@ class QueueTests(unittest.TestCase):
         self.assertNotIn("claim_id", activity[0][2])
         self.assertEqual(activity[0][2]["run_generation"], generation)
         self.assertIsNone(claim["released_at"])
+
+    def test_activity_from_a_superseded_generation_is_final_not_retried(self):
+        handle, generation = self.start()
+        self.event("activity", handle, generation, "prompt-1")
+        original = self.queue.transport
+
+        def superseded(operation, payload, *, timeout=30):
+            if operation == "session_activity":
+                raise BridgeError(409, "Work session belongs to an older run generation")
+            return original(operation, payload, timeout=timeout)
+
+        self.queue.transport = superseded
+        result = self.queue.drain(3000)
+        self.assertEqual((result["dropped"], result["retried"], result["pending"]), (1, 0, 0))
 
     def test_stale_activity_is_dropped_instead_of_sent(self):
         handle, generation = self.start()

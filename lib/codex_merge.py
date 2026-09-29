@@ -227,6 +227,15 @@ def _is_table(value: Any) -> bool:
     return value is not MISSING and isinstance(_unwrap(value), Mapping)
 
 
+def _transport_switch(path: Tuple[str, ...], local_value: Any, incoming_value: Any) -> bool:
+    """An MCP server moving between stdio and HTTP is replaced whole, never merged key by key."""
+    if len(path) != 2 or path[0] != "mcp_servers":
+        return False
+    if not (_is_table(local_value) and _is_table(incoming_value)):
+        return False
+    return any((key in local_value) != (key in incoming_value) for key in ("command", "url"))
+
+
 def _operation(local_value: Any, incoming_value: Any) -> str:
     if incoming_value is MISSING:
         return "remove"
@@ -315,6 +324,7 @@ class _Planner:
             _is_table(local_value)
             and _is_table(incoming_value)
             and base_node["type"] in ("table", "missing")
+            and not _transport_switch(path, local_value, incoming_value)
         )
         if can_recurse:
             base_children = base_node.get("children", {})

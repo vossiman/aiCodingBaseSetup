@@ -71,6 +71,10 @@ JSON_OPERATIONS = {
 }
 
 
+class MissingCredential(SystemExit):
+    """No token is configured: every request would be refused, so callers stop retrying."""
+
+
 class InputError(Exception):
     def __init__(self, code: int, message: str):
         super().__init__(message)
@@ -131,7 +135,7 @@ def token() -> str:
             )
         return value
     if not SECRETS.is_file():
-        die(f"no secrets store at {SECRETS}")
+        raise MissingCredential(f"kanban-post: no secrets store at {SECRETS}")
     for line in SECRETS.read_text().splitlines():
         line = line.strip()
         if line.startswith("KANBAN_TOKEN="):
@@ -139,7 +143,7 @@ def token() -> str:
             if value:
                 return value
             break
-    die("KANBAN_TOKEN is not set in the secrets store")
+    raise MissingCredential("kanban-post: KANBAN_TOKEN is not set in the secrets store")
 
 
 GITHUB_REMOTE = re.compile(
@@ -586,7 +590,7 @@ def run_json_mode(operation: str) -> int:
         message = str(error.code)
         if message.startswith("kanban-post: "):
             message = message[len("kanban-post: "):]
-        emit_json(False, code=502, message=message)
+        emit_json(False, code=401 if isinstance(error, MissingCredential) else 502, message=message)
         return 1
     except urllib.error.HTTPError as error:
         emit_json(False, code=error.code, message=f"HTTP {error.code}")

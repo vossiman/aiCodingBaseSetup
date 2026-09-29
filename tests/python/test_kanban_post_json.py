@@ -212,6 +212,18 @@ class KanbanPostJsonTests(unittest.TestCase):
                 self.assert_error(self.run_json(operation, payload), message)
         self.assertEqual(self.server.calls, [])
 
+    def test_missing_credential_is_a_refusal_not_an_outage(self):
+        env = {key: value for key, value in self.env.items()
+               if key not in {"KANBAN_URL", "KANBAN_TEST_TOKEN"}}
+        result = self.run_json("mcp_instructions", {}, env=env)
+        self.assert_error(result, f"no secrets store at {self.home}/.aicodingsetup/.secrets.env", code=401)
+        store = self.home / ".aicodingsetup"
+        store.mkdir()
+        (store / ".secrets.env").write_text("KANBAN_TOKEN=\n")
+        result = self.run_json("mcp_instructions", {}, env=env)
+        self.assert_error(result, "KANBAN_TOKEN is not set in the secrets store", code=401)
+        self.assertEqual(self.server.calls, [])
+
     def test_claim_maps_only_the_allowlisted_payload(self):
         result = self.run_json("claim_ticket", {
             "work_session_id": SESSION_ID,
