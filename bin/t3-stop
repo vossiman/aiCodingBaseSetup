@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# t3-stop [--orphans]: stop this workspace's T3 Code server and keep it
+# stopped at boot. --orphans cleans up after a crashed supervisor.
+set -uo pipefail
+. "$(dirname "$(readlink -f "$0")")/../lib/t3.sh"
+t3_cmd_stop "$@"

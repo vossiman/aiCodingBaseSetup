@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# t3 supervisor: holds owner.lock for the server's lifetime, runs the server
+# as its child, and on TERM (or when the server dies) stops everything in
+# scope before it exits and so releases the lock.
+# Args: STATE_DIR EXE SERVE_DIR VERSION TOKEN. T3_AICODING_OWNER=TOKEN is in
+# our environment and every child inherits it.
+set -uo pipefail
+state=$1 exe=$2 dir=$3 version=$4 token=$5
+. "$(dirname "$(readlink -f "$0")")/t3-scope.sh"
+
+exec 7>&- 8>&-
+exec 9>>"$state/owner.lock" || exit 70
+flock -n 9 || exit 75
+t3_stat $$ || exit 70
+my_sid=$T3S_SID
+own=$(jq -cn --argjson pid $$ --arg start "$T3S_START" --arg sid "$my_sid" --arg token "$token" \
+  --arg container "$(hostname)" --arg version "$version" --arg at "$(date -u +%FT%TZ)" \
+  '{pid: $pid, start: $start, sid: $sid, token: $token, container: $container, version: $version, started_at: $at}')
+tmp=$(mktemp "$state/.owner.json.XXXXXX") || exit 70
+printf '%s\n' "$own" > "$tmp" && mv -f "$tmp" "$state/owner.json" || exit 70
+
+rm -f "$T3CODE_HOME/userdata/server-runtime.json"
+stopping=0
+trap 'stopping=1' TERM INT HUP
+"$exe" serve "$dir" 7>&- 8>&- 9>&- </dev/null >>"$T3CODE_HOME/serve.log" 2>&1 &
+child=$!
+while [ "$stopping" = 0 ] && kill -0 "$child" 2>/dev/null; do
+  wait "$child" 2>/dev/null || true
+done
+
+grace=${T3_STOP_GRACE:-30}
+t3_scope $$ "$my_sid" "$token"
+[ ${#T3_SCOPE[@]} -gt 0 ] && kill -TERM "${T3_SCOPE[@]}" 2>/dev/null
+for ((i = 0; i < grace * 10; i++)); do
+  t3_scope $$ "$my_sid" "$token"
+  [ ${#T3_SCOPE[@]} -eq 0 ] && break
+  sleep 0.1
+done
+[ ${#T3_SCOPE[@]} -gt 0 ] && kill -KILL "${T3_SCOPE[@]}" 2>/dev/null
+for ((i = 0; i < 100; i++)); do
+  t3_scope $$ "$my_sid" "$token"
+  [ ${#T3_SCOPE[@]} -eq 0 ] && break
+  sleep 0.1
+done
+exit 0

@@ -88,6 +88,14 @@ with open(tmp, "w") as f:
     json.dump({"version": 1, "pid": os.getpid(), "port": s.getsockname()[1],
                "origin": "http://127.0.0.1", "startedAt": now}, f)
 os.replace(tmp, f"{u}/server-runtime.json")
+import threading
+def serve_accepts():
+    while True:
+        try:
+            c, _ = s.accept(); c.close()
+        except OSError:
+            return
+threading.Thread(target=serve_accepts, daemon=True).start()
 def stop(*_):
     for k in kids:
         k.terminate()
@@ -141,7 +149,20 @@ t3_test_teardown() {
 
 t3_lib() { bash -c '. "$BLUEPRINT_ROOT/lib/t3.sh"; "$@"' t3lib "$@"; }
 
-t3_bin_as() { cp "$(command -v "$2")" "$TMP/bin/$1"; chmod +x "$TMP/bin/$1"; }
+# A copied `sleep` breaks where coreutils is a multi-call binary that
+# dispatches on argv[0] (uutils): it exits at once under another name. A
+# python sleeper keeps the process name (comm) without forking a child.
+t3_bin_as() {
+  if [ "$2" = sleep ]; then
+    # Absolute interpreter path: via /usr/bin/env the process renames itself
+    # to python3, and scope code identifies processes by comm.
+    printf '#!%s\nimport sys, time\ntime.sleep(float(sys.argv[1]) if len(sys.argv) > 1 else 3600)\n' \
+      "$(command -v python3)" > "$TMP/bin/$1"
+  else
+    cp "$(command -v "$2")" "$TMP/bin/$1"
+  fi
+  chmod +x "$TMP/bin/$1"
+}
 
 t3_db() { printf '%s\n' "$T3_ENVS_ROOT/$DEVPOD_WORKSPACE_ID/userdata/state.sqlite"; }
 
@@ -159,3 +180,17 @@ t3_sql() {
 t3_iso() { date -u -d "${1:-now}" +%Y-%m-%dT%H:%M:%S.000Z; }
 
 t3_ready_workspace() { "$B/t3-setup" >/dev/null 2>&1; }
+
+
+t3_fake_setup() {
+  local v=${1:-0.0.42} h="$T3_ENVS_ROOT/$DEVPOD_WORKSPACE_ID"
+  mkdir -p "$h/aicoding" "$h/userdata/secrets"
+  echo env-test-1 > "$h/userdata/environment-id"
+  : > "$h/userdata/secrets/cloud-cli-oauth-token.bin"
+  printf '{"mode":"latest","version":"%s"}\n' "$v" > "$h/aicoding/version.json"
+  echo on > "$h/aicoding/auto"
+  echo env-test-1 > "$h/aicoding/setup-done"
+  t3_lib t3_install "$v" >/dev/null 2>&1
+}
+
+t3_owner() { jq -r ".$1" "$T3_ENVS_ROOT/$DEVPOD_WORKSPACE_ID/aicoding/owner.json"; }
