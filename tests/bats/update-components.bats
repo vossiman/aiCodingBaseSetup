@@ -1268,6 +1268,17 @@ _no_curl() {
   [ "$(cat "$TMP/installer-env")" = "unset|unset" ]
 }
 
+@test "Claude's staged installer drops the updater switch from every shell scope" {
+  _tool claude '2.1.49 (Claude Code)'
+  _claude_npm_target 2.1.50
+  _claude_installer_stub
+  export DISABLE_AUTOUPDATER=1 FORCE_AUTOUPDATE_PLUGINS=1
+  _layered() { local DISABLE_AUTOUPDATER=2; DISABLE_AUTOUPDATER=3 FORCE_AUTOUPDATE_PLUGINS=3 aicoding_update_claude; }
+  run _layered
+  [ "$status" -eq 0 ]
+  [ "$(cat "$TMP/installer-env")" = "unset|unset" ]
+}
+
 @test "Claude removes the unused native download tree and its backup link once managed" {
   _managed_claude_release 2.1.50
   _native_claude_tree 2.1.49

@@ -49,14 +49,14 @@ t3_prune_backups() {
 # continue. Returns 2 when the combination is not one the table covers.
 t3_restore() {
   local j=$1 b=$2 base=$T3CODE_HOME f
-  local st="$base/userdata.restore-$1" old="$base/userdata.old-$1" mk="$base/userdata.restore-$1.complete"
+  local u="$base/userdata" st="$base/userdata.restore-$1" old="$base/userdata.old-$1" mk="$base/userdata.restore-$1.complete"
   if [ "$(t3_json_get "$(t3_journal_file)" .restored)" = true ]; then
     rm -rf "$old"; rm -f "$mk"; return 0
   fi
   if [ -d "$st" ] && ! grep -qxF "$j" "$mk" 2>/dev/null; then rm -rf "$st"; rm -f "$mk"; fi
-  if [ ! -d "$st" ] && [ ! -f "$mk" ]; then
-    [ -d "$base/userdata" ] || return 2
-    cp -a "$base/userdata" "$st" || return 1
+  if [ ! -e "$st" ] && [ ! -e "$mk" ]; then
+    [ -d "$u" ] && [ ! -e "$old" ] || return 2
+    cp -a "$u" "$st" || return 1
     for f in $T3_BACKUP_FILES; do
       if [ -e "$b/$f" ]; then cp -a "$b/$f" "$st/$f" || return 1
       else case "$f" in state.sqlite-wal|state.sqlite-shm) rm -f "$st/$f" ;; esac
@@ -66,9 +66,9 @@ t3_restore() {
     sync
     t3_write_file "$mk" "$j" || return 1
   fi
-  if [ -d "$st" ] && [ -d "$base/userdata" ]; then mv "$base/userdata" "$old" || return 1; fi
-  if [ -d "$st" ] && [ ! -d "$base/userdata" ]; then mv "$st" "$base/userdata" || return 1; fi
-  [ -d "$base/userdata" ] && [ ! -d "$st" ] || return 2
+  if [ -d "$st" ] && [ -d "$u" ] && [ ! -e "$old" ]; then mv -T -- "$u" "$old" || return 1; fi
+  if [ -d "$st" ] && [ ! -e "$u" ] && [ -d "$old" ]; then mv -T -- "$st" "$u" || return 1; fi
+  [ ! -e "$st" ] && [ -f "$mk" ] && [ -d "$u" ] && [ -d "$old" ] || return 2
   t3_journal_set restored true || return 1
   rm -rf "$old"; rm -f "$mk"
 }

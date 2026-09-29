@@ -146,6 +146,7 @@ t3_kill_orphans() {
 # that could not be stopped, so callers must not touch its files.
 t3_start_version() {
   t3_running && return 2
+  t3_install "$1" || return 1
   t3_launch "$1" && t3_ready "$1" && return 0
   t3_stop_server || return 2
   rm -f "$T3CODE_HOME/userdata/server-runtime.json"

@@ -185,6 +185,19 @@ S() { printf '%s\n' "$T3_ENVS_ROOT/demo/aicoding"; }
   [ ! -f "$(S)/enabled" ]
 }
 
+@test "stop run by a real descendant of the server detaches and still completes" {
+  t3_fake_setup
+  t3_bin_as agentsh bash
+  T3_TEST_CHILDREN="agentsh=until mv $TMP/go $TMP/go.taken 2>/dev/null; do sleep 0.1; done; $B/t3-stop > $TMP/child.out 2>&1" "$B/t3-start"
+  : > "$TMP/go"
+  for i in $(seq 1 100); do [ -f "$(S)/enabled" ] || break; sleep 0.2; done
+  [ ! -f "$(S)/enabled" ]
+  grep -q "continuing in the background" "$TMP/child.out"
+  grep -q "stopped; it will not start at boot" "$(S)/detached.log"
+  run bash -c '. "$BLUEPRINT_ROOT/lib/t3.sh"; t3_env 2>/dev/null; t3_running'
+  [ "$status" -ne 0 ]
+}
+
 @test "setup: logs in, links, publishes, then records the newest version and setup-done last" {
   run "$B/t3-setup"
   [ "$status" -eq 0 ]
