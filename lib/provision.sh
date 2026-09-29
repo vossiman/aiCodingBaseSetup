@@ -444,6 +444,21 @@ _provision_retire_stdio_kanban() {
   return 1
 }
 
+# Without KANBAN_TOKEN, a hosted registration left from an earlier sync would
+# keep a revoked bearer in ~/.claude.json; remove it along with its fingerprint.
+_provision_remove_hosted_kanban() {
+  local current
+  current=$(_provision_run claude mcp get kanban 2>/dev/null | sed -n 's/^ *URL: //p' | head -n1) || true
+  [ "$current" = "https://kanban.dataprospectors.at/mcp" ] || return 0
+  if _provision_run claude mcp remove -s user kanban >/dev/null 2>&1; then
+    rm -f "$AICODING_MCP_STATE/kanban.sha256" 2>/dev/null || true
+    info "kanban MCP: removed the hosted registration (KANBAN_TOKEN not set)"
+    return 0
+  fi
+  warn "kanban MCP: failed to remove the hosted registration"
+  return 1
+}
+
 # --- Claude Code MCPs ---
 install_claude_mcps() {
   local inherited_receipt=${AICODING_REQUIRE_UPDATE_RECEIPT:-0}
@@ -535,6 +550,8 @@ install_claude_mcps() {
     fi
   else
     warn "kanban MCP skipped (KANBAN_TOKEN not set)"
+    _provision_retire_stdio_kanban || rc=1
+    _provision_remove_hosted_kanban || rc=1
   fi
   [ "$rc" -eq 0 ] || { _provision_soft_failure; return $?; }
   if [ "$deferred" -eq 1 ] && [ -n "${AICODING_SYNC_MODE:-}" ]; then return 3; fi

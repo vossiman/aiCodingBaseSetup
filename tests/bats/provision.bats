@@ -323,13 +323,32 @@ EOF
   [[ "$output" == *"user stdio registration"* ]]
 }
 
-@test "Claude provision skips the hosted kanban MCP without KANBAN_TOKEN" {
+@test "Claude provision without KANBAN_TOKEN retires the stdio registration and adds none" {
   _kanban_claude_stub "$(printf 'kanban:\n  Type: stdio\n  Command: %s/.local/bin/kanban-mcp\n' "$HOME")"
   unset KANBAN_TOKEN
   run install_claude_mcps
   [ "$status" -eq 0 ]
   [[ "$output" == *"kanban MCP skipped (KANBAN_TOKEN not set)"* ]]
-  if grep -q 'kanban' "$TMP/claude-calls" 2>/dev/null; then false; fi
+  [ -f "$TMP/removed" ]
+  [ ! -f "$TMP/added" ]
+}
+
+@test "Claude provision without KANBAN_TOKEN removes a hosted registration and its fingerprint" {
+  _kanban_claude_stub "$(printf 'kanban:\n  Type: http\n  URL: https://kanban.dataprospectors.at/mcp\n')"
+  unset KANBAN_TOKEN
+  printf 'fp\n' > "$AICODING_MCP_STATE/kanban.sha256"
+  run install_claude_mcps
+  [ "$status" -eq 0 ]
+  [ -f "$TMP/removed" ]
+  [ ! -f "$AICODING_MCP_STATE/kanban.sha256" ]
+}
+
+@test "Claude provision without KANBAN_TOKEN leaves a user's own kanban registration" {
+  _kanban_claude_stub "$(printf 'kanban:\n  Type: http\n  URL: https://example.invalid/mcp\n')"
+  unset KANBAN_TOKEN
+  run install_claude_mcps
+  [ "$status" -eq 0 ]
+  [ ! -f "$TMP/removed" ]
 }
 
 @test "the kanban package updater no longer writes a Claude registration" {

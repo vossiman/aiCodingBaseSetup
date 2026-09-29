@@ -471,6 +471,50 @@ EOF
   python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "$TMPDIR/codex.toml"
 }
 
+@test "merge replaces the retired stdio kanban entry instead of grafting the hosted one onto it" {
+  export KANBAN_TOKEN=kb-new
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$TMPDIR/clone/configs/cursor" "$TMPDIR/clone/configs/opencode" "$TMPDIR/dest"
+  cp "$BLUEPRINT_ROOT/configs/cursor/mcp.json" "$TMPDIR/clone/configs/cursor/mcp.json"
+  cp "$BLUEPRINT_ROOT/configs/opencode/opencode.json" "$TMPDIR/clone/configs/opencode/opencode.json"
+  echo '{"mcpServers":{"kanban":{"command":"kanban-mcp"},"mine":{"command":"x"}}}' > "$TMPDIR/dest/mcp.json"
+  echo '{"mcp":{"kanban":{"type":"local","command":["kanban-mcp"],"enabled":true}}}' > "$TMPDIR/dest/opencode.json"
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  manifest_stage_begin
+  deploy_merge_file_substituted "$TMPDIR/clone/configs/cursor/mcp.json" "$TMPDIR/dest/mcp.json" configs/cursor/mcp.json
+  deploy_merge_file_substituted "$TMPDIR/clone/configs/opencode/opencode.json" "$TMPDIR/dest/opencode.json" configs/opencode/opencode.json
+  manifest_stage_commit
+  jq -e '.mcpServers.kanban == {"url":"https://kanban.dataprospectors.at/mcp","headers":{"Authorization":"Bearer kb-new"}}
+         and .mcpServers.mine == {"command":"x"}' "$TMPDIR/dest/mcp.json"
+  jq -e '.mcp.kanban == {"type":"remote","url":"https://kanban.dataprospectors.at/mcp","headers":{"Authorization":"Bearer kb-new"},"oauth":false,"enabled":true}' \
+    "$TMPDIR/dest/opencode.json"
+  run classify_file "$TMPDIR/dest/mcp.json" "$TMPDIR/clone/configs/cursor/mcp.json" merge
+  [ "$output" = up_to_date ]
+}
+
+@test "merge without KANBAN_TOKEN removes a previously deployed bearer but keeps a user's own kanban entry" {
+  unset KANBAN_TOKEN
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$TMPDIR/clone/configs/cursor" "$TMPDIR/dest"
+  cp "$BLUEPRINT_ROOT/configs/cursor/mcp.json" "$TMPDIR/clone/configs/cursor/mcp.json"
+  echo '{"mcpServers":{"kanban":{"url":"https://kanban.dataprospectors.at/mcp","headers":{"Authorization":"Bearer kb-revoked"}}}}' \
+    > "$TMPDIR/dest/mcp.json"
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  manifest_stage_begin
+  deploy_merge_file_substituted "$TMPDIR/clone/configs/cursor/mcp.json" "$TMPDIR/dest/mcp.json" configs/cursor/mcp.json
+  manifest_stage_commit
+  if grep -q 'kb-revoked' "$TMPDIR/dest/mcp.json"; then false; fi
+  run jq -e '.mcpServers.kanban' "$TMPDIR/dest/mcp.json"
+  [ "$status" -ne 0 ]
+
+  echo '{"mcpServers":{"kanban":{"url":"http://127.0.0.1:9/mcp","headers":{"Authorization":"Bearer mine"}}}}' \
+    > "$TMPDIR/dest/mcp.json"
+  manifest_stage_begin
+  deploy_merge_file_substituted "$TMPDIR/clone/configs/cursor/mcp.json" "$TMPDIR/dest/mcp.json" configs/cursor/mcp.json
+  manifest_stage_commit
+  jq -e '.mcpServers.kanban.headers.Authorization == "Bearer mine"' "$TMPDIR/dest/mcp.json"
+}
+
 @test "_substitute_file_to: strips both token-gated servers when neither token is set" {
   unset KANBAN_TOKEN MEMORY_ROUTER_TOKEN
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"

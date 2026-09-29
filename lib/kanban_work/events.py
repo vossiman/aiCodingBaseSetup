@@ -69,11 +69,12 @@ class EventIngestor:
             harness, native_session_id, subagent_id, generation, handle, checkout, capable,
             repo=repo, label=label, now=observed_at,
         )
-        self.store.enqueue_register(handle, {
+        if not self.store.enqueue_register(handle, {
             "harness": harness, "native_session_id": native_session_id,
             "subagent_id": subagent_id, "run_generation": generation, "handle": handle,
             "label": label, "repo": repo, "lifecycle_capable": capable,
-        }, str(uuid5(OPERATION_NAMESPACE, f"register\0{handle}")), observed_at)
+        }, str(uuid5(OPERATION_NAMESPACE, f"register\0{handle}")), observed_at):
+            raise BridgeError(503, "lifecycle queue is full")
         return {"status": "minted", "handle": handle, "run_generation": generation}
 
     def ingest_event(self, harness: str, event_name: str, payload: dict) -> dict:

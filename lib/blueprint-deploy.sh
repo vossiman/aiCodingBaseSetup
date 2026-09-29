@@ -554,6 +554,8 @@ deploy_overwrite_file() {
 # unsorted blueprint array therefore lands unsorted, and every later sync
 # re-sorts it and reports phantom drift forever. Caught by sync.bats
 # "sync right after install reports Nothing to do".
+KANBAN_MCP_URL="https://kanban.dataprospectors.at/mcp"
+
 _json_merge_into() {
   local target=$1 source=$2
   if [ ! -f "$target" ]; then
@@ -566,7 +568,19 @@ _json_merge_into() {
   # fallthrough used to overwrite it with an empty line (data loss on a
   # hand-broken user config) in sync's non-set-e context.
   local merged
-  merged=$(jq -s '
+  # A deep merge would graft the hosted kanban entry onto the stdio entry the
+  # blueprint used to ship, and would keep a revoked bearer when KANBAN_TOKEN
+  # is gone. Drop both blueprint-owned shapes first; other entries stay.
+  merged=$(jq -s --arg hosted "$KANBAN_MCP_URL" '
+    def retired_kanban:
+      . == {"command":"kanban-mcp"}
+      or . == {"type":"local","command":["kanban-mcp"],"enabled":true};
+    def drop_owned_kanban($src):
+      reduce ("mcpServers", "mcp") as $k (.;
+        if (.[$k]? | type) == "object" and (.[$k].kanban? | type) == "object"
+           and ((.[$k].kanban | retired_kanban)
+                or (.[$k].kanban.url == $hosted and (($src[$k].kanban? // null) == null)))
+        then .[$k] |= del(.kanban) else . end);
     def deep_merge(key):
       if length == 2 then
         .[0] as $a | .[1] as $b |
@@ -584,7 +598,7 @@ _json_merge_into() {
           if ($b == null or $b == "") then $a else $b end
         end
       else .[0] end;
-    [.[0],.[1]] | deep_merge("")
+    .[1] as $src | [(.[0] | drop_owned_kanban($src)), $src] | deep_merge("")
   ' "$target" "$source") || return 1
   _write_text_atomic "$target" "$merged" 0600
 }

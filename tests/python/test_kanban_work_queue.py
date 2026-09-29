@@ -133,6 +133,20 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(self.queue.pending(handle), [])
         self.assertEqual(self.store.unsettled_stops(handle), [])
 
+    def test_start_fails_rather_than_minting_an_unregistrable_handle_when_the_queue_is_full(self):
+        from lib.kanban_work.store import MAX_QUEUE_ROWS
+        handle, generation = self.start()
+        with self.store._immediate() as db:
+            for index in range(MAX_QUEUE_ROWS):
+                db.execute("INSERT INTO queue(handle,run_generation,kind,payload,operation_id,created_at) "
+                           "VALUES(?,?,'end','{}',?,?)", (handle, generation, f"fill-{index}", NOW.isoformat()))
+        with self.assertRaisesRegex(BridgeError, "queue is full"):
+            self.ingress.ingest_event("claude", "start", {
+                "native_event_id": "start-2", "native_session_id": "native-b", "subagent_id": None,
+                "checkout": "/tmp/repo", "lifecycle_capable": True,
+            })
+        self.assertIsNone(self.store.native_event("claude", "start-2"))
+
     # -- activity ------------------------------------------------------------
 
     def test_activity_renews_without_knowing_the_claim(self):
