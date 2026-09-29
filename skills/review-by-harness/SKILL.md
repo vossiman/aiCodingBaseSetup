@@ -114,6 +114,22 @@ having passed.
 Then report to the user: which findings are real, which are noise, and what
 the diff does. Do not commit on the harness's say-so.
 
+## How many rounds
+
+At most two, and usually one (owner rule, 2026-09-29):
+
+1. **Round 1 always runs.** Verify and fix what holds up.
+2. **Round 2 only if round 1 found something that changes the design**: a
+   P0, or a P1 that alters an interface, a data format, a lock or ownership
+   model, or the rollout. Bugs with a local fix do not qualify.
+3. **Never a third round.** Whatever round 2 still finds goes to the user
+   and into the plan or the PR's follow-ups, not into another review.
+
+The same cap applies to a design spec reviewed outside a PR. Evidence: a spec
+reviewed ten times on 2026-09-29 changed its design only in rounds 1 and 2;
+rounds 3 to 10 found details that the plan and its tests settle anyway, and
+each fix invited the next round.
+
 ## This skill runs on more than one kind of machine
 
 It decides per machine, at the start of every run, and tells you which mode it
