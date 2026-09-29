@@ -424,6 +424,107 @@ EOF
   grep -q '^model' "$TMPDIR/out.toml"
 }
 
+@test "_substitute_file_to: renders the hosted kanban MCP with the bearer for all three configs" {
+  export KANBAN_TOKEN=kb-fake-render
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  local name
+  for name in cursor/mcp.json opencode/opencode.json codex/config.toml; do
+    mkdir -p "$TMPDIR/clone/configs/${name%/*}"
+    cp "$BLUEPRINT_ROOT/configs/$name" "$TMPDIR/clone/configs/$name"
+  done
+  _substitute_file_to "$TMPDIR/clone/configs/cursor/mcp.json" "$TMPDIR/cursor.json"
+  _substitute_file_to "$TMPDIR/clone/configs/opencode/opencode.json" "$TMPDIR/opencode.json"
+  _substitute_file_to "$TMPDIR/clone/configs/codex/config.toml" "$TMPDIR/codex.toml"
+  jq -e '.mcpServers.kanban == {"url":"https://kanban.dataprospectors.at/mcp","headers":{"Authorization":"Bearer kb-fake-render"}}' "$TMPDIR/cursor.json"
+  jq -e '.mcp.kanban.type == "remote" and .mcp.kanban.url == "https://kanban.dataprospectors.at/mcp"
+         and .mcp.kanban.headers.Authorization == "Bearer kb-fake-render" and .mcp.kanban.oauth == false' \
+    "$TMPDIR/opencode.json"
+  run python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["mcp_servers"]["kanban"])' "$TMPDIR/codex.toml"
+  [ "$status" -eq 0 ]
+  [ "$output" = "{'url': 'https://kanban.dataprospectors.at/mcp', 'http_headers': {'Authorization': 'Bearer kb-fake-render'}, 'required': False}" ]
+  # No harness still launches the local stdio server.
+  if grep -q 'kanban-mcp' "$TMPDIR/cursor.json" "$TMPDIR/opencode.json" "$TMPDIR/codex.toml"; then false; fi
+  for name in cursor.json opencode.json codex.toml; do
+    [ "$(stat -c %a "$TMPDIR/$name")" = 600 ]
+  done
+}
+
+@test "_substitute_file_to: strips kanban from all three configs when KANBAN_TOKEN is absent" {
+  unset KANBAN_TOKEN
+  export MEMORY_ROUTER_TOKEN=tok-keep
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  local name
+  for name in cursor/mcp.json opencode/opencode.json codex/config.toml; do
+    mkdir -p "$TMPDIR/clone/configs/${name%/*}"
+    cp "$BLUEPRINT_ROOT/configs/$name" "$TMPDIR/clone/configs/$name"
+  done
+  _substitute_file_to "$TMPDIR/clone/configs/cursor/mcp.json" "$TMPDIR/cursor.json"
+  _substitute_file_to "$TMPDIR/clone/configs/opencode/opencode.json" "$TMPDIR/opencode.json"
+  _substitute_file_to "$TMPDIR/clone/configs/codex/config.toml" "$TMPDIR/codex.toml"
+  run jq -e '.mcpServers.kanban' "$TMPDIR/cursor.json"; [ "$status" -ne 0 ]
+  run jq -e '.mcp.kanban' "$TMPDIR/opencode.json"; [ "$status" -ne 0 ]
+  if grep -q '^\[mcp_servers.kanban\]\|kanban.dataprospectors' "$TMPDIR/codex.toml"; then false; fi
+  # The other token-gated server is independent and survives.
+  jq -e '.mcpServers["memory-router"].headers.Authorization == "Bearer tok-keep"' "$TMPDIR/cursor.json"
+  jq -e '.mcp["memory-router"]' "$TMPDIR/opencode.json"
+  grep -q '^\[mcp_servers.memory-router\]' "$TMPDIR/codex.toml"
+  python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "$TMPDIR/codex.toml"
+}
+
+@test "merge replaces the retired stdio kanban entry instead of grafting the hosted one onto it" {
+  export KANBAN_TOKEN=kb-new
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$TMPDIR/clone/configs/cursor" "$TMPDIR/clone/configs/opencode" "$TMPDIR/dest"
+  cp "$BLUEPRINT_ROOT/configs/cursor/mcp.json" "$TMPDIR/clone/configs/cursor/mcp.json"
+  cp "$BLUEPRINT_ROOT/configs/opencode/opencode.json" "$TMPDIR/clone/configs/opencode/opencode.json"
+  echo '{"mcpServers":{"kanban":{"command":"kanban-mcp"},"mine":{"command":"x"}}}' > "$TMPDIR/dest/mcp.json"
+  echo '{"mcp":{"kanban":{"type":"local","command":["kanban-mcp"],"enabled":true}}}' > "$TMPDIR/dest/opencode.json"
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  manifest_stage_begin
+  deploy_merge_file_substituted "$TMPDIR/clone/configs/cursor/mcp.json" "$TMPDIR/dest/mcp.json" configs/cursor/mcp.json
+  deploy_merge_file_substituted "$TMPDIR/clone/configs/opencode/opencode.json" "$TMPDIR/dest/opencode.json" configs/opencode/opencode.json
+  manifest_stage_commit
+  jq -e '.mcpServers.kanban == {"url":"https://kanban.dataprospectors.at/mcp","headers":{"Authorization":"Bearer kb-new"}}
+         and .mcpServers.mine == {"command":"x"}' "$TMPDIR/dest/mcp.json"
+  jq -e '.mcp.kanban == {"type":"remote","url":"https://kanban.dataprospectors.at/mcp","headers":{"Authorization":"Bearer kb-new"},"oauth":false,"enabled":true}' \
+    "$TMPDIR/dest/opencode.json"
+  run classify_file "$TMPDIR/dest/mcp.json" "$TMPDIR/clone/configs/cursor/mcp.json" merge
+  [ "$output" = up_to_date ]
+}
+
+@test "merge without KANBAN_TOKEN removes a previously deployed bearer but keeps a user's own kanban entry" {
+  unset KANBAN_TOKEN
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$TMPDIR/clone/configs/cursor" "$TMPDIR/dest"
+  cp "$BLUEPRINT_ROOT/configs/cursor/mcp.json" "$TMPDIR/clone/configs/cursor/mcp.json"
+  echo '{"mcpServers":{"kanban":{"url":"https://kanban.dataprospectors.at/mcp","headers":{"Authorization":"Bearer kb-revoked"}}}}' \
+    > "$TMPDIR/dest/mcp.json"
+  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
+  manifest_stage_begin
+  deploy_merge_file_substituted "$TMPDIR/clone/configs/cursor/mcp.json" "$TMPDIR/dest/mcp.json" configs/cursor/mcp.json
+  manifest_stage_commit
+  if grep -q 'kb-revoked' "$TMPDIR/dest/mcp.json"; then false; fi
+  run jq -e '.mcpServers.kanban' "$TMPDIR/dest/mcp.json"
+  [ "$status" -ne 0 ]
+
+  echo '{"mcpServers":{"kanban":{"url":"http://127.0.0.1:9/mcp","headers":{"Authorization":"Bearer mine"}}}}' \
+    > "$TMPDIR/dest/mcp.json"
+  manifest_stage_begin
+  deploy_merge_file_substituted "$TMPDIR/clone/configs/cursor/mcp.json" "$TMPDIR/dest/mcp.json" configs/cursor/mcp.json
+  manifest_stage_commit
+  jq -e '.mcpServers.kanban.headers.Authorization == "Bearer mine"' "$TMPDIR/dest/mcp.json"
+}
+
+@test "_substitute_file_to: strips both token-gated servers when neither token is set" {
+  unset KANBAN_TOKEN MEMORY_ROUTER_TOKEN
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$TMPDIR/clone/configs/codex"
+  cp "$BLUEPRINT_ROOT/configs/codex/config.toml" "$TMPDIR/clone/configs/codex/config.toml"
+  _substitute_file_to "$TMPDIR/clone/configs/codex/config.toml" "$TMPDIR/codex.toml"
+  if grep -q 'Bearer' "$TMPDIR/codex.toml"; then false; fi
+  grep -q '^\[mcp_servers.context7\]' "$TMPDIR/codex.toml"
+}
+
 @test "Codex rendered comments stay generic while configured server and HOME values render" {
   export MEMORY_ROUTER_TOKEN=synthetic-comment-test
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"

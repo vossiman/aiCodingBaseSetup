@@ -4,22 +4,7 @@ import { randomUUID } from "node:crypto"
 const MAX_OUTPUT = 256 * 1024
 const BRIDGE_TIMEOUT_MS = 5000
 const VERSION_TIMEOUT_MS = 2000
-const IDENTITY_ERROR =
-  "OpenCode lifecycle identity is unavailable; Kanban mutations require a qualified native session"
 const LEGACY_GUIDANCE = "Use the Kanban MCP complete_ticket tool"
-const MUTATION_TOOLS = new Set([
-  "kanban_bind_work_session",
-  "kanban_create_ticket",
-  "kanban_update_ticket",
-  "kanban_add_comment",
-  "kanban_link_tickets",
-  "kanban_unlink_tickets",
-  "kanban_claim_ticket",
-  "kanban_checkpoint_work",
-  "kanban_release_ticket",
-  "kanban_complete_ticket",
-  "kanban_end_work_session",
-])
 const LIFECYCLE_EVENTS = new Set([
   "session.created",
   "session.compacted",
@@ -128,13 +113,6 @@ function looksLikeLegacyCompletion(args) {
     /(?:^|\s)--evidence\b/.test(command)
 }
 
-function mutateObject(target, replacement, replaceAll) {
-  if (replaceAll) {
-    for (const key of Object.keys(target)) delete target[key]
-  }
-  Object.assign(target, replacement)
-}
-
 export const KanbanWorkPlugin = async (input) => {
   const bridgeCommand = process.env.AICODING_KANBAN_WORK || "kanban-work"
   const versionCommand = process.env.AICODING_OPENCODE || "opencode"
@@ -153,14 +131,13 @@ export const KanbanWorkPlugin = async (input) => {
     const parentSessionID = parents.get(sessionID)
     return parentSessionID ? { ...payload, parentSessionID } : payload
   }
+  // The server instructions, fetched once; an unreachable board leaves only
+  // the handle line, and the next plugin load tries again.
   const canonicalInstructions = async () => {
     if (!instructions) {
-      instructions = bridge(["--json", "instructions"], {}).then((value) => {
-        if (value?.ok !== true || typeof value.data?.text !== "string") {
-          throw new Error("Kanban work bridge returned invalid instructions")
-        }
-        return value.data.text
-      })
+      instructions = bridge(["--json", "instructions"], {})
+        .then((value) => (typeof value?.data?.text === "string" ? value.data.text : ""))
+        .catch(() => "")
     }
     return instructions
   }
@@ -192,7 +169,6 @@ export const KanbanWorkPlugin = async (input) => {
       const callID = toolInput?.callID
       const args = output?.args
       if (typeof sessionID !== "string" || !sessionID || typeof callID !== "string" || !callID) {
-        if (MUTATION_TOOLS.has(tool)) throw new Error(IDENTITY_ERROR)
         if (tool === "bash" && looksLikeLegacyCompletion(args)) throw new Error(LEGACY_GUIDANCE)
         return
       }
@@ -203,7 +179,7 @@ export const KanbanWorkPlugin = async (input) => {
         args,
       }))
       if (result?.args && args && typeof args === "object") {
-        mutateObject(args, result.args, MUTATION_TOOLS.has(tool))
+        Object.assign(args, result.args)
       }
     },
 
@@ -223,12 +199,9 @@ export const KanbanWorkPlugin = async (input) => {
       const sessionID = chatInput?.sessionID
       if (typeof sessionID !== "string" || !sessionID) return
       const identity = await hook("system.transform", withParent(sessionID, { sessionID }))
-      const text = await canonicalInstructions()
-      const capability = identity.lifecycle_capable ? "available" : "read-only"
-      output.system.push(
-        `${text.trimEnd()}\n\nKanban work session handle: ${identity.handle}\n` +
-        `Lifecycle mutations: ${capability}`,
-      )
+      const text = (await canonicalInstructions()).trimEnd()
+      const line = `Kanban work handle: ${identity.handle}`
+      output.system.push(text ? `${text}\n\n${line}` : line)
     },
   }
 }

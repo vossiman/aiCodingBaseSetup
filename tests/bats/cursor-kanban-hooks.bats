@@ -10,11 +10,6 @@ setup() {
   export PATH="$HOME/bin:$PATH"
   mkdir -p "$HOME/bin" "$HOME/.local/bin" "$HOME/checkout"
   ln -s "$BLUEPRINT_ROOT/bin/kanban-work" "$HOME/.local/bin/kanban-work"
-  cat > "$HOME/bin/kanban-mcp" <<'EOF'
-#!/bin/sh
-printf 'Kanban workflow fixture\n'
-EOF
-  chmod +x "$HOME/bin/kanban-mcp"
   HOOK="$BLUEPRINT_ROOT/configs/claude/hooks/kanban-work-hook.sh"
 }
 
@@ -65,42 +60,40 @@ PY
   [ "$status" -eq 0 ]
 }
 
-@test "Cursor generic preToolUse denies a peer handle before Kanban MCP execution" {
-  start_cursor_session conv-a gen-a
-  local own_handle=$CURSOR_HANDLE
-  start_cursor_session conv-peer gen-peer
-  local peer_handle=$CURSOR_HANDLE payload
-  payload=$(cursor_payload preToolUse conv-a gen-a \
-    "{\"tool_use_id\":\"call-7\",\"tool_name\":\"MCP:claim_ticket\",\"tool_input\":{\"handle\":\"$peer_handle\",\"ticket\":\"KANBAN-2\"}}")
-  run_cursor_hook preToolUse "$payload"
-  [ "$status" -eq 0 ]
-  jq -e '.permission == "deny" and (.agent_message|contains("bound Cursor session"))' <<<"$output"
-  [ "$own_handle" != "$peer_handle" ]
-}
-
-@test "Cursor generic preToolUse mints one exact permit and replay is denied" {
+@test "Cursor preToolUse never inspects Kanban MCP arguments" {
   start_cursor_session conv-a gen-a
   local payload
   payload=$(cursor_payload preToolUse conv-a gen-a \
-    "{\"tool_use_id\":\"call-7\",\"tool_name\":\"MCP:claim_ticket\",\"tool_input\":{\"handle\":\"$CURSOR_HANDLE\",\"ticket\":\"KANBAN-2\"}}")
+    '{"tool_use_id":"call-7","tool_name":"MCP:claim_ticket","tool_input":{"handle":"someone-else","ticket":"KANBAN-2"}}')
   run_cursor_hook preToolUse "$payload"
   [ "$status" -eq 0 ]
+  jq -e '.permission == "allow" and (has("updated_input")|not)' <<<"$output"
+  payload=$(cursor_payload preToolUse conv-a gen-a \
+    '{"tool_use_id":"call-8","tool_name":"MCP:create_ticket","tool_input":"not an object"}')
+  run_cursor_hook preToolUse "$payload"
   jq -e '.permission == "allow"' <<<"$output"
-  run_cursor_hook preToolUse "$payload"
-  [ "$status" -eq 0 ]
-  jq -e '.permission == "deny"' <<<"$output"
 }
 
-@test "Cursor shell preToolUse rewrites exact legacy completion and rejects unsafe variants" {
+@test "Cursor stop that never reached the board is dropped at the next prompt and does not block a claim" {
   start_cursor_session conv-a gen-a
-  python3 - "$XDG_STATE_HOME/aicoding/kanban-work.sqlite3" "$CURSOR_HANDLE" <<'PY'
-import sys
-from lib.kanban_work.store import Store
-s = Store(sys.argv[1])
-s.record_bound(sys.argv[2], "backend-session", "kanban", "worker")
-s.set_claim(sys.argv[2], "22222222-2222-4222-8222-222222222222", "KANBAN-2")
-s.close()
-PY
+  local payload
+  payload=$(cursor_payload stop conv-a gen-a '{"status":"completed","loop_count":0}')
+  run_cursor_hook stop "$payload"
+  [ "$status" -eq 0 ]
+  payload=$(cursor_payload beforeSubmitPrompt conv-a gen-b '{"prompt":"next","attachments":[]}')
+  run_cursor_hook beforeSubmitPrompt "$payload"
+  [ "$status" -eq 0 ]
+  payload=$(cursor_payload preToolUse conv-a gen-b \
+    '{"tool_use_id":"call-9","tool_name":"MCP:claim_ticket","tool_input":{"ticket":"KANBAN-2"}}')
+  run_cursor_hook preToolUse "$payload"
+  jq -e '.permission == "allow"' <<<"$output"
+  run python3 -c 'import sqlite3, sys; print(sqlite3.connect(sys.argv[1]).execute("SELECT count(*) FROM stops").fetchone()[0])' \
+    "$XDG_STATE_HOME/aicoding/kanban-work.sqlite3"
+  [ "$output" = 0 ]
+}
+
+@test "Cursor shell preToolUse pins legacy completion to the session handle and rejects unsafe variants" {
+  start_cursor_session conv-a gen-a
   local payload
   payload=$(cursor_payload preToolUse conv-a gen-a \
     "{\"tool_use_id\":\"legacy\",\"tool_name\":\"Shell\",\"tool_input\":{\"command\":\"kanban-post --done KANBAN-2 --evidence ok\",\"working_directory\":\"$HOME/checkout\"}}")

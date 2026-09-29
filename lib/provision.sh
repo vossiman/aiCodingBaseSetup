@@ -421,6 +421,44 @@ ensure_http_mcp() {
   fi
 }
 
+# Remove the user-scope stdio registration this blueprint used to create for
+# the local kanban-mcp launcher, so the hosted HTTP entry can take the name.
+# Any other stdio command under that name is user configuration: leave it and
+# fail, rather than replace something we did not write.
+_provision_retire_stdio_kanban() {
+  local current command_line
+  current=$(_provision_run claude mcp get kanban 2>/dev/null) || current=""
+  command_line=$(printf '%s\n' "$current" | sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' | head -n1)
+  [ -n "$command_line" ] || return 0
+  case "$command_line" in
+    kanban-mcp|"$HOME/.local/bin/kanban-mcp") ;;
+    *) warn "kanban MCP: a user stdio registration ($command_line) holds the name; left unchanged"
+       return 1 ;;
+  esac
+  if _provision_run claude mcp remove -s user kanban >/dev/null 2>&1; then
+    rm -f "$AICODING_MCP_STATE/kanban.sha256" 2>/dev/null || true
+    info "kanban MCP: retired the local stdio registration"
+    return 0
+  fi
+  warn "kanban MCP: failed to remove the local stdio registration"
+  return 1
+}
+
+# Without KANBAN_TOKEN, a hosted registration left from an earlier sync would
+# keep a revoked bearer in ~/.claude.json; remove it along with its fingerprint.
+_provision_remove_hosted_kanban() {
+  local current
+  current=$(_provision_run claude mcp get kanban 2>/dev/null | sed -n 's/^ *URL: //p' | head -n1) || true
+  [ "$current" = "https://kanban.dataprospectors.at/mcp" ] || return 0
+  if _provision_run claude mcp remove -s user kanban >/dev/null 2>&1; then
+    rm -f "$AICODING_MCP_STATE/kanban.sha256" 2>/dev/null || true
+    info "kanban MCP: removed the hosted registration (KANBAN_TOKEN not set)"
+    return 0
+  fi
+  warn "kanban MCP: failed to remove the hosted registration"
+  return 1
+}
+
 # --- Claude Code MCPs ---
 install_claude_mcps() {
   local inherited_receipt=${AICODING_REQUIRE_UPDATE_RECEIPT:-0}
@@ -483,11 +521,6 @@ install_claude_mcps() {
     _provision_reconcile_selected_exact_mcp playwright mcp-playwright playwright-mcp --browser chromium \
     || registration_rc=$?
   case "$registration_rc" in 0) ok "playwright MCP exact registration reconciled when selected" ;; 3) deferred=1 ;; *) rc=1 ;; esac
-  registration_rc=0
-  AICODING_MCP_REGISTRATION_FORCE=$registration_force \
-    _provision_reconcile_selected_exact_mcp kanban mcp-kanban kanban-mcp \
-    || registration_rc=$?
-  case "$registration_rc" in 0) ok "kanban MCP exact registration reconciled when selected" ;; 3) deferred=1 ;; *) rc=1 ;; esac
 
   # logfire — hosted MCP, EU region. The logfire plugin hardcodes the US URL
   # in its bundled .mcp.json (no env override); its README tells EU users to
@@ -504,6 +537,21 @@ install_claude_mcps() {
       -H "Authorization: Bearer ${MEMORY_ROUTER_TOKEN}" || rc=1
   else
     warn "memory-router MCP skipped (MEMORY_ROUTER_TOKEN not set)"
+  fi
+
+  # kanban: the estate backlog's hosted MCP, bearer-authenticated with the
+  # environment's KANBAN_TOKEN like memory-router above.
+  if [[ -n "${KANBAN_TOKEN:-}" ]]; then
+    if _provision_retire_stdio_kanban; then
+      ensure_http_mcp kanban https://kanban.dataprospectors.at/mcp \
+        -H "Authorization: Bearer ${KANBAN_TOKEN}" || rc=1
+    else
+      rc=1
+    fi
+  else
+    warn "kanban MCP skipped (KANBAN_TOKEN not set)"
+    _provision_retire_stdio_kanban || rc=1
+    _provision_remove_hosted_kanban || rc=1
   fi
   [ "$rc" -eq 0 ] || { _provision_soft_failure; return $?; }
   if [ "$deferred" -eq 1 ] && [ -n "${AICODING_SYNC_MODE:-}" ]; then return 3; fi

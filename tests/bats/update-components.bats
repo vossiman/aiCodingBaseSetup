@@ -216,15 +216,8 @@ EOF
   [ "$output" = "mcp-context7: no receipt" ]
   aicoding_result_record mcp-context7 current 1.0.0 installed 1.0.0
   aicoding_result_record mcp-playwright current 1.0.0 installed 1.0.0
+  # The hosted Kanban MCP needs no local package.
   aicoding_result_record mcp-kanban blocked 1.0.0 exact_package_not_staged
-  run aicoding_exact_mcp_config_cause "$codex_config"
-  [ "$status" -ne 0 ]
-  [ "$output" = "mcp-kanban: blocked exact_package_not_staged" ]
-  aicoding_result_record mcp-kanban current 1.0.0 installed 1.0.0
-  _aicoding_active_kanban_mcp_valid() { return 1; }
-  run aicoding_exact_mcp_config_cause "$codex_config"
-  [ "$output" = "mcp-kanban: active launcher invalid" ]
-  _aicoding_active_kanban_mcp_valid() { return 0; }
   _aicoding_claude_mcp_selected() { return 0; }
   run aicoding_exact_mcp_config_cause "$HOME/.claude/settings.json"
   [ "$output" = "mcp-registration-claude-context7: no receipt" ]
@@ -240,10 +233,10 @@ EOF
   _aicoding_active_kanban_mcp_valid() { return 0; }
   run aicoding_exact_mcp_config_ready "$HOME/.codex/config.toml"
   [ "$status" -eq 0 ]
+  _aicoding_claude_mcp_selected() { return 0; }
   run aicoding_exact_mcp_config_ready "$HOME/.claude/settings.json"
   [ "$status" -ne 0 ]
-  for component in mcp-registration-claude-context7 mcp-registration-claude-playwright \
-      mcp-registration-claude-kanban; do
+  for component in mcp-registration-claude-context7 mcp-registration-claude-playwright; do
     aicoding_result_record "$component" current 1.0.0 registration_verified 1.0.0
   done
   run aicoding_exact_mcp_config_ready "$HOME/.claude/settings.json"
@@ -257,14 +250,8 @@ EOF
   _aicoding_active_kanban_mcp_valid() { return 0; }
   aicoding_result_record mcp-registration-claude-context7 blocked 1.0.0 registration_not_selected
   aicoding_result_record mcp-registration-claude-playwright blocked 1.0.0 registration_not_selected
-  aicoding_result_record mcp-registration-claude-kanban current 1.0.0 registration_verified 1.0.0
   run aicoding_exact_mcp_config_ready "$HOME/.claude/settings.json"
   [ "$status" -eq 0 ]
-  aicoding_result_record mcp-registration-claude-kanban blocked 1.0.0 registration_not_selected
-  run aicoding_exact_mcp_config_cause "$HOME/.claude/settings.json"
-  [ "$status" -ne 0 ]
-  [ "$output" = "mcp-registration-claude-kanban: blocked registration_not_selected" ]
-  aicoding_result_record mcp-registration-claude-kanban current 1.0.0 registration_verified 1.0.0
   aicoding_result_record mcp-registration-claude-context7 blocked 1.0.0 registration_conflict
   _aicoding_claude_mcp_selected() { return 0; }
   run aicoding_exact_mcp_config_cause "$HOME/.claude/settings.json"

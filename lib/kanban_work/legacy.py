@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from uuid import UUID
 
-from .schema import BridgeError, normalize_tool_args
-from .store import NativeIdentity, Store
+from .schema import BridgeError
 
 
 DENIAL = "Use the Kanban MCP complete_ticket tool"
@@ -21,13 +19,6 @@ class LegacyComplete:
     evidence: str
     references: tuple[str, ...]
     argv: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class PreparedLegacyComplete:
-    handle: str
-    args: dict
-    rewritten_argv: list[str]
 
 
 def _looks_like(command: str) -> bool:
@@ -108,60 +99,13 @@ def parse_legacy_complete(command: str) -> LegacyComplete | None:
     return LegacyComplete(argv[2], argv[4], tuple(references), tuple(argv))
 
 
-def prepare_legacy_complete(identity: NativeIdentity, native_call_id: str, command: str, *,
-                            store: Store | None = None, now: datetime | None = None) -> PreparedLegacyComplete:
-    parsed = parse_legacy_complete(command)
-    if parsed is None:
-        raise BridgeError(422, DENIAL)
-    owned_store = store is None
-    store = store or Store()
-    try:
-        execution = store.execution_for_identity(identity)
-        if execution is None:
-            raise BridgeError(403, "native execution has no Kanban work handle")
-        if execution.state != "bound" or not execution.cache_trusted:
-            raise BridgeError(409, "native execution has no trusted bound work session")
-        claim = store.active_claim(execution.handle)
-        if claim is None:
-            raise BridgeError(409, "native work session has no current claim")
-        targets = {str(claim["ticket"]).upper()}
-        if claim.get("ticket_id"):
-            targets.add(str(claim["ticket_id"]).upper())
-        if parsed.ticket.upper() not in targets:
-            raise BridgeError(409, "legacy completion target is not the native session's current claim")
-        args = {
-            "handle": execution.handle,
-            "claim_id": claim["id"],
-            "evidence": parsed.evidence,
-            "references": list(parsed.references),
-            "operation_id": None,
-        }
-        normalized = normalize_tool_args("complete_ticket", args)
-        store.permit_call(identity, native_call_id, "complete_ticket", normalized,
-                          now or datetime.now(UTC))
-        return PreparedLegacyComplete(execution.handle, args,
-                                      [*parsed.argv, "--work-handle", execution.handle])
-    finally:
-        if owned_store:
-            store.close()
-
-
-
 def looks_like_legacy_complete(command: str) -> bool:
     return isinstance(command, str) and _looks_like(command)
 
 
-def claimed_legacy_complete(identity: NativeIdentity, native_call_id: str, command: str, *,
-                            store: Store | None = None,
-                            now: datetime | None = None) -> PreparedLegacyComplete | None:
-    """None when the session holds no claim: kanban-post then completes without one."""
-    owned_store = store is None
-    store = store or Store()
-    try:
-        execution = store.execution_for_identity(identity)
-        if execution is None or store.active_claim(execution.handle) is None:
-            return None
-        return prepare_legacy_complete(identity, native_call_id, command, store=store, now=now)
-    finally:
-        if owned_store:
-            store.close()
+def rewrite_legacy_complete(command: str, handle: str) -> list[str]:
+    """Pin an evidence-bearing completion to the calling session's handle."""
+    parsed = parse_legacy_complete(command)
+    if parsed is None:
+        raise BridgeError(422, DENIAL)
+    return [*parsed.argv, "--work-handle", handle]

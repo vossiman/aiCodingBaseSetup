@@ -97,9 +97,7 @@ _aicoding_finish_kanban_mcp_release() {
     _aicoding_active_kanban_mcp_valid "$revision" \
       || { aicoding_result_record mcp-kanban failed "$revision" active_controller_invalid; return 1; }
   fi
-  aicoding_result_record mcp-kanban "$state" "$revision" "$reason" "$revision" || return 1
-  _aicoding_reconcile_claude_mcp_registration \
-    kanban mcp-kanban "$revision" kanban-mcp
+  aicoding_result_record mcp-kanban "$state" "$revision" "$reason" "$revision"
 }
 
 # The stage (and its uv log) is deleted on failure, so keep uv's last lines

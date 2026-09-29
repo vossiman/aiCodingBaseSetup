@@ -39,10 +39,12 @@
       "enabled": true
     },
     "kanban": {
-      "type": "local",
-      "command": [
-        "kanban-mcp"
-      ],
+      "type": "remote",
+      "url": "https://kanban.dataprospectors.at/mcp",
+      "headers": {
+        "Authorization": "Bearer {{KANBAN_TOKEN}}"
+      },
+      "oauth": false,
       "enabled": true
     },
     "memory-router": {

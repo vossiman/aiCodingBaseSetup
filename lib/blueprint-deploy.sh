@@ -554,6 +554,8 @@ deploy_overwrite_file() {
 # unsorted blueprint array therefore lands unsorted, and every later sync
 # re-sorts it and reports phantom drift forever. Caught by sync.bats
 # "sync right after install reports Nothing to do".
+KANBAN_MCP_URL="https://kanban.dataprospectors.at/mcp"
+
 _json_merge_into() {
   local target=$1 source=$2
   if [ ! -f "$target" ]; then
@@ -566,7 +568,19 @@ _json_merge_into() {
   # fallthrough used to overwrite it with an empty line (data loss on a
   # hand-broken user config) in sync's non-set-e context.
   local merged
-  merged=$(jq -s '
+  # A deep merge would graft the hosted kanban entry onto the stdio entry the
+  # blueprint used to ship, and would keep a revoked bearer when KANBAN_TOKEN
+  # is gone. Drop both blueprint-owned shapes first; other entries stay.
+  merged=$(jq -s --arg hosted "$KANBAN_MCP_URL" '
+    def retired_kanban:
+      . == {"command":"kanban-mcp"}
+      or . == {"type":"local","command":["kanban-mcp"],"enabled":true};
+    def drop_owned_kanban($src):
+      reduce ("mcpServers", "mcp") as $k (.;
+        if (.[$k]? | type) == "object" and (.[$k].kanban? | type) == "object"
+           and ((.[$k].kanban | retired_kanban)
+                or (.[$k].kanban.url == $hosted and (($src[$k].kanban? // null) == null)))
+        then .[$k] |= del(.kanban) else . end);
     def deep_merge(key):
       if length == 2 then
         .[0] as $a | .[1] as $b |
@@ -584,7 +598,7 @@ _json_merge_into() {
           if ($b == null or $b == "") then $a else $b end
         end
       else .[0] end;
-    [.[0],.[1]] | deep_merge("")
+    .[1] as $src | [(.[0] | drop_owned_kanban($src)), $src] | deep_merge("")
   ' "$target" "$source") || return 1
   _write_text_atomic "$target" "$merged" 0600
 }
@@ -832,13 +846,14 @@ _substitute_file_to() {
   else
     (umask 077; : > "$out") || return 1
   fi
-  # The four placeholders are mutually independent; one sed pipeline handles
+  # The placeholders are mutually independent; one sed pipeline handles
   # all of them with each value safely quoted (we escape `&`, `/`, and `\`
   # because they're sed-replacement metacharacters).
   local home_v="$HOME"
   local fc_v="${FIRECRAWL_API_KEY:-}"
   local br_v="${BRAVE_API_KEY:-}"
   local mr_v="${MEMORY_ROUTER_TOKEN:-}"
+  local kb_v="${KANBAN_TOKEN:-}"
   # Codex sandbox posture is PROFILE-GATED, not a secret: fixed literals from
   # this function, never user input, so no _esc call needed for these two.
   local codex_approval_v codex_sandbox_v
@@ -855,6 +870,7 @@ _substitute_file_to() {
     -e "s/{{FIRECRAWL_API_KEY}}/$(_esc "$fc_v")/g" \
     -e "s/{{BRAVE_API_KEY}}/$(_esc "$br_v")/g" \
     -e "s/{{MEMORY_ROUTER_TOKEN}}/$(_esc "$mr_v")/g" \
+    -e "s/{{KANBAN_TOKEN}}/$(_esc "$kb_v")/g" \
     -e "s/{{CODEX_APPROVAL_POLICY}}/$codex_approval_v/g" \
     -e "s/{{CODEX_SANDBOX_MODE}}/$codex_sandbox_v/g" \
     "$src" > "$out"; then
@@ -863,19 +879,22 @@ _substitute_file_to() {
   _strip_absent_secret_servers "$src" "$out"
 }
 
-# _strip_absent_secret_servers <src> <out> — with MEMORY_ROUTER_TOKEN unset,
-# substitution leaves "Bearer " in the agent CLI configs: a broken-but-non-
-# empty scalar that a merge would write over a user's valid manual header,
-# and that gives clean installs an enabled 401ing MCP. Match Claude's
-# behavior (install_claude_mcps skips the server without the token) by
-# stripping the memory-router entry from the rendered config instead.
+# _strip_absent_secret_servers <src> <out>: with MEMORY_ROUTER_TOKEN or
+# KANBAN_TOKEN unset, substitution leaves "Bearer " in the agent CLI configs:
+# a broken-but-non-empty scalar that a merge would write over a user's valid
+# manual header, and that gives clean installs an enabled 401ing MCP. Match
+# Claude's behavior (install_claude_mcps skips the server without the token)
+# by stripping that server's entry from the rendered config instead.
 # Runs inside _substitute_file_to so classify's simulation and the deploy
 # path see identical content — stripping only at deploy time would leave the
 # classifier comparing against an entry that never lands (phantom drift).
 _strip_absent_secret_servers() {
   local src=$1 out=$2
-  [[ -z "${MEMORY_ROUTER_TOKEN:-}" ]] || return 0
-  local filter tmp
+  local -a servers=()
+  [[ -n "${MEMORY_ROUTER_TOKEN:-}" ]] || servers+=(memory-router)
+  [[ -n "${KANBAN_TOKEN:-}" ]] || servers+=(kanban)
+  (( ${#servers[@]} )) || return 0
+  local filter tmp names
   case "$src" in
     */configs/cursor/mcp.json)
       filter=cursor
@@ -894,21 +913,26 @@ _strip_absent_secret_servers() {
   # under the ordinary 0022 umask.
   tmp=$(mktemp "${out}.strip.XXXXXX") || return 1
   chmod 0600 "$tmp" || { rm -f -- "$tmp"; return 1; }
+  names=$(printf '%s\n' "${servers[@]}" | jq -R . | jq -sc .) \
+    || { rm -f -- "$tmp"; return 1; }
   case "$filter" in
     cursor)
-      jq 'del(.mcpServers."memory-router")' "$out" > "$tmp" \
+      jq --argjson names "$names" \
+        'reduce $names[] as $n (.; del(.mcpServers[$n]))' "$out" > "$tmp" \
         || { rm -f -- "$tmp"; return 1; }
       ;;
     opencode)
-      jq 'del(.mcp."memory-router")' "$out" > "$tmp" \
+      jq --argjson names "$names" \
+        'reduce $names[] as $n (.; del(.mcp[$n]))' "$out" > "$tmp" \
         || { rm -f -- "$tmp"; return 1; }
       ;;
     codex)
-      # Drop the [mcp_servers.memory-router] section (header through the
-      # line before the next [section] or EOF). Its explanatory comments
-      # live inside the section so they disappear with the server.
-      awk '
-        /^\[/ { skip = ($0 == "[mcp_servers.memory-router]") }
+      # Drop each [mcp_servers.<name>] section (header through the line
+      # before the next [section] or EOF). Explanatory comments live inside
+      # the section so they disappear with the server.
+      awk -v names="${servers[*]}" '
+        BEGIN { n = split(names, list, " "); for (i = 1; i <= n; i++) drop["[mcp_servers." list[i] "]"] = 1 }
+        /^\[/ { skip = ($0 in drop) }
         !skip { print }
       ' "$out" > "$tmp" || { rm -f -- "$tmp"; return 1; }
       ;;

@@ -196,11 +196,8 @@ aicoding_exact_mcp_config_ready() {
 # config from being ready, and return 1; print nothing and return 0 when ready.
 aicoding_exact_mcp_config_cause() {
   local dest=$1 component
-  for component in mcp-context7 mcp-playwright mcp-kanban; do
+  for component in mcp-context7 mcp-playwright; do
     _aicoding_mcp_receipt_ready "$component" || return 1
-    if [ "$component" = mcp-kanban ] && ! _aicoding_active_kanban_mcp_valid; then
-      echo "mcp-kanban: active launcher invalid"; return 1
-    fi
   done
   case "$dest" in
     "$HOME/.claude/settings.json")
@@ -212,7 +209,6 @@ aicoding_exact_mcp_config_cause() {
         _aicoding_claude_mcp_selected "${component#mcp-registration-claude-}" || continue
         _aicoding_mcp_receipt_ready "$component" || return 1
       done
-      _aicoding_mcp_receipt_ready mcp-registration-claude-kanban || return 1
       ;;
   esac
 }
@@ -293,9 +289,6 @@ _aicoding_config_component() {
 _aicoding_claude_mcp_selected() {
   local name=$1 plugin registration
   _aicoding_command_is_linux claude || return 1
-  # Kanban has no plugin alternative, so an installed launcher means it is
-  # wanted; sync must add it on machines installed before it existed.
-  [ "$name" = kanban ] && [ -x "$HOME/.local/bin/kanban-mcp" ] && return 0
   registration=$(_aicoding_claude_mcp_get "$name") || registration=""
   printf '%s\n' "$registration" | grep -q '^[[:space:]]*Command:[[:space:]]*' && return 0
   plugin="${name}@claude-plugins-official"
@@ -1217,7 +1210,6 @@ _aicoding_component_attempt_deferred() {
     ([.components[$c].state]
       + (if $c == "mcp-context7" then [.components["mcp-registration-claude-context7"].state]
          elif $c == "mcp-playwright" then [.components["mcp-registration-claude-playwright"].state]
-         elif $c == "mcp-kanban" then [.components["mcp-registration-claude-kanban"].state]
          else [] end)) as $states
     | any($states[]; . == "blocked" or . == "conflict")
       and (all($states[]; . != "failed"))
