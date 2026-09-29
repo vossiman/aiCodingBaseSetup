@@ -96,3 +96,48 @@ teardown() { t3_test_teardown; }
   wait
   [ "$status" -eq 0 ]
 }
+
+@test "install: puts the version in its own folder and verifies it" {
+  run t3_lib t3_install 0.0.42
+  [ "$status" -eq 0 ]
+  [ -x "$T3_RUNTIME_ROOT/0.0.42/node_modules/.bin/t3" ]
+  run t3_lib t3_installed 0.0.42
+  [ "$status" -eq 0 ]
+  run bash -c '. "$BLUEPRINT_ROOT/lib/t3.sh"; t3_exe 0.0.42'
+  [[ "$output" == "$T3_RUNTIME_ROOT/0.0.42/node_modules/@t3code/t3-linux-"*"/t3" ]]
+}
+
+@test "install: a failed npm leaves no folder behind" {
+  export T3_TEST_NPM_FAIL=1
+  run t3_lib t3_install 0.0.42
+  [ "$status" -eq 1 ]
+  [ ! -e "$T3_RUNTIME_ROOT/0.0.42" ]
+  [ -z "$(ls -A "$T3_RUNTIME_ROOT" 2>/dev/null)" ]
+}
+
+@test "install: a package reporting the wrong version is rejected" {
+  export T3_TEST_NPM_REPORTS=0.0.41
+  run t3_lib t3_install 0.0.42
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"expected 0.0.42"* ]]
+  [ ! -e "$T3_RUNTIME_ROOT/0.0.42" ]
+}
+
+@test "install: an installed version is not reinstalled" {
+  t3_lib t3_install 0.0.42
+  : > "$T3_STUB_LOG"
+  run t3_lib t3_install 0.0.42
+  [ "$status" -eq 0 ]
+  if grep -q '^npm install' "$T3_STUB_LOG"; then false; fi
+}
+
+@test "latest: reads npm, rejects junk and failures" {
+  run t3_lib t3_latest
+  [ "$output" = 0.0.50 ]
+  export T3_TEST_LATEST=latest
+  run t3_lib t3_latest
+  [ "$status" -eq 1 ]
+  export T3_TEST_NPM_VIEW_FAIL=1
+  run t3_lib t3_latest
+  [ "$status" -eq 1 ]
+}
