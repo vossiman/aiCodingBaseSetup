@@ -2,9 +2,12 @@
 Description=Check for CI-qualified aicoding updates every six hours
 
 [Timer]
-# OnBootSec provides startup catch-up for this monotonic timer.
 OnBootSec=2min
-OnUnitActiveSec=6h
+# Wall-clock schedule: monotonic timers pause during suspend, so a sleeping
+# laptop would skip due passes. Persistent catches up on resume or boot.
+OnCalendar=*-*-* 00/6:00:00
+Persistent=true
+RandomizedDelaySec=10min
 Unit=aicoding-auto-update.service
 
 [Install]
