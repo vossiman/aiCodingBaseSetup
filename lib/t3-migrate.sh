@@ -67,6 +67,12 @@ t3_legacy_stop() {
       q=${parent[$q]:-}
     done
   done
+  q=$$
+  while [ -n "$q" ] && [ "$q" != 1 ] && [ "$q" != 0 ]; do
+    [[ " ${all[*]} " == *" $q "* ]] \
+      && t3_die "this shell runs inside the t3 server being exported; run t3-migrate --export from a terminal outside t3 (VS Code or ssh)"
+    q=${parent[$q]:-}
+  done
   for p in "${all[@]}"; do t3_stat "$p" && start[$p]=$T3S_START; done
   t3_say "stopping the hand-started t3 server: ${!start[*]}"
   for p in "${!start[@]}"; do kill -TERM "$p" 2>/dev/null; done

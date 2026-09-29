@@ -8,14 +8,22 @@ set -uo pipefail
 state=$1 exe=$2 dir=$3 version=$4 token=$5
 . "$(dirname "$(readlink -f "$0")")/t3-scope.sh"
 
-exec 7>&- 8>&-
+# Close every inherited descriptor above stderr (control.lock, the updater's
+# sync.lock, component locks), so no lock outlives its owner inside the server.
+for _fd in /proc/$$/fd/*; do
+  _fd=${_fd##*/}
+  # 255 is bash's own handle on this script; closing it ends the script early
+  [ "$_fd" -gt 2 ] 2>/dev/null && [ "$_fd" != 255 ] && eval "exec $_fd>&-" 2>/dev/null
+done
+unset _fd
 exec 9>>"$state/owner.lock" || exit 70
 flock -n 9 || exit 75
 t3_stat $$ || exit 70
-my_sid=$T3S_SID
-own=$(jq -cn --argjson pid $$ --arg start "$T3S_START" --arg sid "$my_sid" --arg token "$token" \
+my_sid=$T3S_SID my_start=$T3S_START
+t3_stat 1 && init_start=$T3S_START || init_start=""
+own=$(jq -cn --argjson pid $$ --arg start "$my_start" --arg sid "$my_sid" --arg token "$token" --arg init "$init_start" \
   --arg container "$(hostname)" --arg version "$version" --arg at "$(date -u +%FT%TZ)" \
-  '{pid: $pid, start: $start, sid: $sid, token: $token, container: $container, version: $version, started_at: $at}')
+  '{pid: $pid, start: $start, sid: $sid, token: $token, init: $init, container: $container, version: $version, started_at: $at}')
 tmp=$(mktemp "$state/.owner.json.XXXXXX") || exit 70
 printf '%s\n' "$own" > "$tmp" && mv -f "$tmp" "$state/owner.json" || exit 70
 

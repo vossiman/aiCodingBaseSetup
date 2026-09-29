@@ -10,15 +10,23 @@ t3_verify_identity() {
     || { t3_say "t3 connect status is not green (needs stored credential, provisioned link, publish enabled)"; return 1; }
 }
 
+# version.json and auto are created once; a later setup (re-login) keeps
+# the owner's held version and auto choice.
 t3_init_state() {
-  t3_write_version latest "$1" \
-    && t3_write_file "$T3_STATE/auto" on \
-    && t3_write_file "$T3_STATE/setup-done" "$(cat "$T3CODE_HOME/userdata/environment-id")"
+  if [ ! -f "$T3_STATE/version.json" ]; then
+    t3_write_version latest "$1" && t3_write_file "$T3_STATE/auto" on || return 1
+  fi
+  t3_write_file "$T3_STATE/setup-done" "$(cat "$T3CODE_HOME/userdata/environment-id")"
 }
 
 t3_adopt_core() {
-  local v=$1
+  local v=$1 cur
   t3_running && { t3_say "a server is running; t3-stop first"; return 1; }
+  cur=$(t3_selected_version)
+  if [ -n "$cur" ] && [ "$cur" != "$v" ]; then
+    t3_say "this workspace already runs t3 $cur; adopting $v would open its state with a different release"
+    return 1
+  fi
   t3_install "$v" || { t3_say "cannot install t3 $v"; return 1; }
   t3_verify_identity "$v" || return 1
   t3_init_state "$v"

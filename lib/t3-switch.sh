@@ -118,7 +118,7 @@ t3_journal_recover() {
 }
 
 t3_switch() {
-  local target=$1 mode=$2 kind=$3 oldv old id b
+  local target=$1 mode=$2 kind=$3 oldv old id b rc
   oldv=$(t3_selected_version); old=$(cat "$T3_STATE/version.json")
   t3_install "$target" || { t3_record switch failed install_failed "$target"; return 1; }
   id="$(date +%s)-$$"
@@ -140,12 +140,17 @@ t3_switch() {
   fi
   t3_journal_set phase '"backed-up"'
   t3_journal_set phase '"starting-target"'
-  if t3_start_version "$target"; then
+  t3_start_version "$target"; rc=$?
+  if [ "$rc" = 0 ]; then
     t3_journal_set phase '"committed"'
     t3_switch_commit_tail
     t3_record switch ok switched "$oldv -> $target"
     t3_say "now on t3 $target (backup in $b)"
     return 0
+  fi
+  if [ "$rc" = 2 ]; then
+    t3_attention "t3 $target is running but not ready and could not be stopped; nothing was restored (journal $id)"
+    return 1
   fi
   t3_journal_set phase '"rolling-back"'
   if ! t3_restore "$id" "$b"; then
@@ -175,6 +180,7 @@ t3_pending_apply() {
     return 1
   fi
   t3_switch "$cand" latest candidate || true
+  [ -f "$T3_STATE/attention" ] && t3_die "needs attention: $(cat "$T3_STATE/attention"); see t3-status"
   if t3_running; then t3_write_file "$T3_STATE/enabled" on; return 0; fi
   return 1
 }

@@ -27,6 +27,7 @@ t3_serve_dir() {
 t3_launch() {
   local v=$1 token i
   token=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+  t3_running && { t3_say "a server already owns this workspace; not launching"; return 1; }
   rm -f "$T3_STATE/owner.json"
   T3_LAUNCH_EPOCH=$(date +%s)
   T3_AICODING_OWNER=$token setsid "$T3_LIB_DIR/t3-supervise" "$T3_STATE" "$(t3_exe "$v")" \
@@ -105,6 +106,9 @@ t3_orphans() {
   local token sid p
   T3_ORPHANS_TOKEN=(); T3_ORPHANS_SESSION=()
   [ -f "$T3_STATE/owner.json" ] || return 0
+  # pid 1 restarts with the container; a record from an earlier life names
+  # pids and a session id that may now belong to anything.
+  t3_stat 1 && [ "$(t3_owner_field init)" = "$T3S_START" ] || return 0
   token=$(t3_owner_field token); sid=$(t3_owner_field sid)
   for p in /proc/[0-9]*; do
     p=${p#/proc/}
@@ -138,9 +142,12 @@ t3_kill_orphans() {
   return 0
 }
 
+# 0 ready; 1 not ready and nothing left running; 2 a server is still running
+# that could not be stopped, so callers must not touch its files.
 t3_start_version() {
+  t3_running && return 2
   t3_launch "$1" && t3_ready "$1" && return 0
-  t3_stop_server
+  t3_stop_server || return 2
   rm -f "$T3CODE_HOME/userdata/server-runtime.json"
   return 1
 }

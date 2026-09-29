@@ -248,3 +248,37 @@ S() { printf '%s\n' "$T3_ENVS_ROOT/demo/aicoding"; }
   [[ "$output" == *"stored login"* ]]
   [ ! -f "$(S)/setup-done" ]
 }
+
+@test "start: a lock descriptor held by the caller never survives into the server" {
+  t3_fake_setup
+  # the same form bin/aicoding-sync uses for sync.lock
+  ( exec {lk}>"$TMP/caller.lock"; flock -n "$lk" || exit 9; "$B/t3-start" ) >/dev/null 2>&1
+  [ "$?" -eq 0 ]
+  run flock -n "$TMP/caller.lock" true
+  [ "$status" -eq 0 ]
+}
+
+@test "start: an owner.json from a previous container life never blocks start" {
+  t3_fake_setup
+  t3_bin_as stale sleep
+  setsid "$TMP/bin/stale" 60 &
+  stale=$!
+  sleep 0.3
+  printf '{"pid":%s,"start":"1","sid":"%s","token":"old","init":"0"}\n' "$stale" "$stale" > "$(S)/owner.json"
+  run "$B/t3-start"
+  kill "$stale" 2>/dev/null
+  [ "$status" -eq 0 ]
+}
+
+@test "setup and adopt keep an existing version choice" {
+  t3_fake_setup 0.0.42
+  printf '{"mode":"held","version":"0.0.42"}\n' > "$(S)/version.json"
+  rm -f "$(S)/auto"
+  run "$B/t3-setup"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .mode "$(S)/version.json")" = held ]
+  [ ! -f "$(S)/auto" ]
+  run "$B/t3-adopt" --version 0.0.40
+  [ "$status" -eq 1 ]
+  [ "$(jq -r .version "$(S)/version.json")" = 0.0.42 ]
+}

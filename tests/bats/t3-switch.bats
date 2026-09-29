@@ -208,3 +208,19 @@ running() { bash -c '. "$BLUEPRINT_ROOT/lib/t3.sh"; t3_env 2>/dev/null; t3_runni
   for v in 0.0.43 0.0.44 0.0.45 0.0.46; do "$B/t3-update" "$v" >/dev/null 2>&1; sleep 1; done
   [ "$(ls -d "$(S)"/backups/*/ | wc -l)" -eq 3 ]
 }
+
+@test "switch: a stop that fails is never followed by a restore or a new launch" {
+  t3_fake_setup 0.0.42
+  "$B/t3-start"
+  jq '.start = "1"' "$(S)/owner.json" > "$(S)/o.tmp" && mv "$(S)/o.tmp" "$(S)/owner.json"
+  tok=$(jq -r .token "$(S)/owner.json")
+  run bash -c '. "$BLUEPRINT_ROOT/lib/t3.sh"; t3_entry 2>/dev/null; t3_start_version 0.0.50'
+  [ "$status" -ne 0 ]
+  [ "$(jq -r .token "$(S)/owner.json")" = "$tok" ]
+  [[ "$output" != *"did not take ownership"* ]]
+  running
+}
+
+@test "updater entry strips the owner token so its worker is never in a server's scope" {
+  sed -n '/^unset /,/[^\\]$/p' "$BLUEPRINT_ROOT/bin/aicoding-auto-update" | grep -qw T3_AICODING_OWNER
+}

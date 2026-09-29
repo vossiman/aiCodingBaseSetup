@@ -122,3 +122,14 @@ start_legacy() {
   kill -0 "$other"
   [[ "$output" != *"stopping the hand-started"* ]]
 }
+
+@test "export: run from a terminal of the hand-started server refuses instead of killing itself" {
+  t3_bin_as bash bash
+  export T3_TEST_CHILDREN="bash=$B/t3-migrate --export > $TMP/child.out 2>&1; echo \$? > $TMP/child.rc"
+  start_legacy
+  for i in $(seq 1 100); do [ -s "$TMP/child.rc" ] && break; sleep 0.1; done
+  [ "$(cat "$TMP/child.rc")" = 1 ]
+  grep -q "outside" "$TMP/child.out"
+  pgrep -f "$TMP/legacy" >/dev/null
+  [ ! -f "$T3_MIGRATE_DIR/demo.tgz" ]
+}
