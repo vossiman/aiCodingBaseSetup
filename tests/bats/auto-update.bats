@@ -415,6 +415,65 @@ EOF
   [ ! -s "$AICODING_TEST_ATTEMPTS" ]
 }
 
+@test "a degraded user manager still enrolls the timer" {
+  # One failed unit, such as a failed updater pass, degrades the manager and
+  # makes is-system-running exit non-zero while printing "degraded".
+  cat > "$TEST_ROOT/bin/systemctl" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  '--user is-system-running') echo degraded; exit 1 ;;
+  '--user show --property=Version --value') echo 257 ;;
+  '--user is-enabled aicoding-auto-update.timer') echo enabled ;;
+  '--user is-active aicoding-auto-update.timer') echo active ;;
+esac
+exit 0
+EOF
+  cat > "$TEST_ROOT/bin/loginctl" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *'show-user'* ]]; then echo yes; fi
+exit 0
+EOF
+  chmod +x "$TEST_ROOT/bin/systemctl" "$TEST_ROOT/bin/loginctl"
+
+  run "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  [ "$status" -eq 0 ]
+  for _ in $(seq 40); do [ -f "$HOME/.config/systemd/user/aicoding-auto-update.timer" ] && break; sleep 0.05; done
+  [ -f "$HOME/.config/systemd/user/aicoding-auto-update.timer" ] || { cat "$AICODING_STATE_DIR/auto-update/enroll.log"; false; }
+  [ ! -s "$AICODING_TEST_ATTEMPTS" ]
+}
+
+@test "timer passes run with the enrolling shell's absolute PATH" {
+  # The user manager's default PATH lacks user-installed runtimes such as
+  # Homebrew's node, which the fallback worker inherited from the shell.
+  cat > "$TEST_ROOT/bin/systemctl" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  '--user is-system-running') echo running ;;
+  '--user show --property=Version --value') echo 257 ;;
+  '--user is-enabled aicoding-auto-update.timer') echo enabled ;;
+  '--user is-active aicoding-auto-update.timer') echo active ;;
+esac
+exit 0
+EOF
+  cat > "$TEST_ROOT/bin/loginctl" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *'show-user'* ]]; then echo yes; fi
+exit 0
+EOF
+  chmod +x "$TEST_ROOT/bin/systemctl" "$TEST_ROOT/bin/loginctl"
+  local tools="$TEST_ROOT/tool dir%x"
+  mkdir -p "$tools"
+
+  PATH="$TEST_ROOT/bin:$tools:relative/bin::/usr/bin:/bin" run "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  [ "$status" -eq 0 ]
+  local dropin="$HOME/.config/systemd/user/aicoding-auto-update.service.d/path.conf"
+  for _ in $(seq 40); do [ -f "$dropin" ] && break; sleep 0.05; done
+  [ -f "$dropin" ] || { cat "$AICODING_STATE_DIR/auto-update/enroll.log"; false; }
+  grep -qx '\[Service\]' "$dropin"
+  grep -qxF "Environment=\"PATH=$TEST_ROOT/bin:$TEST_ROOT/tool dir%%x:/usr/bin:/bin\"" "$dropin" \
+    || { cat "$dropin"; false; }
+}
+
 @test "ensure returns before a stalled manager probe finishes" {
   cat > "$TEST_ROOT/bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
