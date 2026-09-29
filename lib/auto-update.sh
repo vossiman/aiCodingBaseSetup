@@ -292,11 +292,32 @@ _aicoding_auto_enable_linger() {
 _aicoding_auto_user_manager_available() {
   command -v systemctl >/dev/null 2>&1 || return 1
   local state version
-  state=$(timeout 10 systemctl --user is-system-running 2>/dev/null) || return 1
+  # is-system-running exits non-zero for "degraded" too; judge by its output.
+  state=$(timeout 10 systemctl --user is-system-running 2>/dev/null) || true
   case "$state" in running|degraded|starting) ;; *) return 1 ;; esac
   version=$(timeout 10 systemctl --user show --property=Version --value 2>/dev/null) || return 1
   # Distributions append a package suffix, e.g. Ubuntu's 249.11-0ubuntu3.22.
   [[ "$version" =~ ^[0-9]+([.][0-9]+)*([-~+][0-9A-Za-z.~+-]*)?$ ]]
+}
+
+# The user manager's PATH lacks shell-configured runtimes (Homebrew, nvm), so
+# timer passes would resolve an older system node than the fallback worker,
+# which inherits the shell. Pin the enrolling shell's absolute entries.
+_aicoding_auto_stage_service_path() {
+  local dir=$1 entry kept= value tmp entries=()
+  IFS=: read -r -a entries <<< "$PATH"
+  for entry in "${entries[@]}"; do
+    [[ "$entry" == /* ]] || continue
+    kept+="${kept:+:}$entry"
+  done
+  [ -n "$kept" ] || return 0
+  value=${kept//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//%/%%}
+  mkdir -p "$dir" || return 1
+  tmp=$(mktemp "$dir/.path.conf.XXXXXX") || return 1
+  printf '[Service]\nEnvironment="PATH=%s"\n' "$value" > "$tmp" \
+    && chmod 0644 "$tmp" && mv -f -- "$tmp" "$dir/path.conf" || { rm -f -- "$tmp"; return 1; }
 }
 
 _aicoding_auto_stage_systemd() {
@@ -307,6 +328,7 @@ _aicoding_auto_stage_systemd() {
   mkdir -p "$target" "$(_aicoding_auto_state_dir)" || return 1
   install -m 0644 "$source/aicoding-auto-update.service" "$target/aicoding-auto-update.service" || return 1
   install -m 0644 "$source/aicoding-auto-update.timer" "$target/aicoding-auto-update.timer" || return 1
+  _aicoding_auto_stage_service_path "$target/aicoding-auto-update.service.d" || return 1
   timeout 10 systemctl --user daemon-reload </dev/null >/dev/null 2>&1
 }
 
