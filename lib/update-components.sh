@@ -948,8 +948,12 @@ _aicoding_finish_npm_entry_release() {
 }
 
 # Staging must not depend on how Claude treats the launcher's updater switch.
+# One unset only drops the innermost bash scope (a local or VAR=x prefix
+# over the exported copy), so repeat until no scope holds either variable.
 _aicoding_without_claude_update_switch() (
-  unset DISABLE_AUTOUPDATER FORCE_AUTOUPDATE_PLUGINS
+  while [ -n "${DISABLE_AUTOUPDATER+x}${FORCE_AUTOUPDATE_PLUGINS+x}" ]; do
+    unset DISABLE_AUTOUPDATER FORCE_AUTOUPDATE_PLUGINS || exit 1
+  done
   "$@"
 )
 
