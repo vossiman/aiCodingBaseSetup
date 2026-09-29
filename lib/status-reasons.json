@@ -433,6 +433,63 @@
       "meaning": "System provisioning failed.",
       "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
     },
+    "t3_auto_off": {
+      "kind": "wait",
+      "meaning": "A newer T3 Code is installed, but automatic restarts are off for this workspace.",
+      "fix": "Run `t3-update` when convenient, or `t3-auto on`."
+    },
+    "t3_candidate_pending": {
+      "kind": "ok",
+      "meaning": "T3 Code is stopped; the newer version is installed and is used at the next start."
+    },
+    "t3_current": {
+      "kind": "ok",
+      "meaning": "T3 Code runs the newest release."
+    },
+    "t3_held": {
+      "kind": "ok",
+      "meaning": "T3 Code is held at a chosen version and is not updated automatically.",
+      "fix": "Run `t3-update --latest` to follow new releases again."
+    },
+    "t3_idle_wait": {
+      "kind": "wait",
+      "meaning": "A newer T3 Code is installed; the restart waits until the server has been quiet for an hour.",
+      "fix": "Nothing to do. Run `t3-update` to switch now."
+    },
+    "t3_install_failed": {
+      "kind": "action",
+      "meaning": "Installing the newer T3 Code from npm failed.",
+      "fix": "Read `~/.local/state/aicoding/t3-update.log`, then run `t3-update`."
+    },
+    "t3_lock_busy": {
+      "kind": "wait",
+      "meaning": "Another t3 command held the workspace's control lock.",
+      "fix": "Nothing to do; the next pass retries."
+    },
+    "t3_not_set_up": {
+      "kind": "action",
+      "meaning": "T3 Code is enabled here but not set up.",
+      "fix": "Run `t3-setup`, or `t3-adopt --version X` for existing state."
+    },
+    "t3_npm_unavailable": {
+      "kind": "wait",
+      "meaning": "The newest T3 Code release could not be looked up on npm.",
+      "fix": "Nothing to do; the next pass retries."
+    },
+    "t3_scheduled_error": {
+      "kind": "action",
+      "meaning": "The T3 Code update step stopped without a result.",
+      "fix": "Run `t3-status` and read `~/.local/state/aicoding/t3-update.log`."
+    },
+    "t3_switch_failed": {
+      "kind": "action",
+      "meaning": "The newer T3 Code did not come up, so the previous version was restored.",
+      "fix": "Run `t3-status`; read `serve.log` in the workspace's `~/.t3-envs` folder."
+    },
+    "t3_switched": {
+      "kind": "ok",
+      "meaning": "T3 Code was restarted on the newest release while idle."
+    },
     "target_version_unavailable": {
       "kind": "action",
       "meaning": "The latest release version could not be looked up.",

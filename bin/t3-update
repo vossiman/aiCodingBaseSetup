@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# t3-update            switch to npm's newest t3 now (asks first if work is running)
+# t3-update VERSION    switch to VERSION and hold it
+# t3-update --latest   follow new releases again (no switch now)
+# --yes skips the question. --scheduled is the updater's internal entry.
+set -uo pipefail
+. "$(dirname "$(readlink -f "$0")")/../lib/t3.sh"
+t3_cmd_update "$@"

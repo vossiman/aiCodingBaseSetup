@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# t3-setup: once per new workspace. Logs this workspace's t3 in, links it and
+# enables agent activity, then records the version to run.
+set -uo pipefail
+. "$(dirname "$(readlink -f "$0")")/../lib/t3.sh"
+t3_cmd_setup "$@"

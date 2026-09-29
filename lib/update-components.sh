@@ -54,6 +54,10 @@ aicoding_installed_components() {
       || { declare -F _sync_profile >/dev/null 2>&1 && [ "$(_sync_profile)" = container ]; }; then
     printf 'ai-usage\n'
   fi
+  # T3 Code is per workspace and opt-in: only where the owner ran t3-start.
+  if [ -f "${T3_ENVS_ROOT:-$HOME/.t3-envs}/${DEVPOD_WORKSPACE_ID:-.none}/aicoding/enabled" ]; then
+    printf 't3\n'
+  fi
 }
 
 # Boolean-only discovery: never prints registration/config contents. Stable
@@ -1141,6 +1145,35 @@ aicoding_update_ai_usage() {
   aicoding_result_record ai-usage updated "$sha" installed "$sha"
 }
 
+# T3 Code (lib/t3*.sh). The t3 tools do the work under their own locks and
+# print one result line; this adapter maps it onto a catalogued reason.
+aicoding_update_t3() {
+  local line state reason version detail log="${AICODING_STATE_DIR:-$HOME/.local/state/aicoding}/t3-update.log"
+  mkdir -p "$(dirname "$log")"
+  line=$("${BASH_SOURCE[0]%/*}/../bin/t3-update" --scheduled </dev/null 2>>"$log" | tail -n 1)
+  read -r _ state reason version detail <<< "$line"
+  [ "$version" = - ] && version=""
+  [ "$detail" = - ] && detail=""
+  case "$state:$reason" in
+    current:t3_not_enabled) return 0 ;;
+    current:t3_current) aicoding_result_record t3 current "$version" t3_current "$version" ;;
+    current:t3_held) aicoding_result_record t3 current "$version" t3_held "$version" ;;
+    current:t3_candidate_pending) aicoding_result_record t3 current "$version" t3_candidate_pending "$version" ;;
+    updated:t3_switched) aicoding_result_record t3 updated "$version" t3_switched "$version" ;;
+    blocked:t3_idle_wait) _aicoding_record_deferred t3 blocked "$version" t3_idle_wait "" "$detail" ;;
+    blocked:t3_auto_off) _aicoding_record_deferred t3 blocked "$version" t3_auto_off "" "$detail" ;;
+    blocked:t3_npm_unavailable) _aicoding_record_deferred t3 blocked "$version" t3_npm_unavailable ;;
+    blocked:t3_lock_busy) _aicoding_record_deferred t3 blocked "$version" t3_lock_busy ;;
+    blocked:t3_not_set_up) aicoding_result_record t3 blocked "$version" t3_not_set_up ;;
+    failed:t3_install_failed) aicoding_result_record t3 failed "$version" t3_install_failed "" "$detail" ;;
+    failed:t3_switch_failed) aicoding_result_record t3 failed "$version" t3_switch_failed "" "$detail" ;;
+    *)
+      aicoding_result_record t3 failed "" t3_scheduled_error "" "${line:-no result line; see $log}"
+      return 1 ;;
+  esac
+  case "$state" in current|updated) return 0 ;; *) return 1 ;; esac
+}
+
 aicoding_update_component() {
   local AICODING_PROGRESS_COMPONENT=$1 component_rc=0 started=$SECONDS
   if declare -F aicoding_ui_active >/dev/null && aicoding_ui_active; then
@@ -1188,6 +1221,7 @@ _aicoding_update_component_impl() {
     dvw) aicoding_update_dvw ;;
     bw-AICode) aicoding_update_bw ;;
     ai-usage) aicoding_update_ai_usage ;;
+    t3) aicoding_update_t3 ;;
     mcp-firecrawl) aicoding_update_npm_entry_component mcp-firecrawl firecrawl-mcp firecrawl-mcp ;;
     mcp-brave) aicoding_update_npm_entry_component mcp-brave brave-search-mcp-server @brave/brave-search-mcp-server ;;
     mcp-context7) aicoding_update_npm_entry_component mcp-context7 context7-mcp @upstash/context7-mcp ;;

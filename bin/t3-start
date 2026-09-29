@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# t3-start [--dir PATH]: start this workspace's T3 Code server; it also
+# starts at every container boot until t3-stop. See docs/t3.md.
+set -uo pipefail
+. "$(dirname "$(readlink -f "$0")")/../lib/t3.sh"
+t3_cmd_start "$@"

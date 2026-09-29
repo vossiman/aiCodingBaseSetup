@@ -18,7 +18,7 @@ DEVCONTAINER="$BLUEPRINT_ROOT/devcontainer.json"
   [ "$status" -eq 0 ]
 }
 
-@test "devcontainer.json: carries all six generic \${localEnv:HOME}/devpod bind mounts" {
+@test "devcontainer.json: carries all seven generic \${localEnv:HOME}/devpod bind mounts" {
   local mounts
   mounts=$(jq -r '.mounts[]' "$DEVCONTAINER")
 
@@ -28,7 +28,8 @@ DEVCONTAINER="$BLUEPRINT_ROOT/devcontainer.json"
     'source=${localEnv:HOME}/devpod/opencode,target=/home/codespace/.local/share/opencode,type=bind' \
     'source=${localEnv:HOME}/devpod/codex,target=/home/codespace/.codex,type=bind' \
     'source=${localEnv:HOME}/devpod/cursor,target=/home/codespace/.cursor,type=bind' \
-    'source=${localEnv:HOME}/devpod/uv,target=/home/codespace/.local/share/uv,type=bind'
+    'source=${localEnv:HOME}/devpod/uv,target=/home/codespace/.local/share/uv,type=bind' \
+    'source=${localEnv:HOME}/devpod/t3-envs,target=/home/codespace/.t3-envs,type=bind'
   do
     [[ "$mounts" == *"$spec"* ]] || {
       echo "missing mount: $spec"

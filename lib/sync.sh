@@ -1661,6 +1661,7 @@ _sync_provision() {
     install_update_status_symlink || rc=1
     install_kanban_post_symlink || rc=1
     install_kanban_work_symlink || rc=1
+    install_t3_symlinks || rc=1
     install_measure_remote_symlink || rc=1
     install_dokploy_api_symlink || rc=1
     install_bugsink_api_symlink || rc=1
@@ -1696,7 +1697,8 @@ _sync_provision() {
   # that are absent from this blueprint are excluded.
   local name source dest
   for name in dvw-probe agent-notify aicoding-status kanban-post kanban-work measure-remote \
-              dokploy-api bugsink-api kuma-admin redact-transcript redact-sessions codex-turn-done; do
+              dokploy-api bugsink-api kuma-admin redact-transcript redact-sessions codex-turn-done \
+              t3-setup t3-adopt t3-start t3-stop t3-update t3-auto t3-status t3-migrate; do
     source="$(dirname "$blueprint_lib")/bin/$name"
     dest="$HOME/.local/bin/$name"
     [ -f "$source" ] || continue

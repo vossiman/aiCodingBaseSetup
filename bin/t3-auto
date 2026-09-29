@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# t3-auto on|off: allow or forbid automatic restarts for this workspace.
+set -uo pipefail
+. "$(dirname "$(readlink -f "$0")")/../lib/t3.sh"
+t3_cmd_auto "$@"
