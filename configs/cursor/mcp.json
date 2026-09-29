@@ -16,7 +16,8 @@
       "args": ["--browser", "chromium"]
     },
     "kanban": {
-      "command": "kanban-mcp"
+      "url": "https://kanban.dataprospectors.at/mcp",
+      "headers": { "Authorization": "Bearer {{KANBAN_TOKEN}}" }
     },
     "memory-router": {
       "url": "http://10.0.0.249:8091/mcp",

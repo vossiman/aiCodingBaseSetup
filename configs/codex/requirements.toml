@@ -93,15 +93,16 @@ timeout = 5
 statusMessage = "agent working"
 
 # Native Kanban work lifecycle. The shared wrapper performs no parsing or
-# network access; kanban-work validates the pinned native payload and journals
-# queue intent locally before returning. Codex 0.154.0 has no
+# network access; kanban-work validates the pinned native payload, journals
+# queue intent locally, and gives registration, Stop release and Stop
+# settlement one 3-second attempt at the board before returning. Codex 0.154.0 has no
 # PostToolUseFailure event, so none is configured here.
 [[hooks.SessionStart]]
 matcher = "startup|resume|clear|compact"
 [[hooks.SessionStart.hooks]]
 type = "command"
 command = "{{MANAGED_DIR}}/hooks/kanban-work-hook.sh codex SessionStart"
-timeout = 10
+timeout = 15
 statusMessage = "Kanban session"
 
 [[hooks.UserPromptSubmit]]
@@ -118,7 +119,7 @@ matcher = ".*"
 type = "command"
 command = "{{MANAGED_DIR}}/hooks/kanban-work-hook.sh codex PreToolUse"
 timeout = 10
-statusMessage = "Kanban permit"
+statusMessage = "Kanban activity"
 
 [[hooks.PostToolUse]]
 matcher = ".*"
@@ -133,7 +134,7 @@ matcher = ".*"
 [[hooks.Stop.hooks]]
 type = "command"
 command = "{{MANAGED_DIR}}/hooks/kanban-work-hook.sh codex Stop"
-timeout = 3
+timeout = 10
 statusMessage = "Kanban handoff"
 
 [[hooks.SessionEnd]]

@@ -165,6 +165,53 @@ class KanbanPostJsonTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(self.server.calls[-1], (method, path, expected_body, "Bearer " + TOKEN))
 
+    def test_session_scoped_lifecycle_operations_map_to_the_hosted_contract(self):
+        handle = "b36e1e6e-1522-5102-b9ed-58ad4a0770e4"
+        cases = [
+            ("register_session", {
+                "harness": "claude", "native_session_id": "native-1", "subagent_id": None,
+                "run_generation": RUN_ID, "handle": handle, "label": "claude session",
+                "repo": None, "lifecycle_capable": True, "operation_id": OP_ID,
+            }, "POST", "/api/work/sessions", {
+                "harness": "claude", "native_session_id": "native-1", "subagent_id": None,
+                "run_generation": RUN_ID, "handle": handle, "label": "claude session",
+                "repo": None, "lifecycle_capable": True, "operation_id": OP_ID,
+            }),
+            ("resolve_handle", {"handle": handle}, "GET", f"/api/work/handles/{handle}", None),
+            ("mcp_instructions", {}, "GET", "/api/mcp/instructions", None),
+            ("session_activity", {"work_session_id": SESSION_ID, "operation_id": OP_ID, "run_generation": RUN_ID,
+                                  "observed_at": "2026-09-29T13:30:00Z", "sequence": 3},
+             "POST", f"/api/work/sessions/{SESSION_ID}/activity",
+             {"operation_id": OP_ID, "run_generation": RUN_ID, "observed_at": "2026-09-29T13:30:00Z", "sequence": 3}),
+            ("release_active", {"work_session_id": SESSION_ID, "operation_id": OP_ID,
+                                "observed_at": "2026-09-29T13:31:00Z", "reason": "stopped"},
+             "POST", f"/api/work/sessions/{SESSION_ID}/release-active",
+             {"operation_id": OP_ID, "observed_at": "2026-09-29T13:31:00Z", "reason": "stopped"}),
+            ("cancel_stop", {"work_session_id": SESSION_ID, "operation_id": OP_ID},
+             "POST", f"/api/work/sessions/{SESSION_ID}/cancel-stop", {"operation_id": OP_ID}),
+        ]
+        for operation, payload, method, path, expected_body in cases:
+            with self.subTest(operation=operation):
+                result = self.run_json(operation, payload)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.server.calls[-1], (method, path, expected_body, "Bearer " + TOKEN))
+
+    def test_session_scoped_operations_validate_before_network(self):
+        cases = [
+            ("release_active", {"work_session_id": SESSION_ID, "operation_id": OP_ID,
+                                "observed_at": "2026-09-29T13:31:00Z", "reason": "feedback"},
+             "reason must be one of paused, stopped"),
+            ("session_activity", {"work_session_id": SESSION_ID, "operation_id": OP_ID, "run_generation": RUN_ID,
+                                  "observed_at": "yesterday", "sequence": 1},
+             "observed_at must be an ISO 8601 timestamp"),
+            ("cancel_stop", {"work_session_id": SESSION_ID}, "missing field 'operation_id' for cancel_stop"),
+            ("mcp_instructions", {"extra": 1}, "unknown field 'extra' for mcp_instructions"),
+        ]
+        for operation, payload, message in cases:
+            with self.subTest(operation=operation):
+                self.assert_error(self.run_json(operation, payload), message)
+        self.assertEqual(self.server.calls, [])
+
     def test_claim_maps_only_the_allowlisted_payload(self):
         result = self.run_json("claim_ticket", {
             "work_session_id": SESSION_ID,

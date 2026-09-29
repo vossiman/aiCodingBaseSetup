@@ -135,33 +135,29 @@ EOF
   grep -q 'codex_requires_0.148' "$TEST_ROOT/warnings"
 }
 
-@test "exact MCP config readiness requires the immutable Kanban launcher" {
+@test "exact MCP config readiness does not wait for the retired Kanban launcher" {
   _load_real_compatibility_guard
   _record_exact_mcp_receipts
   _aicoding_active_kanban_mcp_valid() { return 1; }
   run aicoding_exact_mcp_config_ready "$HOME/.codex/config.toml"
-  [ "$status" -ne 0 ]
-
-  _aicoding_active_kanban_mcp_valid() { return 0; }
-  run aicoding_exact_mcp_config_ready "$HOME/.codex/config.toml"
   [ "$status" -eq 0 ]
 }
 
-@test "managed Kanban MCP entries contain only the local command" {
-  grep -A2 '^\[mcp_servers\.kanban\]$' "$BLUEPRINT_ROOT/configs/codex/config.toml" \
-    | grep -Fxq 'command = "kanban-mcp"'
-  jq -e '.mcpServers.kanban == {"command":"kanban-mcp"}' \
+@test "managed Kanban MCP entries name only the hosted endpoint and a bearer placeholder" {
+  run python3 - "$BLUEPRINT_ROOT/configs/codex/config.toml" <<'PY2'
+import sys, tomllib
+entry = tomllib.load(open(sys.argv[1], "rb"))["mcp_servers"]["kanban"]
+assert entry == {
+    "url": "https://kanban.dataprospectors.at/mcp",
+    "http_headers": {"Authorization": "Bearer {{KANBAN_TOKEN}}"},
+    "required": False,
+}, entry
+PY2
+  [ "$status" -eq 0 ]
+  jq -e '.mcpServers.kanban == {"url":"https://kanban.dataprospectors.at/mcp","headers":{"Authorization":"Bearer {{KANBAN_TOKEN}}"}}' \
     "$BLUEPRINT_ROOT/configs/cursor/mcp.json"
-  jq -e '.mcp.kanban == {"type":"local","command":["kanban-mcp"],"enabled":true}' \
+  jq -e '.mcp.kanban == {"type":"remote","url":"https://kanban.dataprospectors.at/mcp","headers":{"Authorization":"Bearer {{KANBAN_TOKEN}}"},"oauth":false,"enabled":true}' \
     "$BLUEPRINT_ROOT/configs/opencode/opencode.json"
-  local entry
-  entry=$(sed -n '/^\[mcp_servers\.kanban\]$/,/^\[/p' "$BLUEPRINT_ROOT/configs/codex/config.toml")
-  entry+=$(jq -c '.mcpServers.kanban' "$BLUEPRINT_ROOT/configs/cursor/mcp.json")
-  entry+=$(jq -c '.mcp.kanban' "$BLUEPRINT_ROOT/configs/opencode/opencode.json")
-  if printf '%s' "$entry" | grep -Eqi \
-      'KANBAN_TOKEN|Authorization|secret|/checkout|github\.com|https?://|dataprospectors'; then
-    false
-  fi
 }
 
 @test "relocated pinned Kanban MCP passes the real SDK 2.2 protocol contract" {

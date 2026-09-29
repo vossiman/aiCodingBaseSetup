@@ -259,24 +259,80 @@ EOF
   [ "$status" -eq 1 ]
 }
 
-@test "scheduled provision registers kanban even when Claude has no registration yet" {
-  _managed_launcher kanban-mcp mcp-kanban a71a8bd
-  aicoding_result_record claude current 2.1.50 installed 2.1.50
-  cat > "$TMP/stubs/claude" <<'EOF2'
+_kanban_claude_stub() {
+  # $1: what `claude mcp get kanban` reports before any change.
+  printf '%s' "$1" > "$TMP/kanban-before"
+  cat > "$TMP/stubs/claude" <<'EOF'
 #!/bin/sh
 echo "$*" >> "$TMP/claude-calls"
 case "$*" in
-  '--version') echo '2.1.50 (Claude Code)' ;;
   'mcp get kanban')
-    [ -f "$TMP/added" ] || exit 1
-    printf 'Command: %s/.local/bin/kanban-mcp\n' "$HOME" ;;
-  'mcp add kanban -s user -- '*'/kanban-mcp') : > "$TMP/added" ;;
+    if [ -f "$TMP/added" ]; then
+      printf 'kanban:\n  Type: http\n  URL: https://kanban.dataprospectors.at/mcp\n'
+    elif [ -f "$TMP/removed" ] || [ ! -s "$TMP/kanban-before" ]; then
+      exit 1
+    else
+      cat "$TMP/kanban-before"
+    fi ;;
+  'mcp get logfire') printf 'logfire:\n  URL: https://logfire-eu.pydantic.dev/mcp\n' ;;
+  'mcp get '*) exit 1 ;;
+  'mcp remove -s user kanban') : > "$TMP/removed" ;;
+  'mcp add --transport http -s user kanban https://kanban.dataprospectors.at/mcp -H Authorization: Bearer kb-fake')
+    : > "$TMP/added" ;;
+  'mcp add'*) exit 1 ;;
 esac
-EOF2
+EOF
   chmod +x "$TMP/stubs/claude"
-  run _provision_reconcile_selected_exact_mcp kanban mcp-kanban kanban-mcp
+  _provision_tool_ready() { return 0; }
+  _provision_reconcile_selected_exact_mcp() { return 0; }
+  unset MEMORY_ROUTER_TOKEN FIRECRAWL_API_KEY BRAVE_API_KEY
+  export AICODING_MCP_STATE="$TMP/mcp-fingerprints"
+  mkdir -p "$AICODING_MCP_STATE"
+  : > "$AICODING_MCP_STATE/logfire.sha256"
+}
+
+@test "Claude provision retires the local stdio kanban registration and registers the hosted MCP" {
+  _kanban_claude_stub "$(printf 'kanban:\n  Type: stdio\n  Command: %s/.local/bin/kanban-mcp\n' "$HOME")"
+  export KANBAN_TOKEN=kb-fake
+  run install_claude_mcps
+  [ "$status" -eq 0 ]
+  [ -f "$TMP/removed" ]
+  [ -f "$TMP/added" ]
+  grep -qx 'mcp remove -s user kanban' "$TMP/claude-calls"
+  # The fingerprint records a hash of the header, never the token itself.
+  [ -s "$AICODING_MCP_STATE/kanban.sha256" ]
+  if grep -rq 'kb-fake' "$AICODING_MCP_STATE"; then false; fi
+}
+
+@test "Claude provision registers the hosted kanban MCP on a machine without any registration" {
+  _kanban_claude_stub ""
+  export KANBAN_TOKEN=kb-fake
+  run install_claude_mcps
   [ "$status" -eq 0 ]
   [ -f "$TMP/added" ]
-  jq -e '.components["mcp-registration-claude-kanban"].state == "updated"' \
-    "$AICODING_STATE_DIR/update-results.json"
+  [ ! -f "$TMP/removed" ]
+}
+
+@test "Claude provision leaves a user's own stdio kanban registration and reports failure" {
+  _kanban_claude_stub "$(printf 'kanban:\n  Type: stdio\n  Command: /opt/custom/kanban\n')"
+  export KANBAN_TOKEN=kb-fake
+  run install_claude_mcps
+  [ "$status" -ne 0 ]
+  [ ! -f "$TMP/removed" ]
+  [ ! -f "$TMP/added" ]
+  [[ "$output" == *"user stdio registration"* ]]
+}
+
+@test "Claude provision skips the hosted kanban MCP without KANBAN_TOKEN" {
+  _kanban_claude_stub "$(printf 'kanban:\n  Type: stdio\n  Command: %s/.local/bin/kanban-mcp\n' "$HOME")"
+  unset KANBAN_TOKEN
+  run install_claude_mcps
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"kanban MCP skipped (KANBAN_TOKEN not set)"* ]]
+  if grep -q 'kanban' "$TMP/claude-calls" 2>/dev/null; then false; fi
+}
+
+@test "the kanban package updater no longer writes a Claude registration" {
+  if grep -q '_aicoding_reconcile_claude_mcp_registration' "$BLUEPRINT_ROOT/lib/update-kanban.sh"; then false; fi
+  if grep -q 'mcp-registration-claude-kanban' "$BLUEPRINT_ROOT/lib/update-components.sh"; then false; fi
 }

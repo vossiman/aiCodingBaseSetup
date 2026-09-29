@@ -1,17 +1,15 @@
-import tempfile
 import unittest
-from datetime import UTC, datetime
-from pathlib import Path
 
-from lib.kanban_work import BridgeError, NativeIdentity, Store, normalize_tool_args
-from lib.kanban_work.legacy import parse_legacy_complete, prepare_legacy_complete
+from lib.kanban_work import BridgeError
+from lib.kanban_work.legacy import (
+    DENIAL,
+    looks_like_legacy_complete,
+    parse_legacy_complete,
+    rewrite_legacy_complete,
+)
 
 
 HANDLE = "11111111-1111-4111-8111-111111111111"
-RUN = "33333333-3333-4333-8333-333333333333"
-CLAIM = "backend-claim-ref"
-NOW = datetime(2026, 9, 12, tzinfo=UTC)
-IDENTITY = NativeIdentity("codex", "thread-7", None, RUN)
 
 
 class LegacyParserTests(unittest.TestCase):
@@ -68,84 +66,60 @@ class LegacyParserTests(unittest.TestCase):
                 parse_legacy_complete(command)
 
 
-class LegacyTranslatorTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.store = Store(Path(self.temp.name) / "kanban.sqlite3")
-        self.store.start_execution("codex", "thread-7", None, RUN, HANDLE, "/tmp/repo", True, now=NOW)
-        self.store.record_bound(HANDLE, "backend-session-ref", "kanban", "worker")
-        self.store.set_claim(HANDLE, CLAIM, "KANBAN-2")
-
-    def tearDown(self):
-        self.store.close()
-        self.temp.cleanup()
-
-    def test_exact_completion_mints_native_owned_permit_and_safe_argv(self):
-        prepared = prepare_legacy_complete(
-            IDENTITY, "tool-9",
-            "kanban-post --done KANBAN-2 --evidence 'pytest: 127 passed' --reference PR-17",
-            store=self.store, now=NOW,
+class LegacyRewriteTests(unittest.TestCase):
+    def test_rewrite_appends_work_handle_to_the_parsed_argv(self):
+        argv = rewrite_legacy_complete(
+            "kanban-post --done KANBAN-2 --evidence 'pytest: 127 passed' "
+            "--reference PR-17 --reference 'commit abc'",
+            HANDLE,
         )
-        self.assertEqual(prepared.handle, HANDLE)
-        self.assertEqual(prepared.args, {
-            "handle": HANDLE, "claim_id": CLAIM,
-            "evidence": "pytest: 127 passed", "references": ["PR-17"],
-            "operation_id": None,
-        })
-        self.assertEqual(prepared.rewritten_argv[-2:], ["--work-handle", HANDLE])
-        self.assertTrue(self.store.has_permit(
-            HANDLE, "complete_ticket", normalize_tool_args("complete_ticket", prepared.args)
-        ))
+        self.assertEqual(argv, [
+            "kanban-post", "--done", "KANBAN-2", "--evidence", "pytest: 127 passed",
+            "--reference", "PR-17", "--reference", "commit abc",
+            "--work-handle", HANDLE,
+        ])
 
-    def test_uuid_completion_matches_lookup_identity_and_mints_permit(self):
+    def test_rewrite_accepts_uuid_ticket_and_keeps_literal_single_quoted_dollar(self):
         ticket_id = "44444444-4444-4444-8444-444444444444"
-        self.store.set_claim(HANDLE, CLAIM, "KANBAN-2", ticket_id=ticket_id)
-
-        claim = self.store.lookup(HANDLE)["active_claim"]
-        self.assertEqual(claim, {
-            "id": CLAIM, "ticket": "KANBAN-2", "ticket_id": ticket_id,
-        })
-        prepared = prepare_legacy_complete(
-            IDENTITY, "tool-uuid",
-            f"kanban-post --done {ticket_id} --evidence 'pytest: 127 passed'",
-            store=self.store, now=NOW,
+        argv = rewrite_legacy_complete(
+            f"kanban-post --done {ticket_id} --evidence 'cost $5'", HANDLE
         )
-        self.assertTrue(self.store.has_permit(
-            HANDLE, "complete_ticket", normalize_tool_args("complete_ticket", prepared.args)
+        self.assertEqual(argv, [
+            "kanban-post", "--done", ticket_id, "--evidence", "cost $5",
+            "--work-handle", HANDLE,
+        ])
+
+    def test_rewrite_denies_commands_that_are_not_a_completion(self):
+        for command in (
+            "kanban-post --list-tickets",
+            "git status --short",
+            "kanban-post --done KANBAN-2",
+        ):
+            with self.subTest(command=command), self.assertRaisesRegex(BridgeError, DENIAL):
+                rewrite_legacy_complete(command, HANDLE)
+
+    def test_rewrite_denies_unsafe_or_ungrammatical_completion_text(self):
+        for command in (
+            "kanban-post --done KANBAN-2 --evidence ok; echo stolen",
+            "KANBAN_WORK_HANDLE=x kanban-post --done KANBAN-2 --evidence ok",
+            "kanban-post --done KANBAN-2 --evidence ok --work-handle " + HANDLE,
+            "kanban-post --done KANBAN-2 --evidence $HOME",
+            "kanban-post --done not_a_key --evidence ok",
+        ):
+            with self.subTest(command=command), self.assertRaises(BridgeError) as raised:
+                rewrite_legacy_complete(command, HANDLE)
+            self.assertEqual(raised.exception.message, DENIAL)
+            self.assertEqual(raised.exception.code, 422)
+
+    def test_looks_like_legacy_complete_detects_candidates_only(self):
+        self.assertTrue(looks_like_legacy_complete("kanban-post --done K-1 --evidence ok"))
+        self.assertTrue(looks_like_legacy_complete(
+            "FOO=1 kanban-post --done K-1 --evidence ok; echo bad"
         ))
-
-    def test_missing_identity_claim_ticket_mismatch_and_peer_are_denied_without_permit(self):
-        cases = [
-            (NativeIdentity("codex", "missing", None, RUN), "KANBAN-2"),
-            (IDENTITY, "KANBAN-3"),
-            (NativeIdentity("codex", "thread-7", "peer", RUN), "KANBAN-2"),
-        ]
-        for i, (identity, ticket) in enumerate(cases):
-            with self.subTest(identity=identity, ticket=ticket), self.assertRaises(BridgeError):
-                prepare_legacy_complete(identity, f"tool-{i}",
-                    f"kanban-post --done {ticket} --evidence ok", store=self.store, now=NOW)
-        self.assertFalse(self.store.has_any_permit())
-
-    def test_missing_current_claim_is_denied_without_permit(self):
-        self.store.refresh_authoritative(HANDLE, {
-            "id": "backend-session-ref", "harness": "codex", "native_session_id": "thread-7",
-            "subagent_id": None, "run_generation": RUN, "label": "worker", "repo": "kanban",
-            "lifecycle_capable": True, "ended_at": None, "claims": [],
-        }, None)
-        with self.assertRaisesRegex(BridgeError, "no current claim"):
-            prepare_legacy_complete(IDENTITY, "tool-no-claim",
-                                    "kanban-post --done KANBAN-2 --evidence ok",
-                                    store=self.store, now=NOW)
-        self.assertFalse(self.store.has_any_permit())
-
-    def test_compound_completion_is_denied_before_identity_resolution(self):
-        with self.assertRaisesRegex(BridgeError, "Use the Kanban MCP complete_ticket tool"):
-            prepare_legacy_complete(
-                NativeIdentity("codex", "missing", None, RUN), "tool-10",
-                "kanban-post --done KANBAN-2 --evidence ok; echo stolen",
-                store=self.store, now=NOW,
-            )
-        self.assertFalse(self.store.has_any_permit())
+        for value in ("kanban-post --done K-1", "kanban-post --list-tickets",
+                      "echo kanban-post --done K-1 --evidence ok", None, ["kanban-post"]):
+            with self.subTest(value=value):
+                self.assertFalse(looks_like_legacy_complete(value))
 
 
 if __name__ == "__main__":

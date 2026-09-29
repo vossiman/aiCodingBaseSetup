@@ -37,45 +37,49 @@ Configured for **all four CLIs**: `claude mcp add` for Claude Code, `~/.config/o
 | brave-search | Web, news, image, video search | API key |
 | context7 | Library documentation lookup (via Docker) | None |
 | playwright | Browser automation, screenshots, testing | None (via plugin) |
-| kanban | Shared backlog reads and native-session-bound work lifecycle | `kanban-post` broker only |
+| kanban | Shared backlog: hosted MCP at `https://kanban.dataprospectors.at/mcp` | Bearer `KANBAN_TOKEN` |
 
 #### Kanban MCP lifecycle
 
-The Kanban controller is installed from the exact Git revision in
-`configs/versions/kanban-mcp.rev`. The updater checks out that detached
-revision, creates a relocatable virtual environment from the committed lock,
-and validates `kanban-mcp --version` and `kanban-mcp --instructions` before it
-publishes `~/.local/share/aicoding/current/mcp-kanban` and the stable
-`~/.local/bin/kanban-mcp` launcher. The `mcp-kanban` update receipt records the
-full revision. Claude registration has its own
-`mcp-registration-claude-kanban` receipt. A retained release must pass its
-integrity and controller checks before it can be reused.
+The board serves its MCP at `https://kanban.dataprospectors.at/mcp` (streamable
+HTTP, stateless). Every harness's config holds only that URL and an
+`Authorization: Bearer` header, rendered from `KANBAN_TOKEN` at deploy time
+into the same mode `0600`, deny-listed files that carry `MEMORY_ROUTER_TOKEN`.
+Without the token the entry is left out. Codex marks the server
+`required = false`, so an unreachable board never blocks startup. Tools, tool
+schemas and server instructions ship with the board; no tool change needs a
+machine update.
 
-The managed MCP entries contain only the local `kanban-mcp` command. They do
-not contain `KANBAN_TOKEN`, an authorization header, a board URL, or a checkout
-path. The controller reaches the board through `kanban-post`, which remains the
-only process that reads `KANBAN_TOKEN` and is also the credential-safe recovery
-CLI. Recovery use does not bypass claim lifecycle rules.
+Native Claude Code, Codex and Cursor hooks and the OpenCode plugin mint a work
+handle for the current native session and run generation and register it with
+the board at session start (one 3-second attempt, then the local queue). The
+repo comes from the working directory's GitHub `origin`; outside a checkout, or
+for a repo the board does not list, the session registers without one and its
+first claim binds it. The start hook injects only the handle line; Codex,
+Cursor and OpenCode also get the server instructions from
+`GET /api/mcp/instructions`, so the workflow reaches them even if they do not
+surface MCP initialize instructions.
 
-Native Claude Code, Codex, and Cursor hooks and the OpenCode plugin mint a work
-handle for the current native session and run generation. They bind that handle
-to a backend work session, issue one-use 60-second pre-call permits, report
-activity for running tools, and reconcile claims on stop and session end.
-Normal turn stop releases unfinished work; compaction and active child or tool
-work preserve the parent claim. Delivery queues prioritize release and end over
-stale activity, and supervision is bounded to two hours.
+Lifecycle calls are session-scoped, so hooks never know which claim a session
+holds: activity at most once a minute, `release-active` when a turn stops, and
+`end` at session end. A new turn settles the previous turn's Stop first: a Stop
+never sent is deleted locally, and one that may have been sent is cancelled on
+the board, which answers atomically whether it already applied. The only Kanban
+tool the pre-tool hook looks at is `claim_ticket`, by name: while an earlier
+Stop is unsettled and the board is unreachable, the claim is refused with
+"retry the claim". Compaction and active child or tool work defer the Stop.
 
 The operational registry is
-`${XDG_STATE_HOME:-$HOME/.local/state}/aicoding/kanban-work.sqlite3`. Its
-directory is mode `0700` and the database is mode `0600`. Ended generations and
-completed native-event receipts are retained for seven days; consumed permits
-are retained for one hour. The delivery queue is capped at 1024 rows. This
-registry coordinates processes running as the same user. It is not an
-adversarial security boundary against another process running as that user.
+`${XDG_STATE_HOME:-$HOME/.local/state}/aicoding/kanban-work.sqlite3` (directory
+`0700`, database `0600`). It holds execution identity, the delivery queue and
+Stop settlement state; ended generations and native-event receipts are kept for
+seven days, and the queue is capped at 1024 rows with activity evicted first.
+It coordinates processes of one user and is not a security boundary against
+that user.
 
-Lifecycle mutations (bind, claim, complete) work for every supported client,
-whatever its version: the clients release several times a day, so a per-version
-allowlist could never keep up.
+Lifecycle mutations work for every supported client, whatever its version: the
+clients release several times a day, so a per-version allowlist could never
+keep up.
 
 `kanban-post --done TICKET --evidence TEXT` completes through the session's
 claim when it holds one. Without a claim it posts the evidence as a comment

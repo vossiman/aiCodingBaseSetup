@@ -14,18 +14,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable
 
-from .bridge import Bridge
-from .events import EventIngestor
-from .legacy import DENIAL, claimed_legacy_complete, looks_like_legacy_complete
-from .schema import (
-    BridgeError,
-    READ_TOOLS,
-    TOOL_SPECS,
-    normalize_tool_args,
-    normalized_dict,
-    qualified_client_version,
-)
+from .events import EventIngestor, network_allowed
+from .legacy import DENIAL, looks_like_legacy_complete, rewrite_legacy_complete
+from .schema import CLAIM_TOOL, BridgeError, qualified_client_version
 from .store import Execution, MAX_OPAQUE, Store
+from .transport import fetch_instructions
 
 
 CLAUDE_EVENTS = frozenset({
@@ -55,16 +48,23 @@ VERSION_PATTERN = re.compile(r"\b\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?\b")
 CLAUDE_BASH_FIELDS = frozenset({"command", "description", "timeout", "run_in_background"})
 CODEX_BASH_FIELDS = frozenset({"command"})
 CURSOR_SHELL_FIELDS = frozenset({"command", "working_directory"})
-CURSOR_MCP_TOOLS = frozenset(
-    f"MCP:{name}" for name in frozenset(TOOL_SPECS) | READ_TOOLS
-)
-OPENCODE_MCP_TOOLS = {
-    f"kanban_{name}": name for name in frozenset(TOOL_SPECS) | READ_TOOLS
-}
-OPENCODE_IDENTITY_ERROR = (
-    "OpenCode lifecycle identity is unavailable; "
-    "Kanban mutations require a qualified native session"
-)
+CURSOR_CLAIM_TOOL = f"MCP:{CLAIM_TOOL}"
+OPENCODE_CLAIM_TOOL = f"kanban_{CLAIM_TOOL}"
+UNSETTLED_STOP = "the board has not confirmed the previous turn's stop; retry the claim"
+# Claude surfaces the MCP initialize instructions itself; the others get the
+# same central text through the start hook.
+HOOK_INSTRUCTION_HARNESSES = frozenset({"codex", "cursor", "opencode"})
+
+
+def _hook_instructions(harness: str) -> str | None:
+    if harness not in HOOK_INSTRUCTION_HARNESSES or not network_allowed():
+        return None
+    return fetch_instructions()
+
+
+def _context(instructions: str | None, handle: str) -> str:
+    line = f"Kanban work handle: {handle}"
+    return f"{instructions.rstrip()}\n\n{line}" if instructions else line
 
 
 @dataclass(frozen=True)
@@ -107,15 +107,12 @@ class ClaudeCodexAdapter:
     def __init__(self, store: Store | None = None, ingress: EventIngestor | None = None, *,
                  now: Callable[[], datetime] | None = None,
                  version_provider: Callable[[str], str | None] | None = None,
-                 instructions_provider: Callable[[str], str] | None = None):
+                 instructions_provider: Callable[[str], str | None] | None = None):
         self.store = store or Store()
         self.now = now or (lambda: datetime.now(UTC))
         self.ingress = ingress or EventIngestor(self.store, now=self.now)
         self.version_provider = version_provider or _client_version
-        self.instructions_provider = instructions_provider or self._instructions
-
-    def _instructions(self, handle: str) -> str:
-        return Bridge(store=self.store).instructions({"handle": handle})["text"]
+        self.instructions_provider = instructions_provider or _hook_instructions
 
     @staticmethod
     def _allow(updated_input: dict | None = None) -> dict:
@@ -292,8 +289,7 @@ class ClaudeCodexAdapter:
         handle = lifecycle["handle"]
         if harness == "claude":
             self._write_claude_hint(handle)
-        text = self.instructions_provider(handle)
-        context = f"{text.rstrip()}\n\nKanban work handle: {handle}"
+        context = _context(self.instructions_provider(harness), handle)
         return AdapterResult({"hookSpecificOutput": {
             "hookEventName": "SessionStart",
             "additionalContext": context,
@@ -380,14 +376,12 @@ class ClaudeCodexAdapter:
                 "checkout": checkout,
                 "lifecycle_capable": parent.lifecycle_capable,
             })
-        handle = lifecycle["handle"]
-        context = (
-            f"{self.instructions_provider(handle).rstrip()}\n\n"
-            f"Kanban work handle: {handle}"
-        )
+        return self._subagent_output(harness, lifecycle)
+
+    def _subagent_output(self, harness: str, lifecycle: dict) -> AdapterResult:
         return AdapterResult({"hookSpecificOutput": {
             "hookEventName": "SubagentStart",
-            "additionalContext": context,
+            "additionalContext": _context(self.instructions_provider(harness), lifecycle["handle"]),
         }}, lifecycle)
 
     def _subagent_stop(self, harness: str, payload: dict) -> AdapterResult:
@@ -418,57 +412,38 @@ class ClaudeCodexAdapter:
             harness, "activity", execution,
             self._prompt_event_id(harness, session_id, agent_id, prompt_id),
         )
+        # A new turn settles the previous turn's Stop; an unreachable board
+        # leaves it for the claim gate, and the turn proceeds either way.
+        self.ingress.settle_turn(execution.handle)
         return AdapterResult({}, lifecycle)
 
     @staticmethod
-    def _mcp_tool(tool_name: str) -> str | None:
-        return tool_name[len(MCP_PREFIX):] if tool_name.startswith(MCP_PREFIX) else None
+    def _is_claim(tool_name: str) -> bool:
+        return tool_name == MCP_PREFIX + CLAIM_TOOL
 
     def _tool_start(self, harness: str, payload: dict) -> AdapterResult:
         try:
             tool_name = _bounded(payload.get("tool_name"), "tool_name")
             tool_input = payload.get("tool_input")
-            mcp_tool = self._mcp_tool(tool_name)
-            updated = None
+            claim = self._is_claim(tool_name)
             prepared_command = None
-            if mcp_tool is not None:
-                if mcp_tool in READ_TOOLS:
-                    pass
-                elif mcp_tool in TOOL_SPECS:
-                    if not isinstance(tool_input, dict):
-                        raise BridgeError(422, "tool_input must be an object")
-                else:
-                    raise BridgeError(422, "unknown Kanban MCP tool")
-            elif tool_name in SHELL_TOOLS and isinstance(tool_input, dict):
-                command = tool_input.get("command")
-                if looks_like_legacy_complete(command):
-                    prepared_command = command
-
-            requires_correlation = mcp_tool is not None and mcp_tool not in READ_TOOLS
+            if (not claim and tool_name in SHELL_TOOLS and isinstance(tool_input, dict)
+                    and looks_like_legacy_complete(tool_input.get("command"))):
+                prepared_command = tool_input["command"]
             try:
                 session_id, agent_id = self._native(payload)
                 native_call_id = _bounded(payload.get("tool_use_id"), "tool_use_id")
                 execution = self._execution_for_tool(harness, payload)
             except BridgeError:
-                if requires_correlation:
-                    raise
                 return AdapterResult(self._allow())
-
-            if mcp_tool is not None and mcp_tool not in READ_TOOLS:
-                normalized = normalize_tool_args(mcp_tool, tool_input)
-                self.store.permit_call(
-                    execution.identity, native_call_id, mcp_tool, normalized, self.now()
-                )
-            elif prepared_command is not None:
-                prepared = claimed_legacy_complete(
-                    execution.identity, native_call_id, prepared_command,
-                    store=self.store, now=self.now(),
-                )
-                if prepared is not None:
-                    updated = {
-                        **self._validated_shell_input(harness, tool_input),
-                        "command": shlex.join(prepared.rewritten_argv),
-                    }
+            if claim and not self.ingress.settle_turn(execution.handle):
+                raise BridgeError(503, UNSETTLED_STOP)
+            updated = None
+            if prepared_command is not None:
+                updated = {
+                    **self._validated_shell_input(harness, tool_input),
+                    "command": shlex.join(rewrite_legacy_complete(prepared_command, execution.handle)),
+                }
             lifecycle = self._record(
                 harness, "tool_start", execution,
                 _event_id("tool-start", harness, session_id, agent_id, native_call_id),
@@ -594,8 +569,6 @@ class CursorAdapter(ClaudeCodexAdapter):
 
     @staticmethod
     def _deny(message: str) -> dict:
-        if message == "handle belongs to another native session":
-            message = "handle does not belong to the bound Cursor session"
         return {"permission": "deny", "agent_message": message, "user_message": message}
 
     @staticmethod
@@ -621,9 +594,8 @@ class CursorAdapter(ClaudeCodexAdapter):
         return _bounded(payload.get("generation_id"), "generation_id")
 
     @staticmethod
-    def _mcp_tool(tool_name: str) -> str | None:
-        prefix = "MCP:"
-        return tool_name[len(prefix):] if tool_name in CURSOR_MCP_TOOLS else None
+    def _is_claim(tool_name: str) -> bool:
+        return tool_name == CURSOR_CLAIM_TOOL
 
     @staticmethod
     def _validated_shell_input(harness: str, tool_input: dict) -> dict:
@@ -638,13 +610,9 @@ class CursorAdapter(ClaudeCodexAdapter):
 
     def _start_output(self, harness: str, lifecycle: dict) -> AdapterResult:
         handle = lifecycle["handle"]
-        context = (
-            f"{self.instructions_provider(handle).rstrip()}\n\n"
-            f"Kanban work handle: {handle}"
-        )
         return AdapterResult({
             "env": {"KANBAN_WORK_HANDLE": handle},
-            "additional_context": context,
+            "additional_context": _context(self.instructions_provider("cursor"), handle),
         }, lifecycle)
 
     def _session_start(self, harness: str, payload: dict) -> AdapterResult:
@@ -707,15 +675,13 @@ class CursorAdapter(ClaudeCodexAdapter):
     def _subagent_start(self, harness: str, payload: dict) -> AdapterResult:
         if payload.get("parent_conversation_id") != payload.get("conversation_id"):
             raise BridgeError(422, "parent_conversation_id must match conversation_id")
-        result = super()._subagent_start("cursor", payload)
-        handle = result.lifecycle["handle"]
+        return super()._subagent_start("cursor", payload)
+
+    def _subagent_output(self, harness: str, lifecycle: dict) -> AdapterResult:
         return AdapterResult({
             "permission": "allow",
-            "additional_context": (
-                f"{self.instructions_provider(handle).rstrip()}\n\n"
-                f"Kanban work handle: {handle}"
-            ),
-        }, result.lifecycle)
+            "additional_context": _context(self.instructions_provider("cursor"), lifecycle["handle"]),
+        }, lifecycle)
 
     def _subagent_stop(self, harness: str, payload: dict) -> AdapterResult:
         # Cursor's documented event has no subagent_id. Summaries, task text,
@@ -925,7 +891,7 @@ class OpenCodeAdapter:
             "native_session_id": session_id,
             "subagent_id": None,
             "checkout": self._directory(payload),
-            "lifecycle_capable": False,
+            "lifecycle_capable": qualified_client_version("opencode", self._version(payload)),
         })
         execution = self.store.get_execution(lifecycle["handle"])
         if execution is None:
@@ -953,10 +919,7 @@ class OpenCodeAdapter:
 
     @staticmethod
     def _identity_output(execution: Execution) -> dict:
-        return {
-            "handle": execution.handle,
-            "lifecycle_capable": execution.lifecycle_capable,
-        }
+        return {"handle": execution.handle}
 
     def _session_created(self, payload: dict) -> AdapterResult:
         session_id = _bounded(payload.get("sessionID"), "sessionID")
@@ -1089,10 +1052,6 @@ class OpenCodeAdapter:
         return AdapterResult({}, lifecycle)
 
     @staticmethod
-    def _mcp_tool(tool_name: str) -> str | None:
-        return OPENCODE_MCP_TOOLS.get(tool_name)
-
-    @staticmethod
     def _tool_start_id(instance_id: str, session_id: str,
                        call_id: str, tool_name: str) -> str:
         return _event_id(
@@ -1101,38 +1060,28 @@ class OpenCodeAdapter:
 
     def _tool_before(self, payload: dict) -> AdapterResult:
         tool_name = _bounded(payload.get("tool"), "tool")
-        mcp_tool = self._mcp_tool(tool_name)
         args = payload.get("args")
         command = args.get("command") if tool_name == "bash" and isinstance(args, dict) else None
         prepared_command = command if looks_like_legacy_complete(command) else None
-        requires_identity = mcp_tool is not None and mcp_tool not in READ_TOOLS
         session_id = payload.get("sessionID")
         call_id = payload.get("callID")
         if not isinstance(session_id, str) or not session_id.strip() or not isinstance(
             call_id, str
         ) or not call_id.strip():
-            if requires_identity:
-                raise BridgeError(409, OPENCODE_IDENTITY_ERROR)
+            if prepared_command is not None:
+                raise BridgeError(422, DENIAL)
             return AdapterResult({})
         session_id = _bounded(session_id, "sessionID")
         call_id = _bounded(call_id, "callID")
         instance_id = self._instance(payload)
         execution, _ = self._session_or_observe(payload, "tool.execute.before")
-
+        if tool_name == OPENCODE_CLAIM_TOOL and not self.ingress.settle_turn(execution.handle):
+            raise BridgeError(503, UNSETTLED_STOP)
         output = {}
-        if mcp_tool is not None and mcp_tool not in READ_TOOLS:
-            normalized = normalize_tool_args(mcp_tool, args)
-            self.store.permit_call(
-                execution.identity, call_id, mcp_tool, normalized, self.now()
-            )
-            output["args"] = normalized_dict(mcp_tool, args)
-        elif prepared_command is not None:
-            prepared = claimed_legacy_complete(
-                execution.identity, call_id, command, store=self.store, now=self.now()
-            )
-            if prepared is not None:
-                output["args"] = {"command": shlex.join(prepared.rewritten_argv)}
-
+        if prepared_command is not None:
+            output["args"] = {"command": shlex.join(
+                rewrite_legacy_complete(prepared_command, execution.handle)
+            )}
         lifecycle = self._record(
             "tool_start", execution,
             self._tool_start_id(instance_id, session_id, call_id, tool_name),
@@ -1164,7 +1113,10 @@ class OpenCodeAdapter:
         return AdapterResult({}, lifecycle)
 
     def _system_transform(self, payload: dict) -> AdapterResult:
+        # Every model request passes here, so it is the turn start: settle
+        # the previous turn's Stop before the model can claim anything.
         execution, lifecycle = self._session_or_observe(payload, "system.transform")
+        self.ingress.settle_turn(execution.handle)
         return AdapterResult(self._identity_output(execution), lifecycle)
 
     def adapt(self, event_name: str, payload: dict) -> AdapterResult:

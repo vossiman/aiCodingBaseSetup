@@ -84,46 +84,6 @@ _fake_checkout() {
   cd "$dir" || return 1
 }
 
-# A bridge-shaped fake for the legacy completion adapter. The supplied handle
-# is intentionally only recorded as a hint; KANBAN_FAKE_BRIDGE=deny simulates
-# the real bridge refusing it because no matching native pre-call permit exists.
-_fake_kanban_work() {
-  mkdir -p "$TMPDIR/bin"
-  cat > "$TMPDIR/bin/kanban-work" <<'EOF'
-#!/usr/bin/env python3
-import json, os, sys
-operation = sys.argv[2]
-payload = json.load(sys.stdin)
-with open(os.environ["KANBAN_FAKE_LOG"], "a") as stream:
-    stream.write(json.dumps({"operation": operation, "payload": payload}, sort_keys=True) + "\n")
-if operation == "lookup" and os.environ.get("KANBAN_FAKE_LOOKUP") == "unknown":
-    print(json.dumps({"ok": False, "error": {"code": 404, "message": "unknown work handle"}}))
-    raise SystemExit(1)
-elif operation == "lookup" and os.environ.get("KANBAN_FAKE_LOOKUP") == "broken":
-    print(json.dumps({"ok": False, "error": {"code": 503, "message": "registry unavailable"}}))
-    raise SystemExit(1)
-elif operation == "lookup":
-    claim = {
-        "id": "claim-fixture", "ticket": os.environ.get("KANBAN_FAKE_TICKET", "MYREPO-1")
-    }
-    if os.environ.get("KANBAN_FAKE_TICKET_ID"):
-        claim["ticket_id"] = os.environ["KANBAN_FAKE_TICKET_ID"]
-    print(json.dumps({"ok": True, "data": {
-        "handle": payload["handle"], "active_claim": {
-            **claim
-        }
-    }}))
-elif os.environ.get("KANBAN_FAKE_BRIDGE") == "deny":
-    print(json.dumps({"ok": False, "error": {"code": 403, "message": "matching native pre-call permit required"}}))
-    raise SystemExit(1)
-else:
-    print(json.dumps({"ok": True, "data": {"claim": {"id": "claim-fixture"}, "ticket": {"key": "MYREPO-1", "status": "done"}}}))
-EOF
-  chmod +x "$TMPDIR/bin/kanban-work"
-  export PATH="$TMPDIR/bin:$PATH"
-  export KANBAN_FAKE_LOG="$TMPDIR/kanban-work.log"
-}
-
 # A board-shaped server: it knows which repos are registered, 400s an
 # unknown one the way resolve_repo does, and appends "METHOD PATH BODY" to
 # $TMPDIR/requests so a test can assert what was actually sent.
@@ -162,11 +122,24 @@ class H(http.server.BaseHTTPRequestHandler):
             # surfaces whatever comes back rather than deriving its own.
             key = "".join(c for c in payload["repo"] if c.isalnum()).upper() + "-1"
             return self._reply(201, {"id": "new-id", "key": key, **payload})
+        if self.command == "GET" and self.path.startswith("/api/work/handles/"):
+            mode = os.environ.get("KANBAN_FAKE_SESSION", "unregistered")
+            if mode == "unregistered":
+                return self._reply(409, {"detail": "Work session not registered yet; retry in a few seconds"})
+            if mode == "broken":
+                return self._reply(500, {"detail": "database unavailable"})
+            claims = [] if mode == "idle" else [{"id": "claim-fixture", "ticket_id": mode,
+                                                 "work_session_id": "ws-fixture"}]
+            return self._reply(200, {"id": "ws-fixture", "claims": claims})
+        if self.command == "POST" and self.path.startswith("/api/work/claims/"):
+            return self._reply(200, {"claim": {"id": "claim-fixture"},
+                                     "ticket": {"key": "MYREPO-1", "status": "done"}})
         if self.command == "GET" and self.path.startswith("/api/tickets/"):
             key = self.path.rsplit("/", 1)[1]
             if key == "MISSING-1":
                 return self._reply(404, {"detail": "Ticket not found"})
-            return self._reply(200, {"id": "some-uuid", "key": key, "title": "a ticket",
+            ticket_id = key if len(key) == 36 else "id-" + key.upper()
+            return self._reply(200, {"id": ticket_id, "key": key.upper(), "title": "a ticket",
                                      "comments": [{"id": "c1", "author": "owner", "body": "please use the blue one"}]})
         if self.command == "PATCH" and self.path.startswith("/api/tickets/"):
             return self._reply(200, {"id": self.path.rsplit("/", 1)[1], **payload})
@@ -411,50 +384,55 @@ EOF
 
 @test "--done with evidence and no work session records evidence, then sets Done" {
   _start_api_server myrepo
-  _fake_kanban_work
   run "$KP" --done MYREPO-1 --evidence "tests pass" --reference "PR #7"
   [ "$status" -eq 0 ] || { echo "$output"; false; }
-  [ ! -f "$KANBAN_FAKE_LOG" ]
   run cat "$TMPDIR/requests"
   [ "${#lines[@]}" -eq 2 ]
   [[ "${lines[0]}" == "POST /api/tickets/MYREPO-1/comments "*"tests pass"*"PR #7"* ]]
   [[ "${lines[1]}" == 'PATCH /api/tickets/MYREPO-1 {"status": "done"}' ]]
 }
 
-@test "--done with evidence treats an unknown session handle as no session" {
+@test "--done with evidence treats an unregistered session handle as no session" {
+  export KANBAN_WORK_HANDLE="handle-hint" KANBAN_FAKE_SESSION=unregistered
   _start_api_server myrepo
-  _fake_kanban_work
-  export KANBAN_WORK_HANDLE="handle-hint" KANBAN_FAKE_LOOKUP=unknown
   run "$KP" --done MYREPO-1 --evidence "tests pass"
   [ "$status" -eq 0 ] || { echo "$output"; false; }
   run cat "$TMPDIR/requests"
-  [ "${#lines[@]}" -eq 2 ]
-  [[ "${lines[1]}" == 'PATCH /api/tickets/MYREPO-1 {"status": "done"}' ]]
+  [ "${#lines[@]}" -eq 3 ]
+  [[ "${lines[0]}" == "GET /api/work/handles/handle-hint "* ]]
+  [[ "${lines[2]}" == 'PATCH /api/tickets/MYREPO-1 {"status": "done"}' ]]
 }
 
-@test "--done with evidence fails closed when the claim lookup errors" {
+@test "--done with evidence and a session without a claim records evidence, then sets Done" {
+  export KANBAN_FAKE_SESSION=idle
   _start_api_server myrepo
-  _fake_kanban_work
-  export KANBAN_WORK_HANDLE="handle-hint" KANBAN_FAKE_LOOKUP=broken
+  run "$KP" --done MYREPO-1 --evidence "tests pass" --work-handle "handle-hint"
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  run cat "$TMPDIR/requests"
+  [ "${#lines[@]}" -eq 3 ]
+  [[ "${lines[1]}" == "POST /api/tickets/MYREPO-1/comments "* ]]
+}
+
+@test "--done with evidence fails closed when the board cannot resolve the handle" {
+  export KANBAN_WORK_HANDLE="handle-hint" KANBAN_FAKE_SESSION=broken
+  _start_api_server myrepo
   run "$KP" --done MYREPO-1 --evidence "tests pass"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"registry unavailable"* ]]
-  [ ! -f "$TMPDIR/requests" ]
+  [[ "$output" == *"could not resolve the work handle"* ]]
+  run cat "$TMPDIR/requests"
+  [ "${#lines[@]}" -eq 1 ]
 }
 
 @test "--done with blank evidence is rejected before any request" {
   _start_api_server myrepo
-  _fake_kanban_work
   run "$KP" --done MYREPO-1 --evidence "   "
   [ "$status" -ne 0 ]
   [[ "$output" == *"must not be blank"* ]]
   [ ! -f "$TMPDIR/requests" ]
-  [ ! -f "$KANBAN_FAKE_LOG" ]
 }
 
 @test "--done with evidence does not set Done when the evidence comment fails" {
   _start_api_server myrepo
-  _fake_kanban_work
   run "$KP" --done MISSING-1 --evidence "tests pass"
   [ "$status" -ne 0 ]
   run cat "$TMPDIR/requests"
@@ -462,10 +440,9 @@ EOF
   [[ "${lines[0]}" == "POST "* ]]
 }
 
-@test "--done with evidence rejects every legacy mutation argument before bridge lookup" {
-  _start_api_server myrepo
-  _fake_kanban_work
+@test "--done with evidence rejects every legacy mutation argument before any request" {
   export KANBAN_WORK_HANDLE="handle-hint"
+  _start_api_server myrepo
   local -a incompatible=(title body status priority swimlane due)
   local name
   for name in "${incompatible[@]}"; do
@@ -479,78 +456,57 @@ EOF
     esac
     [ "$status" -ne 0 ]
     [[ "$output" == *"--done --evidence cannot be combined"* ]]
-    [ ! -f "$KANBAN_FAKE_LOG" ]
   done
   [ ! -f "$TMPDIR/requests" ]
 }
 
-@test "--done with evidence delegates the bound claim and references to kanban-work" {
+@test "--done with evidence completes through the session's claim with its references" {
+  export KANBAN_WORK_HANDLE="handle-hint" KANBAN_FAKE_SESSION=id-MYREPO-1
   _start_api_server myrepo
-  _fake_kanban_work
-  export KANBAN_WORK_HANDLE="handle-hint"
   run "$KP" --done myrepo-1 --evidence "python tests pass" --reference "commit abc" --reference "CI run 7"
-  [ "$status" -eq 0 ]
-  run python3 - "$KANBAN_FAKE_LOG" <<'EOF'
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  run python3 - "$TMPDIR/requests" <<'EOF'
 import json, sys
-calls = [json.loads(line) for line in open(sys.argv[1])]
-assert calls == [
-    {"operation": "lookup", "payload": {"handle": "handle-hint"}},
-    {"operation": "execute", "payload": {
-        "handle": "handle-hint", "operation": "complete_ticket", "payload": {
-            "claim_id": "claim-fixture", "evidence": "python tests pass",
-            "references": ["commit abc", "CI run 7"],
-        },
-    }},
-]
+lines = open(sys.argv[1]).read().splitlines()
+assert [line.split(" ", 2)[:2] for line in lines] == [
+    ["GET", "/api/work/handles/handle-hint"],
+    ["GET", "/api/tickets/myrepo-1"],
+    ["POST", "/api/work/claims/claim-fixture/complete"],
+], lines
+body = json.loads(lines[2].split(" ", 2)[2])
+assert body.pop("operation_id")
+assert body == {"work_session_id": "ws-fixture", "evidence": "python tests pass",
+                "references": ["commit abc", "CI run 7"]}, body
 EOF
-  [ "$status" -eq 0 ]
-  [ ! -f "$TMPDIR/requests" ]
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
 
 @test "--done evidence refuses a claim for another ticket" {
+  export KANBAN_WORK_HANDLE="handle-hint" KANBAN_FAKE_SESSION=id-MYREPO-2
   _start_api_server myrepo
-  _fake_kanban_work
-  export KANBAN_WORK_HANDLE="handle-hint"
-  export KANBAN_FAKE_TICKET="MYREPO-2"
   run "$KP" --done MYREPO-1 --evidence "tests pass"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"not the bound session's current claim"* ]]
-  [ "$(wc -l < "$KANBAN_FAKE_LOG")" -eq 1 ]
-  [ ! -f "$TMPDIR/requests" ]
+  [[ "$output" == *"not the session's current claim"* ]]
+  if grep -q "complete\|PATCH\|comments" "$TMPDIR/requests"; then false; fi
 }
 
 @test "--done evidence accepts the active claim ticket UUID" {
-  _start_api_server myrepo
-  _fake_kanban_work
   export KANBAN_WORK_HANDLE="handle-hint"
-  export KANBAN_FAKE_TICKET_ID="44444444-4444-4444-8444-444444444444"
-  run "$KP" --done "$KANBAN_FAKE_TICKET_ID" --evidence "tests pass"
-  [ "$status" -eq 0 ]
-  [ "$(wc -l < "$KANBAN_FAKE_LOG")" -eq 2 ]
-  [ ! -f "$TMPDIR/requests" ]
+  export KANBAN_FAKE_SESSION="44444444-4444-4444-8444-444444444444"
+  _start_api_server myrepo
+  run "$KP" --done "44444444-4444-4444-8444-444444444444" --evidence "tests pass"
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  grep -q "POST /api/work/claims/claim-fixture/complete" "$TMPDIR/requests"
 }
 
-@test "--done evidence rejects a UUID outside the active claim identities" {
-  _start_api_server myrepo
-  _fake_kanban_work
+@test "--done evidence rejects a UUID outside the active claim" {
   export KANBAN_WORK_HANDLE="handle-hint"
-  export KANBAN_FAKE_TICKET_ID="44444444-4444-4444-8444-444444444444"
+  export KANBAN_FAKE_SESSION="44444444-4444-4444-8444-444444444444"
+  _start_api_server myrepo
   run "$KP" --done "55555555-5555-4555-8555-555555555555" --evidence "tests pass"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"not the bound session's current claim"* ]]
-  [ "$(wc -l < "$KANBAN_FAKE_LOG")" -eq 1 ]
-  [ ! -f "$TMPDIR/requests" ]
-}
-
-@test "--work-handle is only a hint and cannot bypass a missing native permit" {
-  _start_api_server myrepo
-  _fake_kanban_work
-  export KANBAN_FAKE_BRIDGE="deny"
-  run "$KP" --done MYREPO-1 --evidence "tests pass" --work-handle "peer-supplied-handle"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"matching native pre-call permit required"* ]]
-  [ "$(wc -l < "$KANBAN_FAKE_LOG")" -eq 2 ]
-  [ ! -f "$TMPDIR/requests" ]
+  [[ "$output" == *"not the session's current claim"* ]]
+  if grep -q "complete" "$TMPDIR/requests"; then false; fi
 }
 
 @test "--patch sends only the fields given" {

@@ -51,6 +51,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 DEFAULT_URL = "https://kanban.dataprospectors.at"
 SECRETS = pathlib.Path.home() / ".aicodingsetup" / ".secrets.env"
@@ -65,7 +66,8 @@ JSON_OPERATIONS = {
     "list_repos", "list_tickets", "get_ticket", "create_ticket", "update_ticket",
     "add_comment", "link_tickets", "unlink_tickets", "register_session", "get_session",
     "rebind_session", "end_session", "claim_ticket", "activity", "checkpoint_work",
-    "release_ticket", "complete_ticket", "override_claim",
+    "release_ticket", "complete_ticket", "override_claim", "resolve_handle",
+    "session_activity", "release_active", "cancel_stop", "mcp_instructions",
 }
 
 
@@ -413,18 +415,52 @@ def dispatch_json(operation: str, payload: dict) -> tuple[int, object]:
         return _request(operation, "DELETE", f"/api/tickets/{urllib.parse.quote(ticket, safe='')}/links/{link_id}")
 
     if operation == "register_session":
-        required = ("harness", "native_session_id", "run_generation", "label", "repo", "lifecycle_capable", "operation_id")
-        _shape(operation, payload, required=required, optional=("subagent_id",))
+        required = ("harness", "native_session_id", "run_generation", "label", "lifecycle_capable", "operation_id")
+        _shape(operation, payload, required=required, optional=("subagent_id", "handle", "repo"))
         _enum(payload["harness"], "harness", HARNESSES)
         _text(payload["native_session_id"], "native_session_id")
         _optional_text(payload.get("subagent_id"), "subagent_id")
         _text(payload["run_generation"], "run_generation")
+        _optional_text(payload.get("handle"), "handle")
         _text(payload["label"], "label")
-        _text(payload["repo"], "repo")
+        _optional_text(payload.get("repo"), "repo")
         if type(payload["lifecycle_capable"]) is not bool:
             raise InputError(422, "lifecycle_capable must be a boolean")
         _operation_id(payload)
         return _request(operation, "POST", "/api/work/sessions", payload)
+
+    if operation == "resolve_handle":
+        _shape(operation, payload, required=("handle",))
+        return _request(operation, "GET", f"/api/work/handles/{_segment(payload['handle'], 'handle')}")
+
+    if operation == "mcp_instructions":
+        _shape(operation, payload)
+        return _request(operation, "GET", "/api/mcp/instructions")
+
+    if operation in {"session_activity", "release_active", "cancel_stop"}:
+        required = {
+            "session_activity": ("work_session_id", "operation_id", "run_generation", "observed_at", "sequence"),
+            "release_active": ("work_session_id", "operation_id", "observed_at", "reason"),
+            "cancel_stop": ("work_session_id", "operation_id"),
+        }[operation]
+        optional = ("handoff",) if operation == "release_active" else ()
+        _shape(operation, payload, required=required, optional=optional)
+        session = _text(payload["work_session_id"], "work_session_id")
+        _operation_id(payload)
+        if operation == "session_activity":
+            _text(payload["run_generation"], "run_generation")
+            _timestamp(payload["observed_at"])
+            if isinstance(payload["sequence"], bool) or not isinstance(payload["sequence"], int) or payload["sequence"] < 0:
+                raise InputError(422, "sequence must be a nonnegative integer")
+        elif operation == "release_active":
+            _timestamp(payload["observed_at"])
+            _enum(payload["reason"], "reason", {"paused", "stopped"})
+            _optional_text(payload.get("handoff"), "handoff", maximum=10_000)
+        suffix = {"session_activity": "activity", "release_active": "release-active",
+                  "cancel_stop": "cancel-stop"}[operation]
+        body = {key: value for key, value in payload.items() if key != "work_session_id"}
+        return _request(operation, "POST",
+                        f"/api/work/sessions/{urllib.parse.quote(session, safe='')}/{suffix}", body)
 
     if operation == "get_session":
         _shape(operation, payload, required=("work_session_id",))
@@ -576,28 +612,20 @@ def complete_without_claim(ticket: str, evidence: str, references: list[str]) ->
     return 0 if status < 400 else 1
 
 
-def run_kanban_work(operation: str, payload: dict, *, missing_ok: bool = False) -> dict | None:
-    try:
-        result = subprocess.run(
-            ["kanban-work", "--json", operation],
-            input=json.dumps(payload, separators=(",", ":")),
-            capture_output=True, text=True, timeout=30,
-        )
-        envelope = json.loads(result.stdout)
-        if not isinstance(envelope, dict):
-            raise ValueError("non-object envelope")
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError) as error:
-        die(f"kanban-work failed: {type(error).__name__}")
-    if result.returncode != 0 or not envelope.get("ok"):
-        detail = envelope.get("error", {})
-        # Only an unknown handle means "no session"; any other failure fails closed.
-        if missing_ok and isinstance(detail, dict) and detail.get("code") == 404:
-            return None
-        message = detail.get("message") if isinstance(detail, dict) else None
-        die(message or "kanban-work rejected the operation")
-    if not isinstance(envelope.get("data"), dict):
-        die("kanban-work returned an invalid success envelope")
-    return envelope
+def session_claim(handle: str) -> tuple[str, dict] | None:
+    """The board session behind a work handle and its live claim; None when it has neither."""
+    status, session = call("GET", f"/api/work/handles/{urllib.parse.quote(handle, safe='')}")
+    if status == 409 or status == 404:
+        return None
+    if status >= 400 or not isinstance(session, dict):
+        die(f"the board could not resolve the work handle (HTTP {status})")
+    claims = session.get("claims")
+    if not isinstance(claims, list) or not claims:
+        return None
+    claim = claims[0]
+    if not isinstance(claim, dict) or not isinstance(claim.get("id"), str):
+        die("the board returned an invalid claim for the work handle")
+    return session["id"], claim
 
 
 def selftest() -> int:
@@ -859,35 +887,25 @@ def main() -> int:
             if not a.evidence.strip():
                 p.error("--evidence must not be blank")
             handle = a.work_handle or os.environ.get("KANBAN_WORK_HANDLE")
-            claim = None
-            if handle:
-                current = run_kanban_work("lookup", {"handle": handle}, missing_ok=not a.work_handle)
-                candidate = current["data"].get("active_claim") if current else None
-                if isinstance(candidate, dict):
-                    targets = {str(candidate.get("ticket", "")).upper()}
-                    if candidate.get("ticket_id"):
-                        targets.add(str(candidate["ticket_id"]).upper())
-                    if a.done.upper() not in targets:
-                        die("--done target is not the bound session's current claim; use the Kanban MCP")
-                    claim = candidate
-            if claim is None:
-                if a.work_handle:
-                    die("--done --evidence found no active claim for the bound session")
+            found = session_claim(handle) if handle else None
+            if found is None:
                 return complete_without_claim(a.done, a.evidence, a.reference or [])
-            claim_id = claim.get("id")
-            if not isinstance(claim_id, str) or not claim_id:
-                die("kanban-work returned an invalid active claim")
-            completed = run_kanban_work("execute", {
-                "handle": handle,
-                "operation": "complete_ticket",
-                "payload": {
-                    "claim_id": claim_id,
-                    "evidence": a.evidence,
-                    "references": a.reference or [],
-                },
-            })
-            emit(completed["data"])
-            return 0
+            session_id, claim = found
+            status, ticket = call("GET", f"/api/tickets/{urllib.parse.quote(a.done, safe='')}")
+            if status >= 400 or not isinstance(ticket, dict):
+                print(status)
+                emit(ticket)
+                return 1
+            if ticket.get("id") != claim.get("ticket_id"):
+                die("--done target is not the session's current claim; use the Kanban MCP")
+            status, out = call(
+                "POST", f"/api/work/claims/{urllib.parse.quote(claim['id'], safe='')}/complete",
+                {"operation_id": str(uuid.uuid4()), "work_session_id": session_id,
+                 "evidence": a.evidence, "references": a.reference or []},
+            )
+            print(status)
+            emit(out)
+            return 0 if status < 400 else 1
         ticket_id = a.patch or a.done
         fields = {"status": "done"} if a.done else {}
         for name in ("title", "body", "status", "priority", "swimlane"):

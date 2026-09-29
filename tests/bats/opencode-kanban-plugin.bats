@@ -28,7 +28,7 @@ jq -nc --argjson argv "$argv" --argjson stdin "$payload" \
   '{argv:$argv,stdin:$stdin}' >> "$BRIDGE_CALLS"
 
 if [ "$1 $2" = "--json instructions" ]; then
-  printf '%s\n' '{"ok":true,"data":{"text":"Claim a ticket before implementation.","lifecycle_capable":false,"handle":null}}'
+  printf '%s\n' '{"ok":true,"data":{"text":"Claim a ticket before implementation."}}'
   exit 0
 fi
 
@@ -40,12 +40,11 @@ $payload
 EOF_PAYLOAD
 )
     case "$session" in
-      ses-parent) handle=11111111-1111-4111-8111-111111111111; capable=true ;;
-      ses-child) handle=22222222-2222-4222-8222-222222222222; capable=true ;;
-      *) handle=33333333-3333-4333-8333-333333333333; capable=false ;;
+      ses-parent) handle=11111111-1111-4111-8111-111111111111 ;;
+      ses-child) handle=22222222-2222-4222-8222-222222222222 ;;
+      *) handle=33333333-3333-4333-8333-333333333333 ;;
     esac
-    jq -nc --arg handle "$handle" --argjson capable "$capable" \
-      '{handle:$handle,lifecycle_capable:$capable}'
+    jq -nc --arg handle "$handle" '{handle:$handle}'
     ;;
   tool.execute.before)
     tool=$(jq -r '.tool' <<EOF_PAYLOAD
@@ -60,28 +59,9 @@ EOF_PAYLOAD
 $payload
 EOF_PAYLOAD
 )
-    if [ -z "$session" ] || [ -z "$call" ]; then
-      printf '%s\n' '{"ok":false,"error":{"code":409,"message":"OpenCode lifecycle identity is unavailable; Kanban mutations require a qualified native session"}}'
+    if [ "$tool" = kanban_claim_ticket ] && [ -n "${FAKE_UNSETTLED:-}" ]; then
+      printf '%s\n' '{"ok":false,"error":{"code":503,"message":"the board has not confirmed the previous turn'"'"'s stop; retry the claim"}}'
       exit 1
-    fi
-    count=$(jq -s --arg call "$call" '[.[] | select(.stdin.callID == $call)] | length' "$BRIDGE_CALLS")
-    if [ "$count" -gt 1 ]; then
-      printf '%s\n' '{"ok":false,"error":{"code":403,"message":"handle belongs to another native session"}}'
-      exit 1
-    fi
-    if [ "$tool" = kanban_claim_ticket ]; then
-      handle=$(jq -r '.args.handle' <<EOF_PAYLOAD
-$payload
-EOF_PAYLOAD
-)
-      if [ "$handle" != 11111111-1111-4111-8111-111111111111 ]; then
-        printf '%s\n' '{"ok":false,"error":{"code":403,"message":"handle belongs to another native session"}}'
-        exit 1
-      fi
-      jq -c '.args + {operation_id:null} | {args:.}' <<EOF_PAYLOAD
-$payload
-EOF_PAYLOAD
-      exit 0
     fi
     if [ "$tool" = bash ]; then
       command=$(jq -r '.args.command // empty' <<EOF_PAYLOAD
@@ -152,9 +132,8 @@ for (let i = 0; i < 2; i++) {
   await hooks["experimental.chat.system.transform"]({ sessionID: "ses-parent", model: {} }, output)
   assert.strictEqual(output.system, original)
   assert.equal(output.system[0], "base")
-  assert.match(output.system.join("\n"), /Kanban work session handle: 11111111/)
-  assert.match(output.system.join("\n"), /Claim a ticket before implementation/)
-  assert.match(output.system.join("\n"), /Lifecycle mutations: available/)
+  assert.equal(output.system[1],
+    "Claim a ticket before implementation.\n\nKanban work handle: 11111111-1111-4111-8111-111111111111")
 }
 const absent = { system: ["base"] }
 await hooks["experimental.chat.system.transform"]({ model: {} }, absent)
@@ -164,7 +143,7 @@ JS
   [ "$(jq -s '[.[] | select(.argv == ["--json","instructions"])] | length' "$BRIDGE_CALLS")" -eq 1 ]
 }
 
-@test "OpenCode before mutates existing MCP args and successful after carries exact identity" {
+@test "OpenCode before leaves Kanban MCP args untouched and after carries exact identity" {
   export INJECTION_MARKER="$HOME/not-created"
   run node --input-type=module <<'JS'
 import assert from "node:assert/strict"
@@ -176,7 +155,7 @@ const output = { args: { handle: "11111111-1111-4111-8111-111111111111", ticket:
 const original = output.args
 await hooks["tool.execute.before"](input, output)
 assert.strictEqual(output.args, original)
-assert.equal(output.args.operation_id, null)
+assert.deepEqual(output.args, { handle: "11111111-1111-4111-8111-111111111111", ticket: "KANBAN-2" })
 await hooks["tool.execute.after"]({ ...input, args: output.args }, { content: [{ type: "text", text: "ok" }] })
 JS
   [ "$status" -eq 0 ]
@@ -189,23 +168,61 @@ JS
   ' "$BRIDGE_CALLS"
 }
 
-@test "OpenCode missing identity leaves reads available and blocks mutations before bridge execution" {
+@test "OpenCode missing identity leaves every Kanban tool to the hosted server" {
+  run node --input-type=module <<'JS'
+import { pathToFileURL } from "node:url"
+const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
+const hooks = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
+await hooks["tool.execute.before"]({ tool: "kanban_list_tickets" }, { args: {} })
+await hooks["tool.execute.before"](
+  { tool: "kanban_claim_ticket" },
+  { args: { handle: "11111111-1111-4111-8111-111111111111", ticket: "KANBAN-2" } },
+)
+JS
+  [ "$status" -eq 0 ]
+  [ ! -e "$BRIDGE_CALLS" ]
+}
+
+@test "OpenCode surfaces the claim gate's refusal as a tool error" {
+  export FAKE_UNSETTLED=1
   run node --input-type=module <<'JS'
 import assert from "node:assert/strict"
 import { pathToFileURL } from "node:url"
 const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
 const hooks = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
-await hooks["tool.execute.before"]({ tool: "kanban_list_tickets" }, { args: {} })
 await assert.rejects(
   hooks["tool.execute.before"](
-    { tool: "kanban_claim_ticket" },
-    { args: { handle: "11111111-1111-4111-8111-111111111111", ticket: "KANBAN-2" } },
+    { tool: "kanban_claim_ticket", sessionID: "ses-parent", callID: "call-1" },
+    { args: { ticket: "KANBAN-2" } },
   ),
-  /OpenCode lifecycle identity is unavailable/,
+  /has not confirmed the previous turn's stop/,
 )
 JS
   [ "$status" -eq 0 ]
-  [ ! -e "$BRIDGE_CALLS" ]
+}
+
+@test "OpenCode system transform still injects the handle when instructions are unavailable" {
+  cat > "$HOME/bin/fake-no-instructions" <<'EOF'
+#!/bin/sh
+cat >/dev/null
+if [ "$1 $2" = "--json instructions" ]; then
+  printf '%s\n' '{"ok":false,"error":{"code":502,"message":"kanban instructions are unavailable"}}'
+  exit 1
+fi
+printf '%s\n' '{"handle":"11111111-1111-4111-8111-111111111111"}'
+EOF
+  chmod +x "$HOME/bin/fake-no-instructions"
+  export AICODING_KANBAN_WORK="$HOME/bin/fake-no-instructions"
+  run node --input-type=module <<'JS'
+import assert from "node:assert/strict"
+import { pathToFileURL } from "node:url"
+const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
+const hooks = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
+const output = { system: [] }
+await hooks["experimental.chat.system.transform"]({ sessionID: "ses-parent", model: {} }, output)
+assert.deepEqual(output.system, ["Kanban work handle: 11111111-1111-4111-8111-111111111111"])
+JS
+  [ "$status" -eq 0 ]
 }
 
 @test "OpenCode missing identity leaves ordinary legacy CLI commands available" {
@@ -247,7 +264,7 @@ JS
   [ ! -e "$BRIDGE_CALLS" ]
 }
 
-@test "OpenCode shell rewrite is exact while unsafe peer replay and unrelated commands are safe" {
+@test "OpenCode shell rewrite is exact while unsafe and unrelated commands are safe" {
   run node --input-type=module <<'JS'
 import assert from "node:assert/strict"
 import { pathToFileURL } from "node:url"
@@ -260,7 +277,6 @@ await hooks["tool.execute.before"](input, output)
 assert.strictEqual(output.args, original)
 assert.equal(output.args.command, "kanban-post --done KANBAN-2 --evidence ok --work-handle 11111111-1111-4111-8111-111111111111")
 assert.equal(output.args.description, "keep")
-await assert.rejects(hooks["tool.execute.before"](input, { args: { command: "kanban-post --done KANBAN-2 --evidence ok" } }), /another native session/)
 await assert.rejects(hooks["tool.execute.before"](
   { tool: "bash", sessionID: "ses-parent", callID: "unsafe" },
   { args: { command: "kanban-post --done KANBAN-2 --evidence ok; echo bad" } },
@@ -270,10 +286,6 @@ await hooks["tool.execute.before"](
   { tool: "bash", sessionID: "ses-parent", callID: "ordinary" }, ordinary,
 )
 assert.deepEqual(ordinary.args, { command: "git status --short" })
-await assert.rejects(hooks["tool.execute.before"](
-  { tool: "kanban_claim_ticket", sessionID: "ses-parent", callID: "peer" },
-  { args: { handle: "22222222-2222-4222-8222-222222222222", ticket: "KANBAN-2" } },
-), /another native session/)
 JS
   [ "$status" -eq 0 ]
 }

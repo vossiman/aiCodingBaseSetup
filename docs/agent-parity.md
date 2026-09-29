@@ -46,12 +46,12 @@ per-user `/hooks` trust step. The memory wrapper tags retrieval as
 
 ## Kanban work lifecycle
 
-All four clients register the pinned `kanban-mcp` controller. The controller's
-`--instructions` output is the canonical workflow and tool-schema source.
-Python lifecycle adapters entered through `kanban-work hook` call that same
-public instructions operation through the bridge; the external OpenCode plugin
-calls `kanban-work --json instructions`. Setup guidance only points clients to
-that source.
+All four clients use the board's hosted MCP at
+`https://kanban.dataprospectors.at/mcp` with a bearer header rendered from
+`KANBAN_TOKEN`. Its `initialize` result carries the canonical workflow; Codex,
+Cursor and OpenCode receive the same text from `GET /api/mcp/instructions`
+through `kanban-work --json instructions` at session start. Setup guidance only
+points clients to that source.
 
 | Client | Native integration | Lifecycle behavior | Enforcement gate |
 |---|---|---|---|
@@ -64,19 +64,18 @@ Every supported client can bind, claim and complete, whatever its version.
 The clients ship several releases a day, so a per-version allowlist could never
 keep up; a release that breaks the hooks shows up in use.
 
-The local SQLite registry binds a handle to one native identity and run
-generation, consumes a matching pre-call permit once, renews activity while a
-tool is running, releases unfinished claims on a normal stop, and makes session
-end dominate later activity. It is operational coordination among processes
-running as one user, not an isolation boundary against that user. `kanban-post`
-is the credential-safe recovery CLI and the only reader of `KANBAN_TOKEN`; MCP
-configuration contains no board credential or endpoint.
+The local SQLite registry maps a handle to one native identity and run
+generation, queues session registration, activity, Stop release and session
+end, and records whether each Stop is settled. The pre-tool hook inspects only
+`claim_ticket`, and only to settle the previous turn's Stop first. It is
+operational coordination among processes running as one user, not an isolation
+boundary against that user. `kanban-post` is the credential-safe transport for
+the hooks and the recovery CLI.
 
 Native API references: [Claude Code hooks](https://code.claude.com/docs/en/hooks-guide),
 [Codex hooks](https://developers.openai.com/codex/hooks),
 [Cursor Agent hooks](https://cursor.com/docs/hooks), and
-[OpenCode plugins](https://opencode.ai/docs/plugins/). The controller uses the
-[Python MCP SDK 2.2.0](https://github.com/modelcontextprotocol/python-sdk/tree/v2.2.0).
+[OpenCode plugins](https://opencode.ai/docs/plugins/).
 
 ## Worktree isolation and coordination
 

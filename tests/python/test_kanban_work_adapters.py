@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -7,19 +8,21 @@ from pathlib import Path
 from unittest import mock
 
 from lib.kanban_work.adapters import (
+    UNSETTLED_STOP,
     ClaudeCodexAdapter,
     CursorAdapter,
     OpenCodeAdapter,
     _client_version,
+    _hook_instructions,
 )
 from lib.kanban_work.events import EventIngestor
 from lib.kanban_work.queue import LifecycleQueue
-from lib.kanban_work.schema import BridgeError, normalize_tool_args
+from lib.kanban_work.legacy import DENIAL
+from lib.kanban_work.schema import BridgeError
 from lib.kanban_work.store import Store
 
 
 NOW = datetime(2026, 9, 12, 12, tzinfo=UTC)
-CLAIM = "22222222-2222-4222-8222-222222222222"
 
 
 class Clock:
@@ -47,14 +50,17 @@ class AdapterTests(unittest.TestCase):
         self.clock = Clock()
         self.store = Store(self.state, now=self.clock)
         self.queue = LifecycleQueue(self.store, now=self.clock)
-        self.ingress = EventIngestor(self.store, self.queue, now=self.clock)
+        self.ingress = EventIngestor(
+            self.store, self.queue, now=self.clock, synchronous=False,
+            derive_repo=lambda checkout: None,
+        )
         self.versions = {"claude": "2.1.268", "codex": "0.154.0"}
         self.adapter = ClaudeCodexAdapter(
             self.store,
             self.ingress,
             now=self.clock,
             version_provider=lambda harness: self.versions[harness],
-            instructions_provider=lambda handle: f"Kanban workflow\nhandle={handle}",
+            instructions_provider=lambda harness: "Kanban workflow",
         )
 
     def tearDown(self):
@@ -179,70 +185,135 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn("KANBAN_TEST_TOKEN", kwargs["env"])
         self.assertNotIn("KANBAN_TOKEN", kwargs["env"])
 
-    def test_two_sessions_same_checkout_and_peer_handle_never_authorize_each_other(self):
-        first = self.start("claude", session="native-a")
-        second = self.start("claude", session="native-b")
-        self.prompt(session="native-a")
-        denied = self.pre(
-            "claude", "mcp__kanban__claim_ticket",
-            {"handle": second["handle"], "ticket": "KANBAN-2"}, session="native-a",
+    def test_start_context_is_handle_only_when_provider_has_no_instructions(self):
+        adapter = ClaudeCodexAdapter(
+            self.store, self.ingress, now=self.clock,
+            version_provider=lambda harness: self.versions[harness],
+            instructions_provider=lambda harness: None,
         )
-        output = denied.output["hookSpecificOutput"]
-        self.assertEqual(output["permissionDecision"], "deny")
-        self.assertIn("another native session", output["permissionDecisionReason"])
-        self.assertFalse(self.store.has_any_permit())
-        self.assertNotEqual(first["handle"], second["handle"])
-
-    def test_mutating_mcp_pretool_mints_exact_once_permit_for_actual_caller(self):
-        started = self.start("claude")
-        self.prompt()
-        args = {"handle": started["handle"], "ticket": "KANBAN-2"}
-        allowed = self.pre("claude", "mcp__kanban__claim_ticket", args)
+        result = adapter.adapt("claude", "SessionStart", self.start_payload())
         self.assertEqual(
-            allowed.output["hookSpecificOutput"]["permissionDecision"], "allow"
+            result.output["hookSpecificOutput"]["additionalContext"],
+            f"Kanban work handle: {result.lifecycle['handle']}",
         )
-        self.assertTrue(self.store.has_permit(
-            started["handle"], "claim_ticket", normalize_tool_args("claim_ticket", args)
-        ))
 
-        replay = self.pre("claude", "mcp__kanban__claim_ticket", args)
+    def test_start_context_appends_handle_after_provider_instructions(self):
+        seen = []
+
+        def provider(harness):
+            seen.append(harness)
+            return "Kanban workflow\n"
+
+        adapter = ClaudeCodexAdapter(
+            self.store, self.ingress, now=self.clock,
+            version_provider=lambda harness: self.versions[harness],
+            instructions_provider=provider,
+        )
+        result = adapter.adapt("codex", "SessionStart", self.start_payload())
         self.assertEqual(
-            replay.output["hookSpecificOutput"]["permissionDecision"], "deny"
+            result.output["hookSpecificOutput"]["additionalContext"],
+            f"Kanban workflow\n\nKanban work handle: {result.lifecycle['handle']}",
         )
+        self.assertEqual(seen, ["codex"])
 
-    def test_permit_digest_change_is_rejected_by_bridge_boundary(self):
+    def test_default_instructions_provider_returns_nothing_for_claude(self):
+        with mock.patch("lib.kanban_work.adapters.fetch_instructions") as fetch:
+            self.assertIsNone(_hook_instructions("claude"))
+        fetch.assert_not_called()
+
+    def test_claim_is_denied_while_an_earlier_stop_cannot_be_settled(self):
+        for harness in ("claude", "codex"):
+            with self.subTest(harness=harness):
+                started = self.start(harness)
+                self.prompt(harness)
+                with mock.patch.object(
+                    self.ingress, "settle_turn", return_value=False
+                ) as settle:
+                    denied = self.pre(
+                        harness, "mcp__kanban__claim_ticket", {"ticket": "KANBAN-2"},
+                        call="claim-denied",
+                    )
+                output = denied.output["hookSpecificOutput"]
+                self.assertEqual(output["permissionDecision"], "deny")
+                self.assertEqual(output["permissionDecisionReason"], UNSETTLED_STOP)
+                settle.assert_called_once_with(started["handle"])
+                self.assertIsNone(self.store.tool_operation(started["handle"], "claim-denied"))
+
+                with mock.patch.object(
+                    self.ingress, "settle_turn", return_value=True
+                ) as settle:
+                    allowed = self.pre(
+                        harness, "mcp__kanban__claim_ticket", {"ticket": "KANBAN-2"},
+                        call="claim-allowed",
+                    )
+                output = allowed.output["hookSpecificOutput"]
+                self.assertEqual(output["permissionDecision"], "allow")
+                self.assertNotIn("updatedInput", output)
+                settle.assert_called_once_with(started["handle"])
+                self.assertTrue(
+                    self.store.tool_operation(started["handle"], "claim-allowed")["active"]
+                )
+
+    def test_other_kanban_tools_are_allowed_without_inspecting_arguments(self):
         started = self.start("codex")
         self.prompt("codex")
-        args = {"handle": started["handle"], "ticket": "KANBAN-2"}
-        self.pre("codex", "mcp__kanban__claim_ticket", args)
-        with self.assertRaisesRegex(BridgeError, "digest does not match"):
-            self.store.consume_permit(
-                started["handle"], "claim_ticket",
-                normalize_tool_args("claim_ticket", {**args, "ticket": "KANBAN-3"}),
-                self.clock(),
-            )
+        cases = [
+            ("mcp__kanban__complete_ticket", {"handle": "not-a-uuid", "evidence": ""}),
+            ("mcp__kanban__release_ticket", "not-an-object"),
+            ("mcp__kanban__bind_work_session", {"unexpected": ["field"]}),
+            ("mcp__kanban__list_tickets", {}),
+        ]
+        with mock.patch.object(self.ingress, "settle_turn", return_value=False) as settle:
+            for index, (tool, args) in enumerate(cases):
+                with self.subTest(tool=tool):
+                    result = self.pre("codex", tool, args, call=f"other-{index}")
+                    output = result.output["hookSpecificOutput"]
+                    self.assertEqual(output["permissionDecision"], "allow")
+                    self.assertNotIn("updatedInput", output)
+                    self.assertTrue(
+                        self.store.tool_operation(started["handle"], f"other-{index}")["active"]
+                    )
+        settle.assert_not_called()
 
-    def test_missing_native_session_call_or_object_input_denies_mutating_tool(self):
-        started = self.start("codex")
+    def test_uncorrelatable_tool_calls_are_allowed(self):
+        self.start("codex")
         self.prompt("codex")
         base = self.tool_payload(
-            "mcp__kanban__claim_ticket",
-            {"handle": started["handle"], "ticket": "KANBAN-2"},
-            harness="codex",
+            "mcp__kanban__claim_ticket", {"ticket": "KANBAN-2"}, harness="codex",
         )
         cases = [
             {key: value for key, value in base.items() if key != "session_id"},
             {key: value for key, value in base.items() if key != "tool_use_id"},
-            {**base, "tool_input": "not-an-object"},
+            {**base, "turn_id": "never-submitted"},
         ]
-        for payload in cases:
-            result = self.adapter.adapt("codex", "PreToolUse", payload)
-            self.assertEqual(
-                result.output["hookSpecificOutput"]["permissionDecision"], "deny"
-            )
+        with mock.patch.object(self.ingress, "settle_turn", return_value=False) as settle:
+            for payload in cases:
+                result = self.adapter.adapt("codex", "PreToolUse", payload)
+                self.assertEqual(
+                    result.output["hookSpecificOutput"]["permissionDecision"], "allow"
+                )
+                self.assertIsNone(result.lifecycle)
+        settle.assert_not_called()
         shell = self.tool_payload("Bash", {"command": ["not", "text"]}, harness="codex")
         result = self.adapter.adapt("codex", "PreToolUse", shell)
         self.assertEqual(result.output["hookSpecificOutput"]["permissionDecision"], "allow")
+
+    def test_user_prompt_submit_settles_the_previous_turn_for_its_execution(self):
+        for harness in ("claude", "codex"):
+            with self.subTest(harness=harness):
+                started = self.start(harness)
+                self.prompt(harness, turn="turn-1")
+                self.adapter.adapt(harness, "Stop", {
+                    **self.prompt_payload(harness, turn="turn-1"),
+                    "hook_event_name": "Stop",
+                })
+                self.assertEqual(len(self.store.unsettled_stops(started["handle"])), 1)
+                with mock.patch.object(
+                    self.ingress, "settle_turn", wraps=self.ingress.settle_turn
+                ) as settle:
+                    self.prompt(harness, turn="turn-2")
+                settle.assert_called_once_with(started["handle"])
+                self.assertEqual(self.store.unsettled_stops(started["handle"]), [])
 
     def test_read_and_unrelated_tools_allow_without_prompt_correlation(self):
         self.start("codex")
@@ -250,7 +321,6 @@ class AdapterTests(unittest.TestCase):
         unrelated = self.pre("codex", "Bash", {"command": "git status --short"})
         self.assertEqual(read.output["hookSpecificOutput"]["permissionDecision"], "allow")
         self.assertEqual(unrelated.output["hookSpecificOutput"]["permissionDecision"], "allow")
-        self.assertFalse(self.store.has_any_permit())
 
     def test_delayed_post_after_resume_closes_only_captured_old_generation(self):
         old = self.start("codex")
@@ -298,7 +368,8 @@ class AdapterTests(unittest.TestCase):
             self.prompt(turn=f"turn-{index + 1}")
             result = self.adapter.adapt("claude", "Stop", stop)
             self.assertEqual(result.lifecycle["status"], "deferred_active_work")
-        self.assertEqual(self.queue.pending(started["handle"]), [])
+        self.assertNotIn("stop", [row.kind for row in self.queue.pending(started["handle"])])
+        self.assertEqual(self.store.unsettled_stops(started["handle"]), [])
 
     def test_child_stop_ends_child_without_releasing_parent(self):
         parent = self.start("claude")
@@ -311,6 +382,10 @@ class AdapterTests(unittest.TestCase):
             "hookSpecificOutput"]["additionalContext"])
         child_start = child_result.lifecycle
         child = child_start["handle"]
+        self.assertEqual(
+            child_result.output["hookSpecificOutput"]["additionalContext"],
+            f"Kanban workflow\n\nKanban work handle: {child}",
+        )
         self.assertNotEqual(child, parent["handle"])
 
         result = self.adapter.adapt(
@@ -359,16 +434,17 @@ class AdapterTests(unittest.TestCase):
         read = self.pre(
             "codex", "mcp__kanban__list_tickets", {}, agent="agent-1", turn="child-turn",
         )
-        args = {"handle": child["handle"], "ticket": "KANBAN-2"}
-        mutation = self.pre(
-            "codex", "mcp__kanban__claim_ticket", args,
-            agent="agent-1", turn="child-turn", call="child-claim",
-        )
+        with mock.patch.object(
+            self.ingress, "settle_turn", wraps=self.ingress.settle_turn
+        ) as settle:
+            claim = self.pre(
+                "codex", "mcp__kanban__claim_ticket", {"ticket": "KANBAN-2"},
+                agent="agent-1", turn="child-turn", call="child-claim",
+            )
         self.assertEqual(read.output["hookSpecificOutput"]["permissionDecision"], "allow")
-        self.assertEqual(mutation.output["hookSpecificOutput"]["permissionDecision"], "allow")
-        self.assertTrue(self.store.has_permit(
-            child["handle"], "claim_ticket", normalize_tool_args("claim_ticket", args)
-        ))
+        self.assertEqual(claim.output["hookSpecificOutput"]["permissionDecision"], "allow")
+        settle.assert_called_once_with(child["handle"])
+        self.assertTrue(self.store.tool_operation(child["handle"], "child-claim")["active"])
 
     def test_delayed_child_start_after_codex_resume_cannot_select_latest_parent(self):
         self.start("codex")
@@ -414,8 +490,6 @@ class AdapterTests(unittest.TestCase):
             self.subagent_payload("claude", "SubagentStart", session="final-parent",
                                   turn="final-turn"),
         ).lifecycle
-        self.store.record_bound(parent["handle"], "backend-parent", "kanban", "parent")
-        self.store.record_bound(child["handle"], "backend-child", "kanban", "child")
         self.adapter.adapt("claude", "SessionEnd", {
             "session_id": "final-parent", "hook_event_name": "SessionEnd",
             "reason": "completed", "cwd": "/tmp/repo",
@@ -424,23 +498,25 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(self.store.get_execution(child["handle"]).state, "ended")
         self.assertEqual(self.store.get_execution(parent["handle"]).state, "ended")
         self.assertEqual([row.kind for row in self.queue.pending(child["handle"])],
-                         ["end_session"])
+                         ["register", "end"])
         self.assertEqual([row.kind for row in self.queue.pending(parent["handle"])],
-                         ["end_session"])
+                         ["register", "end"])
+        ends = [row.row_id for row in self.queue.pending() if row.kind == "end"]
+        child_end = [row.row_id for row in self.queue.pending(child["handle"])
+                     if row.kind == "end"]
+        self.assertEqual(ends[0], child_end[0])
         self.assertEqual(
             self.store.active_child_executions("claude", "final-parent"), []
         )
 
-    def test_legacy_completion_rewrites_only_safe_argv_and_mints_same_permit(self):
+    def test_legacy_completion_appends_work_handle_without_any_claim(self):
         started = self.start("claude")
         handle = started["handle"]
-        self.store.record_bound(handle, "backend-session", "kanban", "worker")
-        self.store.set_claim(handle, CLAIM, "KANBAN-2")
         self.prompt()
         command = "kanban-post --done KANBAN-2 --evidence 'tests pass' --reference PR-17"
         native_input = {
             "command": command,
-            "description": "Complete the claimed ticket",
+            "description": "Complete the ticket",
             "timeout": 120000,
             "run_in_background": False,
         }
@@ -451,16 +527,21 @@ class AdapterTests(unittest.TestCase):
             **native_input,
             "command": f"kanban-post --done KANBAN-2 --evidence 'tests pass' --reference PR-17 --work-handle {handle}",
         })
-        normalized = normalize_tool_args("complete_ticket", {
-            "handle": handle, "claim_id": CLAIM, "evidence": "tests pass",
-            "references": ["PR-17"], "operation_id": None,
+        self.assertTrue(self.store.tool_operation(handle, "legacy-1")["active"])
+
+        codex = self.start("codex")
+        self.prompt("codex")
+        result = self.pre("codex", "Bash", {
+            "command": "kanban-post --done KANBAN-2 --evidence ok",
+        }, call="legacy-codex")
+        output = result.output["hookSpecificOutput"]
+        self.assertEqual(output["permissionDecision"], "allow")
+        self.assertEqual(output["updatedInput"], {
+            "command": f"kanban-post --done KANBAN-2 --evidence ok --work-handle {codex['handle']}",
         })
-        self.assertTrue(self.store.has_permit(handle, "complete_ticket", normalized))
 
     def test_completion_like_shell_rejects_unverified_harness_input_fields(self):
-        started = self.start("codex")
-        self.store.record_bound(started["handle"], "backend-session", "kanban", "worker")
-        self.store.set_claim(started["handle"], CLAIM, "KANBAN-2")
+        self.start("codex")
         self.prompt("codex")
         command = "kanban-post --done KANBAN-2 --evidence ok"
         invalid = [
@@ -477,9 +558,7 @@ class AdapterTests(unittest.TestCase):
                               result.output["hookSpecificOutput"]["permissionDecisionReason"])
 
     def test_claude_completion_rejects_null_timeout_in_replacement_input(self):
-        started = self.start("claude")
-        self.store.record_bound(started["handle"], "backend-session", "kanban", "worker")
-        self.store.set_claim(started["handle"], CLAIM, "KANBAN-2")
+        self.start("claude")
         self.prompt("claude")
         result = self.pre("claude", "Bash", {
             "command": "kanban-post --done KANBAN-2 --evidence ok",
@@ -489,25 +568,27 @@ class AdapterTests(unittest.TestCase):
         self.assertIn("Use the Kanban MCP complete_ticket tool",
                       result.output["hookSpecificOutput"]["permissionDecisionReason"])
 
-    def test_unclaimed_completion_commands_pass_through_unchanged(self):
+    def test_unsafe_completion_variants_are_denied_and_ordinary_shell_allowed(self):
         started = self.start("codex")
         self.prompt("codex")
         commands = [
-            "kanban-post --done KANBAN-2 --evidence ok",
             "KANBAN_WORK_HANDLE=x kanban-post --done KANBAN-2 --evidence ok",
             "kanban-post --done KANBAN-2 --evidence $HOME",
             "kanban-post --done KANBAN-2 --evidence ok; echo bad",
             "kanban-post --done KANBAN-2 --evidence ok --unknown flag",
+            "kanban-post --done KANBAN-2 --evidence ok --work-handle x",
         ]
         for index, command in enumerate(commands):
             with self.subTest(command=command):
-                result = self.pre("codex", "Bash", {"command": command}, call=f"plain-{index}")
+                result = self.pre("codex", "Bash", {"command": command}, call=f"unsafe-{index}")
                 output = result.output["hookSpecificOutput"]
-                self.assertEqual(output["permissionDecision"], "allow")
-                self.assertNotIn("updatedInput", output)
+                self.assertEqual(output["permissionDecision"], "deny")
+                self.assertEqual(output["permissionDecisionReason"], DENIAL)
+                self.assertIsNone(self.store.tool_operation(started["handle"], f"unsafe-{index}"))
         ordinary = self.pre("codex", "Bash", {"command": "git status --short"}, call="ordinary")
-        self.assertEqual(ordinary.output["hookSpecificOutput"]["permissionDecision"], "allow")
-        self.assertFalse(self.store.has_any_permit())
+        output = ordinary.output["hookSpecificOutput"]
+        self.assertEqual(output["permissionDecision"], "allow")
+        self.assertNotIn("updatedInput", output)
         self.assertTrue(self.store.tool_operation(started["handle"], "ordinary")["active"])
 
     def test_codex_leaves_ordinary_legacy_commands_available(self):
@@ -572,10 +653,13 @@ class CursorAdapterTests(unittest.TestCase):
         self.clock = Clock()
         self.store = Store(self.state, now=self.clock)
         self.queue = LifecycleQueue(self.store, now=self.clock)
-        self.ingress = EventIngestor(self.store, self.queue, now=self.clock)
+        self.ingress = EventIngestor(
+            self.store, self.queue, now=self.clock, synchronous=False,
+            derive_repo=lambda checkout: None,
+        )
         self.adapter = CursorAdapter(
             self.store, self.ingress, now=self.clock,
-            instructions_provider=lambda handle: f"Kanban workflow\nhandle={handle}",
+            instructions_provider=lambda harness: "Kanban workflow",
         )
 
     def tearDown(self):
@@ -623,7 +707,10 @@ class CursorAdapterTests(unittest.TestCase):
 
         result = self.start()
         self.assertEqual(result.output["env"]["KANBAN_WORK_HANDLE"], result.lifecycle["handle"])
-        self.assertIn("Kanban workflow", result.output["additional_context"])
+        self.assertEqual(
+            result.output["additional_context"],
+            f"Kanban workflow\n\nKanban work handle: {result.lifecycle['handle']}",
+        )
         execution = self.store.get_execution(result.lifecycle["handle"])
         self.assertEqual(execution.native_session_id, "conv-a")
         self.assertTrue(execution.lifecycle_capable)
@@ -649,49 +736,53 @@ class CursorAdapterTests(unittest.TestCase):
             "cursor", self.adapter._prompt_event_id("cursor", "conv-a", None, "gen-b")
         ))
 
-    def test_generic_pre_tool_is_only_permit_minter_and_denies_peer_handle(self):
+    def test_claim_tool_is_denied_only_while_an_earlier_stop_is_unsettled(self):
         handle = self.start().lifecycle["handle"]
         self.prompt()
-        peer = self.ingress.ingest_event("cursor", "start", {
-            "native_event_id": "peer-start", "native_session_id": "conv-peer",
-            "subagent_id": None, "checkout": str(self.checkout),
-            "lifecycle_capable": True,
+        with mock.patch.object(self.ingress, "settle_turn", return_value=False) as settle:
+            denied = self.pre("MCP:claim_ticket", {"ticket": "KANBAN-2"}, call="claim-0")
+        self.assertEqual(denied.output, {
+            "permission": "deny", "agent_message": UNSETTLED_STOP,
+            "user_message": UNSETTLED_STOP,
         })
-        denied = self.pre(
-            "MCP:claim_ticket", {"handle": peer["handle"], "ticket": "KANBAN-2"}
-        )
-        self.assertEqual(denied.output["permission"], "deny")
-        self.assertIn("bound Cursor session", denied.output["agent_message"])
-        self.assertFalse(self.store.has_any_permit())
+        settle.assert_called_once_with(handle)
+        self.assertIsNone(self.store.tool_operation(handle, "claim-0"))
 
-        allowed = self.pre(
-            "MCP:claim_ticket", {"handle": handle, "ticket": "KANBAN-2"}, call="claim-1"
-        )
+        with mock.patch.object(self.ingress, "settle_turn", return_value=True) as settle:
+            allowed = self.pre("MCP:claim_ticket", "not-an-object", call="claim-1")
         self.assertEqual(allowed.output, {"permission": "allow"})
-        normalized = normalize_tool_args(
-            "claim_ticket", {"handle": handle, "ticket": "KANBAN-2"}
-        )
-        self.assertTrue(self.store.has_permit(handle, "claim_ticket", normalized))
+        settle.assert_called_once_with(handle)
+        self.assertTrue(self.store.tool_operation(handle, "claim-1")["active"])
 
-    def test_generic_pre_tool_leaves_unrelated_mcp_tools_available(self):
+    def test_generic_pre_tool_leaves_other_mcp_tools_available_without_settling(self):
         handle = self.start().lifecycle["handle"]
         self.prompt()
-        result = self.pre(
-            "MCP:github_search", {"query": "cursor hooks"}, call="github-read"
-        )
-        self.assertEqual(result.output, {"permission": "allow"})
-        self.assertFalse(self.store.has_any_permit())
-        self.assertTrue(self.store.tool_operation(handle, "github-read")["active"])
+        cases = [
+            ("MCP:github_search", {"query": "cursor hooks"}),
+            ("MCP:complete_ticket", {"handle": "not-a-uuid"}),
+            ("MCP:release_ticket", "not-an-object"),
+        ]
+        with mock.patch.object(self.ingress, "settle_turn", return_value=False) as settle:
+            for index, (tool, args) in enumerate(cases):
+                with self.subTest(tool=tool):
+                    result = self.pre(tool, args, call=f"other-{index}")
+                    self.assertEqual(result.output, {"permission": "allow"})
+                    self.assertTrue(
+                        self.store.tool_operation(handle, f"other-{index}")["active"]
+                    )
+        settle.assert_not_called()
 
-    def test_pre_tool_validates_object_input_and_replay_fails_closed(self):
+    def test_before_submit_prompt_settles_the_previous_turn(self):
         handle = self.start().lifecycle["handle"]
-        self.prompt()
-        malformed = self.pre("MCP:claim_ticket", "not-an-object", call="bad")
-        self.assertEqual(malformed.output["permission"], "deny")
-        first = self.pre("MCP:claim_ticket", {"handle": handle, "ticket": "KANBAN-2"})
-        replay = self.pre("MCP:claim_ticket", {"handle": handle, "ticket": "KANBAN-2"})
-        self.assertEqual(first.output["permission"], "allow")
-        self.assertEqual(replay.output["permission"], "deny")
+        self.prompt("gen-a")
+        self.adapter.adapt("stop", self.payload("stop", status="completed", loop_count=0))
+        self.assertEqual(len(self.store.unsettled_stops(handle)), 1)
+        with mock.patch.object(
+            self.ingress, "settle_turn", wraps=self.ingress.settle_turn
+        ) as settle:
+            self.prompt("gen-b")
+        settle.assert_called_once_with(handle)
+        self.assertEqual(self.store.unsettled_stops(handle), [])
 
     def test_matching_generic_post_success_and_failure_close_original_calls(self):
         handle = self.start().lifecycle["handle"]
@@ -847,8 +938,6 @@ class CursorAdapterTests(unittest.TestCase):
 
     def test_cursor_legacy_completion_rewrites_only_native_shell_input(self):
         handle = self.start().lifecycle["handle"]
-        self.store.record_bound(handle, "backend-session", "kanban", "worker")
-        self.store.set_claim(handle, CLAIM, "KANBAN-2")
         self.prompt()
         command = "kanban-post --done KANBAN-2 --evidence 'tests pass'"
         native = {"command": command, "working_directory": str(self.checkout)}
@@ -858,16 +947,17 @@ class CursorAdapterTests(unittest.TestCase):
             **native,
             "command": f"kanban-post --done KANBAN-2 --evidence 'tests pass' --work-handle {handle}",
         })
-        replay = self.pre("Shell", native, call="legacy")
-        self.assertEqual(replay.output["permission"], "deny")
         for index, bad in enumerate((
             "KANBAN_WORK_HANDLE=x kanban-post --done KANBAN-2 --evidence ok",
             "kanban-post --done KANBAN-2 --evidence ok; echo bad",
         )):
             denied = self.pre("Shell", {"command": bad}, call=f"bad-{index}")
             self.assertEqual(denied.output["permission"], "deny")
+            self.assertEqual(denied.output["agent_message"], DENIAL)
+        unknown_field = self.pre("Shell", {"command": command, "sandbox": True}, call="bad-field")
+        self.assertEqual(unknown_field.output["permission"], "deny")
         ordinary = self.pre("Shell", {"command": "git status --short"}, call="ordinary")
-        self.assertEqual(ordinary.output["permission"], "allow")
+        self.assertEqual(ordinary.output, {"permission": "allow"})
 
     def test_cursor_leaves_ordinary_legacy_commands_available(self):
         self.start()
@@ -902,7 +992,10 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.clock = Clock()
         self.store = Store(self.state, now=self.clock)
         self.queue = LifecycleQueue(self.store, now=self.clock)
-        self.ingress = EventIngestor(self.store, self.queue, now=self.clock)
+        self.ingress = EventIngestor(
+            self.store, self.queue, now=self.clock, synchronous=False,
+            derive_repo=lambda checkout: None,
+        )
         self.adapter = OpenCodeAdapter(self.store, self.ingress, now=self.clock)
 
     def tearDown(self):
@@ -993,41 +1086,54 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.assertNotEqual(self.store.get_execution(parent["handle"]).state, "ended")
         self.assertNotEqual(self.store.get_execution(child["handle"]).state, "ended")
 
-    def test_exact_flattened_mutation_mints_permit_and_unrelated_mcp_stays_available(self):
+    def test_claim_tool_is_denied_only_while_an_earlier_stop_is_unsettled(self):
         handle = self.created().lifecycle["handle"]
-        allowed = self.before(
-            "kanban_claim_ticket", {"handle": handle, "ticket": "KANBAN-2"}
-        )
-        self.assertEqual(allowed.output["args"], {
-            "handle": handle, "ticket": "KANBAN-2", "operation_id": None,
-        })
-        self.assertTrue(self.store.has_permit(
-            handle,
-            "claim_ticket",
-            normalize_tool_args("claim_ticket", allowed.output["args"]),
-        ))
-        unrelated = self.before(
-            "kanban_github_search", {"query": "OpenCode hooks"}, call="call-github"
-        )
-        self.assertEqual(unrelated.output, {})
-        self.assertTrue(self.store.tool_operation(handle, "call-github")["active"])
+        with mock.patch.object(self.ingress, "settle_turn", return_value=False) as settle:
+            with self.assertRaisesRegex(BridgeError, re.escape(UNSETTLED_STOP)):
+                self.before("kanban_claim_ticket", {"ticket": "KANBAN-2"}, call="claim-0")
+        settle.assert_called_once_with(handle)
+        self.assertIsNone(self.store.tool_operation(handle, "claim-0"))
 
-    def test_mutation_requires_exact_identity_while_reads_remain_available(self):
+        with mock.patch.object(self.ingress, "settle_turn", return_value=True) as settle:
+            allowed = self.before("kanban_claim_ticket", {"ticket": "KANBAN-2"}, call="claim-1")
+        self.assertEqual(allowed.output, {})
+        settle.assert_called_once_with(handle)
+        self.assertTrue(self.store.tool_operation(handle, "claim-1")["active"])
+
+    def test_other_kanban_and_unrelated_tools_are_allowed_without_settling(self):
         handle = self.created().lifecycle["handle"]
-        with self.assertRaisesRegex(BridgeError, "OpenCode lifecycle identity is unavailable"):
-            self.adapter.adapt("tool.execute.before", {
-                "tool": "kanban_claim_ticket", "args": {
-                    "handle": handle, "ticket": "KANBAN-2",
-                }, "instanceID": self.INSTANCE, "clientVersion": self.VERSION,
+        cases = [
+            ("kanban_complete_ticket", {"handle": "not-a-uuid"}),
+            ("kanban_release_ticket", None),
+            ("kanban_github_search", {"query": "OpenCode hooks"}),
+        ]
+        with mock.patch.object(self.ingress, "settle_turn", return_value=False) as settle:
+            for index, (tool, args) in enumerate(cases):
+                with self.subTest(tool=tool):
+                    result = self.before(tool, args, call=f"other-{index}")
+                    self.assertEqual(result.output, {})
+                    self.assertTrue(
+                        self.store.tool_operation(handle, f"other-{index}")["active"]
+                    )
+        settle.assert_not_called()
+
+    def test_uncorrelatable_calls_are_allowed_and_reads_remain_available(self):
+        self.created()
+        with mock.patch.object(self.ingress, "settle_turn", return_value=False) as settle:
+            claim = self.adapter.adapt("tool.execute.before", {
+                "tool": "kanban_claim_ticket", "args": {"ticket": "KANBAN-2"},
+                "instanceID": self.INSTANCE, "clientVersion": self.VERSION,
                 "directory": str(self.checkout),
             })
-        read = self.adapter.adapt("tool.execute.before", {
-            "tool": "kanban_list_tickets", "args": {},
-            "instanceID": self.INSTANCE, "clientVersion": self.VERSION,
-            "directory": str(self.checkout),
-        })
+            read = self.adapter.adapt("tool.execute.before", {
+                "tool": "kanban_list_tickets", "args": {},
+                "instanceID": self.INSTANCE, "clientVersion": self.VERSION,
+                "directory": str(self.checkout),
+            })
+        self.assertEqual(claim.output, {})
+        self.assertIsNone(claim.lifecycle)
         self.assertEqual(read.output, {})
-        self.assertFalse(self.store.has_any_permit())
+        settle.assert_not_called()
 
     def test_success_after_closes_only_its_journaled_original_call(self):
         parent = self.created().lifecycle
@@ -1062,24 +1168,24 @@ class OpenCodeAdapterTests(unittest.TestCase):
         })
         self.assertEqual(missing.lifecycle["status"], "ignored_missing_identity")
 
-    def test_first_observation_is_journaled_unqualified_and_never_promoted(self):
+    def test_first_observation_is_journaled_capable_and_kept_by_later_create(self):
         observed = self.adapter.adapt("system.transform", {
             "sessionID": "ses-resumed", "clientVersion": self.VERSION,
             "instanceID": self.INSTANCE, "directory": str(self.checkout),
         })
         execution = self.store.get_execution(observed.lifecycle["handle"])
-        self.assertFalse(execution.lifecycle_capable)
-        with self.assertRaisesRegex(BridgeError, "lacks qualified lifecycle support"):
-            self.adapter.adapt("tool.execute.before", {
-                "tool": "kanban_claim_ticket", "sessionID": "ses-resumed",
-                "callID": "resumed-call", "args": {
-                    "handle": execution.handle, "ticket": "KANBAN-2",
-                }, "instanceID": self.INSTANCE, "clientVersion": self.VERSION,
-                "directory": str(self.checkout),
-            })
+        self.assertTrue(execution.lifecycle_capable)
+        claim = self.adapter.adapt("tool.execute.before", {
+            "tool": "kanban_claim_ticket", "sessionID": "ses-resumed",
+            "callID": "resumed-call", "args": {"ticket": "KANBAN-2"},
+            "instanceID": self.INSTANCE, "clientVersion": self.VERSION,
+            "directory": str(self.checkout),
+        })
+        self.assertEqual(claim.output, {})
+        self.assertEqual(claim.lifecycle["handle"], execution.handle)
         later_created = self.created("ses-resumed", event="evt-created-late")
         self.assertEqual(later_created.lifecycle["handle"], execution.handle)
-        self.assertFalse(self.store.get_execution(execution.handle).lifecycle_capable)
+        self.assertTrue(self.store.get_execution(execution.handle).lifecycle_capable)
 
     def test_deleted_ends_exact_children_before_parent_without_latest_lookup(self):
         parent = self.created().lifecycle
@@ -1093,20 +1199,34 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.assertEqual(self.store.get_execution(child["handle"]).state, "ended")
         self.assertEqual(self.store.get_execution(parent["handle"]).state, "ended")
 
-    def test_system_transform_returns_only_current_handle_and_capability(self):
+    def test_system_transform_returns_only_current_handle(self):
         started = self.created().lifecycle
         transformed = self.adapter.adapt("system.transform", {
             "sessionID": "ses-parent", "clientVersion": self.VERSION,
             "instanceID": self.INSTANCE, "directory": str(self.checkout),
         })
-        self.assertEqual(transformed.output, {
-            "handle": started["handle"], "lifecycle_capable": True,
+        self.assertEqual(transformed.output, {"handle": started["handle"]})
+
+    def test_system_transform_settles_the_previous_turn(self):
+        handle = self.created().lifecycle["handle"]
+        self.adapter.adapt("session.idle", {
+            "eventID": "evt-idle-settle", "sessionID": "ses-parent",
+            "instanceID": self.INSTANCE, "clientVersion": self.VERSION,
+            "directory": str(self.checkout),
         })
+        self.assertEqual(len(self.store.unsettled_stops(handle)), 1)
+        with mock.patch.object(
+            self.ingress, "settle_turn", wraps=self.ingress.settle_turn
+        ) as settle:
+            self.adapter.adapt("system.transform", {
+                "sessionID": "ses-parent", "clientVersion": self.VERSION,
+                "instanceID": self.INSTANCE, "directory": str(self.checkout),
+            })
+        settle.assert_called_once_with(handle)
+        self.assertEqual(self.store.unsettled_stops(handle), [])
 
     def test_legacy_completion_rewrites_only_safe_native_bash_command(self):
         handle = self.created().lifecycle["handle"]
-        self.store.record_bound(handle, "backend-session", "kanban", "worker")
-        self.store.set_claim(handle, CLAIM, "KANBAN-2")
         native = {"command": "kanban-post --done KANBAN-2 --evidence 'tests pass'"}
         prepared = self.before("bash", native, call="legacy")
         self.assertEqual(prepared.output["args"], {
@@ -1121,6 +1241,11 @@ class OpenCodeAdapterTests(unittest.TestCase):
         )):
             with self.assertRaisesRegex(BridgeError, "Kanban MCP complete_ticket"):
                 self.before("bash", {"command": command}, call=f"bad-{index}")
+        with self.assertRaisesRegex(BridgeError, "Kanban MCP complete_ticket"):
+            self.adapter.adapt("tool.execute.before", {
+                "tool": "bash", "args": native, "instanceID": self.INSTANCE,
+                "clientVersion": self.VERSION, "directory": str(self.checkout),
+            })
         ordinary = self.before("bash", {"command": "git status --short"}, call="ordinary")
         self.assertEqual(ordinary.output, {})
 
@@ -1137,7 +1262,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
                 result = self.before("bash", {"command": command}, call=f"ordinary-{index}")
                 self.assertEqual(result.output, {})
 
-    def test_new_plugin_instance_mints_unqualified_generation_and_late_old_event_stays_old(self):
+    def test_new_plugin_instance_mints_fresh_generation_and_late_old_event_stays_old(self):
         old_instance = "plugin-instance-old"
         new_instance = "plugin-instance-new"
         old = self.created(instance=old_instance).lifecycle
@@ -1146,7 +1271,10 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.store.close()
         self.store = Store(self.state, now=self.clock)
         self.queue = LifecycleQueue(self.store, now=self.clock)
-        self.ingress = EventIngestor(self.store, self.queue, now=self.clock)
+        self.ingress = EventIngestor(
+            self.store, self.queue, now=self.clock, synchronous=False,
+            derive_repo=lambda checkout: None,
+        )
         self.adapter = OpenCodeAdapter(self.store, self.ingress, now=self.clock)
 
         observed = self.adapter.adapt("system.transform", {
@@ -1156,7 +1284,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
         current = self.store.get_execution(observed.lifecycle["handle"])
         self.assertNotEqual(current.handle, old["handle"])
         self.assertNotEqual(current.run_generation, old["run_generation"])
-        self.assertFalse(current.lifecycle_capable)
+        self.assertTrue(current.lifecycle_capable)
 
         new_tool = self.adapter.adapt("tool.execute.before", {
             "tool": "read", "sessionID": "ses-parent", "callID": "new-call",
@@ -1181,9 +1309,9 @@ class OpenCodeAdapterTests(unittest.TestCase):
 
         later_created = self.created(instance=new_instance, event="evt-created-new-instance")
         self.assertEqual(later_created.lifecycle["handle"], current.handle)
-        self.assertFalse(self.store.get_execution(current.handle).lifecycle_capable)
+        self.assertTrue(self.store.get_execution(current.handle).lifecycle_capable)
 
-    def test_tool_and_idle_each_fail_closed_when_first_seen_by_new_plugin_instance(self):
+    def test_tool_and_idle_each_mint_fresh_generation_when_first_seen_by_new_plugin_instance(self):
         old_instance = "plugin-instance-old"
         old_tool = self.created("ses-tool", event="evt-old-tool",
                                 instance=old_instance).lifecycle
@@ -1193,7 +1321,10 @@ class OpenCodeAdapterTests(unittest.TestCase):
         self.store.close()
         self.store = Store(self.state, now=self.clock)
         self.queue = LifecycleQueue(self.store, now=self.clock)
-        self.ingress = EventIngestor(self.store, self.queue, now=self.clock)
+        self.ingress = EventIngestor(
+            self.store, self.queue, now=self.clock, synchronous=False,
+            derive_repo=lambda checkout: None,
+        )
         self.adapter = OpenCodeAdapter(self.store, self.ingress, now=self.clock)
 
         tool = self.adapter.adapt("tool.execute.before", {
@@ -1203,7 +1334,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
         })
         tool_execution = self.store.get_execution(tool.lifecycle["handle"])
         self.assertNotEqual(tool_execution.handle, old_tool["handle"])
-        self.assertFalse(tool_execution.lifecycle_capable)
+        self.assertTrue(tool_execution.lifecycle_capable)
 
         idle = self.adapter.adapt("session.idle", {
             "eventID": "evt-first-idle", "sessionID": "ses-idle",
@@ -1212,7 +1343,7 @@ class OpenCodeAdapterTests(unittest.TestCase):
         })
         idle_execution = self.store.get_execution(idle.lifecycle["handle"])
         self.assertNotEqual(idle_execution.handle, old_idle["handle"])
-        self.assertFalse(idle_execution.lifecycle_capable)
+        self.assertTrue(idle_execution.lifecycle_capable)
 
 
 if __name__ == "__main__":
