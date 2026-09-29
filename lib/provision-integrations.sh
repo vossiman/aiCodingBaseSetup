@@ -167,6 +167,22 @@ install_kanban_work_symlink() {
   ok "kanban-work installed at ~/.local/bin/kanban-work -> $src"
 }
 
+# --- T3 Code per workspace (container only) ---
+# Opt-in per workspace; nothing runs until the owner uses t3-setup or
+# t3-adopt and then t3-start. See docs/t3.md.
+install_t3_symlinks() {
+  header "T3 Code commands"
+  local name src
+  mkdir -p "$HOME/.local/bin"
+  for name in t3-setup t3-adopt t3-start t3-stop t3-update t3-auto t3-status t3-migrate; do
+    src="$SCRIPT_DIR/bin/$name"
+    [[ -f "$src" ]] || { warn "bin/$name not found, skipping"; continue; }
+    chmod +x "$src"
+    ln -sf "$src" "$HOME/.local/bin/$name"
+  done
+  ok "t3 commands installed in ~/.local/bin"
+}
+
 # --- Dokploy panel and Uptime Kuma clients ---
 # Same pattern as kanban-post: the panel's API token and Kuma's admin login
 # live in the shared secrets store, an agent may not expand them, so each

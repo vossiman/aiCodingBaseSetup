@@ -75,6 +75,23 @@ if [ -n "$uv_heal_reason" ] && [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ]; then
   timeout 900 uv sync 2>&1 | tail -3 || echo "WARN: uv sync failed (non-fatal)" >&2
 fi
 
+# T3 Code: restart this workspace's server where the owner enabled it with
+# t3-start. State sits on the host mount ~/.t3-envs; Docker creates a missing
+# bind source root-owned, so hand it to the user first. Detached like the
+# sweep below so DevPod's startup is never held open.
+t3_envs="$HOME/.t3-envs"
+if [ -d "$t3_envs" ] && [ ! -w "$t3_envs" ] && command -v sudo >/dev/null 2>&1; then
+  sudo -n chown "$(id -u):$(id -g)" "$t3_envs" 2>/dev/null \
+    || echo "WARN: $t3_envs is not writable; t3 cannot keep its state" >&2
+fi
+if [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ] \
+    && [ -f "$t3_envs/${DEVPOD_WORKSPACE_ID:-.none}/aicoding/enabled" ] \
+    && command -v t3-start >/dev/null 2>&1; then
+  mkdir -p "$HOME/.cache/aicoding"
+  nohup setsid t3-start --boot </dev/null >>"$HOME/.cache/aicoding/t3-boot.log" 2>&1 &
+  echo "INFO: T3 Code boot start dispatched in background"
+fi
+
 # Boot sweep: scrub transcripts left by crashed sessions or other containers.
 # Detach from the startup session and its pipes so DevPod can finish while
 # the sweep runs to completion. A separate lock skips overlapping boot jobs;

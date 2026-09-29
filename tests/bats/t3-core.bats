@@ -141,3 +141,49 @@ teardown() { t3_test_teardown; }
   run t3_lib t3_latest
   [ "$status" -eq 1 ]
 }
+
+@test "status: reports server, selection, auto, pending and attention without taking the lock" {
+  t3_fake_setup 0.0.42
+  "$BLUEPRINT_ROOT/bin/t3-start"
+  echo '{"candidate":"0.0.50","base":"0.0.42"}' > "$T3_ENVS_ROOT/demo/aicoding/pending.json"
+  echo "restore did not complete" > "$T3_ENVS_ROOT/demo/aicoding/attention"
+  bash -c '. "$BLUEPRINT_ROOT/lib/t3.sh"; t3_env 2>/dev/null; t3_control_lock; sleep 4' &
+  sleep 0.5
+  run "$BLUEPRINT_ROOT/bin/t3-status" --offline
+  wait
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"server:     running"* ]]
+  [[ "$output" == *"selected:   latest 0.0.42"* ]]
+  [[ "$output" == *"auto:       on"* ]]
+  [[ "$output" == *'"candidate":"0.0.50"'* ]]
+  [[ "$output" == *"ATTENTION"* ]]
+  [[ "$output" == *"Environment link: provisioned"* ]]
+}
+
+@test "wiring: install_t3_symlinks links every bin/t3-* wrapper, and sync checks each" {
+  run bash -c 'header(){ :; }; warn(){ echo "W $*"; }; ok(){ :; }; SCRIPT_DIR="$BLUEPRINT_ROOT"
+    . "$BLUEPRINT_ROOT/lib/provision-integrations.sh"; install_t3_symlinks'
+  [ "$status" -eq 0 ]
+  local f n
+  for f in "$BLUEPRINT_ROOT"/bin/t3-*; do
+    n=${f##*/}
+    [ "$(readlink "$HOME/.local/bin/$n")" = "$f" ]
+    sed -n '/for name in dvw-probe/,/do$/p' "$BLUEPRINT_ROOT/lib/sync.sh" | grep -qw "$n"
+  done
+  grep -q 'install_t3_symlinks || rc=1' "$BLUEPRINT_ROOT/lib/sync.sh"
+  grep -q '^  install_t3_symlinks$' "$BLUEPRINT_ROOT/install.sh"
+}
+
+@test "boot: on-start dispatches t3-start --boot only where enabled" {
+  mkdir -p "$HOME/.local/bin"
+  printf '#!/bin/sh\necho "$@" > "%s/boot-called"\n' "$TMP" > "$HOME/.local/bin/t3-start"
+  chmod +x "$HOME/.local/bin/t3-start"
+  cd "$TMP"
+  run env -u AICODINGSETUP_SKIP_NETWORK PATH="$HOME/.local/bin:$TMP/stubs:/usr/local/bin:/usr/bin:/bin" bash "$BLUEPRINT_ROOT/on-start.sh"
+  sleep 0.5
+  [ ! -e "$TMP/boot-called" ]
+  mkdir -p "$T3_ENVS_ROOT/demo/aicoding"; : > "$T3_ENVS_ROOT/demo/aicoding/enabled"
+  run env -u AICODINGSETUP_SKIP_NETWORK PATH="$HOME/.local/bin:$TMP/stubs:/usr/local/bin:/usr/bin:/bin" bash "$BLUEPRINT_ROOT/on-start.sh"
+  for i in $(seq 1 25); do [ -e "$TMP/boot-called" ] && break; sleep 0.2; done
+  [ "$(cat "$TMP/boot-called")" = --boot ]
+}
