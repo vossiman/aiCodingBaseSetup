@@ -95,6 +95,19 @@ running() { bash -c '. "$BLUEPRINT_ROOT/lib/t3.sh"; t3_env 2>/dev/null; t3_runni
   running
 }
 
+@test "rollback after a rebuild reinstalls the old version before starting it" {
+  t3_fake_setup 0.0.42
+  rm -rf "$T3_RUNTIME_ROOT"
+  echo '{"candidate":"0.0.50","base":"0.0.42"}' > "$(S)/pending.json"
+  export T3_TEST_SERVE_FAIL=0.0.50
+  run "$B/t3-start"
+  [ "$status" -eq 0 ]
+  [ "$(t3_owner version)" = 0.0.42 ]
+  [ "$(jq -r .reason "$(S)/last-result.json")" = switch_failed ]
+  [ ! -f "$(S)/attention" ]
+  [ "$(grep -cF '0.0.42 serve' "$T3_STUB_LOG")" -eq 1 ]
+}
+
 @test "update from inside the scope detaches and completes" {
   t3_fake_setup 0.0.42
   "$B/t3-start"
@@ -103,6 +116,18 @@ running() { bash -c '. "$BLUEPRINT_ROOT/lib/t3.sh"; t3_env 2>/dev/null; t3_runni
   [[ "$output" == *"continuing in the background"* ]]
   for i in $(seq 1 100); do [ "$(jq -r .version "$(S)/version.json")" = 0.0.50 ] && break; sleep 0.2; done
   [ "$(jq -r .version "$(S)/version.json")" = 0.0.50 ]
+}
+
+@test "update run by a real descendant of the server detaches and completes" {
+  t3_fake_setup 0.0.42
+  t3_bin_as agentsh bash
+  T3_TEST_CHILDREN="agentsh=until mv $TMP/go $TMP/go.taken 2>/dev/null; do sleep 0.1; done; $B/t3-update --yes > $TMP/child.out 2>&1" "$B/t3-start"
+  : > "$TMP/go"
+  for i in $(seq 1 150); do [ "$(jq -r .version "$(S)/version.json")" = 0.0.50 ] && break; sleep 0.2; done
+  [ "$(jq -r .version "$(S)/version.json")" = 0.0.50 ]
+  grep -q "continuing in the background" "$TMP/child.out"
+  running
+  [ "$(t3_owner version)" = 0.0.50 ]
 }
 
 @test "update on a stopped, disabled workspace switches and leaves it stopped" {
@@ -145,6 +170,53 @@ running() { bash -c '. "$BLUEPRINT_ROOT/lib/t3.sh"; t3_env 2>/dev/null; t3_runni
   [ "$status" -eq 0 ]
   [ -d "$(U)" ]
   [ -z "$(ls -d "$T3_ENVS_ROOT/demo"/userdata.* 2>/dev/null)" ]
+}
+
+restore_journal() {
+  mkdir -p "$(S)/backups/b"; echo env-test-1 > "$(S)/backups/b/environment-id"
+  jq -cn --argjson old "$(cat "$(S)/version.json")" '{id:"j5",old:$old,new:{mode:"latest",version:"0.0.50"},backup:"'"$(S)/backups/b"'",kind:"manual",phase:"rolling-back"}' > "$(S)/switch.json"
+}
+
+needs_attention_untouched() {
+  local before=$1
+  run "$B/t3-auto" on
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"manual attention"* ]]
+  [ -f "$(S)/switch.json" ]
+  [ "$(cd "$T3_ENVS_ROOT/demo" && find userdata* | sort)" = "$before" ]
+}
+
+@test "restore: an existing old copy stops the rename instead of nesting userdata in it" {
+  t3_fake_setup 0.0.42
+  restore_journal
+  cp -a "$(U)" "$T3_ENVS_ROOT/demo/userdata.restore-j5"
+  echo j5 > "$T3_ENVS_ROOT/demo/userdata.restore-j5.complete"
+  mkdir "$T3_ENVS_ROOT/demo/userdata.old-j5"
+  needs_attention_untouched "$(cd "$T3_ENVS_ROOT/demo" && find userdata* | sort)"
+  [ ! -e "$T3_ENVS_ROOT/demo/userdata.old-j5/userdata" ]
+}
+
+@test "restore: a marker without a staging folder or an old copy needs attention" {
+  t3_fake_setup 0.0.42
+  restore_journal
+  echo j5 > "$T3_ENVS_ROOT/demo/userdata.restore-j5.complete"
+  needs_attention_untouched "$(cd "$T3_ENVS_ROOT/demo" && find userdata* | sort)"
+}
+
+@test "restore: a staging folder without userdata or an old copy needs attention" {
+  t3_fake_setup 0.0.42
+  restore_journal
+  cp -a "$(U)" "$T3_ENVS_ROOT/demo/userdata.restore-j5"
+  echo j5 > "$T3_ENVS_ROOT/demo/userdata.restore-j5.complete"
+  rm -rf "$(U)"
+  needs_attention_untouched "$(cd "$T3_ENVS_ROOT/demo" && find userdata* | sort)"
+}
+
+@test "restore: an old copy left beside untouched userdata needs attention" {
+  t3_fake_setup 0.0.42
+  restore_journal
+  mkdir "$T3_ENVS_ROOT/demo/userdata.old-j5"
+  needs_attention_untouched "$(cd "$T3_ENVS_ROOT/demo" && find userdata* | sort)"
 }
 
 @test "journal: an unknown filesystem combination needs attention and blocks commands" {

@@ -72,6 +72,17 @@ pass() { "$B/t3-update" --scheduled 2>>"$TMP/pass.log"; }
   [ "$(t3_owner version)" = 0.0.50 ]
 }
 
+@test "scheduled: a stopped workspace with auto off installs but records no candidate" {
+  t3_fake_setup 0.0.42
+  "$B/t3-start"; "$B/t3-stop"; : > "$(S)/enabled"
+  rm "$(S)/auto"
+  run pass
+  [ "$status" -eq 1 ]
+  [ "$output" = "result blocked t3_auto_off 0.0.42 available=0.0.50" ]
+  [ ! -f "$(S)/pending.json" ]
+  [ -x "$T3_RUNTIME_ROOT/0.0.50/node_modules/.bin/t3" ]
+}
+
 @test "scheduled: npm unavailable" {
   t3_fake_setup 0.0.42
   "$B/t3-start"

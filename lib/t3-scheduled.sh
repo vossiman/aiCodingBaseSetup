@@ -14,12 +14,12 @@ t3_cmd_scheduled() {
   latest=$(t3_latest) || { echo "result blocked t3_npm_unavailable $cur -"; return 1; }
   if ! t3_version_lt "$cur" "$latest"; then echo "result current t3_current $cur -"; return 0; fi
   t3_install "$latest" || { echo "result failed t3_install_failed $latest npm-install-failed"; return 1; }
+  t3_auto_on || { echo "result blocked t3_auto_off $cur available=$latest"; return 1; }
   if ! t3_running; then
     t3_write_file "$T3_STATE/pending.json" "$(jq -cn --arg c "$latest" --arg b "$cur" '{candidate: $c, base: $b}')"
     echo "result current t3_candidate_pending $cur candidate=$latest"
     return 0
   fi
-  t3_auto_on || { echo "result blocked t3_auto_off $cur available=$latest"; return 1; }
   if ! t3_idle_full; then echo "result blocked t3_idle_wait $cur $T3_BUSY"; return 1; fi
   if t3_switch "$latest" latest scheduled; then echo "result updated t3_switched $latest -"; return 0; fi
   echo "result failed t3_switch_failed $latest $(t3_json_get "$T3_STATE/last-result.json" .detail)"
