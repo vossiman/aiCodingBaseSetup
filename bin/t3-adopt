@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# t3-adopt [--version X]: take over existing t3 state (moved onto the mount)
+# without changing it. X is the version that last ran on that state.
+set -uo pipefail
+. "$(dirname "$(readlink -f "$0")")/../lib/t3.sh"
+t3_cmd_adopt "$@"

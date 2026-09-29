@@ -184,3 +184,67 @@ S() { printf '%s\n' "$T3_ENVS_ROOT/demo/aicoding"; }
   for i in $(seq 1 60); do [ -f "$(S)/enabled" ] || break; sleep 0.2; done
   [ ! -f "$(S)/enabled" ]
 }
+
+@test "setup: logs in, links, publishes, then records the newest version and setup-done last" {
+  run "$B/t3-setup"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .version "$(S)/version.json")" = 0.0.50 ]
+  [ "$(jq -r .mode "$(S)/version.json")" = latest ]
+  [ -f "$(S)/auto" ]
+  [ "$(cat "$(S)/setup-done")" = env-test-1 ]
+  grep -q 'connect login --headless' "$T3_STUB_LOG"
+  grep -q 'connect link' "$T3_STUB_LOG"
+  grep -q 'connect publish' "$T3_STUB_LOG"
+}
+
+@test "setup: a red connect status writes neither version.json nor setup-done" {
+  export T3_TEST_CONNECT_RED=1
+  run "$B/t3-setup"
+  [ "$status" -eq 1 ]
+  [ ! -f "$(S)/setup-done" ]
+  [ ! -f "$(S)/version.json" ]
+}
+
+@test "setup: refuses while a server runs" {
+  t3_fake_setup
+  "$B/t3-start"
+  run "$B/t3-setup"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"t3-stop first"* ]]
+}
+
+@test "adopt: uses the named version, never npm's newest" {
+  mkdir -p "$T3_ENVS_ROOT/demo/userdata/secrets"
+  echo env-legacy > "$T3_ENVS_ROOT/demo/userdata/environment-id"
+  : > "$T3_ENVS_ROOT/demo/userdata/secrets/cloud-cli-oauth-token.bin"
+  run "$B/t3-adopt" --version 0.0.40
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .version "$(S)/version.json")" = 0.0.40 ]
+  [ "$(cat "$(S)/setup-done")" = env-legacy ]
+  if grep -q '^npm view' "$T3_STUB_LOG"; then false; fi
+}
+
+@test "adopt: falls back to the export manifest, refuses without either" {
+  mkdir -p "$T3_ENVS_ROOT/demo/userdata/secrets" "$T3_MIGRATE_DIR"
+  echo env-legacy > "$T3_ENVS_ROOT/demo/userdata/environment-id"
+  : > "$T3_ENVS_ROOT/demo/userdata/secrets/cloud-cli-oauth-token.bin"
+  run "$B/t3-adopt"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--version"* ]]
+  echo '{"version":"0.0.39"}' > "$T3_MIGRATE_DIR/demo.json"
+  run "$B/t3-adopt"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .version "$(S)/version.json")" = 0.0.39 ]
+}
+
+@test "adopt: refuses missing identity or login" {
+  run "$B/t3-adopt" --version 0.0.40
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"environment-id"* ]]
+  mkdir -p "$T3_ENVS_ROOT/demo/userdata"
+  echo env-legacy > "$T3_ENVS_ROOT/demo/userdata/environment-id"
+  run "$B/t3-adopt" --version 0.0.40
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"stored login"* ]]
+  [ ! -f "$(S)/setup-done" ]
+}
