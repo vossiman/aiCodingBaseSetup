@@ -1,4 +1,6 @@
 #!/usr/bin/env bats
+load blueprint-snapshot
+
 setup() {
   : "${BLUEPRINT_ROOT:?run via run.sh}"
   export TMP; TMP=$(mktemp -d); export HOME="$TMP"
@@ -1978,8 +1980,9 @@ _kvm_unused_gid() {
 }
 
 @test "host enrollment followed by boot preserves a consistent Codex baseline" {
-  bash "$BLUEPRINT_ROOT/install-host.sh" </dev/null
-  bash "$BLUEPRINT_ROOT/install-host.sh" </dev/null
+  blueprint_snapshot "$TMP/host-blueprint"
+  bash "$TMP/host-blueprint/install-host.sh" </dev/null
+  bash "$TMP/host-blueprint/install-host.sh" </dev/null
   local dest="$HOME/.codex/config.toml" before
   before=$(sha256sum "$dest")
   _sync_source_update_libraries "$BLUEPRINT_ROOT"
@@ -1992,11 +1995,12 @@ _kvm_unused_gid() {
 }
 
 @test "host enrollment silently preserves Codex comment edits without leaking values" {
-  bash "$BLUEPRINT_ROOT/install-host.sh" </dev/null
+  blueprint_snapshot "$TMP/host-blueprint"
+  bash "$TMP/host-blueprint/install-host.sh" </dev/null
   local dest="$HOME/.codex/config.toml" before
   printf '\n# synthetic-private-value-9284\n' >> "$dest"
   before=$(sha256sum "$dest")
-  run bash "$BLUEPRINT_ROOT/install-host.sh"
+  run bash "$TMP/host-blueprint/install-host.sh"
   [ "$status" -eq 0 ]
   [[ "$output" != *"managed config conflict: $dest"* ]]
   [[ "$output" != *"local content changed since its recorded deployment"* ]]
