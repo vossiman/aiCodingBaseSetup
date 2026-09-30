@@ -465,6 +465,10 @@ EOF
   # The detached scrub is slow under parallel load; poll up to 30s, not 5s.
   local i; for i in $(seq 60); do grep -q "$V1" "$f" || break; sleep 0.5; done
   [[ "$(cat "$f")" != *"$V1"* ]]
+  # The detached sweep keeps writing state after the scrub; let it finish
+  # before teardown removes the directory under it.
+  for i in $(seq 60); do grep -q 'sweep inspected' "$STATE/log" 2>/dev/null && break; sleep 0.5; done
+  flock -w 30 "$STATE/sweep.lock" true
 }
 
 @test "aicoding-sync's binary refresh path runs a detached sweep" {
