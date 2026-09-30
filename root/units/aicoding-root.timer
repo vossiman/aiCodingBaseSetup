@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically apply aiCodingBaseSetup root tasks
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+RandomizedDelaySec=1min
+
+[Install]
+WantedBy=timers.target

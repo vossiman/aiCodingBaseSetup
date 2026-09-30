@@ -197,6 +197,53 @@ EOF
     "$AICODING_RESULTS_FILE"
 }
 
+_root_runner_clone() {
+  local clone="$TMP/root-runner-blueprint"
+  mkdir -p "$clone/lib"
+  printf '%s\n' cccccccccccccccccccccccccccccccccccccccc > "$clone/.aicoding-version"
+  cat > "$clone/lib/provision.sh" <<'EOF'
+install_mcp_packages() { return 0; }
+install_claude_mcps() { return 0; }
+install_claude_plugins() { return 0; }
+install_codex_plugins() { return 0; }
+remove_deprecated_shims() { return 0; }
+EOF
+  printf 'ensure_codex_managed_hooks() { codex_managed_defer_reason=%s; return 0; }\nensure_playwright_browsers() { return 0; }\n' \
+    "$1" > "$clone/lib/provision-system.sh"
+  export AICODING_BLUEPRINT_CLONE="$clone"
+  . "$BLUEPRINT_ROOT/lib/update-results.sh"
+  _aicoding_command_is_linux() { return 0; }
+}
+
+@test "Codex hooks waiting for the root runner defer provisioning instead of failing it" {
+  _root_runner_clone root_runner_pending
+  run _sync_provision boot
+  [ "$status" -eq 0 ]
+  jq -e '.components.provision.state == "blocked"
+    and .components.provision.reason == "preparation_deferred"
+    and .components["root-runner"].state == "blocked"
+    and .components["root-runner"].reason == "root_runner_pending"' "$AICODING_RESULTS_FILE"
+  run python3 "$BLUEPRINT_ROOT/lib/status-report.py" --provision-actionable
+  [ "$status" -eq 1 ]
+}
+
+@test "a host without the root runner records an actionable blocker, not a failure" {
+  _root_runner_clone root_runner_not_installed
+  run _sync_provision boot
+  [ "$status" -eq 0 ]
+  jq -e '.components.provision.state == "blocked"
+    and .components["root-runner"].reason == "root_runner_not_installed"' "$AICODING_RESULTS_FILE"
+  run python3 "$BLUEPRINT_ROOT/lib/status-report.py" --provision-actionable
+  [ "$status" -eq 0 ]
+}
+
+@test "Codex hook drift with no runner deferral still fails provisioning" {
+  _root_runner_clone ""
+  run _sync_provision boot
+  [ "$status" -ne 0 ]
+  jq -e '.components.provision.state == "failed"' "$AICODING_RESULTS_FILE"
+}
+
 @test "Playwright failure remains failed even when it also marks preparation deferred" {
   local clone="$TMP/playwright-failure-blueprint"
   mkdir -p "$clone/lib"

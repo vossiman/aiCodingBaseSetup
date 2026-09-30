@@ -207,6 +207,7 @@ main() {
   install_kanban_work_symlink
   install_redact_transcript_symlink
   install_redact_sessions_symlinks
+  install_aicoding_root_install_symlink
   remove_deprecated_shims
 
   local mode

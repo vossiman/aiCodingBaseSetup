@@ -1,0 +1,16 @@
+#!/bin/bash
+# Install the host root runner once. It keeps root-owned files such as the
+# Codex managed hooks in /etc/codex current from CI-qualified main, so
+# scheduled updates never need a sudo password again. Hosts only.
+set -euo pipefail
+blueprint=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+if [ -f /.dockerenv ] || [ -f /run/.containerenv ] || [ -n "${REMOTE_CONTAINERS:-}" ] \
+    || [ -n "${DEVCONTAINER:-}" ] || [ -n "${CODESPACES:-}" ]; then
+  echo "aicoding-root-install: not needed in a container (sudo there is passwordless)" >&2
+  exit 1
+fi
+echo "This installs a root-owned systemd service (aicoding-root) that applies"
+echo "root tasks from github.com/vossiman/aiCodingBaseSetup main, CI-qualified"
+echo "commits only. It reads nothing from your home directory."
+echo "sudo will ask for your password once."
+exec sudo bash "$blueprint/root/install.sh"
