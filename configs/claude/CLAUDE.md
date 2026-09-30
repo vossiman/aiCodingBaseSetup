@@ -199,6 +199,9 @@ to the wiki, a leak that outlives the session.
   exported),
   the git credential helper (`git credential fill`, `git-credential-*`), and
   `gh auth token`. Don't reach for them.
+- **One route is not blocked: the MCP CLI.** `claude mcp get <name>` and
+  `codex mcp get|list --json` print a server's bearer token in clear text.
+  Use `claude mcp list` or plain `codex mcp list`.
 - **You do not need the token to use GitHub.** `git` and `gh` are already
   authenticated from the secrets file, so just run them.
 
