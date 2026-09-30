@@ -15,7 +15,7 @@ setup() {
            "$HOME/.cursor/chats/w/c" "$HOME/.cursor/projects/ws/agent-transcripts/c1"
   SECRETS="$HOME/.aicodingsetup/.secrets.env"
   STATE="$HOME/.claude/state/redact-sessions"
-  unset REDACT_SESSIONS_STATE REDACT_QUIET_SECONDS REDACT_SESSIONS_RACE_HOOK
+  unset REDACT_SESSIONS_STATE REDACT_QUIET_SECONDS REDACT_SESSIONS_RACE_HOOK REDACT_SESSIONS_TRUNC_HOOK
   export AICODING_SECRETS_FILE="$SECRETS"
   export REDACT_SESSIONS_BIN="$RS" REDACT_SESSIONS_SYNC=1
   HOOK="$BLUEPRINT_ROOT/configs/claude/hooks/redact-sessions-hook.sh"
@@ -798,4 +798,19 @@ while not os.path.exists(sys.argv[3]) and time.time() < deadline: time.sleep(0.0
   "$RS" --sweep
   [[ "$(cat "$f")" != *"$V1"* ]]
   [ ! -e "$STATE/sweep.again" ]
+}
+
+@test "incremental: a record appended between truncate and rewrite is not certified clean" {
+  local f="$HOME/.codex/sessions/2026/09/07/r.jsonl"
+  printf '{"text":"%s"}\n{"text":"padding padding padding padding"}\n' "$V1" > "$f"; old "$f"
+  printf '#!/bin/sh\n[ -e "%s/raced" ] && exit 0\ntouch "%s/raced"\nprintf %s "%s" >> "$1"\n' \
+    "$HOME" "$HOME" "'{\"text\":\"%s\"}\\n'" "$V2" > "$HOME/trunc.sh"
+  chmod +x "$HOME/trunc.sh"
+  REDACT_SESSIONS_TRUNC_HOOK="$HOME/trunc.sh" "$RS" --now "$f"
+  grep -q "$V2" "$f"
+  grep -q 'concurrent append during in-place rewrite' "$STATE/log"
+  if grep -qF "$f" "$STATE/offsets.$(hostname)" 2>/dev/null; then false; fi
+  "$RS" --now "$f"
+  [[ "$(cat "$f")" != *"$V2"* ]]
+  [[ "$(cat "$f")" != *"$V1"* ]]
 }

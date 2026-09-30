@@ -239,7 +239,7 @@ line_floor() {
 }
 
 # _swap <file> <tmp> <sig1> <mode>: 0 swapped, 1 refused (file changed),
-# 2 error. Runs under the state lock. Always consumes <tmp>.
+# 2 error, 3 swapped but a record was appended mid-rewrite (not yet checked). Runs under the state lock. Always consumes <tmp>.
 _swap() {
   local f="$1" tmp="$2" sig1="$3" mode="$4" sig2
   sig2="$(stat -c '%i %s %Y' "$f")" || { rm -f "$tmp"; return 2; }
@@ -256,12 +256,16 @@ _swap() {
     local want got
     want="$(stat -c '%s' "$tmp")"
     if ! : > "$f"; then rm -f "$tmp"; return 2; fi
+    [ -n "${REDACT_SESSIONS_TRUNC_HOOK:-}" ] && "$REDACT_SESSIONS_TRUNC_HOOK" "$f"
     if ! dd if="$tmp" of="$f" oflag=append conv=notrunc bs="$want" count=1 status=none 2>/dev/null; then
       cat "$tmp" >> "$f"
     fi
     got="$(stat -c '%s' "$f")"
-    [ "$got" = "$want" ] || log "concurrent append during in-place rewrite file=$f (record kept, order not guaranteed)"
     rm -f "$tmp"
+    if [ "$got" != "$want" ]; then
+      log "concurrent append during in-place rewrite file=$f (record kept, order not guaranteed)"
+      return 3
+    fi
   else
     mv -f "$tmp" "$f" || { rm -f "$tmp"; return 2; }
   fi
@@ -346,12 +350,14 @@ scrub_one() {
     # against the already-clean file.
     locked _swap "$f" "$tmp" "$sig1" "$(write_mode_for "$f")"
     case $? in
-      0) ;;
+      # Everything we wrote is clean; later appends start after it.
+      0) offset_save "$f" "$(stat -c '%i' "$f")" "$(line_floor "$f" "$tsize")" ;;
+      # The appended record sits among our bytes unchecked: no offset, so the
+      # next pass reads the whole file.
+      3) ;;
       1) log "swap refused file=$f attempt=$attempt"; continue ;;
       *) return 1 ;;
     esac
-    # Everything we wrote is clean; later appends start after it.
-    offset_save "$f" "$(stat -c '%i' "$f")" "$(line_floor "$f" "$tsize")"
     sess="$(session_of "$f")"
     # Report the delta: markers already in the file are old news.
     while read -r key n; do
@@ -447,19 +453,23 @@ sweep_pass() {
 }
 
 # One sweep at a time across every container: they all share these roots, and
-# parallel sweeps only multiplied the same reads and rewrites. A sweep that
-# finds the lock taken leaves sweep.again, and the holder runs one more pass
-# so files touched meanwhile are not left waiting for the next trigger.
+# parallel sweeps only multiplied the same reads and rewrites. A trigger that
+# finds the lock taken leaves sweep.again and tries the lock once more; the
+# holder checks for that flag after releasing. Either the holder sees the
+# request or the requester gets the lock, so no trigger is dropped.
 sweep() {
   mkdir -p "$STATE" 2>/dev/null || exit 0
   exec 8>>"$STATE/sweep.lock"
-  if ! flock -n 8; then : > "$STATE/sweep.again"; exit 0; fi
-  for _ in 1 2 3; do
+  while :; do
+    if ! flock -n 8; then
+      : > "$STATE/sweep.again"
+      flock -n 8 || exit 0
+    fi
     rm -f "$STATE/sweep.again"
     sweep_pass
-    [ -e "$STATE/sweep.again" ] || break
+    flock -u 8
+    [ -e "$STATE/sweep.again" ] || exit 0
   done
-  exit 0
 }
 
 _ack() {
