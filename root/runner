@@ -1,0 +1,91 @@
+#!/bin/bash
+# aicoding-root runner: the host's one root entry point for aiCodingBaseSetup.
+#
+# Run by aicoding-root.service (timer, boot, and a user-side trigger). Each
+# pass fetches main from GitHub into a root-owned clone, selects the newest
+# CI-qualified main commit, checks it out and runs root/apply.sh from it.
+# The repo is the ONLY input: nothing is read from /home (the unit also sets
+# ProtectHome=yes), and no argument, file or environment from the user is
+# consulted. Root work therefore changes only through merged PRs.
+set -euo pipefail
+umask 022
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export HOME=/root LC_ALL=C.UTF-8 GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1
+unset BASH_ENV ENV CDPATH GIT_DIR GIT_WORK_TREE GIT_CONFIG_GLOBAL
+
+# Overrides exist for the test suite; only a root caller can set them, and
+# the systemd unit sets none.
+REPO_URL=${AICODING_ROOT_REPO_URL:-https://github.com/vossiman/aiCodingBaseSetup.git}
+STATE_DIR=${AICODING_ROOT_STATE_DIR:-/var/lib/aicoding-root}
+export GIT_ALLOW_PROTOCOL=${AICODING_ROOT_GIT_PROTOCOLS:-https}
+REPO="$STATE_DIR/repo"
+STATUS="$STATE_DIR/status"
+
+log() { printf 'aicoding-root: %s\n' "$*"; }
+
+write_status() {
+  local tmp="$STATUS.tmp"
+  printf '%s %s %s\n' "$1" "${2:-none}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp"
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "$STATUS"
+}
+
+git_r() { git -C "$REPO" -c core.hooksPath=/dev/null -c advice.detachedHead=false "$@"; }
+
+main() {
+  if [ ! -d "$REPO/.git" ]; then
+    rm -rf "$REPO"
+    git -c core.hooksPath=/dev/null clone --quiet --no-checkout --origin origin "$REPO_URL" "$REPO" \
+      || { rm -rf "$REPO"; log "cannot reach $REPO_URL"; RESULT=stale; return 0; }
+  fi
+  git_r remote set-url origin "$REPO_URL"
+  git_r fetch --quiet --prune --no-tags origin '+refs/heads/main:refs/remotes/origin/main' \
+    || { log "cannot fetch $REPO_URL"; RESULT=stale; return 0; }
+
+  # The selector runs from the last applied commit (origin/main on the very
+  # first pass), so selection policy itself only changes via a merged PR.
+  # Force the checkout (and clean) before sourcing anything from it.
+  local base
+  base=$(git_r rev-parse --verify -q 'HEAD^{commit}') || base=origin/main
+  git_r checkout --quiet --force --detach "$base"
+  git_r clean -qffdx
+  # Main has not moved past the last good pass: nothing newer can qualify,
+  # so skip the GitHub API (anonymous for root: 60 requests an hour).
+  local sha tip prev_result= prev_sha=
+  tip=$(git_r rev-parse origin/main)
+  read -r prev_result prev_sha _ < "$STATUS" 2>/dev/null || true
+  if [ "$prev_result" = ok ] && [ "$prev_sha" = "$tip" ]; then
+    sha=$tip
+  elif ! sha=$(cd "$REPO" && bash -c '. lib/ci-selector.sh && aicoding_select_ci_sha aicoding'); then
+    # CI still running or GitHub unreachable: a wait, not a failure.
+    log "no CI-qualified main commit could be selected; keeping $(git_r rev-parse --short HEAD)"
+    RESULT=stale
+    return 0
+  fi
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { log "selector returned no commit"; return 1; }
+  git_r merge-base --is-ancestor "$sha" origin/main \
+    || { log "refusing $sha: not on origin/main"; return 1; }
+
+  git_r checkout --quiet --force --detach "$sha"
+  git_r clean -qffdx
+  [ -f "$REPO/root/apply.sh" ] || { log "$sha has no root/apply.sh"; return 1; }
+  log "applying ${sha:0:12}"
+  AICODING_ROOT_SHA=$sha bash "$REPO/root/apply.sh"
+}
+
+# ok: tasks applied. stale: no commit selectable this pass, nothing applied.
+# failed: a fetch, check or task failed.
+RESULT=ok
+finish() {
+  local rc=$1 head
+  head=$(git_r rev-parse HEAD 2>/dev/null) || head=
+  [ "$rc" -eq 0 ] || RESULT=failed
+  write_status "$RESULT" "$head"
+}
+
+install -d -m 0755 "$STATE_DIR"
+exec 9> "$STATE_DIR/lock"
+flock -n 9 || { log "another pass is running"; exit 0; }
+# Not `if main`: errexit is ignored inside a function called as a condition.
+trap 'finish $?' EXIT
+main

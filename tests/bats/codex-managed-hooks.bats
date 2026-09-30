@@ -190,8 +190,20 @@ EOF
   [ "$status" -eq 0 ]
   [ ! -e "$REQ" ]
   [[ "$output" == *"cannot prompt"* ]]
-  [[ "$output" == *"run 'aicoding-install' from a terminal"* ]]
+  # a host is pointed at the one-time root runner install
+  [[ "$output" == *"run 'aicoding-root-install' once from a terminal"* ]]
   # the whole point of this change: never tell the user to sudo the installer
+  if [[ "$output" == *"sudo aicoding-install"* ]]; then false; fi
+}
+
+@test "password needed + non-interactive in a container: points at aicoding-install" {
+  _stub_sudo 1
+  export AICODINGSETUP_NONINTERACTIVE=1
+  ENV_TYPE=container
+  run ensure_codex_managed_hooks
+  [ "$status" -eq 0 ]
+  [ ! -e "$REQ" ]
+  [[ "$output" == *"run 'aicoding-install' from a terminal"* ]]
   if [[ "$output" == *"sudo aicoding-install"* ]]; then false; fi
 }
 

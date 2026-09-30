@@ -1665,6 +1665,7 @@ _sync_provision() {
     install_measure_remote_symlink || rc=1
     install_dokploy_api_symlink || rc=1
     install_bugsink_api_symlink || rc=1
+    install_aicoding_root_install_symlink || rc=1
     install_kuma_admin_symlink || rc=1
     install_redact_transcript_symlink || rc=1
     install_redact_sessions_symlinks || rc=1
@@ -1697,7 +1698,7 @@ _sync_provision() {
   # that are absent from this blueprint are excluded.
   local name source dest
   for name in dvw-probe agent-notify aicoding-status kanban-post kanban-work measure-remote \
-              dokploy-api bugsink-api kuma-admin redact-transcript redact-sessions codex-turn-done \
+              dokploy-api bugsink-api aicoding-root-install kuma-admin redact-transcript redact-sessions codex-turn-done \
               t3-setup t3-adopt t3-start t3-stop t3-update t3-auto t3-status t3-migrate; do
     source="$(dirname "$blueprint_lib")/bin/$name"
     dest="$HOME/.local/bin/$name"
@@ -1706,18 +1707,27 @@ _sync_provision() {
   done
   if command -v _aicoding_command_is_linux >/dev/null 2>&1 \
       && _aicoding_command_is_linux codex 2>/dev/null; then
-    local root="$(dirname "$blueprint_lib")" req_src req rendered hook
-    req_src="$root/configs/codex/requirements.toml"
-    req="${CODEX_MANAGED_DIR:-/etc/codex}/requirements.toml"
-    if [ ! -f "$req_src" ]; then
-      rc=1
-    else
-      rendered=$(sed "s|{{MANAGED_DIR}}|${CODEX_MANAGED_DIR:-/etc/codex}|g" "$req_src")
-      [ -f "$req" ] && [ "$(cat "$req" 2>/dev/null)" = "$rendered" ] || rc=1
-      for hook in bw-deny-files.sh kanban-work-hook.sh redact-sessions-hook.sh redact-sessions-pending.sh \
-                  memory-hint.sh check-archived-docs.sh agent-working.sh; do
-        cmp -s "$root/configs/claude/hooks/$hook" "${CODEX_MANAGED_DIR:-/etc/codex}/hooks/$hook" || rc=1
-      done
+    declare -F codex_managed_state >/dev/null \
+      || . "$blueprint_lib/codex-managed.sh" 2>/dev/null || true
+    if ! declare -F codex_managed_state >/dev/null \
+        || ! codex_managed_state "$(dirname "$blueprint_lib")"; then
+      # A drift the hook step left on purpose waits for (or asks for) the host
+      # root runner; any other drift is a real provisioning failure.
+      case "${codex_managed_defer_reason:-}" in
+        root_runner_pending|root_runner_not_installed|root_runner_failed)
+          provision_deferred=1
+          _SYNC_DEFERRED_PROVISION_COMPONENTS[root-runner]=1
+          command -v aicoding_result_record >/dev/null 2>&1 \
+            && aicoding_result_record root-runner blocked \
+              "$(_sync_blueprint_version "$(dirname "$blueprint_lib")" || true)" "$codex_managed_defer_reason" || true
+          ;;
+        *) rc=1 ;;
+      esac
+    elif jq -e '.components["root-runner"].state == "blocked"' \
+        "$AICODING_RESULTS_FILE" >/dev/null 2>&1; then
+      command -v aicoding_result_record >/dev/null 2>&1 \
+        && aicoding_result_record root-runner current "" codex_managed_current \
+          "$(_sync_blueprint_version "$(dirname "$blueprint_lib")" || echo unknown)" || true
     fi
   fi
 

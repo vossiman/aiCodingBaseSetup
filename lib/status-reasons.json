@@ -538,6 +538,25 @@
       "kind": "action",
       "meaning": "The Playwright MCP wrapper script could not be written.",
       "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
+    },
+    "codex_managed_current": {
+      "kind": "ok",
+      "meaning": "/etc/codex matches the blueprint's Codex managed hooks."
+    },
+    "root_runner_pending": {
+      "kind": "wait",
+      "meaning": "/etc/codex is behind the blueprint; the host root runner (aicoding-root.service) applies it on its next pass.",
+      "fix": "Nothing to do; it runs every 15 minutes and was asked to run now. Check with `systemctl status aicoding-root.service`."
+    },
+    "root_runner_not_installed": {
+      "kind": "action",
+      "meaning": "/etc/codex needs root to update and this host has no root runner, so unattended updates cannot apply it.",
+      "fix": "Run `aicoding-root-install` once from a terminal (asks for your sudo password). A root service then keeps /etc/codex current from the repo."
+    },
+    "root_runner_failed": {
+      "kind": "action",
+      "meaning": "The host root runner's last pass failed, so /etc/codex is behind the blueprint.",
+      "fix": "Read `journalctl -u aicoding-root.service -n 100`, fix the cause, then `sudo systemctl start aicoding-root.service`."
     }
   },
   "patterns": {

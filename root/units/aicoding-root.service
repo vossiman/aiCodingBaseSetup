@@ -1,0 +1,15 @@
+[Unit]
+Description=Apply aiCodingBaseSetup root tasks from CI-qualified main
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=10min
+StartLimitBurst=8
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/aicoding-root/runner
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+TimeoutStartSec=15min
+Nice=10

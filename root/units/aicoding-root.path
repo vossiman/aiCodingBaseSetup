@@ -1,0 +1,9 @@
+[Unit]
+Description=Run aiCodingBaseSetup root tasks when a user sync asks
+
+[Path]
+PathChanged=/run/aicoding-root/trigger
+Unit=aicoding-root.service
+
+[Install]
+WantedBy=paths.target

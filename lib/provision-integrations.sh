@@ -207,6 +207,15 @@ install_bugsink_api_symlink() {
   ok "bugsink-api installed at ~/.local/bin/bugsink-api -> $src"
 }
 
+install_aicoding_root_install_symlink() {
+  header "aicoding root runner installer"
+  local src="$SCRIPT_DIR/bin/aicoding-root-install"
+  [[ -f "$src" ]] || { warn "bin/aicoding-root-install not found; skipping"; return; }
+  mkdir -p "$HOME/.local/bin"; chmod +x "$src"
+  ln -sf "$src" "$HOME/.local/bin/aicoding-root-install"
+  ok "aicoding-root-install installed at ~/.local/bin/aicoding-root-install -> $src"
+}
+
 install_kuma_admin_symlink() {
   header "uptime kuma client"
   local src="$SCRIPT_DIR/bin/kuma-admin"
