@@ -22,6 +22,8 @@ EFFORT="${REVIEW_EFFORT:-high}"
 # the container (start it with apparmor=unconfined) and change nothing.
 SANDBOX="${REVIEW_SANDBOX:--s workspace-write}"
 
+# The reviewer prompt inlines whole diffs; keep it out of the memory router.
+export MEMORY_HINT=off
 verb="$1"
 wt="$2"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

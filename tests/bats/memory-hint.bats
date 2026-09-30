@@ -117,6 +117,63 @@ PY
   [[ "$output" == *"qid-1"* ]]
 }
 
+# start_counting_stub PORT MARKER: one-shot router stub that touches MARKER
+# when contacted, so a skip test can prove no request was sent at all.
+start_counting_stub() {
+  python3 - "$1" "$2" <<'PY2' &
+import json, sys, pathlib
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        pathlib.Path(sys.argv[2]).touch()
+        body = json.dumps({"query_id": "qid-1",
+            "results": [{"citation": "ports.md", "text": "8091 router"}]})
+        self.send_response(200); self.end_headers()
+        self.wfile.write(body.encode())
+    def log_message(self, *a): pass
+srv = HTTPServer(("127.0.0.1", int(sys.argv[1])), H)
+srv.timeout = 1
+srv.handle_request()
+PY2
+  STUB_PID=$!
+  wait_for_listen "$1"
+}
+
+free_port() {
+  python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'
+}
+
+@test "harness messages and MEMORY_HINT=off send no request" {
+  for case in \
+      "off|which ports are in use on vossisrv" \
+      "on|<task-notification> <task-id>a1</task-id> subagent finished its work </task-notification>" \
+      "on|<teammate-message from=x> please review the router change today </teammate-message>" \
+      "on|<command-name>/review</command-name> <command-args>check the whole diff</command-args>" \
+      "on|<local-command-stdout>total 12 files listed in the directory</local-command-stdout>"; do
+    mode=${case%%|*}; prompt=${case#*|}
+    port=$(free_port); marker="$TMPDIR/hit.$port"
+    start_counting_stub "$port" "$marker"
+    export MEMORY_ROUTER_URL="http://127.0.0.1:$port"
+    if [ "$mode" = off ]; then export MEMORY_HINT=off; else unset MEMORY_HINT; fi
+    run bash -c "printf '%s' \"\$1\" | '$CLI' --client hook:test" _ "$prompt"
+    wait_for_stub "$STUB_PID"
+    [ "$status" -eq 0 ]; [ -z "$output" ]
+    [ ! -e "$marker" ] || { echo "router contacted for: $prompt"; return 1; }
+  done
+}
+
+@test "control: an ordinary prompt still reaches the router" {
+  port=$(free_port); marker="$TMPDIR/hit.$port"
+  start_counting_stub "$port" "$marker"
+  export MEMORY_ROUTER_URL="http://127.0.0.1:$port"
+  export MEMORY_HINT=on
+  run bash -c "printf 'which ports mention task-notification on vossisrv' | '$CLI' --client hook:test"
+  wait_for_stub "$STUB_PID"
+  [ "$status" -eq 0 ]
+  [ -e "$marker" ]
+  [[ "$output" == *"<memory-hints"* ]]
+}
+
 @test "default MEMORY_ROUTER_URL points at the vossisrv router" {
   grep -q 'DEFAULT_ROUTER = "http://10.0.0.249:8091"' "$CLI"
 }
