@@ -281,6 +281,16 @@ EOF
   [ "$status" -ne 0 ]
 }
 
+# Executing install-host.sh tars its source tree, .git included, under
+# pipefail, so a run from the live checkout fails whenever a parallel test
+# touches that .git (AICODINGBASESETUP-75). Execute it from blueprint_snapshot.
+@test "no test executes install-host.sh from the live checkout" {
+  run grep -rnE "bash[[:space:]]+\"?\\\$BLUEPRINT_ROOT/install-host\.sh|BLUEPRINT_ROOT['\"]?[[:space:]]*&&[[:space:]]*bash[[:space:]]+(\./)?install-host\.sh" \
+    "$BLUEPRINT_ROOT"/tests/bats/*.bats
+  echo "$output"
+  [ "$status" -eq 1 ]
+}
+
 @test "no doc claims main is protected" {
   # Verified 2026-08-31 with admin visibility: .protected is false and
   # rulesets are empty on every repo in the estate. Branch protection is not

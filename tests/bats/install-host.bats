@@ -1,4 +1,11 @@
 #!/usr/bin/env bats
+load blueprint-snapshot
+
+setup_file() {
+  : "${BLUEPRINT_ROOT:?unset — run via tests/bats/run.sh}"
+  export HOST_BLUEPRINT="$BATS_FILE_TMPDIR/blueprint"
+  blueprint_snapshot "$HOST_BLUEPRINT"
+}
 
 setup() {
   : "${BLUEPRINT_ROOT:?unset — run via tests/bats/run.sh; refusing to default to / and copy the whole filesystem}"
@@ -181,7 +188,7 @@ _source_host_lib() {
 
 @test "install-host.sh: main writes profile=host and provision stamp to manifest" {
   export AICODINGSETUP_SKIP_NETWORK=1
-  run bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  run bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh"
   [ "$status" -eq 0 ]
   run jq -r '.profile' "$AICODING_MANIFEST"
   [ "$output" = "host" ]
@@ -189,7 +196,7 @@ _source_host_lib() {
 
 @test "install-host.sh installs both Kanban helpers from the durable blueprint" {
   export AICODINGSETUP_SKIP_NETWORK=1
-  bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh"
   local durable="${AICODING_HOST_BLUEPRINT_DIR:-$HOME/.local/share/aicoding/blueprint}"
   for h in kanban-post kanban-work; do
     [ -L "$HOME/.local/bin/$h" ]
@@ -265,7 +272,7 @@ _source_host_lib() {
 
 @test "install-host.sh: deploys host-shaped managed set (boot-sync + agent CLIs yes, tmux no)" {
   export AICODINGSETUP_SKIP_NETWORK=1
-  bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh"
   [ -f "$HOME/.bashrc.d/aicoding-boot-sync.sh" ]
   [ -f "$HOME/.claude/CLAUDE.md" ]
   # Agent CLI configs are managed on hosts too (user decision 2026-08-19:
@@ -310,7 +317,7 @@ EOF
   # A managed file on disk with no manifest flips detect_install_mode to
   # 'adopt' (review, don't merge) — force first-deploy, same as the
   # container-side cursor merge test.
-  bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh --force-reinstall"
+  bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh --force-reinstall"
   jq -e '.mcpServers.postgres'         "$HOME/.cursor/mcp.json"
   jq -e '.mcpServers["memory-router"]' "$HOME/.cursor/mcp.json"
 }
@@ -321,14 +328,14 @@ EOF
   # classify it new_file and clobber it with no backup on the next
   # unattended reconcile/boot-sync.
   export AICODINGSETUP_SKIP_NETWORK=1
-  bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh"
   # Simulate the pre-#89 state: path exists on disk but is not in the
   # manifest (the inventory grew after this host's install).
   jq 'del(.files["'"$HOME"'/.codex/config.toml"])' "$AICODING_MANIFEST" \
     > "$AICODING_MANIFEST.t" && mv "$AICODING_MANIFEST.t" "$AICODING_MANIFEST"
   printf 'model = "my-personal-model"\n' > "$HOME/.codex/config.toml"
 
-  run bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  run bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh"
   [ "$status" -eq 0 ]
   # The personal file survives reconcile verbatim; the replace decision
   # belongs to an interactive `aicoding-sync`.
@@ -342,7 +349,7 @@ EOF
   printf 'model = "gpt-6-astra"\nmodel_reasoning_effort = "xhigh"\n' \
     > "$HOME/.codex/config.toml"
 
-  run bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh --force-reinstall"
+  run bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh --force-reinstall"
   [ "$status" -eq 0 ]
   grep -Fxq 'model = "gpt-6-astra"' "$HOME/.codex/config.toml"
   grep -Fxq 'model_reasoning_effort = "xhigh"' "$HOME/.codex/config.toml"
@@ -364,7 +371,7 @@ EOF
   }
 }
 EOF
-  bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh --force-reinstall"
+  bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh --force-reinstall"
   # The manual registration survives the merge untouched.
   jq -e '.mcpServers["memory-router"].headers.Authorization == "Bearer manual-token"' \
     "$HOME/.cursor/mcp.json"
@@ -378,8 +385,8 @@ EOF
 
 @test "install-host.sh: second run is reconcile mode, still exits 0" {
   export AICODINGSETUP_SKIP_NETWORK=1
-  bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
-  run bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh"
+  run bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh"
   [ "$status" -eq 0 ]
   [[ "$output" == *"reconcile"* ]]
 }
@@ -442,7 +449,7 @@ if [[ "$1" == "config" ]]; then exec /usr/bin/git "$@"; fi
 exit 0
 EOF
   chmod +x "$TMPDIR/stubs/git"
-  run bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  run bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh"
   [ "$status" -eq 0 ]
   grep -q 'git-credential-aicoding' "$HOME/.gitconfig"
 }
@@ -528,7 +535,7 @@ EOF
 
 @test "host profile gets an on-request codex sandbox" {
   export AICODINGSETUP_SKIP_NETWORK=1
-  run bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  run bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh"
   [ "$status" -eq 0 ] || { echo "$output"; false; }
   run grep -E '^approval_policy = "on-request"$' "$HOME/.codex/config.toml"
   [ "$status" -eq 0 ]
@@ -538,7 +545,7 @@ EOF
 
 @test "host profile never ships danger-full-access" {
   export AICODINGSETUP_SKIP_NETWORK=1
-  bash -c "cd '$BLUEPRINT_ROOT' && bash install-host.sh"
+  bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh"
   # Match only the active assignment, not the enumerated values in the
   # comment above it (which legitimately lists danger-full-access as one of
   # the three possible sandbox_mode settings).
