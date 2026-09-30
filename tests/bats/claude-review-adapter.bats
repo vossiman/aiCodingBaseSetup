@@ -45,3 +45,18 @@ teardown() { rm -rf "$TEST_DIR"; }
   [ "$status" -eq 0 ]
   grep -qx '{"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false}}' "$LOG"
 }
+
+@test "reviewer harnesses launch with MEMORY_HINT=off" {
+  for harness in claude codex; do
+    cat > "$TEST_DIR/bin/$harness" <<'STUB'
+#!/bin/sh
+printf '%s\n' "${MEMORY_HINT:-unset}" > "$LOG"
+STUB
+    chmod +x "$TEST_DIR/bin/$harness"
+    out="$TEST_DIR/out-$harness"; mkdir -p "$out"
+    unset MEMORY_HINT
+    run bash "$BLUEPRINT_ROOT/skills/review-by-harness/harnesses/$harness.sh" review "$TEST_DIR/repo" HEAD "$out"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$LOG")" = off ]
+  done
+}

@@ -4,6 +4,8 @@
 set -euo pipefail
 MODEL="${REVIEW_MODEL:-claude-opus-5}"
 EFFORT="${REVIEW_EFFORT:-high}"
+# The reviewer prompt inlines whole diffs; keep it out of the memory router.
+export MEMORY_HINT=off
 verb="$1"
 wt="$2"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -19,6 +19,10 @@ import urllib.request
 SECRETS = os.path.expanduser("~/.aicodingsetup/.secrets.env")
 MIN_WORDS = 4          # shorter prompts are commands/ack noise, not questions
 TIMEOUT_S = 3
+# Harness-generated turns (subagent results, teammate relays, slash-command
+# output) arrive as prompts but are not questions: about a third of all
+# queries in the 2026-09-30 router log.
+HARNESS_PREFIXES = ("<task-notification", "<teammate-message", "<command-name", "<local-command")
 
 DEFAULT_ROUTER = "http://10.0.0.249:8091"
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
@@ -106,8 +110,14 @@ def main() -> int:
     except SystemExit:  # argparse exits on error; degrade to silent 0
         return 0
 
+    # Headless launchers (review-by-harness) set MEMORY_HINT=off: their
+    # prompts are self-contained and can be hundreds of KB.
+    if os.environ.get("MEMORY_HINT", "").lower() == "off":
+        return 0
     prompt = sys.stdin.read().strip()
     if not prompt or prompt.startswith("/") or len(prompt.split()) < MIN_WORDS:
+        return 0
+    if prompt.startswith(HARNESS_PREFIXES):
         return 0
     token = read_token()
     if not token:
