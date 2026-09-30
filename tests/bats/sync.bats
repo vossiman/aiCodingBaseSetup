@@ -926,7 +926,7 @@ STUB
   local old_codex old_tmux
   old_codex=$(cat "$HOME/.codex/config.toml")
   old_tmux=$(cat "$HOME/.tmux.conf")
-  sed -i 's/model = "gpt-5.6-sol"/model = "future-model"/' "$clone/configs/codex/config.toml"
+  sed -i 's/model = "gpt-6.1-sol"/model = "future-model"/' "$clone/configs/codex/config.toml"
   printf '\n# unrelated safe update\n' >> "$clone/configs/tmux/tmux.conf"
   ( cd "$clone" && git add -A &&
     git -c user.email=t@t -c user.name=t commit -q -m update )

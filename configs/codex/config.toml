@@ -8,7 +8,13 @@
 # or model_reasoning_effort remains user-owned, including local Astra choices.
 # Missing values may receive blueprint defaults.
 
-model = "gpt-5.6-sol"
+model = "gpt-6.1-sol"
+
+# Subscription context budget. Sync applies these model-specific defaults only
+# when the selected model matches the blueprint model. Personal budgets follow
+# the normal setting-level merge. Actual capacity depends on the active catalog.
+model_context_window = 872000
+model_auto_compact_token_limit = 780000
 
 # Push a phone notification when a turn completes (agent-waiting feature).
 # codex invokes argv + one JSON arg; only agent-turn-complete fires. The

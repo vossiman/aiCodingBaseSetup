@@ -58,6 +58,9 @@ tomlkit = _load_vendored_tomlkit()
 
 USER_SCALARS = frozenset(("model", "model_reasoning_effort"))
 USER_TREES = frozenset(("projects",))
+MODEL_CONTEXT_SCALARS = frozenset(
+    ("model_context_window", "model_auto_compact_token_limit")
+)
 PROFILE_PATHS = frozenset((("approval_policy",), ("sandbox_mode",)))
 NODE_TYPES = frozenset(
     (
@@ -424,11 +427,34 @@ def plan_merge(
             result[key] = deepcopy(incoming[key])
             planner._change((key,), "add")
 
+    # Context budgets belong to the blueprint's model, not every preserved
+    # personal model. A selected profile can override the top-level model.
+    selected_model = result.get("model")
+    profiles = result.get("profiles")
+    profile_name = result.get("profile")
+    if isinstance(profiles, Mapping) and isinstance(profile_name, str):
+        profile = profiles.get(profile_name)
+        if isinstance(profile, Mapping):
+            selected_model = profile.get("model", selected_model)
+    skipped_context = (
+        MODEL_CONTEXT_SCALARS
+        if "model" in incoming and selected_model != incoming["model"]
+        else frozenset()
+    )
+
     incoming_keys = [
-        key for key in incoming.keys() if key not in USER_SCALARS and key not in USER_TREES
+        key for key in incoming.keys()
+        if key not in USER_SCALARS and key not in USER_TREES
+        and key not in skipped_context
     ]
-    incoming_keys.extend(sorted(key for key in base_children if key not in incoming_keys))
-    next_children: Dict[str, Dict[str, Any]] = {}
+    incoming_keys.extend(sorted(
+        key for key in base_children
+        if key not in incoming_keys and key not in skipped_context
+    ))
+    next_children: Dict[str, Dict[str, Any]] = {
+        key: deepcopy(base_children[key])
+        for key in skipped_context if key in base_children
+    }
     for key in incoming_keys:
         next_children[key] = planner.merge_entry(
             result,
@@ -445,7 +471,7 @@ def plan_merge(
         # comments, key spelling, spacing and order that per-key insertion
         # into an empty document would discard. Project trust is never seeded.
         result = deepcopy(incoming)
-        for key in USER_TREES:
+        for key in USER_TREES | skipped_context:
             if key in result:
                 del result[key]
     try:
