@@ -115,7 +115,12 @@ class ClaudeCodexBase(HookHarness):
         }, url=url)
 
     def decision(self, output):
-        return output["hookSpecificOutput"]["permissionDecision"]
+        if self.harness == "codex" and output == {}:
+            return "allow"
+        specific = output["hookSpecificOutput"]
+        if self.harness == "codex" and specific["permissionDecision"] == "allow":
+            self.assertIn("updatedInput", specific)
+        return specific["permissionDecision"]
 
     def claim_tool(self):
         return "mcp__kanban__claim_ticket"
@@ -224,6 +229,14 @@ class ClaudeFlows(ClaudeCodexBase):
 
 
 class CodexFlows(ClaudeFlows):
+    def test_ordinary_web_call_returns_empty_hook_json(self):
+        self.start()
+        self.prompt("turn-1")
+        self.assertEqual(self.pre(
+            "web.run", "turn-1", "web-1",
+            tool_input={"search_query": [{"q": "Codex hooks"}]},
+        ), {})
+
     harness = "codex"
     turn_field = "turn_id"
 
