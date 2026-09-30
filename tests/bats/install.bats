@@ -1464,7 +1464,7 @@ EOF
 
 @test "managed model defaults use the current pinned families" {
   grep -qx 'model = "gpt-5.6-sol"' "$BLUEPRINT_ROOT/configs/codex/config.toml"
-  jq -e '.model == "anthropic/claude-opus-5"' "$BLUEPRINT_ROOT/configs/opencode/opencode.json"
+  jq -e '.model == "openai/gpt-6.1-sol"' "$BLUEPRINT_ROOT/configs/opencode/opencode.json"
 }
 
 @test "reconcile: restores deleted ~/.codex/config.toml on rebuild" {
