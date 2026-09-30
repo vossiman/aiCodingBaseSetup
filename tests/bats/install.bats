@@ -1276,6 +1276,9 @@ EOF
   # File deployed under bind-mount target ~/.codex/.
   [ -f "$HOME/.codex/config.toml" ]
   # Secret substituted (no {{...}} placeholder survives).
+  grep -qx 'model = "gpt-6.1-sol"' "$HOME/.codex/config.toml"
+  grep -qx 'model_context_window = 872000' "$HOME/.codex/config.toml"
+  grep -qx 'model_auto_compact_token_limit = 780000' "$HOME/.codex/config.toml"
   grep -qF 'FIRECRAWL_API_KEY = "fake-firecrawl-123"' "$HOME/.codex/config.toml"
   if grep -qF '{{FIRECRAWL_API_KEY}}' "$HOME/.codex/config.toml"; then false; fi
   # Manifest records the smart-mode source identity; fingerprints and
@@ -1349,6 +1352,10 @@ EOF
 
   [ -f "$HOME/.config/opencode/opencode.json" ]
   # All 5 servers present under the 'mcp' (not 'mcpServers') top-level key.
+  jq -e '.provider.openai.models["gpt-6.1-sol"].limit ==
+    {context: 1050000, input: 922000, output: 128000} and
+    .compaction.auto == true and .compaction.reserved == 20000' \
+    "$HOME/.config/opencode/opencode.json"
   jq -e '.mcp.firecrawl.type == "local"'                  "$HOME/.config/opencode/opencode.json"
   jq -e '.mcp["brave-search"].type == "local"'            "$HOME/.config/opencode/opencode.json"
   jq -e '.mcp.context7.type == "local"'                   "$HOME/.config/opencode/opencode.json"
@@ -1433,6 +1440,13 @@ EOF
 {
   "$schema": "https://opencode.ai/config.json",
   "model": "anthropic/claude-opus-5",
+  "provider": {
+    "openai": {
+      "models": {
+        "personal-model": {"limit": {"context": 100000, "output": 10000}}
+      }
+    }
+  },
   "mcp": {
     "user-server": {
       "type": "local",
@@ -1460,10 +1474,13 @@ EOF
   jq -e '.mcp.context7'         "$HOME/.config/opencode/opencode.json"
   jq -e '.mcp.playwright'       "$HOME/.config/opencode/opencode.json"
   jq -e '.mcp["memory-router"]' "$HOME/.config/opencode/opencode.json"
+  jq -e '.provider.openai.models["personal-model"].limit.context == 100000 and
+    .provider.openai.models["gpt-6.1-sol"].limit.input == 922000' \
+    "$HOME/.config/opencode/opencode.json"
 }
 
 @test "managed model defaults use the current pinned families" {
-  grep -qx 'model = "gpt-5.6-sol"' "$BLUEPRINT_ROOT/configs/codex/config.toml"
+  grep -qx 'model = "gpt-6.1-sol"' "$BLUEPRINT_ROOT/configs/codex/config.toml"
   jq -e '.model == "openai/gpt-6.1-sol"' "$BLUEPRINT_ROOT/configs/opencode/opencode.json"
 }
 

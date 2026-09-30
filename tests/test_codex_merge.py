@@ -124,6 +124,50 @@ class PureMergeTests(unittest.TestCase):
         self.assertEqual(take.config_text, "x = 3\n")
         self.assertEqual(take.conflicts, [])
 
+    def test_context_rollout_preserves_other_models_and_profile_selections(self):
+        incoming = (
+            'model = "gpt-6.1-sol"\nmodel_context_window = 872000\n'
+            'model_auto_compact_token_limit = 780000\n'
+        )
+        for local in (
+            'model = "gpt-5.6-sol"\n',
+            'model = "gpt-5.6-sol"\nmodel_context_window = 200000\n',
+            'model = "gpt-6.1-sol"\nprofile = "personal"\n'
+            '[profiles.personal]\nmodel = "another-model"\n',
+        ):
+            with self.subTest(local=local):
+                base = self.baseline('model = "gpt-5.6-sol"\n').acknowledged
+                plan = plan_merge(local, incoming, acknowledged=base)
+                self.assertIsNone(plan.error)
+                self.assertEqual(plan.config_text, local)
+                self.assertEqual(plan.conflicts, [])
+                self.assertFalse(plan.config_changed)
+                self.assertEqual(plan.acknowledged, base)
+
+    def test_context_rollout_enrolls_matching_models_and_preserves_personal_budget(self):
+        incoming = (
+            'model = "gpt-6.1-sol"\nmodel_context_window = 872000\n'
+            'model_auto_compact_token_limit = 780000\n'
+        )
+        local = 'model = "gpt-6.1-sol"\n'
+        plan = plan_merge(local, incoming, acknowledged=self.baseline(local).acknowledged)
+        self.assertEqual(plan.conflicts, [])
+        self.assertIn('model_context_window = 872000', plan.config_text)
+        self.assertIn('model_auto_compact_token_limit = 780000', plan.config_text)
+        repeat = plan_merge(plan.config_text, incoming, acknowledged=plan.acknowledged)
+        self.assertFalse(repeat.config_changed)
+
+        personal = plan.config_text.replace('872000', '500000')
+        kept = plan_merge(personal, incoming, acknowledged=plan.acknowledged)
+        self.assertEqual(kept.config_text, personal)
+        self.assertEqual(kept.conflicts, [])
+
+        switched = personal.replace('gpt-6.1-sol', 'another-model')
+        skipped = plan_merge(switched, incoming, acknowledged=plan.acknowledged)
+        self.assertEqual(skipped.config_text, switched)
+        self.assertEqual(skipped.acknowledged, plan.acknowledged)
+        self.assertEqual(skipped.conflicts, [])
+
     def test_mcp_server_moving_between_stdio_and_http_is_replaced_whole(self):
         old = '[mcp_servers.kanban]\ncommand = "kanban-mcp"\nrequired = true\n'
         new = '[mcp_servers.kanban]\nurl = "https://kanban.example/mcp"\nrequired = false\n'

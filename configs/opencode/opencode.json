@@ -1,6 +1,23 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "model": "openai/gpt-6.1-sol",
+  "provider": {
+    "openai": {
+      "models": {
+        "gpt-6.1-sol": {
+          "limit": {
+            "context": 1050000,
+            "input": 922000,
+            "output": 128000
+          }
+        }
+      }
+    }
+  },
+  "compaction": {
+    "auto": true,
+    "reserved": 20000
+  },
   "mcp": {
     "firecrawl": {
       "type": "local",

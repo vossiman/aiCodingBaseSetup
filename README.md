@@ -350,7 +350,20 @@ aicoding-sync --yes        # scripted; auto-confirms generic drift, preserves Co
 aicoding-sync --blueprint /path/to/aiCodingBaseSetup --dry-run  # test a local checkout verbatim
 ```
 
-`aicoding-sync` is installed into `~/.local/bin/` by `install.sh`. Generic managed files still compare whole-file hashes and use the existing diff/backup flow. Codex TOML instead compares settings against fingerprints of the last acknowledged blueprint values. Existing `model`, `model_reasoning_effort`, and the complete `projects` subtree are user-owned. The current `gpt-5.6-sol` template only seeds a missing model and does not change the fleet to Astra. If a reasoning-effort default is added later, it will likewise seed only a missing value. Local-only settings are preserved silently. A local preference against an unchanged blueprint is also silent. Only a setting changed incompatibly on both sides is a conflict.
+`aicoding-sync` is installed into `~/.local/bin/` by `install.sh`. Generic managed files still compare whole-file hashes and use the existing diff/backup flow. Codex TOML instead compares settings against fingerprints of the last acknowledged blueprint values. Existing `model`, `model_reasoning_effort`, and the complete `projects` subtree are user-owned. The current `gpt-6.1-sol` template only seeds a missing model. If a reasoning-effort default is added later, it will likewise seed only a missing value. Local-only settings are preserved silently. A local preference against an unchanged blueprint is also silent. Only a setting changed incompatibly on both sides is a conflict.
+
+Subscription context defaults use the existing ChatGPT login. OpenCode's
+`openai/gpt-6.1-sol` entry declares 1,050,000 total context, 922,000 input, and
+128,000 output tokens, with automatic compaction and a 20,000-token reserve.
+These are model metadata and client budgets, not an authentication change or
+a guarantee of one million input tokens. Codex requests an 872,000-token
+context window and compaction at 780,000. Its active model catalog can cap the
+resolved window. Sync applies those two Codex settings only when the selected
+model matches the blueprint model, including the model of a selected profile;
+other model selections retain their current context settings and receipt
+fingerprints. Personal context edits use the normal setting-level merge.
+Restart each client after its config updates. Repo-local overrides still take
+precedence over these home-level defaults.
 
 Unattended boot, reconcile, and `--yes` runs apply safe Codex updates while retaining true conflicts locally and leaving them unacknowledged. Interactive sync can explicitly keep the local value or take the blueprint value. First adoption is conservative: an existing untracked personal config is untouched by boot/reconcile, while interactive sync or `--yes` may enroll it without inventing historical conflicts. A valid receipt can restore a physically deleted config from current blueprint defaults, but its fingerprints cannot recover deleted personal preferences or project trust.
 
