@@ -164,6 +164,22 @@ class AdapterTests(unittest.TestCase):
         forked = self.start("claude", session="native-fork", source="fork")
         self.assertNotIn(forked["run_generation"], generations)
 
+    def test_codex_ordinary_calls_emit_no_permission_decision_and_track_activity(self):
+        started = self.start("codex")
+        self.prompt("codex")
+        cases = [
+            ("web.run", {"search_query": [{"q": "Codex hooks"}]}),
+            ("Bash", {"command": "git status --short"}),
+            ("mcp__kanban__list_tickets", {}),
+        ]
+        for index, (tool, args) in enumerate(cases):
+            with self.subTest(tool=tool):
+                result = self.pre("codex", tool, args, call=f"ordinary-{index}")
+                self.assertEqual(result.output, {})
+                self.assertTrue(
+                    self.store.tool_operation(started["handle"], f"ordinary-{index}")["active"]
+                )
+
     def test_codex_supports_only_its_pinned_event_set(self):
         self.start("codex")
         with self.assertRaisesRegex(BridgeError, "unsupported codex hook event"):
@@ -246,9 +262,12 @@ class AdapterTests(unittest.TestCase):
                         harness, "mcp__kanban__claim_ticket", {"ticket": "KANBAN-2"},
                         call="claim-allowed",
                     )
-                output = allowed.output["hookSpecificOutput"]
-                self.assertEqual(output["permissionDecision"], "allow")
-                self.assertNotIn("updatedInput", output)
+                if harness == "codex":
+                    self.assertEqual(allowed.output, {})
+                else:
+                    output = allowed.output["hookSpecificOutput"]
+                    self.assertEqual(output["permissionDecision"], "allow")
+                    self.assertNotIn("updatedInput", output)
                 settle.assert_called_once_with(started["handle"])
                 self.assertTrue(
                     self.store.tool_operation(started["handle"], "claim-allowed")["active"]
@@ -267,9 +286,7 @@ class AdapterTests(unittest.TestCase):
             for index, (tool, args) in enumerate(cases):
                 with self.subTest(tool=tool):
                     result = self.pre("codex", tool, args, call=f"other-{index}")
-                    output = result.output["hookSpecificOutput"]
-                    self.assertEqual(output["permissionDecision"], "allow")
-                    self.assertNotIn("updatedInput", output)
+                    self.assertEqual(result.output, {})
                     self.assertTrue(
                         self.store.tool_operation(started["handle"], f"other-{index}")["active"]
                     )
@@ -289,14 +306,12 @@ class AdapterTests(unittest.TestCase):
         with mock.patch.object(self.ingress, "settle_turn", return_value=False) as settle:
             for payload in cases:
                 result = self.adapter.adapt("codex", "PreToolUse", payload)
-                self.assertEqual(
-                    result.output["hookSpecificOutput"]["permissionDecision"], "allow"
-                )
+                self.assertEqual(result.output, {})
                 self.assertIsNone(result.lifecycle)
         settle.assert_not_called()
         shell = self.tool_payload("Bash", {"command": ["not", "text"]}, harness="codex")
         result = self.adapter.adapt("codex", "PreToolUse", shell)
-        self.assertEqual(result.output["hookSpecificOutput"]["permissionDecision"], "allow")
+        self.assertEqual(result.output, {})
 
     def test_user_prompt_submit_settles_the_previous_turn_for_its_execution(self):
         for harness in ("claude", "codex"):
@@ -319,8 +334,8 @@ class AdapterTests(unittest.TestCase):
         self.start("codex")
         read = self.pre("codex", "mcp__kanban__list_tickets", {})
         unrelated = self.pre("codex", "Bash", {"command": "git status --short"})
-        self.assertEqual(read.output["hookSpecificOutput"]["permissionDecision"], "allow")
-        self.assertEqual(unrelated.output["hookSpecificOutput"]["permissionDecision"], "allow")
+        self.assertEqual(read.output, {})
+        self.assertEqual(unrelated.output, {})
 
     def test_delayed_post_after_resume_closes_only_captured_old_generation(self):
         old = self.start("codex")
@@ -441,8 +456,8 @@ class AdapterTests(unittest.TestCase):
                 "codex", "mcp__kanban__claim_ticket", {"ticket": "KANBAN-2"},
                 agent="agent-1", turn="child-turn", call="child-claim",
             )
-        self.assertEqual(read.output["hookSpecificOutput"]["permissionDecision"], "allow")
-        self.assertEqual(claim.output["hookSpecificOutput"]["permissionDecision"], "allow")
+        self.assertEqual(read.output, {})
+        self.assertEqual(claim.output, {})
         settle.assert_called_once_with(child["handle"])
         self.assertTrue(self.store.tool_operation(child["handle"], "child-claim")["active"])
 
@@ -586,9 +601,7 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual(output["permissionDecisionReason"], DENIAL)
                 self.assertIsNone(self.store.tool_operation(started["handle"], f"unsafe-{index}"))
         ordinary = self.pre("codex", "Bash", {"command": "git status --short"}, call="ordinary")
-        output = ordinary.output["hookSpecificOutput"]
-        self.assertEqual(output["permissionDecision"], "allow")
-        self.assertNotIn("updatedInput", output)
+        self.assertEqual(ordinary.output, {})
         self.assertTrue(self.store.tool_operation(started["handle"], "ordinary")["active"])
 
     def test_codex_leaves_ordinary_legacy_commands_available(self):
@@ -604,9 +617,7 @@ class AdapterTests(unittest.TestCase):
                 result = self.pre(
                     "codex", "Bash", {"command": command}, call=f"ordinary-{index}"
                 )
-                self.assertEqual(
-                    result.output["hookSpecificOutput"]["permissionDecision"], "allow"
-                )
+                self.assertEqual(result.output, {})
 
     def test_session_end_without_generation_correlation_fails_closed_after_resume(self):
         self.start("claude")

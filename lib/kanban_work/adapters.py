@@ -421,6 +421,13 @@ class ClaudeCodexAdapter:
     def _is_claim(tool_name: str) -> bool:
         return tool_name == MCP_PREFIX + CLAIM_TOOL
 
+    def _tool_allow(self, harness: str, updated_input: dict | None = None) -> dict:
+        # Codex rejects bare permissionDecision:allow. No decision lets the
+        # call proceed; explicit allow is reserved for input rewrites.
+        if harness == "codex" and updated_input is None:
+            return {}
+        return self._allow(updated_input)
+
     def _tool_start(self, harness: str, payload: dict) -> AdapterResult:
         try:
             tool_name = _bounded(payload.get("tool_name"), "tool_name")
@@ -435,7 +442,7 @@ class ClaudeCodexAdapter:
                 native_call_id = _bounded(payload.get("tool_use_id"), "tool_use_id")
                 execution = self._execution_for_tool(harness, payload)
             except BridgeError:
-                return AdapterResult(self._allow())
+                return AdapterResult(self._tool_allow(harness))
             if claim and not self.ingress.settle_turn(execution.handle):
                 raise BridgeError(503, UNSETTLED_STOP)
             updated = None
@@ -449,7 +456,7 @@ class ClaudeCodexAdapter:
                 _event_id("tool-start", harness, session_id, agent_id, native_call_id),
                 native_call_id=native_call_id,
             )
-            return AdapterResult(self._allow(updated), lifecycle)
+            return AdapterResult(self._tool_allow(harness, updated), lifecycle)
         except BridgeError as error:
             return AdapterResult(self._deny(error.message))
 
