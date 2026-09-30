@@ -175,7 +175,14 @@ container sees it). A hit still means the value reached an agent, so the next
 session start on any container repeats the warning until the key is rotated and
 `redact-sessions --ack KEY` is run. Triggers: Claude Code Stop and SessionEnd,
 codex Stop and SessionEnd as managed hooks (plus `notify`), cursor
-`stop`/`sessionEnd`, and container boot. Live files are
+`stop`/`sessionEnd`, and container boot. Only one sweep runs at a time across
+all containers (`sweep.lock`); a trigger that finds it busy asks the running
+sweep for one more pass. Transcripts only grow, so each file is read in full
+once and afterwards only from the byte offset last found clean
+(`offsets.<host>`); a clean file is never rewritten. Before 2026-09-30 every
+trigger started its own full read and rewrite of every touched file, and a
+rule change made that a rescan of all 4.5 GB that never finished within its
+five-minute limit, which saturated the shared host's disk. Live files are
 handled with a quiet period plus a check-and-swap write, not an open-file test:
 the transcript roots are shared across containers with separate PID namespaces,
 so no process list is trustworthy. Claude Code appends by path and never holds

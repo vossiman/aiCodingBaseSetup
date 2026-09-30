@@ -29,6 +29,12 @@
 #   deferred  files skipped this sweep (quiet period, swap refused twice)
 #   stamp     mtime watermark for --sweep
 #   rules.fp.<host>  salted digest of the rule set and roots the stamp was taken under
+#   offsets.<host>   per file: how many leading bytes are known clean (below)
+#   sweep.lock       held by the one sweep that may run at a time, host-wide
+#   sweep.again      a sweep that found the lock busy asks the holder to rerun
+#
+# Transcripts only grow, so a file is read in full once and afterwards only
+# its new bytes are checked. A clean file is never written.
 #
 # Exit: 0 ok, 2 usage, 3 secrets file unreadable or partially parsed (nothing
 # touched). Never prints a secret value. The secrets file is only ever READ.
@@ -147,6 +153,91 @@ marker_counts() {
     | sed 's/^\[REDACTED:\(.*\)\]$/\1/' | sort | uniq -c | awk '{print $2, $1}'
 }
 
+# Offsets: "fp inode off anchor path" lines in offsets.<host>, last one wins.
+# Bytes [0,off) of that inode were clean under rule set fp. off is always a
+# line start, because a secret never spans JSONL lines, so the next check can
+# start there without splitting a value. anchor digests the 4 KiB before off,
+# which catches a rewrite that kept the inode. Kept per host because fp is.
+# Records are appended as files are checked, so a sweep killed by its hook
+# timeout keeps its progress.
+FP=""
+OFFSETS=""
+declare -A OFF=()
+
+offsets_load() {
+  local fp ino off anc path
+  OFFSETS="$STATE/offsets.$HOST"
+  OFF=()
+  [ -f "$OFFSETS" ] || return 0
+  while IFS=$'\t' read -r fp ino off anc path; do
+    [ "$fp" = "$FP" ] && [ -n "$path" ] && OFF["$path"]="$ino $off $anc"
+  done < "$OFFSETS"
+  return 0
+}
+
+# Rewrites the file from memory, dropping stale rule sets and deleted files.
+# A record another process appended meanwhile may be lost; that costs one
+# re-read later, never a missed secret.
+offsets_compact() {
+  local tmp p ino off anc
+  [ -n "$OFFSETS" ] || return 0
+  tmp="$(mktemp "$STATE/.offsets.XXXXXX")" || return 0
+  for p in "${!OFF[@]}"; do
+    [ -e "$p" ] || continue
+    read -r ino off anc <<< "${OFF[$p]}"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$FP" "$ino" "$off" "$anc" "$p"
+  done > "$tmp"
+  mv -f "$tmp" "$OFFSETS"
+}
+
+# anchor <file> <off>: digest of the up to 4 KiB before off.
+anchor() {
+  local s=$(( $2 > 4096 ? $2 - 4096 : 0 ))
+  tail -c +"$(( s + 1 ))" "$1" 2>/dev/null | head -c "$(( $2 - s ))" | sha256sum | cut -c1-16
+}
+
+offset_save() {
+  local f="$1" ino="$2" off="$3" a
+  [ -n "$OFFSETS" ] && [ "$off" -gt 0 ] || return 0
+  a="$(anchor "$f" "$off")"
+  OFF["$f"]="$ino $off $a"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$FP" "$ino" "$off" "$a" "$f" >> "$OFFSETS" 2>/dev/null || true
+}
+
+# offset_start <file> <inode> <size>: where checking may resume, else 0.
+offset_start() {
+  local rec="${OFF[$1]:-}" ino off anc
+  [ -n "$rec" ] || { echo 0; return; }
+  read -r ino off anc <<< "$rec"
+  if [ "$ino" = "$2" ] && [ "$off" -le "$3" ] && [ "$(anchor "$1" "$off")" = "$anc" ]; then
+    echo "$off"
+  else
+    echo 0
+  fi
+}
+
+# whole_lines <file>: byte count up to and including its last newline.
+whole_lines() {
+  local n part
+  n="$(stat -c '%s' "$1")"
+  [ "$n" -gt 0 ] || { echo 0; return; }
+  if [ "$(tail -c 1 "$1" | od -An -tx1 | tr -d ' \n')" = 0a ]; then echo "$n"; return; fi
+  part="$(tail -n 1 "$1" | wc -c)"
+  echo $(( n - part ))
+}
+
+# line_floor <file> <end>: the last line start at or before end, looking at
+# most 1 MiB back; 0 when none is found (no progress is recorded).
+line_floor() {
+  local f="$1" end="$2" s win n
+  [ "$end" -gt 0 ] || { echo 0; return; }
+  s=$(( end > 1048576 ? end - 1048576 : 0 ))
+  win="$(mktemp)" || { echo 0; return; }
+  tail -c +"$(( s + 1 ))" "$f" 2>/dev/null | head -c "$(( end - s ))" > "$win"
+  n="$(whole_lines "$win")"; rm -f "$win"
+  if [ "$n" -gt 0 ]; then echo $(( s + n )); else echo 0; fi
+}
+
 # _swap <file> <tmp> <sig1> <mode>: 0 swapped, 1 refused (file changed),
 # 2 error. Runs under the state lock. Always consumes <tmp>.
 _swap() {
@@ -215,15 +306,36 @@ scrub_sqlite() {
 # could not be handled (swap refused twice, unreadable, unwritable). Never
 # touches a clean file.
 scrub_one() {
-  local f="$1" attempt tmp before after sig1 sess key n prev
+  local f="$1" attempt tmp tsize before after sig1 sess key n prev ino size start chunk
   [ -n "$RULES" ] || return 0
   [ -f "$f" ] && [ -r "$f" ] && [ -w "$f" ] || return 1
   if [ "$(write_mode_for "$f")" = sqlite ]; then scrub_sqlite "$f"; return; fi
+  read -r ino size < <(stat -c '%i %s' "$f") || return 1
+  start="$(offset_start "$f" "$ino" "$size")"
+  [ "$start" -gt 0 ] && [ "$start" -eq "$size" ] && return 0
+  if [ "$start" -gt 0 ]; then
+    chunk="$(mktemp)" || return 1
+    tail -c +"$(( start + 1 ))" "$f" > "$chunk"
+    if sed -E -f <(printf '%s' "$RULES") "$chunk" | cmp -s - "$chunk"; then
+      n="$(whole_lines "$chunk")"; rm -f "$chunk"
+      offset_save "$f" "$ino" "$(( start + n ))"
+      return 0
+    fi
+    # A hit in the new bytes: the full rewrite below handles it.
+    rm -f "$chunk"
+  fi
   for attempt in 1 2; do
     sig1="$(stat -c '%i %s %Y' "$f")" || return 1
+    # Read-only check first, so a clean file costs two reads and no write.
+    if sed -E -f <(printf '%s' "$RULES") "$f" | cmp -s - "$f"; then
+      read -r ino size _ <<< "$sig1"
+      offset_save "$f" "$ino" "$(line_floor "$f" "$size")"
+      return 0
+    fi
     tmp="$(mktemp "$(dirname "$f")/.redact-sessions.XXXXXX")" || return 1
     if ! sed -E -f <(printf '%s' "$RULES") "$f" > "$tmp"; then rm -f "$tmp"; return 1; fi
     if cmp -s "$f" "$tmp"; then rm -f "$tmp"; return 0; fi
+    tsize="$(stat -c '%s' "$tmp")"
     chmod --reference="$f" "$tmp" 2>/dev/null || true
     [ -n "${REDACT_SESSIONS_RACE_HOOK:-}" ] && "$REDACT_SESSIONS_RACE_HOOK" "$f"
     before="$(marker_counts "$f")"
@@ -238,6 +350,8 @@ scrub_one() {
       1) log "swap refused file=$f attempt=$attempt"; continue ;;
       *) return 1 ;;
     esac
+    # Everything we wrote is clean; later appends start after it.
+    offset_save "$f" "$(stat -c '%i' "$f")" "$(line_floor "$f" "$tsize")"
     sess="$(session_of "$f")"
     # Report the delta: markers already in the file are old news.
     while read -r key n; do
@@ -287,15 +401,14 @@ candidates() {
 # later (a WAL-mode writer touches only the -wal between checkpoints).
 newest_mtime() { { stat -c '%Y' "$1" "$1-wal" 2>/dev/null || echo 0; } | sort -n | tail -1; }
 
-sweep() {
+sweep_pass() {
   local start f age now inspected=0 done=0 deferred=0 list fp
   start="$(date +%s)"
   load_rules || exit 3
-  mkdir -p "$STATE" 2>/dev/null || exit 0
-  # No secrets file means no rules: nothing to scrub, and the stamp must
+    # No secrets file means no rules: nothing to scrub, and the stamp must
   # not advance, or the file that appears later would never see old
   # transcripts.
-  if [ -z "$RULES" ]; then log "sweep skipped: no literal rules (secrets file absent)"; exit 0; fi
+  if [ -z "$RULES" ]; then log "sweep skipped: no literal rules (secrets file absent)"; return 0; fi
   # The stamp only says "inspected under the rules of that time". When the
   # rule set changes (a key added or rotated), every file is a candidate
   # again. The fingerprint is a digest of the whole rendered rule set under
@@ -307,6 +420,7 @@ sweep() {
     rm -f "$STATE/stamp"
     log "rules changed: full rescan (rule set or roots differ from the stamp)"
   fi
+  FP="$fp"; offsets_load
   list="$(candidates | sort -u)"
   # A sweep killed mid-run (hook timeout) leaves its deferred.next behind.
   find "$STATE" -maxdepth 1 -name 'deferred.next.*' -mmin +60 -delete 2>/dev/null
@@ -327,7 +441,24 @@ sweep() {
   # written in the same second as this sweep started is seen next time.
   touch -d "@$(( start - 1 ))" "$STATE/stamp" 2>/dev/null || touch "$STATE/stamp"
   printf '%s\n' "$fp" > "$STATE/rules.fp.$HOST"
+  offsets_compact
   log "sweep inspected=$inspected done=$done deferred=$deferred container=$HOST"
+  return 0
+}
+
+# One sweep at a time across every container: they all share these roots, and
+# parallel sweeps only multiplied the same reads and rewrites. A sweep that
+# finds the lock taken leaves sweep.again, and the holder runs one more pass
+# so files touched meanwhile are not left waiting for the next trigger.
+sweep() {
+  mkdir -p "$STATE" 2>/dev/null || exit 0
+  exec 8>>"$STATE/sweep.lock"
+  if ! flock -n 8; then : > "$STATE/sweep.again"; exit 0; fi
+  for _ in 1 2 3; do
+    rm -f "$STATE/sweep.again"
+    sweep_pass
+    [ -e "$STATE/sweep.again" ] || break
+  done
   exit 0
 }
 
@@ -352,6 +483,8 @@ main() {
     --now)
       shift; [ $# -ge 1 ] || usage
       load_rules || exit 3
+      mkdir -p "$STATE" 2>/dev/null
+      FP="$(fingerprint_rules)"; offsets_load
       for f in "$@"; do scrub_one "$f" || rc=1; done
       exit "$rc" ;;
     --sweep) shift; sweep "$@" ;;

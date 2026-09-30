@@ -710,3 +710,92 @@ while not os.path.exists(sys.argv[3]) and time.time() < deadline: time.sleep(0.0
   [[ "$output" != *"/h/x.jsonl"* ]]
   [[ "$output" == *"must not run"*"--ack"* ]]
 }
+
+@test "incremental: a clean append is checked from the saved offset and never rewritten" {
+  local f="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"clean one"}\n' > "$f"; old "$f"
+  "$RS" --sweep
+  [ "$(cut -f3 "$STATE/offsets.$(hostname)" | tail -n 1)" -eq "$(stat -c %s "$f")" ]
+  printf '{"text":"clean two"}\n' >> "$f"
+  local before; before="$(stat -c '%i %Y' "$f")"
+  REDACT_QUIET_SECONDS=0 "$RS" --sweep
+  [ "$(stat -c '%i %Y' "$f")" = "$before" ]
+  [ "$(cut -f3 "$STATE/offsets.$(hostname)" | tail -n 1)" -eq "$(stat -c %s "$f")" ]
+}
+
+@test "incremental: a secret appended after a clean check is scrubbed" {
+  local f="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"clean"}\n' > "$f"; old "$f"
+  "$RS" --sweep
+  printf '{"text":"%s"}\n' "$V1" >> "$f"
+  REDACT_QUIET_SECONDS=0 "$RS" --sweep
+  [[ "$(cat "$f")" != *"$V1"* ]]
+  grep -q '"text":"clean"' "$f"
+  grep -q 'hit key=OPENROUTER_API_KEY count=1' "$STATE/log"
+}
+
+@test "incremental: a value split across a partial last line is still caught" {
+  local f="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"ok"}\n{"text":"%s' "${V1:0:10}" > "$f"; old "$f"
+  "$RS" --sweep
+  [ "$(cut -f3 "$STATE/offsets.$(hostname)" | tail -n 1)" -eq "$(printf '{"text":"ok"}\n' | wc -c)" ]
+  printf '%s"}\n' "${V1:10}" >> "$f"
+  REDACT_QUIET_SECONDS=0 "$RS" --sweep
+  [[ "$(cat "$f")" != *"$V1"* ]]
+}
+
+@test "incremental: a same-inode rewrite before the offset forces a full check" {
+  local f="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\n{"text":"tail"}\n' > "$f"; old "$f"
+  "$RS" --sweep
+  printf '{"text":"%s"}\n' "$V1" | dd of="$f" conv=notrunc status=none
+  printf '{"text":"more"}\n' >> "$f"
+  REDACT_QUIET_SECONDS=0 "$RS" --sweep
+  [[ "$(cat "$f")" != *"$V1"* ]]
+}
+
+@test "incremental: after a scrub the offset covers the rewritten file" {
+  local f="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"%s"}\n' "$V1" > "$f"; old "$f"
+  "$RS" --sweep
+  local rec; rec="$(tail -n 1 "$STATE/offsets.$(hostname)")"
+  [ "$(cut -f2 <<< "$rec")" = "$(stat -c %i "$f")" ]
+  [ "$(cut -f3 <<< "$rec")" -eq "$(stat -c %s "$f")" ]
+}
+
+@test "incremental: --now uses and extends the same offsets" {
+  local f="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"clean"}\n' > "$f"
+  "$RS" --now "$f"
+  [ "$(cut -f3 "$STATE/offsets.$(hostname)" | tail -n 1)" -eq "$(stat -c %s "$f")" ]
+  printf '{"text":"%s"}\n' "$V2" >> "$f"
+  "$RS" --now "$f"
+  [[ "$(cat "$f")" != *"$V2"* ]]
+}
+
+@test "incremental: a changed rule set ignores offsets taken under the old one" {
+  local f="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"%s"}\n' "$V1" > "$f"; old "$f"
+  printf 'OTHER=unrelatedvalue123456\n' > "$SECRETS"
+  "$RS" --sweep
+  grep -q "$V1" "$f"
+  [ "$(cut -f3 "$STATE/offsets.$(hostname)" | tail -n 1)" -eq "$(stat -c %s "$f")" ]
+  printf 'OPENROUTER_API_KEY=%s\n' "$V1" > "$SECRETS"
+  "$RS" --sweep
+  [[ "$(cat "$f")" != *"$V1"* ]]
+}
+
+@test "single flight: a sweep that finds the lock held exits 0 at once and asks for a rerun" {
+  local f="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"%s"}\n' "$V1" > "$f"; old "$f"
+  mkdir -p "$STATE"
+  exec 7>>"$STATE/sweep.lock"; flock -n 7
+  run timeout 5 "$RS" --sweep
+  exec 7>&-
+  [ "$status" -eq 0 ]
+  grep -q "$V1" "$f"
+  [ -e "$STATE/sweep.again" ]
+  "$RS" --sweep
+  [[ "$(cat "$f")" != *"$V1"* ]]
+  [ ! -e "$STATE/sweep.again" ]
+}
