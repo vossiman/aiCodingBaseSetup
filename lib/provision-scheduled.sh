@@ -19,6 +19,7 @@ aicoding_system_provision_descriptor() {
   printf 'uv=if-missing\n'
   printf 'frogmouth=uv-tool python3.12\n'
   printf 'go=if-missing\n'
+  printf 'bwrap=setuid\n'
 }
 
 aicoding_system_provision_digest() {
@@ -40,6 +41,19 @@ _sched_package_present() {
   esac
 }
 
+# The host denies unprivileged user namespaces, so bubblewrap only starts setuid.
+_sched_bwrap_setuid() {
+  local b
+  b=$(command -v bwrap 2>/dev/null) && [ -u "$b" ]
+}
+
+_sched_bwrap_make_setuid() {
+  local b
+  b=$(command -v bwrap 2>/dev/null) || b=/usr/bin/bwrap
+  timeout --kill-after=5 60 sudo -n dpkg-statoverride --force-statoverride-add \
+    --update --add root root 4755 "$b" </dev/null
+}
+
 _sched_tmux_current() {
   local marker="${AICODING_TMUX_COMMIT_FILE:-/usr/local/share/aicoding/tmux-commit}" installed=""
   local prefix="${AICODING_TMUX_PREFIX:-/usr/local}"
@@ -57,6 +71,7 @@ _sched_pending_actions() {
   for pkg in "${AICODING_SYSTEM_APT_PACKAGES[@]}"; do
     _sched_package_present "$pkg" || printf 'apt:%s\n' "$pkg"
   done
+  _sched_bwrap_setuid || printf 'bwrap-setuid\n'
   _sched_tmux_current || printf 'tmux\n'
   _sched_uv_bin >/dev/null || printf 'uv\n'
   [ -x "$prefix/bin/frogmouth" ] || printf 'frogmouth\n'
@@ -146,6 +161,7 @@ ensure_system_packages_scheduled() {
   fi
   while IFS= read -r action; do
     case "$action" in
+      bwrap-setuid) rc=0; _sched_bwrap_make_setuid || rc=$?; _sched_merge_rc "$rc" bwrap_setuid_failed "$worst"; worst=$? ;;
       tmux) rc=0; _sched_bounded 1800 ensure_tmux || rc=$?; _sched_merge_rc "$rc" tmux_build_failed "$worst"; worst=$? ;;
       uv) rc=0; _sched_bounded 600 ensure_uv || rc=$?; _sched_merge_rc "$rc" uv_install_failed "$worst"; worst=$? ;;
       frogmouth) rc=0; _sched_bounded 900 ensure_frogmouth || rc=$?; _sched_merge_rc "$rc" frogmouth_install_failed "$worst"; worst=$? ;;

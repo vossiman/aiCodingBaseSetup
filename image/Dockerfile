@@ -67,6 +67,12 @@ RUN apt-get update \
  && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
+# Setuid bwrap: the vossisrv host sets apparmor_restrict_unprivileged_userns=1,
+# so bubblewrap (the Codex and Claude Code sandbox) cannot map users without it.
+# codespace already has passwordless sudo, so this grants nothing new. The
+# statoverride keeps the mode across bubblewrap upgrades.
+RUN dpkg-statoverride --update --add root root 4755 /usr/bin/bwrap
+
 # Go toolchain. Pin MUST match goversion in lib/provision-system.sh
 # (ensure_go); tests/bats/image.bats enforces it. PATH is extended below so
 # `command -v go` succeeds and ensure_go short-circuits.

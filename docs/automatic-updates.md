@@ -277,7 +277,10 @@ and Codespaces variables).
 What it covers is a fixed descriptor: the apt packages
 `git git-lfs jq bubblewrap ripgrep parallel kitty-terminfo gh`, the tmux pin
 `AICODING_TMUX_COMMIT_PIN`, frogmouth as a uv tool in `/opt/uv` with its
-launcher in `/usr/local/bin`, and go and uv when missing. The sha256 of that
+launcher in `/usr/local/bin`, go and uv when missing, and a setuid-root
+`bwrap` (a persistent `dpkg-statoverride` 4755). The host denies unprivileged
+user namespaces, so the Codex and Claude Code bubblewrap sandboxes start only
+when bwrap is setuid. The sha256 of that
 descriptor is the recorded `provision-system` successful version. A pass does
 nothing when the recorded digest matches; otherwise it installs the pending
 items and records the new digest only after every item verifies.
@@ -292,6 +295,7 @@ fallback `system_provision_blocked`; `failed` with `apt_timeout`,
 `apt_install_failed`, `tmux_build_failed`, `tmux_build_timeout`,
 `uv_install_failed`, `uv_install_timeout`, `frogmouth_install_failed`,
 `frogmouth_install_timeout`, `go_install_failed`, `go_install_timeout`,
+`bwrap_setuid_failed`, `bwrap_setuid_timeout`,
 `verification_failed:<items>` or the fallback `system_provision_failed`. A
 timeout on the `apt-get update` call itself is also recorded as
 `apt_timeout`. Failures retry on the next pass and never block tool or

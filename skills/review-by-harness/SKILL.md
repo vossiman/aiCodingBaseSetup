@@ -140,9 +140,11 @@ picked:
 ### sandbox: UNAVAILABLE ...       <- it cannot, so the fix pass needs your opt-in
 ```
 
-The test is whether unprivileged user namespaces work (`unshare -Ur`), which is
-what bubblewrap needs. A laptop or desktop normally passes; the devpod
-container does not.
+The test is per harness. Codex is probed with bubblewrap itself
+(`bwrap --unshare-all --ro-bind / / true`), which passes on a laptop or desktop
+and, since the devpod image ships bwrap setuid root, in the devpod container
+too. Claude Code and cursor nest their own user namespace, so they are probed
+with `unshare -Ur`, which the devpod container still fails.
 
 Two rules follow, and both matter more than they look:
 
@@ -167,14 +169,14 @@ reach for:
 | | review | fix |
 |---|---|---|
 | **claude** | file-reading tools only | native sandbox, or existing full-access opt-in |
-| **codex** | works out of the box | needs a sandbox override (below) |
+| **codex** | works out of the box | native sandbox (setuid bwrap in the devpod image) |
 | **cursor** | works out of the box | works with `REVIEW_APPROVAL=--force` |
 
-Both harnesses lose their own sandbox in this container for the same reason.
-The difference is what they do about it: codex hard-fails every tool call,
-while cursor-agent falls back to allowlist mode and keeps working. So a full
-unattended round is available today on `--harness cursor` with no
-sandbox-bypass flag anywhere. Verified end to end on this skill's own PR.
+Cursor loses its own sandbox in this container and falls back to allowlist
+mode, so its fix pass needs `--force`. Codex keeps its sandbox because the
+image makes bwrap setuid; verified 2026-10-01 with codex-cli 0.159.3: a
+`workspace-write` run writes inside the worktree and gets `Read-only file
+system` outside it.
 
 Be clear-eyed about what that buys: cursor's sandbox is unavailable too, so
 `--force` means unrestricted shell inside the worktree. That is comparable
@@ -182,9 +184,9 @@ exposure to running codex with full access — not safer, just reachable
 without a flag. The worktree boundary and the "do not commit" instruction are
 the only limits in both cases.
 
-## Why the codex fix pass needs a sandbox override
+## Why the devpod container needs setuid bwrap
 
-The reason is not fixable from inside the script:
+Without it, bubblewrap cannot start:
 
 ```
 bwrap: setting up uid map: Permission denied
@@ -193,11 +195,16 @@ unshare -Ur true  ->  write failed /proc/self/uid_map: Operation not permitted
 
 The host kernel sets `apparmor_restrict_unprivileged_userns=1` (the Ubuntu
 24.04 default), which blocks unprivileged user namespaces. Codex sandboxes
-itself with bubblewrap, which needs them, so **every** codex tool call fails
-here — regardless of `-s workspace-write`, `network_access=true`, or any other
-config. Verified 2026-08-27.
+itself with bubblewrap, which needs them unless bwrap is setuid root. The
+devpod image and the scheduled system provisioning therefore install bwrap
+with a persistent `dpkg-statoverride` of 4755. The `codespace` user already
+has passwordless sudo, so that grants nothing new inside the container.
+Claude Code's sandbox still fails here (`apply-seccomp: write
+/proc/self/setgroups ... Permission denied`): it creates its own nested user
+namespace, which setuid bwrap does not cover.
 
-There are exactly two ways forward, and both are a human's call:
+On a machine where neither works, there are exactly two ways forward, and both
+are a human's call:
 
 - **Make user namespaces work on the machine.** Then the harness sandboxes
   itself and none of this applies. Note that **`--security-opt
@@ -208,7 +215,7 @@ There are exactly two ways forward, and both are a human's call:
   `CapEff: 0`. (`sudo unshare -Ur true` succeeds, which is what pins it to
   capabilities rather than AppArmor confinement.) The real levers are the host
   sysctl `kernel.apparmor_restrict_unprivileged_userns=0`, or a setuid
-  `bwrap` — both are host-level security decisions, not repo changes.
+  `bwrap` (which only helps codex).
 - **Let the harness run without its own sandbox** — put your chosen flags in a
   config file (never tracked). Write it to the FIRST path that fits, because
   the obvious one is the worst one:

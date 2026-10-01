@@ -114,14 +114,22 @@ esac
 export REVIEW_MODEL REVIEW_EFFORT
 
 
-# Does this machine let a harness sandbox itself? Bubblewrap needs unprivileged
-# user namespaces, and `unshare -Ur` is the cheapest honest proxy for that.
+# Does this machine let a harness sandbox itself? Codex runs plain bubblewrap,
+# which also starts from a setuid bwrap (how the devpod image ships it), so
+# probe bwrap itself. Claude Code and cursor nest their own user namespace,
+# which setuid bwrap does not help, so `unshare -Ur` stays their proxy.
 #
 # This matters because the same skill runs on very different machines. In the
 # devpod container userns is blocked, so a harness can only work unconfined. On
 # a laptop or desktop it usually works fine — and there, running a harness
 # unconfined would give up real protection for nothing.
-if unshare -Ur true 2>/dev/null; then
+harness_can_sandbox() {
+    case "$HARNESS" in
+        codex) bwrap --unshare-all --ro-bind / / true ;;
+        *) unshare -Ur true ;;
+    esac
+}
+if harness_can_sandbox 2>/dev/null; then
     # Prefer the harness's own sandbox whenever it is available, and ignore a
     # config.env that says otherwise: such a file is an opt-in for a machine
     # that CANNOT sandbox, and it must not silently follow you onto one that
@@ -133,7 +141,7 @@ if unshare -Ur true 2>/dev/null; then
     unset REVIEW_SANDBOX REVIEW_APPROVAL
     echo "### sandbox: harness-native"
 else
-    echo "### sandbox: UNAVAILABLE on this machine (no unprivileged user namespaces)"
+    echo "### sandbox: UNAVAILABLE for $HARNESS on this machine"
     if [ "$REVIEW_ONLY" -eq 0 ] && [ -z "${REVIEW_SANDBOX:-}${REVIEW_APPROVAL:-}" ]; then
         echo "!!! refusing to run the fix pass: the harness cannot sandbox itself"
         echo "!!! here, and nothing in config.env says you accept that."
