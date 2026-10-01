@@ -140,6 +140,7 @@ _load_scheduled() {
 _all_present() {
   local c
   for c in git git-lfs bwrap rg gh; do _stub "$c" 'exit 0'; done
+  chmod u+s "$TMP/stubs/bwrap"
   _stub parallel 'echo "GNU parallel 20240222"'
   : > "$TMP/terminfo/x/xterm-kitty"
   printf '%s\n' "$AICODING_TMUX_COMMIT_PIN" > "$AICODING_TMUX_COMMIT_FILE"
@@ -159,6 +160,7 @@ _all_present() {
   [[ "$output" == *"frogmouth=uv-tool python3.12"* ]]
   [[ "$output" == *"go=if-missing"* ]]
   [[ "$output" == *"uv=if-missing"* ]]
+  [[ "$output" == *"bwrap=setuid"* ]]
 }
 
 @test "digest is 64 hex and changes with the tmux pin" {
@@ -187,6 +189,37 @@ _all_present() {
   run _sched_pending_actions
   [ "$status" -eq 0 ]
   [ "$output" = "$(printf 'apt:ripgrep\napt:kitty-terminfo\napt:gh\ntmux\nfrogmouth')" ]
+}
+
+@test "a bwrap without the setuid bit pends bwrap-setuid" {
+  _load_scheduled
+  _all_present
+  chmod u-s "$TMP/stubs/bwrap"
+  run _sched_pending_actions
+  [ "$status" -eq 0 ]
+  [ "$output" = bwrap-setuid ]
+}
+
+@test "bwrap-setuid sets a persistent 4755 statoverride through sudo" {
+  _load_scheduled
+  _all_present
+  chmod u-s "$TMP/stubs/bwrap"
+  _stub dpkg-statoverride 'printf "dpkg-statoverride %s\n" "$*" >> "$CALLS"; chmod u+s "$TMP/stubs/bwrap"'
+  _run_orchestrator
+  [ "$status" -eq 0 ]
+  [ "$(_record state)" = updated ]
+  grep -q "^sudo -n dpkg-statoverride --force-statoverride-add --update --add root root 4755 $TMP/stubs/bwrap$" "$CALLS"
+}
+
+@test "a failed bwrap-setuid is failed/bwrap_setuid_failed" {
+  _load_scheduled
+  _all_present
+  chmod u-s "$TMP/stubs/bwrap"
+  _stub dpkg-statoverride 'exit 2'
+  _run_orchestrator
+  [ "$status" -eq 1 ]
+  [ "$(_record state)" = failed ]
+  [[ "$(_record reason)" == bwrap_setuid_failed* ]]
 }
 
 @test "GNU parallel check rejects moreutils parallel" {

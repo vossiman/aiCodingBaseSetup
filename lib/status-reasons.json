@@ -99,6 +99,11 @@
       "meaning": "Building the tool from source failed.",
       "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
     },
+    "bwrap_setuid_failed": {
+      "kind": "action",
+      "meaning": "Making bubblewrap setuid root failed, so Codex and Claude Code sandboxes cannot start in this container.",
+      "fix": "Run `sudo dpkg-statoverride --force-statoverride-add --update --add root root 4755 /usr/bin/bwrap`, then `aicoding-auto-update --once`."
+    },
     "ci_selection_unavailable": {
       "kind": "action",
       "meaning": "No CI-qualified commit could be selected (GitHub unreachable or no green build yet).",

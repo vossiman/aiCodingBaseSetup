@@ -376,3 +376,21 @@ STUB
     [ -L "$cw/AGENTS.md" ]
   done
 }
+
+@test "codex sandbox probe uses bwrap, other harnesses keep unshare" {
+  cp "$SKILL/harnesses/stub.sh" "$SKILL/harnesses/codex.sh"
+  mkdir -p "$TMPDIR/bin"
+  printf '#!/bin/sh\nexit 0\n' > "$TMPDIR/bin/bwrap"
+  printf '#!/bin/sh\nexit 1\n' > "$TMPDIR/bin/unshare"
+  chmod +x "$TMPDIR/bin/bwrap" "$TMPDIR/bin/unshare"
+  PATH="$TMPDIR/bin:$PATH" run "$SKILL/run.sh" 1 "$REPO" --harness codex --review-only
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'sandbox: harness-native'* ]]
+  PATH="$TMPDIR/bin:$PATH" run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'sandbox: UNAVAILABLE for stub'* ]]
+  printf '#!/bin/sh\nexit 1\n' > "$TMPDIR/bin/bwrap"
+  PATH="$TMPDIR/bin:$PATH" run "$SKILL/run.sh" 1 "$REPO" --harness codex --review-only
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'sandbox: UNAVAILABLE for codex'* ]]
+}

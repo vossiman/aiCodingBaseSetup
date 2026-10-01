@@ -6,20 +6,10 @@ set -euo pipefail
 MODEL="${REVIEW_MODEL:-gpt-5.6-sol}"
 EFFORT="${REVIEW_EFFORT:-high}"
 
-# Codex's own sandbox is bubblewrap, and bubblewrap cannot start in this
-# devcontainer: the host kernel sets apparmor_restrict_unprivileged_userns=1,
-# so `bwrap --unshare-user` dies with "setting up uid map: Permission denied"
-# and every codex tool call fails. Verified 2026-08-27; see the SKILL.md
-# section "Why the fix pass needs a sandbox override".
-#
-# The caller therefore has to choose a sandbox mode explicitly. This adapter
-# does NOT pick a permissive one for you: the default below keeps codex's
-# sandbox on, which means the fix pass will FAIL in this container until you
-# override it. That is intentional — the decision to run a harness without its
-# own sandbox belongs to a human, not to this file.
-#
-# To run the fix pass here, set REVIEW_SANDBOX to a full-access mode, or fix
-# the container (start it with apparmor=unconfined) and change nothing.
+# Codex's own sandbox is bubblewrap. The devpod host denies unprivileged user
+# namespaces, so it starts there only because the image ships bwrap setuid
+# root; run.sh probes bwrap and drops any override where it works. Where it
+# does not, the fix pass needs REVIEW_SANDBOX set by a human, never by this file.
 SANDBOX="${REVIEW_SANDBOX:--s workspace-write}"
 
 # The reviewer prompt inlines whole diffs; keep it out of the memory router.
