@@ -1,0 +1,30 @@
+{
+  "repository": "https://github.com/vossiman/dataprospectors-design-system",
+  "revision": "7097aa55ca7e41f1582a8b1e35c943326803a069",
+  "themeVersion": "0.1.0",
+  "files": {
+    "assets/dp-favicon-192.png": "5cfd919a9298d707de642b6ad1b233dcb011d44d2f1dd568314ee58ceb84d55b",
+    "assets/dp-favicon-32.png": "138ba1211901c751d90346fb01465922c925c833ef26ad6210167efcf30b6f72",
+    "assets/dp-favicon-512.png": "9705b423c41443425612401cd5d4949aa72af922cace3be23c89d05f0d5e3ba3",
+    "assets/dp-favicon.svg": "15559753cd5598d8b8bdfb02a0d7027709db22d4222da189ab1d75a33313a2a2",
+    "assets/dp-logo-dark.png": "533a7d40ba6b2e73781886fea23662c0580b99e3001b3d816ea4513d8a7c1957",
+    "assets/dp-logo-light.png": "53d8f6c75fa6d8b10d301adc4d1b4c6f3ebd4559a6efad30a607008a4b781584",
+    "modules/consumption.md": "86440631958ae89a2fcfe9bf9d8fb62b42ecd4f58f5c80279057d8b1d397aad0",
+    "modules/implementation.md": "729a79daaeaea704fe8b70bed2b251b5a679566456241adabe50234675544668",
+    "modules/scratchpad.md": "371e71618953ace2104ef8b1a8424a3e2c444f1aa6afdc9d3c81f31a2351e370",
+    "modules/selection.md": "0ab4b6bce197912394a52f9e46cb3167da86813426ae86b4a156ee291c0f71b9",
+    "modules/themes-assets.md": "8fd2ebe8bbf46bbea5abb4487aa1a9bbe1edb57755c17e0cd5e3997daeb57ed9",
+    "references/compatibility.md": "38b1c52b8636cee5719968287d340fbcc5ddb6f8d963e5456fe6172027605861",
+    "references/dp-tokens.css": "5ada623663e675bd72a7e511df051c31e37eda142a01e90031a32eeb2090e7fe",
+    "references/fonts.css": "e0c8210da44829386be6a61b7ca6f57a9261639b00467b15d0641b3b6d52b4fe",
+    "references/legacy-dp-tokens.css": "5ada623663e675bd72a7e511df051c31e37eda142a01e90031a32eeb2090e7fe",
+    "references/legacy-pattern-map.md": "a4c70a679f9797a94a67237a2d49ef82544b623c9528140a268d6d186f6fb85e",
+    "references/legacy-theme.css": "078029200229546f82838b8e052ee33978731a0c1af4eca34742417cdfc3adf4",
+    "references/native-theme.css": "6b7ccbc2d7b73539cc7dd999ced852c1f71ed56eb0816bd45ea56597ef4209a4",
+    "references/registry.json": "115c4a74ee6633e0e6ecde6f6399b71b27e483f474c0370ac6c3f20253a05479",
+    "references/tailwind.css": "138de1a4103b6927097f1e69b1b0e50f619afd6a85cb142bfbc995a9679b9fad",
+    "references/theme-package.md": "62d7ad8d3ae7aab4c36b1256456411096218d73f447dec5d5fc865bcf6cf159d",
+    "references/theme.css": "078029200229546f82838b8e052ee33978731a0c1af4eca34742417cdfc3adf4",
+    "SKILL.md": "e3009323ea942fdd7fc05384690c27f8a7d38a38e5cfa9921637c76c4f5f9faf"
+  }
+}

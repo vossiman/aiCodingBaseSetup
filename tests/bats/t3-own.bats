@@ -190,7 +190,12 @@ S() { printf '%s\n' "$T3_ENVS_ROOT/demo/aicoding"; }
   t3_bin_as agentsh bash
   T3_TEST_CHILDREN="agentsh=until mv $TMP/go $TMP/go.taken 2>/dev/null; do sleep 0.1; done; $B/t3-stop > $TMP/child.out 2>&1" "$B/t3-start"
   : > "$TMP/go"
-  for i in $(seq 1 100); do [ -f "$(S)/enabled" ] || break; sleep 0.2; done
+  # enabled is removed before t3_record and the final completion message.
+  # Wait for the completed detached worker, not its earlier flag removal.
+  for i in $(seq 1 100); do
+    if grep -q "stopped; it will not start at boot" "$(S)/detached.log" 2>/dev/null; then break; fi
+    sleep 0.2
+  done
   [ ! -f "$(S)/enabled" ]
   grep -q "continuing in the background" "$TMP/child.out"
   grep -q "stopped; it will not start at boot" "$(S)/detached.log"
