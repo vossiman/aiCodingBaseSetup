@@ -45,7 +45,8 @@ teardown() {
 
 @test "on a terminal the plugin step renders result lines and a summary" {
   command -v script >/dev/null || skip "script(1) unavailable"
-  run script -qec "TERM=xterm bash $TMP/plugins.sh" /dev/null
+  export NO_COLOR=1 AICODING_PLAIN=1
+  run script -qec "env -u NO_COLOR -u AICODING_PLAIN TERM=xterm bash $TMP/plugins.sh" /dev/null
   [[ "$output" == *"Claude Code Plugins"* ]]
   [[ "$output" == *"✔"*"present"*"up to date"* ]]
   [[ "$output" == *"✖"*"hung"*"timed out"* ]]
