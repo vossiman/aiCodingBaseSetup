@@ -1,6 +1,6 @@
 ---
 name: dataprospectors-design
-description: Use when styling, theming, branding or building a dataprospectors or customer UI, selecting catalogue components, exploring a feature design, or contributing reusable UI.
+description: Use when styling or building dataprospectors or customer UI, selecting catalogue components, exploring a feature design or contributing reusable UI; also for brand tokens, shadcn themes, chart palettes, logo assets, typography, status pages and standalone HTML artifacts.
 ---
 
 # dataprospectors design system

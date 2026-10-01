@@ -29,7 +29,9 @@ Copy `out/dataprospectors-themes-0.1.0.tgz` into the consuming repo's private
 package version and `sha256sum` in an adoption/dependency record. Commit the
 tarball and app lockfile to the private app (or store in a private immutable
 artifact service). Do not use a Git URL for the monorepo as an npm dependency;
-the theme package is a workspace, not its root. No public npm registry is used.
+the theme package is a workspace, not its root. The design package is never
+published to the public npm registry; its Fontsource dependencies still resolve
+from the normal dependency registry.
 
 ```sh
 npm install --save-exact ./vendor/dataprospectors-themes-SOURCE_SHA.tgz

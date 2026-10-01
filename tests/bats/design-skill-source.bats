@@ -1,5 +1,14 @@
 #!/usr/bin/env bats
 
+setup() {
+  : "${BLUEPRINT_ROOT:?run via tests/bats/run.sh}"
+  TEST_SCRATCH=$(mktemp -d)
+}
+
+teardown() {
+  rm -rf "$TEST_SCRATCH"
+}
+
 @test "design skill: committed bundle matches its source pin and has no escaping paths" {
   run python3 "$BLUEPRINT_ROOT/tools/update-design-skill.py" --check
   [ "$status" -eq 0 ]
@@ -12,7 +21,7 @@
 
 @test "design skill: normal managed deployment installs portable bundle byte-for-byte" {
   local scratch
-  scratch=$(mktemp -d)
+  scratch="$TEST_SCRATCH"
   export HOME="$scratch/home" AICODING_MANIFEST="$scratch/manifest.json"
   mkdir -p "$HOME"
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
@@ -34,5 +43,4 @@
   [ -f "$HOME/.claude/skills/dataprospectors-design/modules/consumption.md" ]
   [ -f "$HOME/.claude/skills/dataprospectors-design/references/native-theme.css" ]
   [ -f "$HOME/.claude/skills/dataprospectors-design/SOURCE.json" ]
-  rm -rf "$scratch"
 }

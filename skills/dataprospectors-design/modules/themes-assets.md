@@ -44,8 +44,9 @@ Read [consumption.md](consumption.md) for pinned package installation.
    tabs), with `dp-favicon-512.png` / `-192` / `-32` for consumers that
    need raster.
 8. **Radius** is 0.5rem (`--radius`); shadows stay soft and small. Don't
-   introduce new grays — derive surfaces from the navy scale (in
-   references/legacy-dp-tokens.css) or the muted/accent tokens.
+   introduce new grays — use native muted/accent surface tokens. If a design
+   needs a navy scale value, copy that value from the legacy reference; do not
+   import its stylesheet into a native root.
 9. **Semantic quiet**: gold highlights ONE primary action per view. Bulk
    actions are `secondary`/`outline`; destructive actions always use the
    destructive tokens, never bare red hexes.
@@ -58,3 +59,28 @@ Read [consumption.md](consumption.md) for pinned package installation.
 legacy integrations. They are provenance/retained consumer inputs; new native
 apps use native-theme.css. Do not load both token systems into one root. Do not add
 Preline or purchased vendor styles to application runtime.
+
+## Standalone HTML, status pages and artifacts
+
+Without npm or a bundler, inline the contents of
+[native-theme.css](../references/native-theme.css) in a `<style>` element or copy
+it into a served stylesheet. Set `<html data-brand="dataprospectors"
+data-theme="light">` (or the selected brand/mode); the page owns mode selection
+and any OS preference policy. Use `var(--brand-font)`/`var(--brand-mono)` and
+semantic color variables in the page's styles. There are no resets/layout styles.
+
+The bundled fonts.css contains npm bare-specifier imports, so it must not be
+linked directly from standalone HTML. Self-host font files with `@font-face`,
+or use this optional network font link where external fonts are permitted:
+
+```html
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700;800&amp;family=IBM+Plex+Mono:wght@400;600&amp;display=swap" rel="stylesheet">
+```
+
+Keep the declared system/ui-monospace fallbacks. Copy selected logo/favicon files
+from the bundle's assets/ into the page's own served asset directory and use
+those URLs; choose the logo by surface. For one-off artifacts, embed the asset
+when hosting a separate file is unavailable. Runtime URLs must not point at the
+agent's skill directory. An existing legacy standalone consumer can retain its
+single dp-tokens.css snapshot and OS-dark policy; never combine it with native
+tokens on one root. A new standalone surface can use the native CSS directly.

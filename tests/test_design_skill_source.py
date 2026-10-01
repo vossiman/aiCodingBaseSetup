@@ -1,7 +1,7 @@
 """Behavior checks: failed source refresh must never replace the previous bundle."""
 import importlib.util
 import json
-import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -40,6 +40,7 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual((self.dest / 'keep').read_text(), 'old bundle')
         self.assertEqual(list(self.dest.iterdir()), [self.dest / 'keep'])
 
+    @unittest.skipUnless(shutil.which('node'), 'Node is required for source exporter invocation')
     def test_export_failure_preserves_old_bundle(self):
         with self.assertRaises(subprocess.CalledProcessError):
             mod.refresh(self.source, self.sha, self.dest)
@@ -56,6 +57,7 @@ class RefreshTests(unittest.TestCase):
             mod.refresh(self.source, '0' * 40, self.dest)
         self.assert_old_bundle()
 
+    @unittest.skipUnless(shutil.which('node'), 'Node is required for source exporter invocation')
     def test_success_replaces_whole_bundle_with_requested_pin(self):
         exporter = """import {mkdirSync,writeFileSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
