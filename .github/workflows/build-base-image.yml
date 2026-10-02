@@ -4,11 +4,10 @@
 # for out-of-band rebuilds. No schedule: baked CLI seeds self-update at boot
 # via aicoding-sync, so scheduled rebuilds only churned tags (decision
 # 2026-08-09) — dispatch manually if a seed ever needs a fresh bake.
-# After each publish the workflow pins the blueprint devcontainer.json to
-# the new digest and pushes that commit to main itself (machine-generated,
-# smoke-tested — same class as the other direct-to-main mechanical bumps).
-# devcontainer.json is outside this workflow's paths filter, so the pin
-# commit cannot retrigger the build.
+# Every devcontainer.json references :latest, and this workflow moves :latest
+# only after the smoke test passes, so :latest is the newest green image.
+# Only main publishes: a dispatch from another branch builds and smoke-tests
+# but never moves a tag.
 name: build-base-image
 
 on:
@@ -37,9 +36,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      # The final step pushes the regenerated pin commit to main (see the
-      # `git push origin HEAD:main` below) and the image is pushed to GHCR.
-      contents: write
+      contents: read
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -47,7 +44,7 @@ jobs:
           fetch-depth: 0
 
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4
         with:
           registry: ghcr.io
@@ -77,34 +74,15 @@ jobs:
         run: bash image/smoke-test.sh "$IMAGE:$DATE_TAG"
 
       - name: Push
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           docker push "$IMAGE:$DATE_TAG"
           docker push "$IMAGE:latest"
           DIGEST="$(docker buildx imagetools inspect "$IMAGE:$DATE_TAG" --format '{{json .Manifest}}' | jq -r .digest)"
-          echo "DIGEST=$DIGEST" >> "$GITHUB_ENV"
           {
             echo "## devbox-base published"
             echo '```'
             echo "$IMAGE:$DATE_TAG"
             echo "$IMAGE@$DIGEST"
             echo '```'
-            echo "Blueprint pin is automated (next step); on pin failure, pin manually with the ref above."
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Pin blueprint to published digest
-        if: github.event_name != 'pull_request'
-        run: |
-          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::bad digest '$DIGEST'"; exit 1; }
-          git pull --rebase origin main
-          sed -i -E "s|(ghcr\.io/vossiman/devbox-base@)sha256:[0-9a-f]{64}|\1$DIGEST|" devcontainer.json
-          grep -qF "devbox-base@$DIGEST" devcontainer.json || { echo "::error::pin pattern did not match"; exit 1; }
-          if git diff --quiet devcontainer.json; then
-            echo "digest unchanged ($DIGEST) — nothing to pin"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add devcontainer.json
-          git commit -m "chore(image): pin devbox-base $DATE_TAG ($DIGEST)"
-          git push origin HEAD:main
