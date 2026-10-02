@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/vossiman/dataprospectors-design-system",
-  "revision": "7097aa55ca7e41f1582a8b1e35c943326803a069",
+  "revision": "3d8b0313ecd604dc58f4855bbdd06e429dc43b27",
   "themeVersion": "0.1.0",
   "files": {
     "assets/dp-favicon-192.png": "5cfd919a9298d707de642b6ad1b233dcb011d44d2f1dd568314ee58ceb84d55b",
@@ -9,7 +9,7 @@
     "assets/dp-favicon.svg": "15559753cd5598d8b8bdfb02a0d7027709db22d4222da189ab1d75a33313a2a2",
     "assets/dp-logo-dark.png": "533a7d40ba6b2e73781886fea23662c0580b99e3001b3d816ea4513d8a7c1957",
     "assets/dp-logo-light.png": "53d8f6c75fa6d8b10d301adc4d1b4c6f3ebd4559a6efad30a607008a4b781584",
-    "modules/consumption.md": "86440631958ae89a2fcfe9bf9d8fb62b42ecd4f58f5c80279057d8b1d397aad0",
+    "modules/consumption.md": "0c816fb130868faab566f68a42c3d17a5dbfb9ee354e66d2f7979db43c04f972",
     "modules/implementation.md": "729a79daaeaea704fe8b70bed2b251b5a679566456241adabe50234675544668",
     "modules/scratchpad.md": "371e71618953ace2104ef8b1a8424a3e2c444f1aa6afdc9d3c81f31a2351e370",
     "modules/selection.md": "0ab4b6bce197912394a52f9e46cb3167da86813426ae86b4a156ee291c0f71b9",
@@ -18,12 +18,12 @@
     "references/dp-tokens.css": "5ada623663e675bd72a7e511df051c31e37eda142a01e90031a32eeb2090e7fe",
     "references/fonts.css": "e0c8210da44829386be6a61b7ca6f57a9261639b00467b15d0641b3b6d52b4fe",
     "references/legacy-dp-tokens.css": "5ada623663e675bd72a7e511df051c31e37eda142a01e90031a32eeb2090e7fe",
-    "references/legacy-pattern-map.md": "a4c70a679f9797a94a67237a2d49ef82544b623c9528140a268d6d186f6fb85e",
+    "references/legacy-pattern-map.md": "828fb92aa9eff68233f57186269452814822396e4ff6a8afa3b1906dd91c9317",
     "references/legacy-theme.css": "078029200229546f82838b8e052ee33978731a0c1af4eca34742417cdfc3adf4",
     "references/native-theme.css": "6b7ccbc2d7b73539cc7dd999ced852c1f71ed56eb0816bd45ea56597ef4209a4",
     "references/registry.json": "115c4a74ee6633e0e6ecde6f6399b71b27e483f474c0370ac6c3f20253a05479",
     "references/tailwind.css": "138de1a4103b6927097f1e69b1b0e50f619afd6a85cb142bfbc995a9679b9fad",
-    "references/theme-package.md": "62d7ad8d3ae7aab4c36b1256456411096218d73f447dec5d5fc865bcf6cf159d",
+    "references/theme-package.md": "1bed4beb4cad93325f1973d56e63dd922f5223a3e7a1cfb75fbc42a451a9ded8",
     "references/theme.css": "078029200229546f82838b8e052ee33978731a0c1af4eca34742417cdfc3adf4",
     "SKILL.md": "e3009323ea942fdd7fc05384690c27f8a7d38a38e5cfa9921637c76c4f5f9faf"
   }
