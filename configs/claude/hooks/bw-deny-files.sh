@@ -45,6 +45,8 @@ DENY_BASENAMES=(
 SENSITIVE_DIRS=(
   '*/.aicodingsetup'
   '*/.aicodingsetup/*'
+  '*/.codex/.aicoding-sync'
+  '*/.codex/.aicoding-sync/*'
   '*/.ssh'
   '*/.ssh/*'
   # gh stores its token in ~/.config/gh/hosts.yml in plaintext. That file is
@@ -67,6 +69,10 @@ SENSITIVE_DIRS=(
 # credentials, and aicoding-sync reports config drift itself.
 DENY_PATHS=(
   '*/.codex/config.toml'
+  # The sync receipt, lock, and temporary state remain protected even when a
+  # basename also appears in DIR_ALLOW. This check precedes that allowlist.
+  '*/.codex/.aicoding-sync'
+  '*/.codex/.aicoding-sync/*'
   '*/.config/opencode/opencode.json'
   '*/.cursor/mcp.json'
   '*/.claude.json'
@@ -239,12 +245,37 @@ expand_path() {
   printf '%s' "$p"
 }
 
+# True when any equivalent spelling identifies the protected Codex sync state.
+# Check the raw path before normalization so an existing symlink cannot hide a
+# protected spelling. realpath reads path metadata only, never receipt contents.
+is_codex_sync_state_path() {
+  local filepath lexical resolved candidate
+  filepath="$(expand_path "$1")"
+
+  case "$filepath" in
+    */.codex/.aicoding-sync|*/.codex/.aicoding-sync/*) return 0 ;;
+  esac
+
+  [[ "$filepath" == /* ]] || return 1
+  lexical="$(realpath -ms -- "$filepath" 2>/dev/null)" || return 1
+  resolved="$(realpath -m -- "$filepath" 2>/dev/null)" || resolved="$lexical"
+  for candidate in "$lexical" "$resolved"; do
+    case "$candidate" in
+      */.codex/.aicoding-sync|*/.codex/.aicoding-sync/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 # is_denied_path <path> — pattern check only; does not care whether the file
 # exists. Used for tool arguments and redirection targets.
 is_denied_path() {
   local filepath base pattern
   filepath="$(expand_path "$1")"
   base="$(basename -- "$filepath")"
+
+  # State paths have no allow-name exception, including normalized aliases.
+  is_codex_sync_state_path "$filepath" && return 0
 
   for pattern in "${DENY_BASENAMES[@]}"; do
     glob_match "$base" "$pattern" && return 0
@@ -279,6 +310,7 @@ is_denied_path() {
 in_sensitive_dir() {
   local filepath pattern
   filepath="$(expand_path "$1")"
+  is_codex_sync_state_path "$filepath" && return 0
   for pattern in "${SENSITIVE_DIRS[@]}"; do
     glob_match "$filepath" "$pattern" && return 0
   done
