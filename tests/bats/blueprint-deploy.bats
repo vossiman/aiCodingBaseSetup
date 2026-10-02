@@ -331,13 +331,19 @@ TOML
   [ "$sha" = "$(git -C "$BLUEPRINT_ROOT" rev-parse HEAD)" ]
 }
 
-@test "release order: a shallow checkout has no ordinal and never holds back" {
+@test "release order: a release without an ordinal yields to any marker" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   git clone -q --depth 1 "file://$BLUEPRINT_ROOT" "$TMPDIR/shallow"
   export AICODING_BLUEPRINT_CLONE="$TMPDIR/shallow"
   run _managed_release_ordinal
   [ "$status" -ne 0 ]
   [ -z "$output" ]
+  run _managed_newer_release_owns_shared
+  [ "$status" -ne 0 ]
+  mkdir -p "$HOME/.claude"
+  echo "1 someone" > "$HOME/.claude/.aicoding-release"
+  run _managed_newer_release_owns_shared
+  [ "$status" -eq 0 ]
 }
 
 @test "release order: a local --blueprint run writes but never moves the marker" {

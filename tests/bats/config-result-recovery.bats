@@ -47,6 +47,15 @@ state() { jq -r --arg c "$1" '.components[$c] | "\(.state) \(.reason)"' "$AICODI
   [ "$(state config)" = "failed managed_config_apply_failed" ]
 }
 
+@test "held shared files defer that harness's shared provisioning but stay current" {
+  MANAGED_RESULT[$first]=held
+  MANAGED_RESULT[$HOME/.codex/config.toml]=held
+  _sync_record_config_results "$target"
+  [ "$(state config-claude)" = "current reconciliation_verified" ]
+  [ "${_SYNC_DEFERRED_PROVISION_COMPONENTS[claude]}" = 1 ]
+  [ "${_SYNC_DEFERRED_PROVISION_COMPONENTS[codex]}" = 1 ]
+}
+
 @test "a malformed file is reported without deferring provisioning" {
   MANAGED_RESULT[$first]=malformed
   _sync_record_config_results "$target"

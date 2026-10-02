@@ -501,7 +501,10 @@ pass records its release's position on `main` (the number of commits
 behind it) in `~/.claude/.aicoding-release`; a
 container on an older release leaves files under those three directories to
 the newer one and only updates its own container-local files. A local
-`--blueprint` run always writes and never moves that marker.
+`--blueprint` run always writes and never moves that marker. A release
+without a known position (a fresh bootstrap, a shallow checkout) yields to
+any existing marker until its first staged update. An older release also
+skips shared plugin and MCP provisioning.
 
 The `~/.bashrc.d/` convention for user additions: anything matching `local-*.sh` (or any name *not* prefixed `aicoding-`) is sourced by the managed block but never touched by the blueprint. Personal aliases, env vars, and shell tweaks belong there.
 

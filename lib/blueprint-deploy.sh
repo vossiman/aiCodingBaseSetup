@@ -577,14 +577,16 @@ _managed_is_shared() {
 }
 
 # True when a newer release than this one has written the shared roots. A
-# local --blueprint run is development and always writes; so does a release
-# whose ordinal is unknown.
+# local --blueprint run is development and always writes. A release with no
+# ordinal (a bootstrap tarball, a shallow checkout) yields to any marker: the
+# next staged update gives it one.
 _managed_newer_release_owns_shared() {
   local mine theirs
   [[ "${AICODING_BLUEPRINT_LOCAL:-0}" != 1 ]] || return 1
-  mine=$(_managed_release_ordinal) || return 1
   read -r theirs _ < "$(_managed_release_marker)" 2>/dev/null || return 1
-  [[ "$theirs" =~ ^[0-9]+$ ]] && (( theirs > mine ))
+  [[ "$theirs" =~ ^[0-9]+$ ]] || return 1
+  mine=$(_managed_release_ordinal) || return 0
+  (( theirs > mine ))
 }
 
 # Local runs never move the marker, so a dev branch cannot hold back the
