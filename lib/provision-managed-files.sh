@@ -1,6 +1,5 @@
-# lib/provision-managed-files.sh - initial deployment, adoption, and
-# conservative reconciliation of blueprint-managed files. Relies on
-# blueprint-deploy.sh plus install.sh globals/loggers; sourced only.
+# lib/provision-managed-files.sh - installer side of blueprint-managed files.
+# Relies on blueprint-deploy.sh plus install.sh globals/loggers; sourced only.
 
 _aicoding_initial_config_ready() {
   local dest=$1 reason classification_rc=2
@@ -58,143 +57,25 @@ _aicoding_managed_source_version() {
   git -C "$root" rev-parse HEAD 2>/dev/null || printf 'unknown\n'
 }
 
-# Reconcile setting-aware files without exposing their rendered values. The
-# engine owns all config/receipt writes; this wrapper only stages the local
-# manifest entry after a successful managed apply. It always returns zero so
-# set -e installers continue unrelated provisioning on a file-level failure.
-_provision_smart_managed_files() {
-  local context=${1:-installer} dest mode source bucket code plan result
-  local config_changed state_changed
-  _AICODING_PROVISION_SMART_ERRORS=0
-  _AICODING_PROVISION_SMART_CONFLICTS=0
-  while IFS='|' read -r dest mode source; do
-    [[ -z "$dest" ]] && continue
-    # Smart config writes require the same verified runtime/shared-consumer
-    # compatibility as every other managed destination.
-    _aicoding_initial_config_ready "$dest" || continue
-    codex_smart_plan "$dest" "$SCRIPT_DIR/$source" "$context"
-    plan=$CODEX_SMART_RESULT
-    bucket=$(codex_smart_bucket "$plan")
-    case "$bucket" in
-      smart_error)
-        code=$(codex_smart_error_text "$plan")
-        warn "Codex config not updated ($code): $dest"
-        _AICODING_INITIAL_CONFIG_DEFERRED=1
-        _AICODING_PROVISION_SMART_ERRORS=$((_AICODING_PROVISION_SMART_ERRORS + 1))
-        ;;
-      new_file_existing)
-        info "Leaving unmanaged Codex config untouched: $dest"
-        ;;
-      *)
-        codex_smart_apply "$dest" "$SCRIPT_DIR/$source" "$source" "$context"
-        result=$CODEX_SMART_RESULT
-        code=$(codex_smart_error_text "$result")
-        if [[ -n "$code" ]]; then
-          warn "Codex config not updated ($code): $dest"
-          _AICODING_INITIAL_CONFIG_DEFERRED=1
-          _AICODING_PROVISION_SMART_ERRORS=$((_AICODING_PROVISION_SMART_ERRORS + 1))
-        elif [[ $(printf '%s' "$result" | jq -r '.unmanaged') == true ]]; then
-          info "Leaving unmanaged Codex config untouched: $dest"
-        elif (( $(printf '%s' "$result" | jq '.conflicts | length') > 0 )); then
-          _AICODING_INITIAL_CONFIG_DEFERRED=1
-          config_changed=$(printf '%s' "$result" | jq -r '.config_changed')
-          state_changed=$(printf '%s' "$result" | jq -r '.state_changed')
-          if [[ "$config_changed" == true ]]; then
-            warn "Applied safe Codex updates but kept conflicting settings local: $dest"
-          elif [[ "$state_changed" == true ]]; then
-            warn "Updated Codex merge state; conflicting settings kept local: $dest"
-          else
-            warn "Conflicting Codex settings kept local; no updates applied: $dest"
-          fi
-          _AICODING_PROVISION_SMART_CONFLICTS=$((_AICODING_PROVISION_SMART_CONFLICTS + 1))
-        else
-          ok "reconciled Codex settings at $dest"
-        fi
-        ;;
-    esac
-  done < <(managed_inventory_smart)
-  return 0
+# Installer side of managed config: the same pass as aicoding-sync, gated
+# per destination by _aicoding_initial_config_ready (shared-root lock and
+# tool readiness). Returns nonzero only when a write failed.
+_install_config_gate() {
+  _aicoding_initial_config_ready "$1" >&2
 }
 
-# deploy_all_managed_files — wraps every managed-file deployment in a single
-# manifest staging session. Skill files are enumerated from MANAGED_SKILLS.
-deploy_all_managed_files() {
-  manifest_stage_begin
-
-  local entry dest mode source
-  while IFS='|' read -r dest mode source; do
-    [[ -z "$dest" ]] && continue
-    _aicoding_initial_config_ready "$dest" || continue
-    if [[ -f "$SCRIPT_DIR/$source" ]]; then
-      # _rendered, not _substituted: the inventory mixes configs with
-      # markdown every agent reads (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md,
-      # ~/.claude/agents/*.md), and the destination decides which is which.
-      deploy_overwrite_file_rendered "$SCRIPT_DIR/$source" "$dest" "$source"
-      ok "deployed $dest"
-    else
-      warn "missing source in blueprint: $source — skipping $dest"
-    fi
-  done < <(managed_inventory_overwrite)
-
-  while IFS='|' read -r dest mode source; do
-    [[ -z "$dest" ]] && continue
-    _aicoding_initial_config_ready "$dest" || continue
-    if [[ -f "$SCRIPT_DIR/$source" ]]; then
-      _ensure_merge_dest "$dest"
-      deploy_merge_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
-      ok "merged $dest"
-    fi
-  done < <(managed_inventory_merge)
-
-  _provision_smart_managed_files installer
-
-  # ~/.bashrc managed block.
-  deploy_marker_block "$HOME/.bashrc" "$(managed_bashrc_block_body)" \
-    "$BASHRC_BLOCK_START" "$BASHRC_BLOCK_END"
-  ok "managed block written to ~/.bashrc"
-
-  # Skills — every file of every skill dir, via the same enumeration the
-  # sync inventory uses (enumerate_skill_files in blueprint-deploy.sh).
-  # Divergence between the two paths would get files to_remove'd by sync.
-  # Markdown gets {{HOME}} expanded and NOTHING else (CAF-003: an agent must
-  # read a skill to use it, so a substituted credential landed in model
-  # context on every use). Everything else (binaries, CSS, JSON) deploys
-  # verbatim — the sed substitution pass corrupts non-text files.
-  mkdir -p "$CLAUDE_DIR/skills"
-  local skill_dir skill_rel src_file dest_file
-  for skill_dir in "$SCRIPT_DIR/skills"/*/; do
-    [[ -d "$skill_dir" && ! -f "$skill_dir/SKILL.md" ]] && warn "no SKILL.md in $skill_dir"
+install_managed_config() {
+  header "Managed config"
+  local rc=0 dest
+  MANAGED_CONFIG_GATE=_install_config_gate managed_config_apply || rc=1
+  for dest in "${!MANAGED_RESULT[@]}"; do
+    [[ "${MANAGED_RESULT[$dest]}" == blocked:* ]] && _AICODING_INITIAL_CONFIG_DEFERRED=1
   done
-  while IFS= read -r skill_rel; do
-    [[ -z "$skill_rel" ]] && continue
-    src_file="$SCRIPT_DIR/skills/$skill_rel"
-    dest_file="$CLAUDE_DIR/skills/$skill_rel"
-    mkdir -p "$(dirname "$dest_file")"
-    if [[ "$skill_rel" == *.md ]]; then
-      deploy_overwrite_file_prose "$src_file" "$dest_file" "skills/$skill_rel"
-    else
-      deploy_overwrite_file "$src_file" "$dest_file" "skills/$skill_rel"
-    fi
-    ok "skill file $skill_rel installed"
-  done < <(enumerate_skill_files "$SCRIPT_DIR/skills")
-
-  # Slash commands — dynamic enumeration, parallel to skills.
-  mkdir -p "$CLAUDE_DIR/commands"
-  local cmd_file cmd_name
-  for cmd_file in "$SCRIPT_DIR/commands"/*.md; do
-    [[ ! -f "$cmd_file" ]] && continue
-    cmd_name=$(basename "$cmd_file")
-    deploy_overwrite_file_prose "$cmd_file" "$CLAUDE_DIR/commands/$cmd_name" "commands/$cmd_name"
-    ok "command $cmd_name installed"
-  done
-
-  # Record blueprint origin/commit metadata at the top of the manifest.
-  local commit origin
-  commit=$(_aicoding_managed_source_version "$SCRIPT_DIR")
-  origin=$(blueprint_origin "$SCRIPT_DIR")
-  manifest_stage_set_blueprint "$commit" "$origin"
-
-  manifest_stage_commit
+  if [[ "$rc" -eq 0 && "${_AICODING_INITIAL_CONFIG_DEFERRED:-0}" != 1 ]]; then
+    aicoding_stamp_blueprint "$(_aicoding_managed_source_version "$SCRIPT_DIR")"
+    aicoding_remove_legacy_state
+  fi
+  return "$rc"
 }
 
 # Managed component lists (used for unmanaged component detection).
@@ -212,8 +93,6 @@ for _skill_dir in "$SCRIPT_DIR/skills"/*/; do
   MANAGED_SKILLS+=("${_skill_dir##*/}")
 done
 unset _skill_dir
-# JSON merge lives in lib/blueprint-deploy.sh as _json_merge_into (unions both
-# permissions.allow and permissions.deny). Do not reintroduce a local merger.
 
 # --- Report unmanaged components ---
 report_unmanaged() {
@@ -248,7 +127,6 @@ report_unmanaged() {
       [[ ! -f "$hook_file" ]] && continue
       local hook_name
       hook_name="$(basename "$hook_file")"
-      # Skip the installer's own timestamped backups (_backup_file siblings).
       [[ "$hook_name" == *.bak.* ]] && continue
       local managed=false
       for m in "${MANAGED_HOOKS[@]}"; do
@@ -283,256 +161,22 @@ report_unmanaged() {
   fi
 }
 
-# install_mcp_packages / install_claude_mcps / install_claude_plugins live in
-# lib/provision.sh (shared with aicoding-sync).
-# Detect which deploy mode this install.sh run should use.
-detect_install_mode() {
-  if [[ -f "$AICODING_MANIFEST" ]]; then
-    echo "reconcile"
-    return
-  fi
-  # No manifest. Check whether any managed files already exist on disk.
-  # Capture the inventory BEFORE looping: an early `return` while the process
-  # substitution is still writing SIGPIPEs the producer's heredoc `cat`, and
-  # with `set -E` + the ERR trap that subshell prints a phantom
-  # "INSTALL FAILED ... line=414" even though nothing failed (dataEnv
-  # rebuild, 2026-08-17). Command substitution waits for the producer, so
-  # there is no concurrent writer left to kill.
-  local inventory dest
-  inventory=$(managed_inventory_overwrite; managed_inventory_merge; managed_inventory_smart)
-  while IFS='|' read -r dest _ _; do
-    [[ -z "$dest" ]] && continue
-    [[ -e "$dest" ]] && { echo "adopt"; return; }
-  done <<< "$inventory"
-  [[ -f "$HOME/.bashrc" ]] && grep -qxF "$BASHRC_BLOCK_START" "$HOME/.bashrc" \
-    && { echo "adopt"; return; }
-  # Legacy: today's install.sh appends a standalone Go-PATH export to
-  # ~/.bashrc. Its presence signals a prior install, so treat as adopt
-  # (adopt_existing_files strips the line before deploying the managed block).
-  [[ -f "$HOME/.bashrc" ]] \
-    && grep -qxF 'export PATH="/usr/local/go/bin:$PATH"' "$HOME/.bashrc" \
-    && { echo "adopt"; return; }
-  echo "first"
-}
-
-# adopt_existing_files — record current hashes for existing managed files
-# without overwriting them. Files missing on disk are still deployed.
-adopt_existing_files() {
-  manifest_stage_begin
-  local dest mode source
-  local -a adopted=() deployed=()
-
-  while IFS='|' read -r dest mode source; do
-    [[ -z "$dest" ]] && continue
-    _aicoding_initial_config_ready "$dest" || continue
-    if [[ -e "$dest" ]]; then
-      local h
-      h=$(compute_managed_hash "$dest")
-      manifest_set_file "$dest" \
-        "$(jq -n --arg s "$source" --arg h "$h" \
-            '{mode:"overwrite",source:$s,deployed_hash:$h}')"
-      adopted+=("$dest")
-    elif [[ -f "$SCRIPT_DIR/$source" ]]; then
-      # Same dest-driven choice as deploy_all_managed_files above; adopt must
-      # not be the one path that still substitutes secrets into prose.
-      deploy_overwrite_file_rendered "$SCRIPT_DIR/$source" "$dest" "$source"
-      deployed+=("$dest")
-    fi
-  done < <(managed_inventory_overwrite)
-
-  while IFS='|' read -r dest mode source; do
-    [[ -z "$dest" ]] && continue
-    _aicoding_initial_config_ready "$dest" || continue
-    if [[ -e "$dest" ]]; then
-      manifest_set_file "$dest" \
-        "$(jq -n --arg s "$source" '{mode:"merge",source:$s}')"
-      adopted+=("$dest")
-    elif [[ -f "$SCRIPT_DIR/$source" ]]; then
-      _ensure_merge_dest "$dest"
-      deploy_merge_file_substituted "$SCRIPT_DIR/$source" "$dest" "$source"
-      deployed+=("$dest")
-    fi
-  done < <(managed_inventory_merge)
-
-  # Existing configs with no shared receipt are personal/unmanaged here and
-  # stay byte-for-byte untouched. Explicit aicoding-sync --yes performs the
-  # conservative adoption instead.
-  _provision_smart_managed_files installer
-
-  # One-time fixup: today's install.sh appends a standalone Go-PATH export
-  # to ~/.bashrc. The managed block now absorbs this export, so we strip
-  # the standalone line during adopt to avoid duplication.
-  if [[ -f "$HOME/.bashrc" ]]; then
-    local tmp_bashrc
-    tmp_bashrc=$(mktemp)
-    grep -vxF 'export PATH="/usr/local/go/bin:$PATH"' "$HOME/.bashrc" > "$tmp_bashrc" || true
-    mv "$tmp_bashrc" "$HOME/.bashrc"
-  fi
-
-  # ~/.bashrc managed block — adopt if marker block exists, else deploy.
-  if [[ -f "$HOME/.bashrc" ]] && grep -qxF "$BASHRC_BLOCK_START" "$HOME/.bashrc"; then
-    local h
-    h=$(compute_block_hash "$HOME/.bashrc" "$BASHRC_BLOCK_START" "$BASHRC_BLOCK_END")
-    manifest_set_file "$HOME/.bashrc" \
-      "$(jq -n --arg s "$BASHRC_BLOCK_START" --arg e "$BASHRC_BLOCK_END" --arg h "$h" \
-          '{mode:"marker_block",source:"(composed)",marker_start:$s,marker_end:$e,deployed_block_hash:$h}')"
-    adopted+=("$HOME/.bashrc")
-  else
-    deploy_marker_block "$HOME/.bashrc" "$(managed_bashrc_block_body)" \
-      "$BASHRC_BLOCK_START" "$BASHRC_BLOCK_END"
-    deployed+=("$HOME/.bashrc")
-  fi
-
-  local commit origin
-  commit=$(_aicoding_managed_source_version "$SCRIPT_DIR")
-  origin=$(blueprint_origin "$SCRIPT_DIR")
-  manifest_stage_set_blueprint "$commit" "$origin"
-
-  manifest_stage_commit
-
-  info "Adopt mode: ${#adopted[@]} existing managed files captured into manifest:"
-  local f
-  for f in "${adopted[@]}"; do info "    $f"; done
-  if [[ ${#deployed[@]} -gt 0 ]]; then
-    info "Adopt mode: ${#deployed[@]} new managed files deployed from blueprint:"
-    for f in "${deployed[@]}"; do info "    $f"; done
-  fi
-  info "Adopted files were not modified. To see what diverges from the blueprint,"
-  info "run: aicoding-sync --dry-run"
-}
-
-# reconcile_existing_install — manifest exists; classify each managed file
-# and auto-apply only the conservative bucket set (restore, will_update,
-# drifted_but_aligned, merge, plus new_file where the dest is absent).
-# new_file_existing and to_remove are skipped — replacing a personal file at
-# a newly managed path stays with the human-driven `aicoding-sync`.
-#
-# Strictly more conservative than `aicoding-sync --yes`: never auto-applies
-# drifted_and_updating or to_remove, because automatic provisioning should
-# never silently overwrite or delete files the user has touched.
-reconcile_existing_install() {
-  export AICODING_BLUEPRINT_CLONE="$SCRIPT_DIR"
-
-  declare -gA BUCKETS FILE_MODE FILE_SOURCE
-  classify_managed_files installer
-
-  # Owned overwrite files self-heal even in the conservative reconcile path.
-  local _d
-  for _d in "${!BUCKETS[@]}"; do
-    if [[ "${BUCKETS[$_d]}" == drifted_and_updating ]] && _is_owned_overwrite "$_d"; then
-      BUCKETS[$_d]=will_update_owned
-    fi
-  done
-
-  # A persistent enrollment may be reconciling an existing installation.
-  # Apply the same destination capability and shared-consumer gate used by a
-  # fresh deployment before any actionable bucket reaches the write engine.
-  for _d in "${!BUCKETS[@]}"; do
-    case "${BUCKETS[$_d]}" in
-      drifted_and_updating|new_file_existing|to_remove)
-        report_managed_conflict "$_d" "${BUCKETS[$_d]}"
-        _provision_ensure_update_components || return 1
-        case "$(_aicoding_config_component "$_d")" in
-          config-*) _AICODING_INITIAL_CONFIG_DEFERRED=1 ;;
-        esac
-        ;;
-      restore|new_file|will_update|will_update_owned|drifted_but_aligned|merge|smart_update|smart_conflict)
-        _aicoding_initial_config_ready "$_d" || BUCKETS[$_d]=blocked
-        ;;
-      smart_error) _AICODING_INITIAL_CONFIG_DEFERRED=1 ;;
-    esac
-  done
-
-  manifest_stage_begin
-  apply_managed_buckets \
-    "restore new_file will_update will_update_owned drifted_but_aligned merge smart_update smart_conflict smart_retired" \
-    installer
-  # Planning and apply-time failures (for example a concurrent edit or receipt
-  # write failure) are file-local. Surface only their fixed code, preserve the
-  # old manifest entry, and continue the rest of installation.
-  local smart_result smart_code
-  for _d in "${!SMART_PLAN[@]}"; do
-    smart_result=${SMART_APPLY_RESULT[$_d]:-${SMART_PLAN[$_d]}}
-    smart_code=$(codex_smart_error_text "$smart_result")
-    if [[ -n "$smart_code" ]]; then
-      warn "Codex config not updated ($smart_code): $_d"
-      _AICODING_INITIAL_CONFIG_DEFERRED=1
-    elif (( $(printf '%s' "$smart_result" | jq '.conflicts | length') > 0 )); then
-      _AICODING_INITIAL_CONFIG_DEFERRED=1
-    fi
-  done
-  # Stamp the blueprint commit/origin we reconciled to, so the manifest's
-  # recorded version matches what's actually deployed. Without this, reconcile
-  # leaves blueprint_commit stale (first-deploy/adopt set it, reconcile didn't),
-  # which makes anything reading it — e.g. the update notifier — report wrongly.
-  local rc_commit rc_origin
-  rc_commit=$(_aicoding_managed_source_version "$SCRIPT_DIR")
-  rc_origin=$(blueprint_origin "$SCRIPT_DIR")
-  manifest_stage_set_blueprint "$rc_commit" "$rc_origin"
-  manifest_stage_commit
-
-  # Counts for the end-of-run summary. drifted_but_aligned is auto-handled
-  # (silent hash refresh) and not counted.
-  local n_new=0 n_restored=0 n_updated=0 n_merged=0 n_drifted=0 n_to_review=0
-  local dest bucket
-  for dest in "${!BUCKETS[@]}"; do
-    bucket=${BUCKETS[$dest]}
-    case "$bucket" in
-      new_file)             n_new=$((n_new+1)) ;;
-      new_file_existing)    n_to_review=$((n_to_review+1)) ;;
-      restore)              n_restored=$((n_restored+1)) ;;
-      will_update)          n_updated=$((n_updated+1)) ;;
-      will_update_owned)    n_updated=$((n_updated+1)) ;;
-      merge)                n_merged=$((n_merged+1)) ;;
-      drifted_and_updating) n_drifted=$((n_drifted+1)) ;;
-      to_remove)            n_to_review=$((n_to_review+1)) ;;
-      smart_update)
-        smart_result=${SMART_APPLY_RESULT[$dest]:-${SMART_PLAN[$dest]}}
-        if [[ -n "$(codex_smart_error_code "$smart_result")" ]]; then
-          n_to_review=$((n_to_review+1))
-        else
-          n_updated=$((n_updated+1))
-        fi
-        ;;
-      smart_conflict)       n_to_review=$((n_to_review+1)) ;;
-      smart_error)          n_to_review=$((n_to_review+1)) ;;
-    esac
-  done
-
-  _RECONCILE_NEW=$n_new
-  _RECONCILE_RESTORED=$n_restored
-  _RECONCILE_UPDATED=$n_updated
-  _RECONCILE_MERGED=$n_merged
-  _RECONCILE_DRIFTED=$n_drifted
-  _RECONCILE_TO_REVIEW=$n_to_review
-}
-
-# _print_install_summary — emit the fixed-format summary line plus an
-# optional NOTE follow-up. Counters default to 0 when not set by the mode.
+# _print_install_summary [outcome] — one fixed-format line for log scrapers.
 _print_install_summary() {
-  local commit_short outcome=${1:-OK}
-  commit_short=$(_aicoding_managed_source_version "$SCRIPT_DIR")
-  commit_short=${commit_short:0:7}
-  local n_new=${_RECONCILE_NEW:-0}
-  local n_restored=${_RECONCILE_RESTORED:-0}
-  local n_updated=${_RECONCILE_UPDATED:-0}
-  local n_merged=${_RECONCILE_MERGED:-0}
-  local n_drifted=${_RECONCILE_DRIFTED:-0}
-  local n_to_review=${_RECONCILE_TO_REVIEW:-0}
-  printf 'INSTALL %s  blueprint %s  new %d  restored %d  updated %d  merged %d  drifted %d  to_review %d\n' \
-    "$outcome" "$commit_short" "$n_new" "$n_restored" "$n_updated" "$n_merged" "$n_drifted" "$n_to_review"
-  if (( n_drifted > 0 || n_to_review > 0 )); then
-    printf 'NOTE: %d drifted file(s), %d file(s) to review. Run aicoding-sync to address.\n' \
-      "$n_drifted" "$n_to_review"
-  fi
+  local commit dest updated=0
+  commit=$(_aicoding_managed_source_version "$SCRIPT_DIR")
+  for dest in "${!MANAGED_RESULT[@]}"; do
+    [[ "${MANAGED_RESULT[$dest]}" == updated ]] && updated=$((updated + 1))
+  done
+  printf 'INSTALL %s  blueprint %s  updated %d\n' "${1:-OK}" "${commit:0:7}" "$updated"
 }
 
 # remove_legacy_project_templates: /scaffold-project was retired (it never
 # worked in-container: the secrets deny hook blankets ~/.aicodingsetup, so the
 # command could not read its own template mirror there). The reference layout
 # stays in the repo at templates/project/; agents copy it from the blueprint
-# checkout instead. This cleans up the old mirror, which lived outside the
-# manifest and would otherwise persist forever in the host mount.
+# checkout instead. This cleans up the old mirror, which would otherwise
+# persist forever in the host mount.
 remove_legacy_project_templates() {
   local legacy_dir="$SECRETS_DIR/templates/project"
   [[ -d "$legacy_dir" ]] || return 0

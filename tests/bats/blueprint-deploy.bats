@@ -2,8 +2,9 @@
 
 setup() {
   TMPDIR=$(mktemp -d)
-  export AICODING_MANIFEST="$TMPDIR/manifest.json"
-  export HOME="$TMPDIR"
+  export HOME="$TMPDIR" AICODING_STATE_DIR="$TMPDIR/state"
+  export AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT"
+  unset AICODING_PROFILE
   # umask 0002 is the container default and the condition under which the
   # 664 modes were observed live.
   umask 0002
@@ -13,379 +14,296 @@ teardown() {
   rm -rf "$TMPDIR"
 }
 
+# A private, git-backed blueprint with one shipped-then-retired source.
+retired_clone() {
+  local clone="$TMPDIR/clone"
+  git init -q -b main "$clone"
+  mkdir -p "$clone/commands" "$clone/configs" "$clone/lib"
+  printf 'old command\n' > "$clone/commands/gone.md"
+  git -C "$clone" add .
+  git -C "$clone" -c user.email=t@t -c user.name=t commit -qm ship
+  git -C "$clone" rm -q commands/gone.md
+  git -C "$clone" -c user.email=t@t -c user.name=t commit -qm retire
+  jq -n '{mixed:{}, retired_files:[{dest:".claude/commands/gone.md", source:"commands/gone.md"}], retired_keys:[]}' \
+    > "$clone/configs/managed-config.json"
+  export AICODING_BLUEPRINT_CLONE="$clone"
+}
+
+@test "rule 1: a fresh home receives every owned file, and a second pass writes nothing" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  managed_config_apply > "$TMPDIR/first"
+  [ -f "$HOME/.claude/CLAUDE.md" ]
+  [ -x "$HOME/.claude/hooks/bw-deny-files.sh" ]
+  [ -f "$HOME/.claude/skills/review-by-harness/SKILL.md" ]
+  [ "$(stat -c %a "$HOME/.claude/CLAUDE.md")" = 600 ]
+  [ "$(stat -c %a "$HOME/.claude/hooks/bw-deny-files.sh")" = 700 ]
+  run managed_config_apply
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"managed config already current"* ]]
+  [[ "$output" != *"updated:"* ]]
+}
+
+@test "rule 1: a hand-edited owned file is overwritten without a backup or prompt" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$HOME/.claude/hooks"
+  printf 'mine\n' > "$HOME/.claude/hooks/memory-hint.sh"
+  chmod 0664 "$HOME/.claude/hooks/memory-hint.sh"
+  run managed_config_apply
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"updated: $HOME/.claude/hooks/memory-hint.sh"* ]]
+  cmp -s "$BLUEPRINT_ROOT/configs/claude/hooks/memory-hint.sh" "$HOME/.claude/hooks/memory-hint.sh"
+  [ "$(stat -c %a "$HOME/.claude/hooks/memory-hint.sh")" = 600 ]
+  [ -z "$(find "$HOME" -name '*.bak.*')" ]
+}
+
+@test "rule 1: prose gets HOME only, configs get secrets, raw assets stay byte-exact" {
+  export FIRECRAWL_API_KEY=fc-secret
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$TMPDIR/src"
+  printf 'home={{HOME}} key={{FIRECRAWL_API_KEY}}\n' > "$TMPDIR/src/t"
+  _render_managed_source "$TMPDIR/src/t" "$HOME/.claude/commands/x.md" "$TMPDIR/prose"
+  _render_managed_source "$TMPDIR/src/t" "$HOME/.local/bin/x" "$TMPDIR/config"
+  [ "$(cat "$TMPDIR/prose")" = "home=$HOME key={{FIRECRAWL_API_KEY}}" ]
+  [ "$(cat "$TMPDIR/config")" = "home=$HOME key=fc-secret" ]
+  managed_config_apply >/dev/null
+  local asset
+  asset=$(cd "$BLUEPRINT_ROOT/skills" && find . -type f ! -name '*.md' | head -1)
+  cmp -s "$BLUEPRINT_ROOT/skills/$asset" "$HOME/.claude/skills/$asset"
+}
+
+@test "rule 1: dry run reports pending writes and changes nothing" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run managed_config_apply --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"would update: $HOME/.claude/CLAUDE.md"* ]]
+  [ ! -e "$HOME/.claude/CLAUDE.md" ]
+}
+
+@test "rule 1: a gate veto leaves the file alone and records the reason" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  veto() { [[ "$1" != */.cursor/hooks.json ]] || { echo cursor_not_installed; return 1; }; }
+  MANAGED_CONFIG_GATE=veto managed_config_apply >/dev/null
+  [ ! -e "$HOME/.cursor/hooks.json" ]
+  [ "${MANAGED_RESULT[$HOME/.cursor/hooks.json]}" = blocked:cursor_not_installed ]
+  [ "${MANAGED_RESULT[$HOME/.claude/CLAUDE.md]}" = updated ]
+}
+
+@test "rule 2: settings.json enforces owned keys, seeds once, keeps personal content" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$HOME/.claude"
+  jq -n '{effortLevel:"low", personal:{a:1},
+          permissions:{allow:["Bash(mine:*)"], deny:["Read(/mine)"]},
+          env:{MY_VAR:"1", CLAUDE_CODE_NO_FLICKER:"0"},
+          hooks:{MyEvent:[{x:1}], Stop:[{mine:true}]},
+          enabledPlugins:{"mine@x":true, "superpowers@claude-plugins-official":false}}' \
+    > "$HOME/.claude/settings.json"
+  managed_config_apply >/dev/null
+  local s="$HOME/.claude/settings.json" b="$TMPDIR/rendered.json"
+  _substitute_file_to "$BLUEPRINT_ROOT/configs/claude/settings.json" "$b"
+  jq -e '.effortLevel == "low" and .personal == {a:1} and .env.MY_VAR == "1"
+         and .hooks.MyEvent == [{x:1}] and .enabledPlugins["mine@x"] == true' "$s"
+  jq -e --slurpfile b "$b" '.env.CLAUDE_CODE_NO_FLICKER == $b[0].env.CLAUDE_CODE_NO_FLICKER
+         and .hooks.Stop == $b[0].hooks.Stop
+         and .enabledPlugins["superpowers@claude-plugins-official"] == true
+         and .outputStyle == $b[0].outputStyle
+         and (.permissions.allow | index("Bash(mine:*)")) != null
+         and (.permissions.deny | index("Read(/mine)")) != null
+         and ($b[0].permissions.deny - .permissions.deny) == []' "$s"
+  [ "$(stat -c %a "$s")" = 600 ]
+}
+
+@test "rule 2: a malformed mixed file is reported and never overwritten" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$HOME/.cursor" "$HOME/.codex"
+  printf '{broken\n' > "$HOME/.cursor/mcp.json"
+  printf 'model = \n' > "$HOME/.codex/config.toml"
+  run managed_config_apply
+  [ "$status" -eq 0 ]
+  [ "$(cat "$HOME/.cursor/mcp.json")" = '{broken' ]
+  [ "$(cat "$HOME/.codex/config.toml")" = 'model = ' ]
+  [[ "$output" == *"left unreadable file unchanged"*"$HOME/.cursor/mcp.json"* ]]
+}
+
+@test "rule 2: Codex keeps personal model, projects and servers; owned keys follow the blueprint" {
+  export KANBAN_TOKEN=kb MEMORY_ROUTER_TOKEN=mr
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$HOME/.codex"
+  cat > "$HOME/.codex/config.toml" <<'TOML'
+model = "personal-model"
+approval_policy = "untrusted"
+
+[projects."/work"]
+trust_level = "trusted"
+
+[tui]
+alternate_screen = "always"
+
+[mcp_servers.mine]
+command = "mine"
+TOML
+  managed_config_apply >/dev/null
+  local c="$HOME/.codex/config.toml"
+  grep -qx 'model = "personal-model"' "$c"
+  grep -qx 'approval_policy = "never"' "$c"
+  grep -qx 'sandbox_mode = "danger-full-access"' "$c"
+  grep -qx 'trust_level = "trusted"' "$c"
+  grep -qx 'alternate_screen = "always"' "$c"
+  grep -q '^status_line = ' "$c"
+  grep -qx '\[mcp_servers.mine\]' "$c"
+  grep -qx '\[mcp_servers.firecrawl\]' "$c"
+  grep -qF 'Bearer kb' "$c"
+  grep -q '^multi_agent_v2 = true' "$c"
+}
+
+@test "rule 2: a fresh Codex config is the rendered template" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  managed_config_apply >/dev/null
+  _substitute_file_to "$BLUEPRINT_ROOT/configs/codex/config.toml" "$TMPDIR/expected"
+  cmp -s "$TMPDIR/expected" "$HOME/.codex/config.toml"
+}
+
+@test "rule 2: a missing secret removes the blueprint's MCP entry but keeps a user's own" {
+  unset KANBAN_TOKEN
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$HOME/.cursor"
+  echo '{"mcpServers":{"kanban":{"url":"https://kanban.dataprospectors.at/mcp","headers":{"Authorization":"Bearer revoked"}}}}' \
+    > "$HOME/.cursor/mcp.json"
+  managed_config_apply >/dev/null
+  if grep -q revoked "$HOME/.cursor/mcp.json"; then false; fi
+  echo '{"mcpServers":{"kanban":{"url":"http://127.0.0.1:9/mcp"}}}' > "$HOME/.cursor/mcp.json"
+  managed_config_apply >/dev/null
+  jq -e '.mcpServers.kanban.url == "http://127.0.0.1:9/mcp"' "$HOME/.cursor/mcp.json"
+}
+
+@test "rule 2: the bashrc block is enforced between markers; the rest of .bashrc stays" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  printf 'export MINE=1\n' > "$HOME/.bashrc"
+  chmod 0644 "$HOME/.bashrc"
+  managed_config_apply >/dev/null
+  grep -qx 'export MINE=1' "$HOME/.bashrc"
+  grep -qxF "$(managed_marker_block_start)" "$HOME/.bashrc"
+  sed -i 's|/usr/local/go/bin|/edited|' "$HOME/.bashrc"
+  managed_config_apply >/dev/null
+  grep -q '/usr/local/go/bin' "$HOME/.bashrc"
+  [ "$(grep -cxF "$(managed_marker_block_start)" "$HOME/.bashrc")" -eq 1 ]
+  [ "$(stat -c %a "$HOME/.bashrc")" = 644 ]
+}
+
+@test "rule 2: every JSON template key is owned or seeded" {
+  local data="$BLUEPRINT_ROOT/configs/managed-config.json" rel src
+  for rel in $(jq -r '.mixed | keys[] | select(endswith(".json"))' "$data"); do
+    src=$(jq -r --arg r "$rel" '.mixed[$r].source' "$data")
+    jq -e --slurpfile d "$data" --arg r "$rel" '
+      ($d[0].mixed[$r] | (.owned + .seeded) | map(sub("(\\.\\*|\\[\\])$"; "") | split(".")[0])) as $covered
+      | keys - $covered == []' "$BLUEPRINT_ROOT/$src"
+  done
+}
+
+@test "rule 3: a retired file that still matches a shipped version is removed" {
+  retired_clone
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$HOME/.claude/commands"
+  printf 'old command\n' > "$HOME/.claude/commands/gone.md"
+  run _managed_retire_files 0
+  [[ "$output" == *"removed retired file"* ]]
+  [ ! -e "$HOME/.claude/commands/gone.md" ]
+}
+
+@test "rule 3: a hand-edited retired file is kept and reported once" {
+  retired_clone
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$HOME/.claude/commands"
+  printf 'my edit\n' > "$HOME/.claude/commands/gone.md"
+  run _managed_retire_files 0
+  [[ "$output" == *"kept retired file (changed locally): $HOME/.claude/commands/gone.md"* ]]
+  run _managed_retire_files 0
+  [ -z "$output" ]
+  [ "$(cat "$HOME/.claude/commands/gone.md")" = 'my edit' ]
+}
+
+@test "rule 3: an absent retired file is not a conflict" {
+  retired_clone
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run _managed_retire_files 0
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "rule 3: retired keys are removed only when they equal a shipped value" {
+  unset KANBAN_TOKEN
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$HOME/.config/opencode"
+  echo '{"mcp":{"kanban":{"type":"local","command":["kanban-mcp"],"enabled":true}}}' > "$HOME/.config/opencode/opencode.json"
+  managed_config_apply >/dev/null
+  jq -e '.mcp.kanban == null' "$HOME/.config/opencode/opencode.json"
+  echo '{"mcp":{"kanban":{"type":"local","command":["my-kanban"],"enabled":true}}}' > "$HOME/.config/opencode/opencode.json"
+  managed_config_apply >/dev/null
+  jq -e '.mcp.kanban.command == ["my-kanban"]' "$HOME/.config/opencode/opencode.json"
+}
+
+@test "rule 4: profile comes from the env, then the profile file, else container" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  [ "$(aicoding_profile)" = container ]
+  aicoding_stamp_write profile host
+  [ "$(aicoding_profile)" = host ]
+  AICODING_PROFILE=minimal-pi
+  [ "$(aicoding_profile)" = minimal-pi ]
+}
+
+@test "rule 4: a host keeps Codex on-request and workspace-write" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  aicoding_stamp_write profile host
+  managed_config_apply >/dev/null
+  grep -qx 'approval_policy = "on-request"' "$HOME/.codex/config.toml"
+  grep -qx 'sandbox_mode = "workspace-write"' "$HOME/.codex/config.toml"
+  [ -f "$HOME/.bashrc.d/aicoding-boot-sync.sh" ]
+  [ ! -e "$HOME/.tmux.conf" ]
+}
+
+@test "rule 4: migration moves profile and stamps out of the manifest before deleting it" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  local shared="$HOME/.aicodingsetup"
+  mkdir -p "$AICODING_STATE_DIR" "$shared" "$HOME/.codex/.aicoding-sync"
+  echo '{"profile":"host","provision_commit":"p1","blueprint_commit":"b1","files":{}}' > "$AICODING_STATE_DIR/manifest.json"
+  echo '{"files":{}}' > "$shared/manifest.json"
+  aicoding_remove_legacy_state
+  [ -f "$AICODING_STATE_DIR/manifest.json" ]
+  aicoding_migrate_legacy_state
+  [ "$(cat "$AICODING_STATE_DIR/profile")" = host ]
+  [ "$(aicoding_stamp_read provision_commit)" = p1 ]
+  [ "$(aicoding_stamp_read blueprint_commit)" = b1 ]
+  aicoding_remove_legacy_state
+  [ ! -e "$AICODING_STATE_DIR/manifest.json" ]
+  [ ! -e "$shared/manifest.json" ]
+  [ ! -e "$HOME/.codex/.aicoding-sync" ]
+}
+
+@test "rule 4: a moved blueprint stamp drops aicoding-status's cache" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  export AICODING_UPDATE_STATE="$TMPDIR/updates"
+  mkdir -p "$AICODING_UPDATE_STATE"
+  echo '{}' > "$AICODING_UPDATE_STATE/aicoding.json"
+  aicoding_stamp_blueprint aaa
+  [ ! -e "$AICODING_UPDATE_STATE/aicoding.json" ]
+  echo '{}' > "$AICODING_UPDATE_STATE/aicoding.json"
+  aicoding_stamp_blueprint aaa
+  [ -e "$AICODING_UPDATE_STATE/aicoding.json" ]
+}
+
+@test "managed_inventory: covers owned, raw, mixed, block, skills and commands" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  run managed_inventory
+  [[ "$output" == *"$HOME/.local/bin/aicoding-worktree|raw|bin/aicoding-worktree"* ]]
+  [[ "$output" == *"$HOME/.codex/config.toml|mixed|configs/codex/config.toml"* ]]
+  [[ "$output" == *"$HOME/.claude/settings.json|mixed|configs/claude/settings.json"* ]]
+  [[ "$output" == *"$HOME/.bashrc|block|"* ]]
+  [[ "$output" == *"$HOME/.claude/skills/review-by-harness/SKILL.md|owned|skills/review-by-harness/SKILL.md"* ]]
+  [[ "$output" == *"$HOME/.claude/commands/"*"|owned|commands/"* ]]
+  [[ "$output" == *"$HOME/.tmux.conf|owned|"* ]]
+}
+
 @test "library: sources cleanly under set -euo pipefail" {
   bash -c "set -euo pipefail; . '$BLUEPRINT_ROOT/lib/blueprint-deploy.sh'"
-}
-
-@test "compute_hash: returns sha256 of file content" {
-  echo -n "hello" > "$TMPDIR/f"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run compute_hash "$TMPDIR/f"
-  [ "$status" -eq 0 ]
-  [ "$output" = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" ]
-}
-
-@test "compute_hash: returns empty string for missing file" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run compute_hash "$TMPDIR/missing"
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
-}
-
-@test "compute_block_hash: returns hash of content between markers" {
-  cat > "$TMPDIR/f" <<EOF
-prelude line
-# START
-managed line 1
-managed line 2
-# END
-trailing line
-EOF
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run compute_block_hash "$TMPDIR/f" "# START" "# END"
-  [ "$status" -eq 0 ]
-  # sha256 of "managed line 1\nmanaged line 2\n"
-  [ "$output" = "9123922db7288db5afecea8743efe7e43368a5d0baebb29a9fa49f802622e663" ]
-}
-
-@test "compute_block_hash: returns empty if markers absent" {
-  echo "no markers here" > "$TMPDIR/f"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run compute_block_hash "$TMPDIR/f" "# START" "# END"
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
-}
-
-@test "compute_block_hash: returns empty when end marker is absent" {
-  cat > "$TMPDIR/f" <<EOF
-prelude
-# START
-only opening marker
-no end marker here
-EOF
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run compute_block_hash "$TMPDIR/f" "# START" "# END"
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
-}
-
-@test "compute_block_hash: returns empty when start marker is absent" {
-  cat > "$TMPDIR/f" <<EOF
-prelude
-only closing marker below
-# END
-trailer
-EOF
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run compute_block_hash "$TMPDIR/f" "# START" "# END"
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
-}
-
-@test "read_manifest: returns empty manifest when file missing" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run read_manifest
-  [ "$status" -eq 0 ]
-  echo "$output" | jq -e '. == {"schema_version": 1, "files": {}}'
-}
-
-@test "read_manifest: returns existing manifest" {
-  cp "$BLUEPRINT_ROOT/tests/bats/fixtures/sample-manifest.json" "$AICODING_MANIFEST"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run read_manifest
-  [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.schema_version == 1'
-  echo "$output" | jq -e '.blueprint_commit == "abc1234"'
-}
-
-@test "write_manifest: writes atomically via tmp+mv" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  write_manifest '{"schema_version":1,"files":{}}'
-  [ -f "$AICODING_MANIFEST" ]
-  jq -e '.schema_version == 1' "$AICODING_MANIFEST"
-  # No leftover tmp file.
-  [ ! -f "$AICODING_MANIFEST.tmp" ]
-}
-
-@test "write_manifest: creates parent directory if missing" {
-  rm -rf "$TMPDIR"
-  mkdir -p "$TMPDIR"
-  export AICODING_MANIFEST="$TMPDIR/nested/dir/manifest.json"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  write_manifest '{"schema_version":1,"files":{}}'
-  [ -f "$AICODING_MANIFEST" ]
-}
-
-@test "manifest_stage_commit reports a manifest write failure" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  write_manifest() { return 17; }
-
-  run manifest_stage_commit
-
-  [ "$status" -eq 17 ]
-}
-
-@test "manifest_get_file: returns per-file entry as JSON" {
-  cp "$BLUEPRINT_ROOT/tests/bats/fixtures/sample-manifest.json" "$AICODING_MANIFEST"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run manifest_get_file "/tmp/test-home/.tmux.conf"
-  [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.mode == "overwrite"'
-  echo "$output" | jq -e '.source == "configs/tmux/tmux.conf"'
-}
-
-@test "manifest_get_file: returns 'null' for missing entry" {
-  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run manifest_get_file "/tmp/test-home/.missing"
-  [ "$status" -eq 0 ]
-  [ "$output" = "null" ]
-}
-
-@test "manifest_set_file: stages a file entry in pending manifest" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  manifest_set_file "/tmp/foo" '{"mode":"overwrite","source":"x","deployed_hash":"deadbeef"}'
-  manifest_stage_commit
-  jq -e '.files["/tmp/foo"].mode == "overwrite"' "$AICODING_MANIFEST"
-  jq -e '.files["/tmp/foo"].deployed_hash == "deadbeef"' "$AICODING_MANIFEST"
-}
-
-@test "manifest_set_file: overwrites existing entry" {
-  cp "$BLUEPRINT_ROOT/tests/bats/fixtures/sample-manifest.json" "$AICODING_MANIFEST"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  manifest_set_file "/tmp/test-home/.tmux.conf" '{"mode":"overwrite","source":"x","deployed_hash":"newhash"}'
-  manifest_stage_commit
-  jq -e '.files["/tmp/test-home/.tmux.conf"].deployed_hash == "newhash"' "$AICODING_MANIFEST"
-}
-
-@test "classify_file: up_to_date when current == deployed == new" {
-  echo "same" > "$TMPDIR/dest"
-  echo "same" > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  local h
-  h=$(compute_hash "$TMPDIR/dest")
-  manifest_set_file "$TMPDIR/dest" "$(jq -n --arg s configs/x --arg h "$h" \
-    '{mode:"overwrite",source:$s,deployed_hash:$h}')"
-  manifest_stage_commit
-  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
-  [ "$status" -eq 0 ]
-  [ "$output" = "up_to_date" ]
-}
-
-@test "classify_file: will_update when current == deployed != new" {
-  echo "old" > "$TMPDIR/dest"
-  echo "new" > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  local h
-  h=$(compute_hash "$TMPDIR/dest")
-  manifest_set_file "$TMPDIR/dest" "$(jq -n --arg h "$h" \
-    '{mode:"overwrite",source:"configs/x",deployed_hash:$h}')"
-  manifest_stage_commit
-  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
-  [ "$status" -eq 0 ]
-  [ "$output" = "will_update" ]
-}
-
-@test "classify_file: drifted_but_aligned when current != deployed and current == new" {
-  echo "user-edit" > "$TMPDIR/dest"
-  echo "user-edit" > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  manifest_set_file "$TMPDIR/dest" '{"mode":"overwrite","source":"configs/x","deployed_hash":"obsolete"}'
-  manifest_stage_commit
-  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
-  [ "$status" -eq 0 ]
-  [ "$output" = "drifted_but_aligned" ]
-}
-
-@test "classify_file: drifted_and_updating when all three differ" {
-  echo "user-edit" > "$TMPDIR/dest"
-  echo "new-blueprint" > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  manifest_set_file "$TMPDIR/dest" '{"mode":"overwrite","source":"configs/x","deployed_hash":"obsolete"}'
-  manifest_stage_commit
-  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
-  [ "$status" -eq 0 ]
-  [ "$output" = "drifted_and_updating" ]
-}
-
-@test "classify_file: new_file when not in manifest" {
-  echo "new" > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  manifest_stage_commit
-  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
-  [ "$status" -eq 0 ]
-  [ "$output" = "new_file" ]
-}
-
-@test "classify_file: new_file_existing when untracked but dest already on disk" {
-  # A personal file at a path the blueprint just started managing must not
-  # classify as plain new_file — that bucket deploys with no backup.
-  echo "personal content" > "$TMPDIR/dest"
-  echo "blueprint content" > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  manifest_stage_commit
-  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
-  [ "$status" -eq 0 ]
-  [ "$output" = "new_file_existing" ]
-}
-
-@test "classify_file: untracked dest identical to blueprint is drifted_but_aligned, not new_file_existing" {
-  # ~/.claude is one host mount shared by every devpod container, but the
-  # manifest is container-local. After a sibling container deploys a new
-  # managed file, this container sees "not in my manifest, dest exists" and
-  # would back up + rewrite a byte-identical file on every workspace. Adopt
-  # it silently instead: the aligned bucket records the hash without a write.
-  echo "same content" > "$TMPDIR/dest"
-  echo "same content" > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  manifest_stage_commit
-  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
-  [ "$status" -eq 0 ]
-  [ "$output" = "drifted_but_aligned" ]
-  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite_raw"
-  [ "$status" -eq 0 ]
-  [ "$output" = "drifted_but_aligned" ]
-}
-
-@test "apply_managed_buckets: new_file_existing backs up before deploying" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
-  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs/codex" "$HOME/.codex"
-  echo "blueprint codex config" > "$AICODING_BLUEPRINT_CLONE/configs/codex/config.toml"
-  echo "personal codex config" > "$HOME/.codex/config.toml"
-  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
-
-  declare -gA BUCKETS FILE_MODE FILE_SOURCE
-  BUCKETS[$HOME/.codex/config.toml]=new_file_existing
-  FILE_MODE[$HOME/.codex/config.toml]=overwrite
-  FILE_SOURCE[$HOME/.codex/config.toml]=configs/codex/config.toml
-
-  manifest_stage_begin
-  # No `run`: it subshells, which would discard the staged-manifest mutation
-  # this test asserts on.
-  apply_managed_buckets "new_file_existing"
-  manifest_stage_commit
-
-  grep -q "blueprint codex config" "$HOME/.codex/config.toml"
-  local bak
-  bak=$(ls "$HOME"/.codex/config.toml.bak.* 2>/dev/null | head -1)
-  [ -n "$bak" ]
-  grep -q "personal codex config" "$bak"
-  jq -e '.files["'"$HOME"'/.codex/config.toml"]' "$AICODING_MANIFEST"
-}
-
-@test "apply_managed_buckets: reports a failed write and continues unrelated paths" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
-  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs"
-  printf 'first\n' > "$AICODING_BLUEPRINT_CLONE/configs/first"
-  printf 'second\n' > "$AICODING_BLUEPRINT_CLONE/configs/second"
-  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
-  declare -gA BUCKETS FILE_MODE FILE_SOURCE
-  BUCKETS[$TMPDIR/first]=new_file
-  FILE_MODE[$TMPDIR/first]=overwrite
-  FILE_SOURCE[$TMPDIR/first]=configs/first
-  BUCKETS[$TMPDIR/second]=new_file
-  FILE_MODE[$TMPDIR/second]=overwrite
-  FILE_SOURCE[$TMPDIR/second]=configs/second
-  _apply_deploy() {
-    [ "$2" != "$TMPDIR/first" ] || return 23
-    printf 'applied\n' > "$2"
-  }
-
-  run apply_managed_buckets "new_file"
-
-  [ "$status" -ne 0 ]
-  [ -f "$TMPDIR/second" ]
-}
-
-@test "deploy helpers do not stage manifest entries after failed writes" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  printf 'source\n' > "$TMPDIR/source"
-  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
-  manifest_stage_begin
-  _write_atomic() { return 24; }
-
-  run deploy_overwrite_file "$TMPDIR/source" "$TMPDIR/dest" configs/source
-  [ "$status" -eq 24 ]
-
-  _json_merge_into() { return 25; }
-  run deploy_merge_file "$TMPDIR/source" "$TMPDIR/merge" configs/source
-  [ "$status" -eq 25 ]
-}
-
-@test "apply_managed_buckets: no backup when disk already matches incoming content" {
-  # Regression: a newly managed path whose on-disk file already equals the
-  # rendered blueprint content got a .bak byte-identical to the live file on
-  # every run (7 identical bw-deny-files.sh.bak.* piled up on one container,
-  # 2026-08-21..23). A backup that duplicates what deploy is about to write
-  # protects nothing — skip it.
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
-  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs/codex" "$HOME/.codex"
-  echo "identical content" > "$AICODING_BLUEPRINT_CLONE/configs/codex/config.toml"
-  echo "identical content" > "$HOME/.codex/config.toml"
-  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
-
-  declare -gA BUCKETS FILE_MODE FILE_SOURCE
-  BUCKETS[$HOME/.codex/config.toml]=new_file_existing
-  FILE_MODE[$HOME/.codex/config.toml]=overwrite
-  FILE_SOURCE[$HOME/.codex/config.toml]=configs/codex/config.toml
-
-  manifest_stage_begin
-  apply_managed_buckets "new_file_existing"
-  manifest_stage_commit
-
-  grep -q "identical content" "$HOME/.codex/config.toml"
-  # No .bak sibling — it would only duplicate the live file.
-  if ls "$HOME"/.codex/config.toml.bak.* 2>/dev/null; then false; fi
-  # The file is still adopted into the manifest.
-  jq -e '.files["'"$HOME"'/.codex/config.toml"]' "$AICODING_MANIFEST"
-}
-
-@test "apply_managed_buckets: drifted_but_aligned records the MANAGED hash (codex trust sections)" {
-  # Regression: the refresh used compute_hash, so a codex config.toml with
-  # [projects.*] trust sections stored a hash the next classify (which strips
-  # them) could never match — permanent re-drift on every sync.
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
-  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs/codex" "$HOME/.codex"
-  printf 'model = "personal"\n' > "$AICODING_BLUEPRINT_CLONE/configs/codex/config.toml"
-  printf 'model = "personal"\n\n[projects."/w/x"]\ntrust_level = "trusted"\n' \
-    > "$HOME/.codex/config.toml"
-  cat > "$AICODING_MANIFEST" <<EOF
-{"schema_version":1,"files":{"$HOME/.codex/config.toml":{"mode":"overwrite","source":"configs/codex/config.toml","deployed_hash":"obsolete"}}}
-EOF
-
-  declare -gA BUCKETS FILE_MODE FILE_SOURCE
-  FILE_MODE[$HOME/.codex/config.toml]=overwrite
-  FILE_SOURCE[$HOME/.codex/config.toml]=configs/codex/config.toml
-  BUCKETS[$HOME/.codex/config.toml]=$(classify_file "$HOME/.codex/config.toml" \
-    "$AICODING_BLUEPRINT_CLONE/configs/codex/config.toml" overwrite)
-  [ "${BUCKETS[$HOME/.codex/config.toml]}" = "drifted_but_aligned" ]
-
-  manifest_stage_begin
-  apply_managed_buckets "drifted_but_aligned"
-  manifest_stage_commit
-
-  local stored managed
-  stored=$(jq -r '.files["'"$HOME"'/.codex/config.toml"].deployed_hash' "$AICODING_MANIFEST")
-  managed=$(compute_managed_hash "$HOME/.codex/config.toml")
-  [ "$stored" = "$managed" ]
-  # Stable: the next classification converges instead of re-drifting.
-  run classify_file "$HOME/.codex/config.toml" \
-    "$AICODING_BLUEPRINT_CLONE/configs/codex/config.toml" overwrite
-  [ "$output" = "up_to_date" ]
 }
 
 @test "_substitute_file_to: strips memory-router from cursor mcp.json when token absent" {
@@ -471,50 +389,6 @@ EOF
   python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "$TMPDIR/codex.toml"
 }
 
-@test "merge replaces the retired stdio kanban entry instead of grafting the hosted one onto it" {
-  export KANBAN_TOKEN=kb-new
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  mkdir -p "$TMPDIR/clone/configs/cursor" "$TMPDIR/clone/configs/opencode" "$TMPDIR/dest"
-  cp "$BLUEPRINT_ROOT/configs/cursor/mcp.json" "$TMPDIR/clone/configs/cursor/mcp.json"
-  cp "$BLUEPRINT_ROOT/configs/opencode/opencode.json" "$TMPDIR/clone/configs/opencode/opencode.json"
-  echo '{"mcpServers":{"kanban":{"command":"kanban-mcp"},"mine":{"command":"x"}}}' > "$TMPDIR/dest/mcp.json"
-  echo '{"mcp":{"kanban":{"type":"local","command":["kanban-mcp"],"enabled":true}}}' > "$TMPDIR/dest/opencode.json"
-  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
-  manifest_stage_begin
-  deploy_merge_file_substituted "$TMPDIR/clone/configs/cursor/mcp.json" "$TMPDIR/dest/mcp.json" configs/cursor/mcp.json
-  deploy_merge_file_substituted "$TMPDIR/clone/configs/opencode/opencode.json" "$TMPDIR/dest/opencode.json" configs/opencode/opencode.json
-  manifest_stage_commit
-  jq -e '.mcpServers.kanban == {"url":"https://kanban.dataprospectors.at/mcp","headers":{"Authorization":"Bearer kb-new"}}
-         and .mcpServers.mine == {"command":"x"}' "$TMPDIR/dest/mcp.json"
-  jq -e '.mcp.kanban == {"type":"remote","url":"https://kanban.dataprospectors.at/mcp","headers":{"Authorization":"Bearer kb-new"},"oauth":false,"enabled":true}' \
-    "$TMPDIR/dest/opencode.json"
-  run classify_file "$TMPDIR/dest/mcp.json" "$TMPDIR/clone/configs/cursor/mcp.json" merge
-  [ "$output" = up_to_date ]
-}
-
-@test "merge without KANBAN_TOKEN removes a previously deployed bearer but keeps a user's own kanban entry" {
-  unset KANBAN_TOKEN
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  mkdir -p "$TMPDIR/clone/configs/cursor" "$TMPDIR/dest"
-  cp "$BLUEPRINT_ROOT/configs/cursor/mcp.json" "$TMPDIR/clone/configs/cursor/mcp.json"
-  echo '{"mcpServers":{"kanban":{"url":"https://kanban.dataprospectors.at/mcp","headers":{"Authorization":"Bearer kb-revoked"}}}}' \
-    > "$TMPDIR/dest/mcp.json"
-  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
-  manifest_stage_begin
-  deploy_merge_file_substituted "$TMPDIR/clone/configs/cursor/mcp.json" "$TMPDIR/dest/mcp.json" configs/cursor/mcp.json
-  manifest_stage_commit
-  if grep -q 'kb-revoked' "$TMPDIR/dest/mcp.json"; then false; fi
-  run jq -e '.mcpServers.kanban' "$TMPDIR/dest/mcp.json"
-  [ "$status" -ne 0 ]
-
-  echo '{"mcpServers":{"kanban":{"url":"http://127.0.0.1:9/mcp","headers":{"Authorization":"Bearer mine"}}}}' \
-    > "$TMPDIR/dest/mcp.json"
-  manifest_stage_begin
-  deploy_merge_file_substituted "$TMPDIR/clone/configs/cursor/mcp.json" "$TMPDIR/dest/mcp.json" configs/cursor/mcp.json
-  manifest_stage_commit
-  jq -e '.mcpServers.kanban.headers.Authorization == "Bearer mine"' "$TMPDIR/dest/mcp.json"
-}
-
 @test "_substitute_file_to: strips both token-gated servers when neither token is set" {
   unset KANBAN_TOKEN MEMORY_ROUTER_TOKEN
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
@@ -539,701 +413,18 @@ EOF
   grep -qF 'Authorization = "Bearer synthetic-comment-test"' "$TMPDIR/out.toml"
 }
 
-@test "Codex smart render and strip files stay private through the engine boundary" {
-  local clone="$TMPDIR/private-clone" dest="$TMPDIR/private-home/.codex/config.toml"
-  local stubs="$TMPDIR/private-stubs" old_path=$PATH
-  mkdir -p "$clone/configs/codex" "$stubs" "$(dirname "$dest")"
-  cat > "$clone/configs/codex/config.toml" <<'EOF'
-private_token = "{{FIRECRAWL_API_KEY}}"
-
-[mcp_servers.memory-router]
-http_headers = { Authorization = "Bearer {{MEMORY_ROUTER_TOKEN}}" }
-EOF
-  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
-  export AICODING_BLUEPRINT_CLONE="$clone" AICODING_BLUEPRINT_LOCAL=1
-  export FIRECRAWL_API_KEY=fake-render-secret
-  unset MEMORY_ROUTER_TOKEN
-  export AICODING_TEST_STRIP_MODE="$TMPDIR/strip-mode"
-  export AICODING_TEST_ENGINE_MODE="$TMPDIR/engine-mode"
-
-  cat > "$stubs/awk" <<'STUB'
-#!/bin/bash
-target=$(/usr/bin/readlink "/proc/$$/fd/1")
-/usr/bin/stat -c '%a' "$target" > "$AICODING_TEST_STRIP_MODE"
-exec /usr/bin/awk "$@"
-STUB
-  cat > "$stubs/python3" <<'STUB'
-#!/bin/bash
-if [[ "${1:-}" == -c ]]; then
-  exec /usr/bin/python3 "$@"
-fi
-source_path=
-while (( $# > 0 )); do
-  if [[ "$1" == --source ]]; then
-    shift
-    source_path=$1
-  fi
-  shift
-done
-/usr/bin/stat -c '%a' "$source_path" > "$AICODING_TEST_ENGINE_MODE"
-printf '%s\n' '{"config_changed":false,"state_changed":false,"conflicts":[],"error":null,"unmanaged":false,"token":"plan-v1:test","changes":[],"adoption_notices":[]}'
-STUB
-  chmod +x "$stubs/awk" "$stubs/python3"
-
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  umask 0022
-  export PATH="$stubs:$PATH"
-  codex_smart_plan "$dest" "$clone/configs/codex/config.toml" yes
-  export PATH=$old_path
-
-  [ "$(cat "$AICODING_TEST_STRIP_MODE")" = 600 ]
-  [ "$(cat "$AICODING_TEST_ENGINE_MODE")" = 600 ]
-  [ "$(codex_smart_error_code "$CODEX_SMART_RESULT")" = "" ]
-  [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'aicoding-codex-*' -print)" ]
-}
-
-@test "Codex smart planning reports runtime_unavailable for Python older than 3.8" {
-  local stubs="$TMPDIR/old-python"
-  mkdir -p "$stubs"
-  printf '#!/bin/sh\nexit 1\n' > "$stubs/python3"
-  chmod +x "$stubs/python3"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-
-  PATH="$stubs:$PATH" codex_smart_plan \
-    "$HOME/.codex/config.toml" "$BLUEPRINT_ROOT/configs/codex/config.toml" yes
-
-  [ "$(codex_smart_error_code "$CODEX_SMART_RESULT")" = runtime_unavailable ]
-  [ ! -e "$HOME/.codex/config.toml" ]
-  [ ! -e "$HOME/.codex/.aicoding-sync" ]
-}
-
-@test "Codex smart planning rejects a Python executable without the capability marker" {
-  local stubs="$TMPDIR/no-capability-python"
-  mkdir -p "$stubs"
-  printf '#!/bin/sh\nexit 0\n' > "$stubs/python3"
-  chmod +x "$stubs/python3"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-
-  PATH="$stubs:$PATH" codex_smart_plan \
-    "$HOME/.codex/config.toml" "$BLUEPRINT_ROOT/configs/codex/config.toml" yes
-
-  [ "$(codex_smart_error_code "$CODEX_SMART_RESULT")" = runtime_unavailable ]
-  [ ! -e "$HOME/.codex/config.toml" ]
-  [ ! -e "$HOME/.codex/.aicoding-sync" ]
-}
-
-@test "Codex smart render failures stop before apply and clean private temporaries" {
-  local tool case_dir clone dest state stubs old_path=$PATH before_pending
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  unset MEMORY_ROUTER_TOKEN
-  for tool in sed awk mv; do
-    case_dir="$TMPDIR/fail-$tool"
-    clone="$case_dir/clone"
-    dest="$case_dir/home/.codex/config.toml"
-    state="$case_dir/home/.codex/.aicoding-sync/config-state.json"
-    stubs="$case_dir/stubs"
-    mkdir -p "$clone/configs/codex" "$stubs" "$(dirname "$dest")"
-    cat > "$clone/configs/codex/config.toml" <<'EOF'
-private_token = "{{FIRECRAWL_API_KEY}}"
-
-[mcp_servers.memory-router]
-http_headers = { Authorization = "Bearer {{MEMORY_ROUTER_TOKEN}}" }
-EOF
-    export AICODING_MANIFEST="$case_dir/manifest.json"
-    echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
-    export AICODING_BLUEPRINT_CLONE="$clone" AICODING_BLUEPRINT_LOCAL=1
-    export FIRECRAWL_API_KEY=fake-render-secret
-    printf '#!/bin/sh\nexit 9\n' > "$stubs/$tool"
-    chmod +x "$stubs/$tool"
-
-    manifest_stage_begin
-    before_pending=$_aicoding_pending_manifest
-    export PATH="$stubs:$old_path"
-    codex_smart_apply "$dest" "$clone/configs/codex/config.toml" \
-      configs/codex/config.toml yes
-    export PATH=$old_path
-
-    [ "$(codex_smart_error_code "$CODEX_SMART_RESULT")" = source_render_failed ]
-    [ "$_aicoding_pending_manifest" = "$before_pending" ]
-    [ ! -e "$dest" ]
-    [ ! -e "$state" ]
-    [ -z "$(find "$TMPDIR" -maxdepth 1 -name 'aicoding-codex-*' -print)" ]
-  done
-}
-
-@test "merge with token absent preserves an existing manual memory-router entry" {
-  unset MEMORY_ROUTER_TOKEN
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  mkdir -p "$TMPDIR/clone/configs/opencode" "$TMPDIR/dest"
-  cp "$BLUEPRINT_ROOT/configs/opencode/opencode.json" "$TMPDIR/clone/configs/opencode/opencode.json"
-  cat > "$TMPDIR/dest/opencode.json" <<'EOF'
-{"mcp":{"memory-router":{"type":"remote","url":"http://myown:9999/mcp","headers":{"Authorization":"Bearer manual-token"},"enabled":true}}}
-EOF
-  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
-  manifest_stage_begin
-  deploy_merge_file_substituted "$TMPDIR/clone/configs/opencode/opencode.json" \
-    "$TMPDIR/dest/opencode.json" configs/opencode/opencode.json
-  manifest_stage_commit
-  # The manual registration is untouched; blueprint keys still merged in.
-  jq -e '.mcp["memory-router"].headers.Authorization == "Bearer manual-token"' "$TMPDIR/dest/opencode.json"
-  jq -e '.mcp["memory-router"].url == "http://myown:9999/mcp"' "$TMPDIR/dest/opencode.json"
-  jq -e '.mcp.context7' "$TMPDIR/dest/opencode.json"
-}
-
-@test "classify_file: to_remove when in manifest but src is absent" {
-  echo "old" > "$TMPDIR/dest"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  local h
-  h=$(compute_hash "$TMPDIR/dest")
-  manifest_set_file "$TMPDIR/dest" "$(jq -n --arg h "$h" \
-    '{mode:"overwrite",source:"configs/x",deployed_hash:$h}')"
-  manifest_stage_commit
-  run classify_file "$TMPDIR/dest" "$TMPDIR/missing-src" "overwrite"
-  [ "$status" -eq 0 ]
-  [ "$output" = "to_remove" ]
-}
-
-@test "classify_file: merge mode fail-open — non-JSON target still returns merge" {
-  echo "current" > "$TMPDIR/dest"
-  echo "new" > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "merge"
-  [ "$status" -eq 0 ]
-  [ "$output" = "merge" ]
-}
-
-@test "_json_merge_into: leaves a non-JSON target untouched (no clobber)" {
-  echo "definitely-not-json" > "$TMPDIR/target"
-  echo '{"a":1}' > "$TMPDIR/source"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run _json_merge_into "$TMPDIR/target" "$TMPDIR/source"
-  [ "$status" -ne 0 ]
-  [ "$(cat "$TMPDIR/target")" = "definitely-not-json" ]
-}
-
-@test "classify_file: merge target is up_to_date when re-merge is a no-op" {
-  echo '{"blueprint":{"a":1}}' > "$TMPDIR/src"
-  echo '{"user":2}' > "$TMPDIR/dest"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  # Produce dest exactly as a prior sync would have left it.
-  _json_merge_into "$TMPDIR/dest" "$TMPDIR/src"
-  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "merge"
-  [ "$status" -eq 0 ]
-  [ "$output" = "up_to_date" ]
-}
-
-@test "classify_file: merge target stays merge when blueprint adds a key" {
-  echo '{"blueprint":{"a":1}}' > "$TMPDIR/src"
-  echo '{"user":2}' > "$TMPDIR/dest"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  _json_merge_into "$TMPDIR/dest" "$TMPDIR/src"
-  echo '{"blueprint":{"a":1,"b":2}}' > "$TMPDIR/src"
-  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "merge"
-  [ "$status" -eq 0 ]
-  [ "$output" = "merge" ]
-}
-
-@test "classify_file: merge target with missing dest returns merge" {
-  echo '{"blueprint":{"a":1}}' > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run classify_file "$TMPDIR/absent-dest" "$TMPDIR/src" "merge"
-  [ "$status" -eq 0 ]
-  [ "$output" = "merge" ]
-}
-
-@test "classify_file: substituted overwrite file is up_to_date after substituted deploy" {
-  printf 'key = "{{FIRECRAWL_API_KEY}}"\n' > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  export FIRECRAWL_API_KEY="sekret-value"
-  manifest_stage_begin
-  deploy_overwrite_file_rendered "$TMPDIR/src" "$TMPDIR/dest" "configs/x"
-  manifest_stage_commit
-  # Nothing changed since deploy: must NOT be perpetually will_update.
-  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
-  [ "$status" -eq 0 ]
-  [ "$output" = "up_to_date" ]
-}
-
-@test "classify_file: substituted overwrite file is will_update when blueprint changes" {
-  printf 'key = "{{FIRECRAWL_API_KEY}}"\n' > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  export FIRECRAWL_API_KEY="sekret-value"
-  manifest_stage_begin
-  deploy_overwrite_file_rendered "$TMPDIR/src" "$TMPDIR/dest" "configs/x"
-  manifest_stage_commit
-  printf 'key = "{{FIRECRAWL_API_KEY}}"\nextra = true\n' > "$TMPDIR/src"
-  run classify_file "$TMPDIR/dest" "$TMPDIR/src" "overwrite"
-  [ "$status" -eq 0 ]
-  [ "$output" = "will_update" ]
-}
-
-@test "classify_file: codex config.toml ignores codex-written [projects.*] trust sections" {
-  # codex ≥0.147 auto-appends a blank line + [projects."<dir>"] trust_level
-  # after opening any directory; that must never count as drift.
-  mkdir -p "$TMPDIR/.codex"
-  printf 'model = "m"\n\n[tui]\nstatus_line = ["run-state"]\n' > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_overwrite_file_rendered "$TMPDIR/src" "$TMPDIR/.codex/config.toml" "configs/codex/config.toml"
-  manifest_stage_commit
-  printf '\n[projects."/some/dir"]\ntrust_level = "trusted"\n' >> "$TMPDIR/.codex/config.toml"
-  run classify_file "$TMPDIR/.codex/config.toml" "$TMPDIR/src" "overwrite"
-  [ "$status" -eq 0 ]
-  [ "$output" = "up_to_date" ]
-}
-
-@test "classify_file: codex config.toml still detects real user edits alongside trust sections" {
-  mkdir -p "$TMPDIR/.codex"
-  printf 'model = "m"\n' > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_overwrite_file_rendered "$TMPDIR/src" "$TMPDIR/.codex/config.toml" "configs/codex/config.toml"
-  manifest_stage_commit
-  printf 'model = "changed-by-user"\n\n[projects."/some/dir"]\ntrust_level = "trusted"\n' > "$TMPDIR/.codex/config.toml"
-  printf 'model = "new-blueprint"\n' > "$TMPDIR/src"
-  run classify_file "$TMPDIR/.codex/config.toml" "$TMPDIR/src" "overwrite"
-  [ "$status" -eq 0 ]
-  [ "$output" = "drifted_and_updating" ]
-}
-
-@test "compute_managed_hash: adopt and classify agree on a codex config carrying trust sections" {
-  # adopt_existing_files records the hash an already-present file will later
-  # be compared against — both sides must strip [projects.*] identically.
-  mkdir -p "$TMPDIR/.codex"
-  printf 'model = "m"\n\n[projects."/a"]\ntrust_level = "trusted"\n' > "$TMPDIR/.codex/config.toml"
-  printf 'model = "m"\n' > "$TMPDIR/clean"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  local with_trust without_trust
-  with_trust=$(compute_managed_hash "$TMPDIR/.codex/config.toml")
-  without_trust=$(compute_hash "$TMPDIR/clean")
-  [ "$with_trust" = "$without_trust" ]
-}
-
-@test "deploy_overwrite_file: writes file and records hash in pending manifest" {
-  echo "content" > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/dest" "configs/example.sh"
-  manifest_stage_commit
-  diff "$TMPDIR/src" "$TMPDIR/dest"
-  jq -e '.files["'"$TMPDIR"'/dest"].mode == "overwrite"' "$AICODING_MANIFEST"
-  jq -e '.files["'"$TMPDIR"'/dest"].source == "configs/example.sh"' "$AICODING_MANIFEST"
-  local expect_h
-  expect_h=$(compute_hash "$TMPDIR/dest")
-  jq -e --arg h "$expect_h" '.files["'"$TMPDIR"'/dest"].deployed_hash == $h' "$AICODING_MANIFEST"
-}
-
-@test "deploy_overwrite_file: creates parent directory if missing" {
-  echo "content" > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/nested/dir/dest" "configs/x"
-  manifest_stage_commit
-  [ -f "$TMPDIR/nested/dir/dest" ]
-}
-
-@test "deploy_overwrite_file: creates the destination at 0600" {
-  echo hello > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/out/dest" "label"
-  manifest_stage_commit
-  [ "$(stat -c '%a' "$TMPDIR/out/dest")" = "600" ]
-}
-
-@test "deploy_overwrite_file: narrows a permissive existing destination" {
-  echo hello > "$TMPDIR/src"
-  echo stale > "$TMPDIR/dest"
-  chmod 664 "$TMPDIR/dest"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/dest" "label"
-  manifest_stage_commit
-  # A bare cp preserves 664 here, which is how the credential-bearing skill
-  # file ended up group-readable.
-  [ "$(stat -c '%a' "$TMPDIR/dest")" = "600" ]
-}
-
-@test "deploy_overwrite_file: keeps the executable bit at 0700" {
-  printf '#!/bin/sh\n' > "$TMPDIR/src"
-  chmod +x "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/dest" "label"
-  manifest_stage_commit
-  [ "$(stat -c '%a' "$TMPDIR/dest")" = "700" ]
-  [ -x "$TMPDIR/dest" ]
-}
-
-@test "_backup_file: a backup inherits the restrictive mode" {
-  echo secret > "$TMPDIR/dest"
-  chmod 600 "$TMPDIR/dest"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run _backup_file "$TMPDIR/dest"
-  [ "$status" -eq 0 ]
-  local bak; bak=$(ls "$TMPDIR"/dest.bak.* | head -1)
-  [ "$(stat -c '%a' "$bak")" = "600" ]
-}
-
-@test "_ensure_merge_dest: an empty merge destination is created at 0600" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  _ensure_merge_dest "$TMPDIR/merge/target.json"
-  [ "$(stat -c '%a' "$TMPDIR/merge/target.json")" = "600" ]
-  [ "$(cat "$TMPDIR/merge/target.json")" = "{}" ]
-}
-
-@test "deploy_merge_file: narrows an ALREADY-EXISTING permissive target to 0600" {
-  # The atomic-0600 guarantee used to hold only for files _json_merge_into
-  # created: its final write was a plain `> "$target"` redirect, which keeps
-  # an existing file's mode. So on every machine provisioned before that
-  # work, ~/.cursor/mcp.json and ~/.config/opencode/opencode.json — the two
-  # most credential-dense deployed files (FIRECRAWL_API_KEY, BRAVE_API_KEY,
-  # the MEMORY_ROUTER_TOKEN bearer header) — stayed 664 forever. Start from
-  # 664, as those machines are, not from nothing.
-  echo '{"userKey":"userValue"}' > "$TMPDIR/dest"
-  chmod 664 "$TMPDIR/dest"
-  [ "$(stat -c '%a' "$TMPDIR/dest")" = "664" ]   # before
-  echo '{"apiKey":"sekret-value"}' > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  ( umask 0002; deploy_merge_file "$TMPDIR/src" "$TMPDIR/dest" "configs/x" )
-  manifest_stage_commit
-  [ "$(stat -c '%a' "$TMPDIR/dest")" = "600" ]   # after
-  jq -e '.userKey == "userValue"' "$TMPDIR/dest"
-  jq -e '.apiKey == "sekret-value"' "$TMPDIR/dest"
-}
-
-@test "deploy_merge_file: a first-install copy lands at 0600 under a lax umask" {
-  # The absent-target branch of _json_merge_into was a bare `cp`, which
-  # creates under the ambient umask (0664 under umask 0002).
-  echo '{"apiKey":"sekret-value"}' > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  ( umask 0002; deploy_merge_file "$TMPDIR/src" "$TMPDIR/fresh/dest.json" "configs/x" )
-  manifest_stage_commit
-  [ "$(stat -c '%a' "$TMPDIR/fresh/dest.json")" = "600" ]
-  jq -e '.apiKey == "sekret-value"' "$TMPDIR/fresh/dest.json"
-}
-
-@test "_json_merge_into: leaves no temp file behind in the destination dir" {
-  mkdir -p "$TMPDIR/merge"
-  echo '{"a":1}' > "$TMPDIR/merge/dest.json"
-  echo '{"b":2}' > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  _json_merge_into "$TMPDIR/merge/dest.json" "$TMPDIR/src"
-  run bash -c "ls -A '$TMPDIR/merge' | grep -c aicoding-deploy"
-  [ "$output" = "0" ]
-}
-
-@test "_ensure_merge_dest: leaves an existing destination untouched" {
-  mkdir -p "$TMPDIR/merge"
-  echo '{"k":"v"}' > "$TMPDIR/merge/target.json"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  _ensure_merge_dest "$TMPDIR/merge/target.json"
-  jq -e '.k == "v"' "$TMPDIR/merge/target.json"
-}
-
-@test "deploy_merge_file: preserves user-added top-level keys" {
-  echo '{"theme":"dark","userKey":"userValue"}' > "$TMPDIR/dest"
-  echo '{"theme":"light","newKey":"newValue"}' > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_merge_file "$TMPDIR/src" "$TMPDIR/dest" "configs/example.json"
-  manifest_stage_commit
-  jq -e '.userKey == "userValue"' "$TMPDIR/dest"
-  jq -e '.newKey == "newValue"' "$TMPDIR/dest"
-  jq -e '.theme == "light"' "$TMPDIR/dest"  # source wins for shared keys
-}
-
-@test "deploy_merge_file: unions 'allow' arrays" {
-  echo '{"permissions":{"allow":["a","b"]}}' > "$TMPDIR/dest"
-  echo '{"permissions":{"allow":["b","c"]}}' > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_merge_file "$TMPDIR/src" "$TMPDIR/dest" "configs/example.json"
-  manifest_stage_commit
-  jq -e '.permissions.allow | sort == ["a","b","c"]' "$TMPDIR/dest"
-}
-
-@test "deploy_merge_file: unions 'deny' arrays (sync must not drop user deny rules)" {
-  echo '{"permissions":{"deny":["Shell(rm)"],"allow":["a"]}}' > "$TMPDIR/dest"
-  echo '{"permissions":{"deny":["Read(**/.aicodingsetup/**)"]}}' > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_merge_file "$TMPDIR/src" "$TMPDIR/dest" "configs/example.json"
-  manifest_stage_commit
-  jq -e '.permissions.deny | sort == ["Read(**/.aicodingsetup/**)","Shell(rm)"]' "$TMPDIR/dest"
-  jq -e '.permissions.allow == ["a"]' "$TMPDIR/dest"
-}
-
-@test "deploy_merge_file: records mode=merge in manifest, no hash" {
-  echo '{}' > "$TMPDIR/dest"
-  echo '{}' > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_merge_file "$TMPDIR/src" "$TMPDIR/dest" "configs/example.json"
-  manifest_stage_commit
-  jq -e '.files["'"$TMPDIR"'/dest"].mode == "merge"' "$AICODING_MANIFEST"
-  jq -e '.files["'"$TMPDIR"'/dest"].source == "configs/example.json"' "$AICODING_MANIFEST"
-  jq -e '.files["'"$TMPDIR"'/dest"] | has("deployed_hash") | not' "$AICODING_MANIFEST"
-}
-
-@test "deploy_merge_file: copies file when dest doesn't exist" {
-  echo '{"key":"value"}' > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_merge_file "$TMPDIR/src" "$TMPDIR/dest" "configs/example.json"
-  manifest_stage_commit
-  jq -e '.key == "value"' "$TMPDIR/dest"
-}
-
-@test "deploy_marker_block: inserts block at end when file lacks markers" {
-  echo "prelude line" > "$TMPDIR/dest"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_marker_block "$TMPDIR/dest" "block content here" "# START" "# END"
-  manifest_stage_commit
-  grep -q "^prelude line$" "$TMPDIR/dest"
-  grep -q "^# START$" "$TMPDIR/dest"
-  grep -q "^block content here$" "$TMPDIR/dest"
-  grep -q "^# END$" "$TMPDIR/dest"
-}
-
-@test "deploy_marker_block: replaces block when markers already present" {
-  cat > "$TMPDIR/dest" <<EOF
-prelude
-# START
-old block content
-# END
-trailer
-EOF
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_marker_block "$TMPDIR/dest" "new block content" "# START" "# END"
-  manifest_stage_commit
-  grep -q "^prelude$" "$TMPDIR/dest"
-  grep -q "^new block content$" "$TMPDIR/dest"
-  if grep -q "old block content" "$TMPDIR/dest"; then false; fi
-  grep -q "^trailer$" "$TMPDIR/dest"
-}
-
-@test "deploy_marker_block: records mode=marker_block with block hash" {
-  echo "prelude" > "$TMPDIR/dest"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_marker_block "$TMPDIR/dest" "body" "# START" "# END"
-  manifest_stage_commit
-  jq -e '.files["'"$TMPDIR"'/dest"].mode == "marker_block"' "$AICODING_MANIFEST"
-  jq -e '.files["'"$TMPDIR"'/dest"].marker_start == "# START"' "$AICODING_MANIFEST"
-  jq -e '.files["'"$TMPDIR"'/dest"].marker_end == "# END"' "$AICODING_MANIFEST"
-  local expect_h
-  expect_h=$(compute_block_hash "$TMPDIR/dest" "# START" "# END")
-  jq -e --arg h "$expect_h" '.files["'"$TMPDIR"'/dest"].deployed_block_hash == $h' "$AICODING_MANIFEST"
-}
-
-@test "remove_managed_file: deletes file and removes manifest entry" {
-  echo "x" > "$TMPDIR/dest"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  manifest_set_file "$TMPDIR/dest" '{"mode":"overwrite","source":"x","deployed_hash":"y"}'
-  manifest_stage_commit
-
-  manifest_stage_begin
-  remove_managed_file "$TMPDIR/dest"
-  manifest_stage_commit
-
-  [ ! -e "$TMPDIR/dest" ]
-  jq -e '.files | has("'"$TMPDIR"'/dest") | not' "$AICODING_MANIFEST"
-}
-
-@test "remove_managed_file: tolerates missing file" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  manifest_set_file "$TMPDIR/dest" '{"mode":"overwrite","source":"x","deployed_hash":"y"}'
-  manifest_stage_commit
-
-  manifest_stage_begin
-  remove_managed_file "$TMPDIR/dest"   # file already absent
-  manifest_stage_commit
-
-  jq -e '.files | has("'"$TMPDIR"'/dest") | not' "$AICODING_MANIFEST"
-}
-
-@test "apply_managed_buckets: applies only the listed buckets" {
-  # Restoring a missing file is in the allowed set; to_remove is not.
-  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
-  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs/tmux"
-  echo "tmux from blueprint" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
-  mkdir -p "$HOME/.aicodingsetup"
-  local tmux_hash
-  tmux_hash=$(sha256sum "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf" | awk '{print $1}')
-  cat > "$AICODING_MANIFEST" <<EOF
-{"schema_version":1,"files":{
-  "$HOME/.tmux.conf":{"mode":"overwrite","source":"configs/tmux/tmux.conf","deployed_hash":"$tmux_hash"},
-  "$HOME/.obsolete":{"mode":"overwrite","source":"configs/obsolete","deployed_hash":"$tmux_hash"}
-}}
-EOF
-  # ~/.tmux.conf missing → bucket restore. ~/.obsolete not in inventory → to_remove.
-  touch "$HOME/.obsolete"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  declare -gA BUCKETS FILE_MODE FILE_SOURCE
-  classify_managed_files
-  [ "${BUCKETS[$HOME/.tmux.conf]}" = "restore" ]
-  [ "${BUCKETS[$HOME/.obsolete]}" = "to_remove" ]
-
-  # This fixture has only overwrite sources; merge and removal are excluded.
-  manifest_stage_begin
-  apply_managed_buckets "restore new_file will_update drifted_but_aligned"
-  manifest_stage_commit
-
-  # tmux.conf restored.
-  [ -f "$HOME/.tmux.conf" ]
-  grep -q "tmux from blueprint" "$HOME/.tmux.conf"
-  # obsolete file NOT removed (to_remove was excluded).
-  [ -f "$HOME/.obsolete" ]
-}
-
-@test "classify_managed_files: populates BUCKETS for tracked + on-disk + missing scenarios" {
-  # Set up a blueprint clone with one overwrite file.
-  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
-  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs/tmux" "$AICODING_BLUEPRINT_CLONE/configs/claude"
-  echo "blueprint tmux content" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
-  echo '{}' > "$AICODING_BLUEPRINT_CLONE/configs/claude/settings.json"
-  # Manifest tracks the tmux file with matching hash.
-  mkdir -p "$HOME/.aicodingsetup"
-  local tmux_hash
-  tmux_hash=$(sha256sum "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf" | awk '{print $1}')
-  cat > "$AICODING_MANIFEST" <<EOF
-{"schema_version":1,"files":{"$HOME/.tmux.conf":{"mode":"overwrite","source":"configs/tmux/tmux.conf","deployed_hash":"$tmux_hash"}}}
-EOF
-  # File is missing on disk → should classify as restore.
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  declare -gA BUCKETS FILE_MODE FILE_SOURCE
-  classify_managed_files
-  [ "${BUCKETS[$HOME/.tmux.conf]}" = "restore" ]
-}
-
-@test "apply_managed_buckets: drifted_and_updating backs up and redeploys" {
-  # Source the lib (other tests in this file do the same).
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-
-  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
-  mkdir -p "$AICODING_BLUEPRINT_CLONE/configs/tmux"
-  echo "new blueprint tmux" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
-
-  # User has an edited file (drift). Manifest hash is from neither current
-  # disk content nor blueprint content → bucket drifted_and_updating.
-  mkdir -p "$HOME/.aicodingsetup"
-  echo "user edited tmux" > "$HOME/.tmux.conf"
-  local stale_hash
-  stale_hash=$(echo "original deployed content" | sha256sum | awk '{print $1}')
-  cat > "$AICODING_MANIFEST" <<EOF
-{"schema_version":1,"files":{"$HOME/.tmux.conf":{"mode":"overwrite","source":"configs/tmux/tmux.conf","deployed_hash":"$stale_hash"}}}
-EOF
-
-  declare -gA BUCKETS FILE_MODE FILE_SOURCE
-  classify_managed_files
-  [ "${BUCKETS[$HOME/.tmux.conf]}" = "drifted_and_updating" ]
-
-  manifest_stage_begin
-  run apply_managed_buckets "drifted_and_updating"
-  manifest_stage_commit
-  [ "$status" -eq 0 ]
-
-  # Blueprint version deployed.
-  grep -q "new blueprint tmux" "$HOME/.tmux.conf"
-  # A .bak.<stamp> sibling exists with the user's previous content.
-  local bak
-  bak=$(ls "$HOME"/.tmux.conf.bak.* 2>/dev/null | head -1)
-  [ -n "$bak" ]
-  grep -q "user edited tmux" "$bak"
-  # Output mentions the backup line (visible-failure regression guard).
-  echo "$output" | grep -qE "^      backup: $HOME/.tmux.conf.bak\.[0-9]+-[0-9]+$"
-}
-
-@test "managed_inventory_smart: owns codex config.toml in toml_merge mode" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run managed_inventory_smart
-  [ "$status" -eq 0 ]
-  echo "$output" | grep -qxF "$HOME/.codex/config.toml|toml_merge|configs/codex/config.toml"
-  run managed_inventory_overwrite
-  [[ "$output" != *"/.codex/config.toml|"* ]]
-}
-
-@test "codex_smart_bucket: error and conflict precedence retain mixed plans" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  local base
-  base='{"config_changed":true,"state_changed":true,"conflicts":[{"path":["x"]}],"error":{"code":"invalid_destination_toml"},"unmanaged":false,"token":null,"changes":[{"path":["safe"],"operation":"add"}],"adoption_notices":[]}'
-  [ "$(codex_smart_bucket "$base")" = smart_error ]
-  [ "$(codex_smart_bucket "$(printf '%s' "$base" | jq '.error = null')")" = smart_conflict ]
-  [ "$(codex_smart_bucket "$(printf '%s' "$base" | jq '.error = null | .conflicts = [] | .adoption_notices = [{path:["profile"]}]')")" = smart_conflict ]
-  [ "$(codex_smart_bucket "$(printf '%s' "$base" | jq '.error = null | .conflicts = [] | .adoption_notices = []')")" = smart_update ]
-}
-
-@test "smart manifest recording bumps schema only when toml_merge is recorded" {
-  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-
-  manifest_stage_begin
-  manifest_set_file "$TMPDIR/generic" '{"mode":"overwrite","source":"generic","deployed_hash":"abc"}'
-  manifest_stage_commit
-  jq -e '.schema_version == 1' "$AICODING_MANIFEST"
-
-  manifest_stage_begin
-  codex_smart_record_manifest "$HOME/.codex/config.toml" configs/codex/config.toml
-  manifest_stage_commit
-  jq -e '.schema_version == 2' "$AICODING_MANIFEST"
-  jq -e '.files["'"$HOME"'/.codex/config.toml"] == {"mode":"toml_merge","source":"configs/codex/config.toml"}' \
-    "$AICODING_MANIFEST"
-  run manifest_check_schema
-  [ "$status" -eq 0 ]
-}
-
-@test "smart retirement preserves Codex config and receipt for current and legacy entries" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  export AICODING_BLUEPRINT_CLONE="$TMPDIR/empty-blueprint"
-  mkdir -p "$AICODING_BLUEPRINT_CLONE" "$HOME/.codex/.aicoding-sync"
-  printf 'model = "personal"\n' > "$HOME/.codex/config.toml"
-  printf '{"private":"state"}\n' > "$HOME/.codex/.aicoding-sync/config-state.json"
-  local config_before receipt_before mode
-  config_before=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
-  receipt_before=$(sha256sum "$HOME/.codex/.aicoding-sync/config-state.json" | awk '{print $1}')
-
-  # Simulate a future blueprint removing the smart target entirely.
-  managed_inventory_overwrite() { :; }
-  managed_inventory_merge() { :; }
-  managed_inventory_smart() { :; }
-  declare -gA BUCKETS FILE_MODE FILE_SOURCE
-  for mode in toml_merge overwrite; do
-    printf '{"schema_version":1,"files":{"%s":{"mode":"%s","source":"configs/codex/config.toml"}}}\n' \
-      "$HOME/.codex/config.toml" "$mode" > "$AICODING_MANIFEST"
-    classify_managed_files
-    [ "${BUCKETS[$HOME/.codex/config.toml]}" = smart_retired ]
-    manifest_stage_begin
-    apply_managed_buckets smart_retired
-    manifest_stage_commit
-    jq -e '.files | has("'"$HOME"'/.codex/config.toml") | not' "$AICODING_MANIFEST"
-    [ "$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')" = "$config_before" ]
-    [ "$(sha256sum "$HOME/.codex/.aicoding-sync/config-state.json" | awk '{print $1}')" = "$receipt_before" ]
-  done
-
-  classify_managed_files
-  [ -z "${BUCKETS[$HOME/.codex/config.toml]+present}" ]
-}
-
 @test "managed_inventory_overwrite: includes global claude CLAUDE.md" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run managed_inventory_overwrite
   [ "$status" -eq 0 ]
-  echo "$output" | grep -qF "$HOME/.claude/CLAUDE.md|overwrite|configs/claude/CLAUDE.md"
+  echo "$output" | grep -qF "$HOME/.claude/CLAUDE.md|owned|configs/claude/CLAUDE.md"
 }
 
 @test "managed_inventory_overwrite: includes bw-deny-files hook" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run managed_inventory_overwrite
   [ "$status" -eq 0 ]
-  echo "$output" | grep -qF "$HOME/.claude/hooks/bw-deny-files.sh|overwrite|configs/claude/hooks/bw-deny-files.sh"
+  echo "$output" | grep -qF "$HOME/.claude/hooks/bw-deny-files.sh|owned|configs/claude/hooks/bw-deny-files.sh"
 }
 
 @test "shared destination lock lives in the shared root and excludes a second writer" {
@@ -1279,7 +470,6 @@ EOF
   cp "$AICODING_BLUEPRINT_CLONE/$source_path" "$dest"
   printf '#!/bin/sh\necho new\n' > "$AICODING_BLUEPRINT_CLONE/$source_path"
   git -C "$AICODING_BLUEPRINT_CLONE" -c user.email=t@t -c user.name=t commit -qam new
-  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
 
   run owned_file_has_generated_provenance "$dest" "$source_path"
@@ -1308,20 +498,6 @@ EOF
   [ "$status" -ne 0 ]
 }
 
-@test "managed_inventory_merge: includes cursor mcp.json" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run managed_inventory_merge
-  [ "$status" -eq 0 ]
-  echo "$output" | grep -qF "$HOME/.cursor/mcp.json|merge|configs/cursor/mcp.json"
-}
-
-@test "managed_inventory_merge: includes cursor cli-config.json (deny rules)" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run managed_inventory_merge
-  [ "$status" -eq 0 ]
-  echo "$output" | grep -qF "$HOME/.cursor/cli-config.json|merge|configs/cursor/cli-config.json"
-}
-
 @test "cursor cli-config fragment: valid JSON, statusLine reuses the claude script" {
   jq -e '.statusLine.type == "command"' "$BLUEPRINT_ROOT/configs/cursor/cli-config.json"
   jq -re '.statusLine.command' "$BLUEPRINT_ROOT/configs/cursor/cli-config.json" \
@@ -1341,42 +517,14 @@ EOF
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run managed_inventory_overwrite
   [ "$status" -eq 0 ]
-  echo "$output" | grep -qF "$HOME/.bashrc.d/aicoding-aliases.sh|overwrite|configs/bash/aliases.sh"
+  echo "$output" | grep -qF "$HOME/.bashrc.d/aicoding-aliases.sh|owned|configs/bash/aliases.sh"
 }
 
 @test "managed_inventory_overwrite: includes git credential fallback helper" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run managed_inventory_overwrite
   [ "$status" -eq 0 ]
-  echo "$output" | grep -qF "$HOME/.local/bin/git-credential-aicoding|overwrite|configs/git/git-credential-aicoding"
-}
-
-@test "managed_inventory_merge: opencode.json row is unchanged" {
-  # Defensive: opencode.json row is still the existing $HOME/.config/opencode
-  # path with merge mode — Task 5 widened the source content but did not
-  # change the inventory row.
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run managed_inventory_merge
-  [ "$status" -eq 0 ]
-  echo "$output" | grep -qF "$HOME/.config/opencode/opencode.json|merge|configs/opencode/opencode.json"
-}
-
-# --- container-local manifest (see: shared-manifest defect) ---------------
-# ~/.aicodingsetup is a HOST BIND MOUNT shared by every devpod container, but
-# the manifest describes container-local paths (~/.bashrc, ~/.tmux.conf, ...)
-# with per-file deployed_hash values. Keeping it there let whichever container
-# synced last speak for all of them — which silenced aicoding-status' CTA in
-# every other container. The manifest must live on the container filesystem.
-
-@test "manifest default is container-local, not the shared aicodingsetup mount" {
-  unset AICODING_MANIFEST
-  run bash -c ". '$BLUEPRINT_ROOT/lib/blueprint-deploy.sh'; printf '%s' \"\$AICODING_MANIFEST\""
-  [ "$status" -eq 0 ]
-  [ -n "$output" ]
-  case "$output" in
-    */.aicodingsetup/*) echo "manifest still on the shared mount: $output"; return 1 ;;
-  esac
-  [ "$output" = "$HOME/.local/state/aicoding/manifest.json" ]
+  echo "$output" | grep -qF "$HOME/.local/bin/git-credential-aicoding|owned|configs/git/git-credential-aicoding"
 }
 
 @test "claude settings fragment: cross-session messaging policy keys" {
@@ -1406,8 +554,8 @@ EOF
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run managed_inventory_overwrite
   [ "$status" -eq 0 ]
-  echo "$output" | grep -qF "$HOME/.claude/hooks/llmwiki-distill.sh|overwrite|configs/claude/hooks/llmwiki-distill.sh"
-  echo "$output" | grep -qF "$HOME/.claude/agents/llmwiki-distiller.md|overwrite|configs/claude/agents/llmwiki-distiller.md"
+  echo "$output" | grep -qF "$HOME/.claude/hooks/llmwiki-distill.sh|owned|configs/claude/hooks/llmwiki-distill.sh"
+  echo "$output" | grep -qF "$HOME/.claude/agents/llmwiki-distiller.md|owned|configs/claude/agents/llmwiki-distiller.md"
   if echo "$output" | grep -q 'llmwiki-nudge'; then false; fi
 }
 
@@ -1418,75 +566,6 @@ EOF
     | length == 1 and .[0].async == true and .[0].timeout == 600
   ' "$BLUEPRINT_ROOT/configs/claude/settings.json"
   if grep -q 'llmwiki-nudge' "$BLUEPRINT_ROOT/configs/claude/settings.json"; then false; fi
-}
-
-@test "manifest_get_profile: defaults to container when manifest absent" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run manifest_get_profile
-  [ "$status" -eq 0 ]
-  [ "$output" = "container" ]
-}
-
-@test "manifest_set_profile then get round-trips host" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_set_profile host
-  run jq -r '.profile' "$AICODING_MANIFEST"
-  [ "$output" = "host" ]
-  run manifest_get_profile
-  [ "$output" = "host" ]
-}
-
-@test "manifest_set_profile preserves existing manifest keys" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stamp_provision deadbeef
-  manifest_set_profile host
-  run jq -r '.provision_commit' "$AICODING_MANIFEST"
-  [ "$output" = "deadbeef" ]
-}
-
-@test "manifest_get_profile: AICODING_PROFILE env overrides manifest" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_set_profile container
-  AICODING_PROFILE=host run manifest_get_profile
-  [ "$output" = "host" ]
-}
-
-@test "inventories: container profile has tmux/cursor and routes Codex separately" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run managed_inventory_overwrite
-  [[ "$output" == *"/.tmux.conf|"* ]]
-  [[ "$output" == *"aicoding-ssh-auth-sock.sh|"* ]]
-  [[ "$output" != *"/.codex/config.toml|"* ]]
-  [[ "$output" != *"aicoding-boot-sync.sh"* ]]
-  run managed_inventory_merge
-  [[ "$output" == *"opencode.json|"* ]]
-  [[ "$output" == *"/.cursor/mcp.json|"* ]]
-  run managed_inventory_smart
-  [[ "$output" == *"/.codex/config.toml|toml_merge|"* ]]
-}
-
-@test "inventories: host profile drops container-only wiring, keeps agent CLI configs" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  export AICODING_PROFILE=host
-  run managed_inventory_overwrite
-  # tmux/ssh-agent wiring is container-only; boot-sync is host-only.
-  [[ "$output" != *"/.tmux.conf|"* ]]
-  [[ "$output" != *"aicoding-ssh-auth-sock.sh|"* ]]
-  [[ "$output" == *"$HOME/.bashrc.d/aicoding-boot-sync.sh|overwrite|configs/bash/boot-sync.sh"* ]]
-  [[ "$output" == *"/.claude/CLAUDE.md|"* ]]
-  # Agent CLI configs are managed on hosts too (user decision 2026-08-19),
-  # but Codex config is setting-aware rather than an overwrite target.
-  [[ "$output" != *"/.codex/config.toml|"* ]]
-  [[ "$output" == *"/.codex/AGENTS.md|"* ]]
-  [[ "$output" == *"/.cursor/skills/aicoding-estate/SKILL.md|overwrite|configs/cursor/skills/aicoding-estate/SKILL.md"* ]]
-  run managed_inventory_merge
-  [[ "$output" == *"/.claude/settings.json|"* ]]
-  [[ "$output" == *"opencode.json|"* ]]
-  [[ "$output" == *"/.cursor/mcp.json|"* ]]
-  [[ "$output" == *"/.cursor/cli-config.json|"* ]]
-  run managed_inventory_smart
-  [[ "$output" == *"/.codex/config.toml|toml_merge|"* ]]
-  unset AICODING_PROFILE
 }
 
 @test "enumerate_skill_files: lists nested files relative to root, sorted" {
@@ -1509,144 +588,6 @@ EOF
   [ -z "$output" ]
 }
 
-@test "classify_file: overwrite_raw does not substitute placeholders" {
-  printf 'binary-ish {{HOME}} content' > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/dest" "skills/x/a.png"
-  manifest_stage_commit
-  run classify_file "$TMPDIR/dest" "$TMPDIR/src" overwrite_raw
-  [ "$status" -eq 0 ]
-  [ "$output" = "up_to_date" ]
-  cmp -s "$TMPDIR/src" "$TMPDIR/dest"
-}
-
-@test "classify_file: overwrite (substituted) sees drift for same placeholder file" {
-  printf 'binary-ish {{HOME}} content' > "$TMPDIR/src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_overwrite_file "$TMPDIR/src" "$TMPDIR/dest" "skills/x/a.png"
-  manifest_stage_commit
-  run classify_file "$TMPDIR/dest" "$TMPDIR/src" overwrite
-  [ "$status" -eq 0 ]
-  [ "$output" = "will_update" ]
-}
-
-@test "_apply_deploy: overwrite_raw copies bytes verbatim" {
-  printf 'raw {{HOME}} bytes' > "$TMPDIR/clone-src"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  declare -A FILE_SOURCE
-  FILE_SOURCE[$TMPDIR/dest]="skills/x/a.png"
-  manifest_stage_begin
-  _apply_deploy overwrite_raw "$TMPDIR/dest" "$TMPDIR/clone-src"
-  manifest_stage_commit
-  cmp -s "$TMPDIR/clone-src" "$TMPDIR/dest"
-}
-
-@test "_incoming_matches_dest: overwrite_raw compares raw bytes" {
-  printf 'raw {{HOME}} bytes' > "$TMPDIR/src"
-  printf 'raw {{HOME}} bytes' > "$TMPDIR/dest"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run _incoming_matches_dest overwrite_raw "$TMPDIR/src" "$TMPDIR/dest"
-  [ "$status" -eq 0 ]
-  printf 'different' > "$TMPDIR/dest"
-  run _incoming_matches_dest overwrite_raw "$TMPDIR/src" "$TMPDIR/dest"
-  [ "$status" -ne 0 ]
-}
-
-@test "classify_managed_files: inventories every skill file with per-mode routing" {
-  export AICODING_BLUEPRINT_CLONE="$TMPDIR/clone"
-  mkdir -p "$AICODING_BLUEPRINT_CLONE/skills/demo/assets"
-  echo '# demo' > "$AICODING_BLUEPRINT_CLONE/skills/demo/SKILL.md"
-  printf 'png {{HOME}} bytes' > "$AICODING_BLUEPRINT_CLONE/skills/demo/assets/logo.png"
-  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  declare -gA BUCKETS FILE_MODE FILE_SOURCE
-  classify_managed_files
-  [ "${FILE_MODE[$HOME/.claude/skills/demo/SKILL.md]}" = "overwrite" ]
-  [ "${FILE_MODE[$HOME/.claude/skills/demo/assets/logo.png]}" = "overwrite_raw" ]
-  [ "${FILE_SOURCE[$HOME/.claude/skills/demo/assets/logo.png]}" = "skills/demo/assets/logo.png" ]
-  [ "${BUCKETS[$HOME/.claude/skills/demo/assets/logo.png]}" = "new_file" ]
-
-  # Apply and verify the binary lands verbatim while SKILL.md is substituted.
-  manifest_stage_begin
-  apply_managed_buckets "new_file"
-  manifest_stage_commit
-  cmp -s "$AICODING_BLUEPRINT_CLONE/skills/demo/assets/logo.png" "$HOME/.claude/skills/demo/assets/logo.png"
-
-  # Re-classify: everything up_to_date (idempotent, no phantom drift).
-  declare -gA BUCKETS2 FILE_MODE2
-  BUCKETS=() ; FILE_MODE=() ; FILE_SOURCE=()
-  classify_managed_files
-  [ "${BUCKETS[$HOME/.claude/skills/demo/assets/logo.png]}" = "up_to_date" ]
-  [ "${BUCKETS[$HOME/.claude/skills/demo/SKILL.md]}" = "up_to_date" ]
-}
-
-@test "_backup_file: a backup of a permissive file is narrowed to 0600" {
-  echo secret > "$TMPDIR/dest"
-  chmod 664 "$TMPDIR/dest"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run _backup_file "$TMPDIR/dest"
-  [ "$status" -eq 0 ]
-  local bak; bak=$(ls "$TMPDIR"/dest.bak.* | head -1)
-  # Copying the live mode is how ~/.claude/hooks/*.bak.* ended up at 775:
-  # a backup is a second copy of the credential and gets no group bits.
-  [ "$(stat -c '%a' "$bak")" = "600" ]
-}
-
-@test "_backup_file: a backup of an executable keeps +x as 0700, no group bits" {
-  printf '#!/bin/sh\n' > "$TMPDIR/hook.sh"
-  chmod 775 "$TMPDIR/hook.sh"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  run _backup_file "$TMPDIR/hook.sh"
-  [ "$status" -eq 0 ]
-  local bak; bak=$(ls "$TMPDIR"/hook.sh.bak.* | head -1)
-  [ "$(stat -c '%a' "$bak")" = "700" ]
-}
-
-@test "deploy_marker_block: a new destination is created at 0600 under a lax umask" {
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  ( umask 0002; deploy_marker_block "$TMPDIR/rc" "body line" "# START" "# END" )
-  manifest_stage_commit
-  [ "$(stat -c '%a' "$TMPDIR/rc")" = "600" ]
-  grep -qxF "body line" "$TMPDIR/rc"
-}
-
-@test "deploy_marker_block: replacing a block never widens an existing 0600 destination" {
-  printf 'prelude\n# START\nold body\n# END\n' > "$TMPDIR/rc"
-  chmod 600 "$TMPDIR/rc"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  # The replace path used to render into "$dest.tmp" under the ambient
-  # umask and mv it over dest, so a 600 file came back as 664.
-  ( umask 0002; deploy_marker_block "$TMPDIR/rc" "new body" "# START" "# END" )
-  manifest_stage_commit
-  [ "$(stat -c '%a' "$TMPDIR/rc")" = "600" ]
-  grep -qxF "new body" "$TMPDIR/rc"
-  if grep -qxF "old body" "$TMPDIR/rc"; then false; fi
-  [ ! -e "$TMPDIR/rc.tmp" ]
-}
-
-@test "deploy_marker_block: appending to a user dotfile keeps the user's mode" {
-  printf 'prelude\n' > "$TMPDIR/rc"
-  chmod 644 "$TMPDIR/rc"
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  deploy_marker_block "$TMPDIR/rc" "body line" "# START" "# END"
-  manifest_stage_commit
-  # ~/.bashrc is the user's file, not a credential store: the block deploy
-  # never widens it, and never narrows a mode the user chose either.
-  [ "$(stat -c '%a' "$TMPDIR/rc")" = "644" ]
-  grep -qxF "prelude" "$TMPDIR/rc"
-  grep -qxF "body line" "$TMPDIR/rc"
-}
-
-# Auto mode consults allow rules before its classifier, and the classifier
-# cannot resolve a relative path after `cd` against the Read() deny globs, so
-# without these rules every `cd X && grep ... file` prompts. Read-only shell
-# commands are pre-approved fleet-wide; the secrets PreToolUse hook still
-# guards Bash on every profile. Sorted: _json_merge_into invariant.
 @test "claude settings fragment: read-only shell commands are allow-listed" {
   local f="$BLUEPRINT_ROOT/configs/claude/settings.json"
   for rule in 'Bash(cd:*)' 'Bash(grep:*)' 'Bash(rg:*)' 'Bash(cat:*)' \

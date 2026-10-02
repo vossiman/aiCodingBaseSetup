@@ -11,7 +11,6 @@ setup() {
   : "${BLUEPRINT_ROOT:?unset — run via tests/bats/run.sh; refusing to default to / and copy the whole filesystem}"
   TMPDIR=$(mktemp -d)
   export HOME="$TMPDIR"
-  export AICODING_MANIFEST="$TMPDIR/.local/state/aicoding/manifest.json"
   export AICODINGSETUP_NONINTERACTIVE=1
   export AICODING_BLUEPRINT_LOCAL=1
   # install-host.sh's nvs-strip prelude (copied from install.sh) unconditionally
@@ -40,10 +39,8 @@ STUB
   chmod +x "$TMPDIR/stubs/python3"
   # dirname and jq are real passthroughs, not no-op stubs. install-host.sh's
   # SCRIPT_DIR resolution (`dirname "${BASH_SOURCE[0]}"`) needs dirname's
-  # actual output at source-time, and the deploy engine's manifest read/write
-  # (manifest_set_profile, manifest_stamp_provision, detect_install_mode)
-  # needs real jq behavior — a no-op stub would silently truncate
-  # $AICODING_MANIFEST to empty on every write. Some tests set
+  # actual output at source-time, and the deploy engine's JSON merges need
+  # real jq behavior. Some tests set
   # PATH="$TMPDIR/stubs" (no system dirs) to hide real jq/npm from
   # `command -v`; without a stub-dir dirname/jq passthrough, that same
   # restriction also hides coreutils' dirname and breaks sourcing before
@@ -88,37 +85,27 @@ make_gitless_host_release() {
   _aicoding_runtime_tree_digest "$AICODING_HOST_BLUEPRINT_DIR" > "$AICODING_HOST_BLUEPRINT_DIR/.aicoding-tree.sha256"
 }
 
-@test "Gitless host enrollment migrates tracked Codex preferences and repeats offline" {
+@test "Gitless host enrollment migrates a legacy manifest and keeps Codex preferences" {
   make_gitless_host_release
-  mkdir -p "$HOME/.codex" "$(dirname "$AICODING_MANIFEST")"
+  rm -rf "$AICODING_STATE_DIR/code-provenance"
+  mkdir -p "$HOME/.codex" "$AICODING_STATE_DIR"
   printf 'model = "personal-model"\nmodel_reasoning_effort = "high"\n[projects."/personal/project"]\ntrust_level = "trusted"\n' > "$HOME/.codex/config.toml"
-  jq -n --arg dest "$HOME/.codex/config.toml" '{schema_version:1,profile:"host",files:{($dest):{mode:"overwrite",source:"configs/codex/config.toml",deployed_hash:"legacy"}}}' > "$AICODING_MANIFEST"
+  jq -n --arg dest "$HOME/.codex/config.toml" '{schema_version:1,profile:"host",provision_commit:"p",files:{($dest):{mode:"overwrite",source:"configs/codex/config.toml",deployed_hash:"legacy"}}}' \
+    > "$AICODING_STATE_DIR/manifest.json"
   run bash "$AICODING_HOST_BLUEPRINT_DIR/install-host.sh" </dev/null
   [ "$status" -eq 0 ] || { echo "$output"; false; }
-  [ -f "$HOME/.codex/.aicoding-sync/config-state.json" ]
   grep -Fxq 'model = "personal-model"' "$HOME/.codex/config.toml"
   grep -Fxq 'model_reasoning_effort = "high"' "$HOME/.codex/config.toml"
   grep -Fxq 'trust_level = "trusted"' "$HOME/.codex/config.toml"
-  jq -e --arg sha "$RELEASE_SHA" '.provenance.revision == $sha and .provenance.source_kind == "tracking"' "$HOME/.codex/.aicoding-sync/config-state.json"
+  grep -Fxq 'approval_policy = "on-request"' "$HOME/.codex/config.toml"
+  grep -Fxq 'sandbox_mode = "workspace-write"' "$HOME/.codex/config.toml"
+  [ "$(cat "$AICODING_STATE_DIR/profile")" = host ]
+  [ ! -e "$AICODING_STATE_DIR/manifest.json" ]
+  [ ! -e "$HOME/.codex/.aicoding-sync" ]
   cp "$HOME/.codex/config.toml" "$TMPDIR/first-config"
   run bash "$AICODING_HOST_BLUEPRINT_DIR/install-host.sh" </dev/null
   [ "$status" -eq 0 ] || { echo "$output"; false; }
   cmp "$TMPDIR/first-config" "$HOME/.codex/config.toml"
-  [[ "$output" != *invalid_blueprint_clone* ]]
-}
-
-@test "Gitless host enrollment without offline evidence preserves tracked Codex config" {
-  make_gitless_host_release
-  rm -rf "$AICODING_STATE_DIR/code-provenance"
-  mkdir -p "$HOME/.codex" "$(dirname "$AICODING_MANIFEST")"
-  printf 'model = "personal-model"\n' > "$HOME/.codex/config.toml"
-  cp "$HOME/.codex/config.toml" "$TMPDIR/before-config"
-  jq -n --arg dest "$HOME/.codex/config.toml" '{schema_version:1,profile:"host",files:{($dest):{mode:"overwrite",source:"configs/codex/config.toml",deployed_hash:"legacy"}}}' > "$AICODING_MANIFEST"
-  run bash "$AICODING_HOST_BLUEPRINT_DIR/install-host.sh" </dev/null
-  [ "$status" -eq 0 ] || { echo "$output"; false; }
-  cmp "$TMPDIR/before-config" "$HOME/.codex/config.toml"
-  [ ! -e "$HOME/.codex/.aicoding-sync/config-state.json" ]
-  [[ "$output" == *revision_unavailable* ]]
 }
 
 _source_host_lib() {
@@ -183,15 +170,15 @@ _source_host_lib() {
 @test "install-host.sh: sourcing defines functions without executing main" {
   run _source_host_lib true
   [ "$status" -eq 0 ]
-  [ ! -f "$AICODING_MANIFEST" ]
+  [ ! -e "$HOME/.local/state/aicoding/profile" ]
 }
 
-@test "install-host.sh: main writes profile=host and provision stamp to manifest" {
+@test "install-host.sh: main writes the host profile and provision stamp" {
   export AICODINGSETUP_SKIP_NETWORK=1
   run bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh"
   [ "$status" -eq 0 ]
-  run jq -r '.profile' "$AICODING_MANIFEST"
-  [ "$output" = "host" ]
+  [ "$(cat "$HOME/.local/state/aicoding/profile")" = host ]
+  [ -s "$HOME/.local/state/aicoding/provision_commit" ]
 }
 
 @test "install-host.sh installs both Kanban helpers from the durable blueprint" {
@@ -223,7 +210,8 @@ _source_host_lib() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"=== Enrolled with deferrals ==="* ]]
   [[ "$output" != *"=== Done! ==="* ]]
-  jq -e '.profile == "host" and (.provision_commit // null) == null' "$AICODING_MANIFEST"
+  [ "$(cat "$HOME/.local/state/aicoding/profile")" = host ]
+  [ ! -s "$HOME/.local/state/aicoding/provision_commit" ]
   jq -e '.components.provision.state == "blocked"
     and .components.provision.reason == "preparation_deferred"' \
     "$HOME/.local/state/aicoding/update-results.json"
@@ -240,7 +228,7 @@ _source_host_lib() {
     }
     install_claude_mcps() { :; }
     install_claude_plugins() { :; }
-    deploy_all_managed_files() {
+    install_managed_config() {
       [ -x "$HOME/.local/bin/kanban-post" ]
       [ -x "$HOME/.local/bin/kanban-work" ]
       [ -x "$HOME/.local/bin/kanban-mcp" ]
@@ -314,47 +302,23 @@ _source_host_lib() {
   }
 }
 EOF
-  # A managed file on disk with no manifest flips detect_install_mode to
-  # 'adopt' (review, don't merge) — force first-deploy, same as the
-  # container-side cursor merge test.
   bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh --force-reinstall"
   jq -e '.mcpServers.postgres'         "$HOME/.cursor/mcp.json"
   jq -e '.mcpServers["memory-router"]' "$HOME/.cursor/mcp.json"
 }
 
-@test "install-host.sh: reconcile leaves an existing unmanaged ~/.codex/config.toml untouched" {
-  # Regression (unified review 2026-08-20, HIGH): a previously installed host
-  # (manifest exists) with a personal codex config not yet tracked used to
-  # classify it new_file and clobber it with no backup on the next
-  # unattended reconcile/boot-sync.
+@test "install-host.sh: a rerun keeps a personal Codex model and enforces the host posture" {
   export AICODINGSETUP_SKIP_NETWORK=1
   bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh"
-  # Simulate the pre-#89 state: path exists on disk but is not in the
-  # manifest (the inventory grew after this host's install).
-  jq 'del(.files["'"$HOME"'/.codex/config.toml"])' "$AICODING_MANIFEST" \
-    > "$AICODING_MANIFEST.t" && mv "$AICODING_MANIFEST.t" "$AICODING_MANIFEST"
-  printf 'model = "my-personal-model"\n' > "$HOME/.codex/config.toml"
+  printf 'model = "my-personal-model"\nmodel_reasoning_effort = "xhigh"\n' > "$HOME/.codex/config.toml"
 
   run bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh"
   [ "$status" -eq 0 ]
-  # The personal file survives reconcile verbatim; the replace decision
-  # belongs to an interactive `aicoding-sync`.
-  grep -q 'my-personal-model' "$HOME/.codex/config.toml"
-  if grep -q 'mcp_servers' "$HOME/.codex/config.toml"; then false; fi
-}
-
-@test "install-host.sh: force reinstall preserves an untracked personal Codex config" {
-  export AICODINGSETUP_SKIP_NETWORK=1
-  mkdir -p "$HOME/.codex"
-  printf 'model = "gpt-6-astra"\nmodel_reasoning_effort = "xhigh"\n' \
-    > "$HOME/.codex/config.toml"
-
-  run bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh --force-reinstall"
-  [ "$status" -eq 0 ]
-  grep -Fxq 'model = "gpt-6-astra"' "$HOME/.codex/config.toml"
+  grep -Fxq 'model = "my-personal-model"' "$HOME/.codex/config.toml"
   grep -Fxq 'model_reasoning_effort = "xhigh"' "$HOME/.codex/config.toml"
-  if grep -q '^\[mcp_servers' "$HOME/.codex/config.toml"; then false; fi
-  jq -e '.files | has("'"$HOME"'/.codex/config.toml") | not' "$AICODING_MANIFEST"
+  grep -Fxq 'approval_policy = "on-request"' "$HOME/.codex/config.toml"
+  grep -q '^\[mcp_servers.context7\]' "$HOME/.codex/config.toml"
+  [ -z "$(find "$HOME/.codex" -name '*.bak.*')" ]
 }
 
 @test "install-host.sh: absent MEMORY_ROUTER_TOKEN deploys no memory-router, keeps a manual one" {
@@ -383,12 +347,12 @@ EOF
   if grep -q '^\[mcp_servers.memory-router\]' "$HOME/.codex/config.toml"; then false; fi
 }
 
-@test "install-host.sh: second run is reconcile mode, still exits 0" {
+@test "install-host.sh: a second run writes nothing and still exits 0" {
   export AICODINGSETUP_SKIP_NETWORK=1
   bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh"
   run bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"reconcile"* ]]
+  [[ "$output" == *"INSTALL OK  blueprint "*"  updated 0"* ]]
 }
 
 @test "install-host.sh: main flow survives a failed homelab-wiki clone (errexit-safe)" {
@@ -432,8 +396,7 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"Skipping bw-AICode (AICODINGSETUP_SKIP_NETWORK)"* ]]
   [[ "$output" == *"WARN"*"homelab-wiki clone failed"* ]]
-  run jq -r '.profile' "$AICODING_MANIFEST"
-  [ "$output" = "host" ]
+  [ "$(cat "$HOME/.local/state/aicoding/profile")" = host ]
 }
 
 @test "install-host.sh: main registers the git-credential-aicoding fallback helper" {
@@ -515,7 +478,7 @@ EOF
 
 @test "aicoding-install: dispatches to install-host.sh when profile=host" {
   mkdir -p "$HOME/.local/state/aicoding"
-  echo '{"profile":"host"}' > "$HOME/.local/state/aicoding/manifest.json"
+  echo host > "$HOME/.local/state/aicoding/profile"
   # Explicit local blueprint with sentinel installers; no network. Merely
   # setting AICODING_BLUEPRINT_CLONE must not bypass qualified selection.
   CLONE="$TMPDIR/clone"; mkdir -p "$CLONE/lib"

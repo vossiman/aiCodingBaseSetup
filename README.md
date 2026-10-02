@@ -141,8 +141,8 @@ Accepted tool limitations are recorded in
 - **`~/.bashrc.d/aicoding-env.sh`** — empty by default; put container-wide `export FOO=bar` lines here. Sourced from every login shell via the managed block in `~/.bashrc`.
 - **`~/.bashrc.d/aicoding-ssh-auth-sock.sh`** — stabilizes the forwarded SSH agent socket across DevPod / Cursor reconnects. Routes every shell through `~/.ssh/agent.sock` (a symlink we keep current). Without it, long-lived tmux panes hold a stale `SSH_AUTH_SOCK` path after the host's SSH session rotates, and `git push` fails with `Permission denied (publickey)` until you open a new pane.
 - **`~/.codex/config.toml`**: smart TOML-managed file; declares the 6 MCPs in `[mcp_servers.<name>]` tables with secrets substituted privately at deploy time. Existing model, reasoning effort, and project trust remain user-owned. Other blueprint settings use setting-level three-way comparison. The Kanban entry is command-only.
-- **`~/.cursor/mcp.json`** — merge-mode managed file; declares the 5 MCPs in JSON `{mcpServers: ...}` (Claude-Desktop-compatible schema). User-added entries are preserved by the merge.
-- **`~/.cursor/skills/aicoding-estate/SKILL.md`** — overwrite-mode managed file; Cursor's only file-backed global instruction surface (User Rules live in the account, `~/.cursor/rules` is not read by the CLI). Carries the memory-retrieval, canonical Kanban MCP pointer, backlog-board recovery guidance, and secrets guidance that Claude gets from `~/.claude/CLAUDE.md` and Codex from `~/.codex/AGENTS.md`.
+- **`~/.cursor/mcp.json`** — mixed managed file (blueprint MCP entries owned, yours kept); declares the 5 MCPs in JSON `{mcpServers: ...}` (Claude-Desktop-compatible schema). User-added entries are preserved by the merge.
+- **`~/.cursor/skills/aicoding-estate/SKILL.md`** — blueprint-owned managed file; Cursor's only file-backed global instruction surface (User Rules live in the account, `~/.cursor/rules` is not read by the CLI). Carries the memory-retrieval, canonical Kanban MCP pointer, backlog-board recovery guidance, and secrets guidance that Claude gets from `~/.claude/CLAUDE.md` and Codex from `~/.codex/AGENTS.md`.
 
 ### External Tools (detected, not installed)
 
@@ -344,13 +344,18 @@ development path and never fetches or resets its checkout.
 ### `aicoding-sync` — day-2 reconciliation (recommended)
 
 ```bash
-aicoding-sync --dry-run    # show what would change vs your environment
-aicoding-sync              # interactive: overall y/N confirm, then Codex setting choices if needed
-aicoding-sync --yes        # scripted; auto-confirms generic drift, preserves Codex conflicts
+aicoding-sync --dry-run    # list the files that would change; writes nothing
+aicoding-sync              # apply managed config, refresh tools and provisioning
 aicoding-sync --blueprint /path/to/aiCodingBaseSetup --dry-run  # test a local checkout verbatim
 ```
 
-`aicoding-sync` is installed into `~/.local/bin/` by `install.sh`. Generic managed files still compare whole-file hashes and use the existing diff/backup flow. Codex TOML instead compares settings against fingerprints of the last acknowledged blueprint values. Existing `model`, `model_reasoning_effort`, and the complete `projects` subtree are user-owned. The current `gpt-6.1-sol` template only seeds a missing model. If a reasoning-effort default is added later, it will likewise seed only a missing value. Local-only settings are preserved silently. A local preference against an unchanged blueprint is also silent. Only a setting changed incompatibly on both sides is a conflict.
+`aicoding-sync` is installed into `~/.local/bin/` by `install.sh`. Every mode,
+including the unattended `--boot` pass, applies managed config the same way
+and never prompts (`--yes` is accepted for old callers). The rules are listed
+under [Managed config](#managed-config) below. For Codex, `model`,
+`model_reasoning_effort`, `[projects.*]` and `[tui]` stay personal; the
+blueprint enforces `notify`, the approval and sandbox posture, its
+`[mcp_servers.*]` entries and its `[features]` keys.
 
 Subscription context defaults use the existing ChatGPT login. OpenCode's
 `openai/gpt-6.1-sol` entry declares 1,050,000 total context, 922,000 input, and
@@ -358,38 +363,42 @@ Subscription context defaults use the existing ChatGPT login. OpenCode's
 These are model metadata and client budgets, not an authentication change or
 a guarantee of one million input tokens. Codex requests an 872,000-token
 context window and compaction at 780,000. Its active model catalog can cap the
-resolved window. Sync applies those two Codex settings only when the selected
-model matches the blueprint model, including the model of a selected profile;
-other model selections retain their current context settings and receipt
-fingerprints. Personal context edits use the normal setting-level merge.
+resolved window. These two Codex settings are seeded: sync writes them only when they are
+missing, so personal budgets stay.
 Restart each client after its config updates. Repo-local overrides still take
 precedence over these home-level defaults.
 
-Unattended boot, reconcile, and `--yes` runs apply safe Codex updates while retaining true conflicts locally and leaving them unacknowledged. Interactive sync can explicitly keep the local value or take the blueprint value. First adoption is conservative: an existing untracked personal config is untouched by boot/reconcile, while interactive sync or `--yes` may enroll it without inventing historical conflicts. A valid receipt can restore a physically deleted config from current blueprint defaults, but its fingerprints cannot recover deleted personal preferences or project trust.
-
-Codex merge state lives in `~/.codex/.aicoding-sync/config-state.json` with format version 1 and contains typed fingerprints plus credential-free provenance, never plaintext setting values. The agent secrets guard protects the entire state directory and its children, including filenames otherwise allowed in sensitive directories. The container-local deployment manifest moves to schema 2 only when it records the Codex `toml_merge` mode; schema 1 remains valid for generic-only manifests. Old readers reject schema 2, and old sibling writers do not understand the receipt or advisory lock, so every writer sharing a Codex directory must be upgraded before preservation is guaranteed.
-
-The planner never installs or downloads a runtime. If sync runs on an existing
-machine before Python 3.8 or newer is provisioned, it reports
-`runtime_unavailable`, preserves the config and receipt, and never falls back
-to whole-file overwrite. Run `aicoding-install`; containers can bootstrap the
-package, while hosts retain the manual-install policy described below.
+The Codex TOML merge needs Python 3.8 or newer and the vendored tomlkit. On a
+machine without it, sync records the Codex config as failed and leaves the file
+untouched. Run `aicoding-install`; containers can bootstrap the package, while
+hosts retain the manual-install policy described below.
 
 (The former `aicoding-update` and `update-status` names were back-compat shims and have been removed; use `aicoding-sync` and `aicoding-status`.)
 
-The manifest at `~/.local/state/aicoding/manifest.json` records the blueprint commit and generic managed-file state. Schema 2 adds the Codex `toml_merge` source identity; the shared Codex receipt holds its per-setting acknowledged fingerprints.
+Sync keeps three one-line files in `~/.local/state/aicoding/`: `profile`
+(`host`, `container` or `minimal-pi`), `blueprint_commit` and
+`provision_commit`. They are container-local, not under `~/.aicodingsetup`,
+which is a host bind mount shared by every devpod container. The update-status
+cache (`~/.local/state/aicoding/updates/`) is container-local for the same
+reason and stores **only the remote `latest` SHA**. On managed installations,
+`aicoding-status` reads the installed SHA from the physical immutable release
+selected by `current/aicoding`; the `blueprint_commit` stamp is the fallback for
+older installs. Provision badges use the active release plus local result
+receipts, so they do not depend on a `/tmp/aicoding` Git clone surviving.
 
-It is deliberately **container-local**, not under `~/.aicodingsetup`: that directory is a host bind mount shared by every devpod container, whereas the manifest describes container-local paths (`~/.bashrc`, `~/.tmux.conf`, …). While it was shared, whichever container synced last stamped the global `blueprint_commit`, so every other container computed installed == latest and went quiet while it was still running stale files. The update-status cache (`~/.local/state/aicoding/updates/`) is container-local for the same reason, and stores **only the remote `latest` SHA**. On managed installations, `aicoding-status` reads the installed SHA from the physical immutable release selected by `current/aicoding`; the manifest remains the migration fallback for older installs. Provision badges use the active release plus local result receipts, so they do not depend on a `/tmp/aicoding` Git clone surviving. A manifest left on the shared mount by an older install is adopted once, on first read; the shared copy is left in place so sibling containers can adopt it too.
+Older releases kept a per-container `manifest.json` (and a shared copy under
+`~/.aicodingsetup`). The first sync or install on this release copies its
+`profile` and commit stamps into the files above, and deletes both manifests
+and `~/.codex/.aicoding-sync/` after a clean pass.
 
 ### `aicoding-install` — select a qualified release and re-run the installer
 
 ```bash
 aicoding-install                     # select latest CI-qualified main and re-run the saved profile
-aicoding-install --force-reinstall   # same, but deletes the manifest first (nuke drift, first-deploy)
 aicoding-install --blueprint /path/to/aiCodingBaseSetup  # provision from a local checkout
 ```
 
-Re-running the installer on an initialized container (manifest exists) re-runs the apt/build/locale prerequisite steps (idempotent), including ensuring Python 3.8 or newer for Codex smart merge. It then runs **reconcile mode**, which automatically applies the conservative buckets without prompts. Use it when provisioning-only pieces broke or changed (tool bootstrap including codex, templates, tmux plugins, Playwright browser and system libs); `aicoding-sync` deliberately does not touch those. Running `./install.sh` from a checkout does the same against that checkout's version.
+Re-running the installer re-runs the apt/build/locale prerequisite steps (idempotent), including ensuring Python 3.8 or newer for the Codex TOML merge, then applies managed config exactly as sync does. Use it when provisioning-only pieces broke or changed (tool bootstrap including codex, templates, tmux plugins, Playwright browser and system libs); `aicoding-sync` deliberately does not touch those. Running `./install.sh` from a checkout does the same against that checkout's version.
 
 `aicoding-install` is profile-aware: it preserves `container`, `host`, or
 `minimal-pi` from persistent state before dispatching the selected release.
@@ -404,7 +413,7 @@ deploys the thin core layer and enrolls the same persistent updater: Claude,
 managed shared agent configuration including Codex TOML, the homelab wiki,
 terminal-open auto-sync, the sandbox prerequisite, and `bw-AICode` tooling.
 It skips container-only CLI bootstrap, Playwright, Go, and tmux. Because Codex
-TOML uses smart merge, Python 3.8 or newer is a host prerequisite; host checks
+TOML merging needs it, Python 3.8 or newer is a host prerequisite; host checks
 report the manual install command rather than installing it. The
 `minimal-pi` profile installs only the common aicoding runtime and the selected
 `dvw` bastion adapter; it does not install Claude, project configuration, or
@@ -433,9 +442,8 @@ overdue scheduled timestamp alone is not evidence that the worker is alive.
 Tool results are cached observations with their own timestamps, not new
 checks for the latest available version. Missing results mean unknown, and
 older failures remain unresolved until a relevant update verifies recovery.
-Managed config recovery requires evidence for every destination sharing that
-config result; an aggregate provisioning success cannot clear a remaining
-config conflict. `--banner` and `--tmux` retain their lightweight notice paths.
+A config result is current only when every destination sharing it was
+written or already matched. `--banner` and `--tmux` retain their lightweight notice paths.
 
 Each scheduled pass runs `aicoding-sync --boot` with closed stdin from that
 state directory. Different CLIs have different update paths:
@@ -456,35 +464,39 @@ the prior `previous/<component>` pointer are retained for recovery. See
 [Automatic updates and shared compatibility](docs/automatic-updates.md) for
 the on-disk layout, receipts, and shared-consumer rollout gate.
 
-### Install modes
+### Managed config
 
-`install.sh` picks one of three modes based on what it finds:
+Every install and sync applies four rules. There is no record of past
+deployments, so there is nothing to drift out of step and no conflict to
+resolve.
 
-| State on disk | Mode | Behaviour |
-|---|---|---|
-| No manifest, no managed files exist | `first` | Deploys everything; writes initial manifest. |
-| No manifest, but managed files already on disk (older install) | `adopt` | Captures current file hashes into the manifest without overwriting. Surfaces accumulated drift on the next `aicoding-sync --dry-run`. |
-| Manifest exists | `reconcile` | Re-runs prereqs, then auto-applies the conservative buckets (see below). |
+1. **Blueprint-owned files are overwritten.** Hooks, commands, skills,
+   agents, `CLAUDE.md`, `AGENTS.md` and the `~/.bashrc.d/aicoding-*.sh`
+   snippets are rendered (`{{HOME}}` everywhere, secrets only in configs,
+   never in prose) and written whenever the destination differs. Writes use a
+   private temp file and an atomic rename; executables land at 0700, the rest
+   at 0600. Change these files in the repo, by PR.
+2. **Mixed files: owned keys are enforced, seeded keys are set once.**
+   `~/.claude/settings.json`, `~/.cursor/mcp.json`, `~/.cursor/cli-config.json`,
+   `~/.config/opencode/opencode.json` and `~/.codex/config.toml` list their
+   keys in [`configs/managed-config.json`](configs/managed-config.json). Owned
+   keys take the blueprint value on every pass; `.*` owns each blueprint entry
+   under a key and `[]` adds missing array items, so personal entries stay.
+   Seeded keys are written only when missing. Everything else is personal. A
+   blueprint MCP entry whose secret is missing is removed. A file that is not
+   valid JSON or TOML is reported and never overwritten. `~/.bashrc` gets one
+   marker block that sources `~/.bashrc.d/*.sh`; the rest of the file is yours.
+3. **Retired files and keys** are listed in the same data file. A retired
+   file is deleted only while it still equals a version the blueprint shipped
+   (checked against git history); an edited one is kept and reported once.
+4. **The machine profile** lives in `~/.local/state/aicoding/profile`. Hosts
+   keep Codex at `approval_policy = "on-request"` and
+   `sandbox_mode = "workspace-write"`; containers run without prompts.
 
-**Reconcile mode** runs every time `install.sh` is invoked on a container that already has a manifest (e.g., every devcontainer rebuild). It classifies each managed file and automatically applies the conservative buckets:
-- `restore` (file tracked but missing on disk → redeploy from blueprint)
-- `new_file` (in blueprint inventory, not yet in manifest → deploy)
-- `will_update` (tracked, unedited locally, blueprint changed → deploy)
-- `drifted_but_aligned` (you edited to match the new blueprint → refresh manifest hash, no file write)
-- `merge` (settings.json / opencode.json → deep-merge blueprint over local)
-- `toml_merge` (Codex config → apply safe setting changes, preserve unresolved conflicts)
-
-It deliberately does **not** auto-apply two buckets:
-- `drifted_and_updating` (you edited AND blueprint changed differently) — reported, left for `aicoding-sync`.
-- `to_remove` (file dropped from blueprint inventory) — reported, never auto-deleted.
-
-This is strictly more conservative than `aicoding-sync --yes`, which DOES auto-resolve drift (with backup) and DOES auto-remove. The automatic provisioning path is intentionally more cautious about touching files the user has edited.
+A destination whose tool is not installed or not yet verified is left alone
+and recorded as blocked until the tool is ready.
 
 The `~/.bashrc.d/` convention for user additions: anything matching `local-*.sh` (or any name *not* prefixed `aicoding-`) is sourced by the managed block but never touched by the blueprint. Personal aliases, env vars, and shell tweaks belong there.
-
-### Why the model
-
-The pre-manifest installer would silently clobber any file you'd hand-edited on every re-run. The manifest + drift detection lets the installer guarantee "your changes are never overwritten without a prompt." See `docs/superpowers/specs/2026-05-16-blueprint-sync-design.md` in the parent [devMachine](https://github.com/vossiman/devMachine) repo for the full design.
 
 > The container hostname is set to the workspace name via runArgs:
 > `["--hostname", "${containerWorkspaceFolderBasename}"]`, so shells and logs
@@ -579,14 +591,13 @@ install.sh
   5. Configure Claude Code MCPs (claude mcp add)
   6. Install Claude Code marketplace plugins
   7. Install aicoding-sync symlink → ~/.local/bin/aicoding-sync
-  8. Detect install mode (first / adopt / reconcile) — see Update section
-  9. Deploy managed files (first mode) OR adopt existing hashes (adopt mode) OR
-     auto-apply conservative buckets (reconcile mode). Writes / updates the manifest.
+  8. Apply managed config (see Managed config)
+  9. Stamp the profile, blueprint and provision commits
  10. Install tmux plugins (TPM), clone/update bubblewrap, detect infra-audit,
      check Playwright
 ```
 
-File deployment is centralised in `lib/blueprint-deploy.sh`. Managed files flow through `overwrite`, `merge`, `marker_block`, or Codex-specific `toml_merge` mode, captured in the manifest at `~/.local/state/aicoding/manifest.json` so subsequent `aicoding-sync` runs can reconcile them safely.
+File deployment is centralised in `lib/blueprint-deploy.sh` (`managed_config_apply`), with the Codex TOML merge in `lib/managed_toml.py`.
 
 The same persist-once-share-everywhere property applies to all four CLIs once their bind mounts are wired: `claude`, `opencode`, `codex`, and `agent` each persist their auth into their respective bind-mounted home directories, so a single login in any container is reusable from every other.
 
@@ -594,7 +605,7 @@ The same persist-once-share-everywhere property applies to all four CLIs once th
 
 ```
 aiCodingBaseSetup/
-├── install.sh                     # container installer (three-mode dispatch)
+├── install.sh                     # container installer
 ├── bootstrap-aicoding.sh          # self-contained verified first enrollment
 ├── on-start.sh                    # container startup maintenance + scheduler ensure
 ├── contrib/windows/               # quarantined Windows stub (unsupported)
@@ -605,7 +616,7 @@ aiCodingBaseSetup/
 │   ├── aicoding-status            # readable updater status plus banner/tmux notices
 │   └── aicoding-ssh-agent-watch   # legacy ssh-agent socket watcher
 ├── lib/
-│   ├── blueprint-deploy.sh        # hash, manifest, classify, deploy primitives
+│   ├── blueprint-deploy.sh        # render, merge and write managed config
 │   ├── blueprint-source.sh        # --blueprint PATH parsing + validation
 │   ├── auto-update.sh             # systemd/fallback scheduler implementation
 │   ├── runtime.sh                 # immutable staging + transactional activation

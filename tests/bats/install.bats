@@ -4,7 +4,6 @@ setup() {
   : "${BLUEPRINT_ROOT:?unset — run via tests/bats/run.sh; refusing to default to / and copy the whole filesystem}"
   TMPDIR=$(mktemp -d)
   export HOME="$TMPDIR"
-  export AICODING_MANIFEST="$TMPDIR/.aicodingsetup/manifest.json"
   export AICODING_BLUEPRINT_LOCAL=1
   export AICODINGSETUP_NONINTERACTIVE=1
   export CODEX_MANAGED_DIR="$TMPDIR/etc-codex"
@@ -77,20 +76,6 @@ blueprint_copy() {
   git -C "$BP" update-ref refs/remotes/origin/main HEAD
 }
 
-@test "install.sh mode: first-deploy when no manifest and no managed files" {
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  [ -f "$AICODING_MANIFEST" ]
-  [ -f "$HOME/.tmux.conf" ]
-}
-
-@test "install.sh: container flow writes no profile key to the manifest" {
-  # Regression pin (spec 2026-08-12-host-install-design.md): absent profile
-  # key IS the container contract — only install-host.sh may write one.
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  run jq 'has("profile")' "$AICODING_MANIFEST"
-  [ "$output" = "false" ]
-}
-
 @test "persistent install reports expected preparation deferrals without failing enrollment or stamping provision" {
   export AICODING_PERSISTENT_ENROLLMENT=1
   run env _AICODINGSETUP_NVS_STRIPPED=1 bash -c '
@@ -109,7 +94,7 @@ blueprint_copy() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"=== Enrolled with deferrals ==="* ]]
   [[ "$output" != *"=== Done! ==="* ]]
-  jq -e '(.provision_commit // null) == null' "$AICODING_MANIFEST"
+  [ ! -s "$HOME/.local/state/aicoding/provision_commit" ]
   jq -e '.components.provision.state == "blocked"
     and .components.provision.reason == "preparation_deferred"' \
     "$HOME/.local/state/aicoding/update-results.json"
@@ -127,7 +112,7 @@ blueprint_copy() {
     install_claude_mcps() { :; }
     install_claude_plugins() { :; }
     install_codex_plugins() { :; }
-    deploy_all_managed_files() {
+    install_managed_config() {
       [ -x "$HOME/.local/bin/kanban-post" ]
       [ -x "$HOME/.local/bin/kanban-work" ]
       [ -x "$HOME/.local/bin/kanban-mcp" ]
@@ -171,7 +156,7 @@ blueprint_copy() {
   [ "$(cat "$shared_root/config.toml")" = "user-owned = true" ]
   [[ "$output" == *"=== Completed with deferrals ==="* ]]
   [[ "$output" != *"=== Done! ==="* ]]
-  jq -e '(.provision_commit // null) == null' "$AICODING_MANIFEST"
+  [ ! -s "$HOME/.local/state/aicoding/provision_commit" ]
 }
 
 @test "direct adopt does not create missing config below a shared root without evidence" {
@@ -188,20 +173,18 @@ blueprint_copy() {
   [ ! -e "$shared_root/config.toml" ]
   [[ "$output" == *"=== Completed with deferrals ==="* ]]
   [[ "$output" != *"=== Done! ==="* ]]
-  jq -e '(.provision_commit // null) == null' "$AICODING_MANIFEST"
+  [ ! -s "$HOME/.local/state/aicoding/provision_commit" ]
 }
 
 @test "direct reconcile does not restore config into a shared root without evidence" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   rm -rf "$HOME/.codex"
-  local shared_root="$TMPDIR/shared-codex" tmp_manifest
+  local shared_root="$TMPDIR/shared-codex"
   mkdir -p "$shared_root"
   ln -s "$shared_root" "$HOME/.codex"
   export AICODING_SHARED_CONFIG_ROOTS="$shared_root"
   export AICODING_SHARED_CONSUMERS_FILE="$TMPDIR/missing-consumers.json"
-  tmp_manifest=$(mktemp)
-  jq 'del(.provision_commit)' "$AICODING_MANIFEST" > "$tmp_manifest"
-  mv "$tmp_manifest" "$AICODING_MANIFEST"
+  rm -f "$HOME/.local/state/aicoding/provision_commit"
 
   run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
 
@@ -209,7 +192,7 @@ blueprint_copy() {
   [ ! -e "$shared_root/config.toml" ]
   [[ "$output" == *"=== Completed with deferrals ==="* ]]
   [[ "$output" != *"=== Done! ==="* ]]
-  jq -e '(.provision_commit // null) == null' "$AICODING_MANIFEST"
+  [ ! -s "$HOME/.local/state/aicoding/provision_commit" ]
 }
 
 @test "direct first-deploy still writes a missing confirmed-local config root" {
@@ -239,7 +222,7 @@ STUB
   [ "$(cat "$HOME/.codex/config.toml")" = "user-owned = true" ]
   [[ "$output" == *"=== Completed with deferrals ==="* ]]
   [[ "$output" != *"=== Done! ==="* ]]
-  jq -e '(.provision_commit // null) == null' "$AICODING_MANIFEST"
+  [ ! -s "$HOME/.local/state/aicoding/provision_commit" ]
 }
 
 @test "direct first-deploy uses a shared config root when complete evidence is present" {
@@ -542,41 +525,10 @@ STUB
   [[ "$output" == *"Please install"* ]]
 }
 
-@test "install.sh mode: adopt when managed files exist but no manifest" {
-  mkdir -p "$HOME"
-  echo "user-customised tmux config" > "$HOME/.tmux.conf"
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  # File content must be untouched.
-  grep -q "user-customised" "$HOME/.tmux.conf"
-  # Manifest must record the user's hash.
-  local user_hash blueprint_hash
-  user_hash=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
-  blueprint_hash=$(jq -r '.files["'"$HOME"'/.tmux.conf"].deployed_hash' "$AICODING_MANIFEST")
-  [ "$user_hash" = "$blueprint_hash" ]
-}
-
-@test "install.sh mode: reconcile when manifest exists" {
-  # First-deploy populates a real manifest, then a re-run hits reconcile.
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  [ "$status" -eq 0 ]
-  # Output announces reconcile mode (replaces the old "Container already initialized" line).
-  echo "$output" | grep -q "Mode: reconcile"
-}
-
-# A provisioning run that advances blueprint_commit must invalidate the
-# aicoding-status cache, exactly as the two sync paths do (lib/sync.sh). Without
-# it the badge keeps the pre-run verdict and _cache_fresh suppresses any
-# re-check for the full 6h TTL, so an already-current container shows a phantom
-# ⬆aicoding until the TTL lapses. Hit for real 2026-07-26.
-@test "install.sh reconcile: advancing blueprint_commit drops the stale aicoding-status cache" {
+@test "install.sh: advancing blueprint_commit drops the stale aicoding-status cache" {
   export AICODING_UPDATE_STATE="$TMPDIR/state/updates"
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  # Rewind the recorded commit so the reconcile run genuinely advances it.
-  local tmp
-  tmp=$(mktemp)
-  jq '.blueprint_commit = "old"' "$AICODING_MANIFEST" > "$tmp"
-  mv "$tmp" "$AICODING_MANIFEST"
+  echo old > "$HOME/.local/state/aicoding/blueprint_commit"
   # Seed a stale "behind" verdict, as aicoding-status would have cached it.
   mkdir -p "$AICODING_UPDATE_STATE"
   echo '{"tool":"aicoding","status":"behind"}' > "$AICODING_UPDATE_STATE/aicoding.json"
@@ -584,7 +536,7 @@ STUB
   run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   [ "$status" -eq 0 ]
 
-  [ "$(jq -r .blueprint_commit "$AICODING_MANIFEST")" != "old" ]
+  [ "$(cat "$HOME/.local/state/aicoding/blueprint_commit")" != "old" ]
   [ ! -e "$AICODING_UPDATE_STATE/aicoding.json" ]
 }
 
@@ -594,84 +546,6 @@ STUB
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "tmux 3.8 is not pinned commit 13c10f6"
   echo "$output" | grep -q "Skipping tmux rebuild while network operations are disabled"
-}
-
-@test "install.sh --force-reinstall: deletes manifest and re-deploys" {
-  mkdir -p "$HOME/.aicodingsetup"
-  echo '{"schema_version":1,"files":{}}' > "$AICODING_MANIFEST"
-  echo "user-edit-that-should-be-clobbered" > "$HOME/.tmux.conf"
-  run bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
-  [ "$status" -eq 0 ]
-  # File must be overwritten from blueprint.
-  if grep -q "user-edit-that-should-be-clobbered" "$HOME/.tmux.conf"; then false; fi
-  # Manifest must record blueprint-hash, not user's hash.
-  local blueprint_hash deployed_hash
-  blueprint_hash=$(sha256sum "$BLUEPRINT_ROOT/configs/tmux/tmux.conf" | awk '{print $1}')
-  deployed_hash=$(jq -r '.files["'"$HOME"'/.tmux.conf"].deployed_hash' "$AICODING_MANIFEST")
-  [ "$blueprint_hash" = "$deployed_hash" ]
-}
-
-@test "install.sh --force-reinstall preserves receipt-backed Codex preferences" {
-  blueprint_copy
-  bash "$BP/install.sh" </dev/null
-  sed -i 's/^model = .*/model = "gpt-6-astra"/' "$HOME/.codex/config.toml"
-  sed -i '/^model = /a model_reasoning_effort = "xhigh"' "$HOME/.codex/config.toml"
-  cat >> "$HOME/.codex/config.toml" <<'EOF'
-
-[projects."/workspace/personal"]
-trust_level = "trusted"
-EOF
-
-  run bash "$BP/install.sh" --force-reinstall </dev/null
-  [ "$status" -eq 0 ]
-  grep -Fxq 'model = "gpt-6-astra"' "$HOME/.codex/config.toml"
-  grep -Fxq 'model_reasoning_effort = "xhigh"' "$HOME/.codex/config.toml"
-  grep -Fq '[projects."/workspace/personal"]' "$HOME/.codex/config.toml"
-  grep -Fxq 'trust_level = "trusted"' "$HOME/.codex/config.toml"
-  jq -e '.schema_version == 2' "$AICODING_MANIFEST"
-  jq -e '.files["'"$HOME"'/.codex/config.toml"] == {"mode":"toml_merge","source":"configs/codex/config.toml"}' \
-    "$AICODING_MANIFEST"
-  if ls "$HOME"/.codex/config.toml.bak.* 2>/dev/null; then false; fi
-}
-
-@test "install.sh conflict-only force reconcile does not claim safe Codex updates" {
-  blueprint_copy
-  bash "$BP/install.sh" </dev/null
-  sed -i 's/^alternate_screen = .*/alternate_screen = "local-choice"/' \
-    "$HOME/.codex/config.toml"
-  sed -i 's/^alternate_screen = .*/alternate_screen = "blueprint-choice"/' \
-    "$BP/configs/codex/config.toml"
-  git -C "$BP" add configs/codex/config.toml
-  git -C "$BP" -c user.email=t@t -c user.name=t commit -q -m conflict
-  git -C "$BP" update-ref refs/remotes/origin/main HEAD
-
-  run bash "$BP/install.sh" --force-reinstall </dev/null
-  [ "$status" -eq 0 ]
-  [[ "$output" != *"Applied safe Codex updates"* ]]
-  echo "$output" | grep -q 'Codex merge state.*conflicting settings kept local'
-  grep -Fxq 'alternate_screen = "local-choice"' "$HOME/.codex/config.toml"
-}
-
-@test "install.sh adopt: strips standalone Go-PATH export from ~/.bashrc" {
-  mkdir -p "$HOME"
-  cat > "$HOME/.bashrc" <<'EOF'
-export PATH="/usr/local/go/bin:$PATH"
-echo hello
-EOF
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  # Standalone line is gone; managed block contains it inside markers.
-  local outside_block
-  outside_block=$(awk -v s="$BASHRC_BLOCK_START_LIT" -v e="$BASHRC_BLOCK_END_LIT" '
-    $0 == s { in_block = 1; next }
-    $0 == e { in_block = 0; next }
-    !in_block { print }
-  ' "$HOME/.bashrc")
-  if echo "$outside_block" | grep -qF 'export PATH="/usr/local/go/bin:$PATH"'; then
-    echo "Go-PATH export still present outside managed block:"
-    echo "$outside_block"
-    return 1
-  fi
-  grep -qF 'export PATH="/usr/local/go/bin:$PATH"' "$HOME/.bashrc"
 }
 
 @test "install.sh: does not install the removed shims (aicoding-update, update-status)" {
@@ -708,132 +582,10 @@ EOF
   readlink "$HOME/.local/bin/dvw-probe" | grep -q "bin/dvw-probe"
 }
 
-@test "install.sh reconcile mode: restores missing files without touching edited ones" {
-  # First-deploy populates the manifest and all managed files.
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  [ -f "$AICODING_MANIFEST" ]
-  [ -f "$HOME/.tmux.conf" ]
-  [ -f "$HOME/.bashrc.d/aicoding-env.sh" ]
-
-  # Simulate a rebuild: manifest persists (bind-mount), one file is wiped,
-  # another (user-editable, non-owned) is locally edited.
-  rm -f "$HOME/.bashrc.d/aicoding-env.sh"
-  echo "user edit" >> "$HOME/.tmux.conf"
-  local edited_hash
-  edited_hash=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
-
-  # Re-run install.sh — should enter reconcile mode.
-  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  [ "$status" -eq 0 ]
-
-  # Missing file restored.
-  [ -f "$HOME/.bashrc.d/aicoding-env.sh" ]
-  # Edited non-owned file untouched.
-  local after_hash
-  after_hash=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
-  [ "$after_hash" = "$edited_hash" ]
-  # Output mentions reconcile mode and restored count.
-  echo "$output" | grep -q "Mode: reconcile"
-  echo "$output" | grep -qE "restored [1-9]"
-}
-
-@test "install.sh reconcile mode: applies will_update for unedited file" {
-  blueprint_copy
-  bash "$BP/install.sh" </dev/null
-  # Snapshot the deployed tmux.conf hash and overwrite the blueprint source
-  # to simulate a blueprint update.
-  local deployed_hash
-  deployed_hash=$(jq -r '.files["'"$HOME"'/.tmux.conf"].deployed_hash' "$AICODING_MANIFEST")
-  local blueprint_src="$BP/configs/tmux/tmux.conf"
-  local original_blueprint
-  original_blueprint=$(cat "$blueprint_src")
-  echo "${original_blueprint}
-# new blueprint addition" > "$blueprint_src"
-
-  # Re-run; should auto-update since user hasn't touched ~/.tmux.conf.
-  run bash "$BP/install.sh" </dev/null
-  [ "$status" -eq 0 ]
-
-  # File now matches new blueprint, not old deployed_hash.
-  grep -q "# new blueprint addition" "$HOME/.tmux.conf"
-  local new_hash
-  new_hash=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
-  [ "$new_hash" != "$deployed_hash" ]
-  # Manifest deployed_hash refreshed.
-  local manifest_hash
-  manifest_hash=$(jq -r '.files["'"$HOME"'/.tmux.conf"].deployed_hash' "$AICODING_MANIFEST")
-  [ "$manifest_hash" = "$new_hash" ]
-}
-
-@test "install.sh reconcile mode: does not auto-resolve drifted_and_updating" {
-  blueprint_copy
-  bash "$BP/install.sh" </dev/null
-  # Edit the deployed file (user drift).
-  echo "user local change" >> "$HOME/.tmux.conf"
-  local edited_hash
-  edited_hash=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
-
-  # Also change the blueprint so the bucket is drifted_and_updating, not drifted_but_aligned.
-  echo "
-# blueprint also changed" >> "$BP/configs/tmux/tmux.conf"
-
-  run bash "$BP/install.sh" </dev/null
-  [ "$status" -eq 0 ]
-
-  # User's edit must be preserved byte-for-byte.
-  local after_hash
-  after_hash=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
-  [ "$after_hash" = "$edited_hash" ]
-  # No .bak.* file created (reconcile didn't back up + overwrite).
-  [ -z "$(ls "$HOME"/.tmux.conf.bak.* 2>/dev/null)" ]
-}
-
-@test "reconcile force-restores a drifted owned bashrc.d snippet (with backup)" {
-  blueprint_copy
-  bash "$BP/install.sh" </dev/null
-  echo "# STALE old version" > "$HOME/.bashrc.d/aicoding-env.sh"
-  printf '\n# blueprint moved\n' >> "$BP/configs/bash/env.sh"
-  run bash "$BP/install.sh" </dev/null
-  [ "$status" -eq 0 ]
-  if grep -q "STALE old version" "$HOME/.bashrc.d/aicoding-env.sh"; then false; fi
-  grep -q "blueprint moved" "$HOME/.bashrc.d/aicoding-env.sh"
-  ls "$HOME"/.bashrc.d/aicoding-env.sh.bak.* >/dev/null 2>&1
-}
-
-@test "reconcile still preserves an edited non-owned overwrite file" {
-  blueprint_copy
-  bash "$BP/install.sh" </dev/null
-  echo "# user tweak" >> "$HOME/.tmux.conf"
-  local edited; edited=$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')
-  printf '\n# blueprint moved\n' >> "$BP/configs/tmux/tmux.conf"
-  run bash "$BP/install.sh" </dev/null
-  [ "$status" -eq 0 ]
-  [ "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')" = "$edited" ]
-}
-
-@test "install.sh reconcile mode: does not delete to_remove entries" {
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  # Inject a manifest entry not present in the blueprint inventory.
-  local fake_hash
-  fake_hash=$(echo "junk" | sha256sum | awk '{print $1}')
-  echo "obsolete content" > "$HOME/.obsolete"
-  jq --arg p "$HOME/.obsolete" --arg h "$fake_hash" \
-     '.files[$p] = {mode:"overwrite",source:"configs/obsolete",deployed_hash:$h}' \
-     "$AICODING_MANIFEST" > "$AICODING_MANIFEST.tmp" && mv "$AICODING_MANIFEST.tmp" "$AICODING_MANIFEST"
-
-  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  [ "$status" -eq 0 ]
-
-  # File must still exist (to_remove is report-only in reconcile).
-  [ -f "$HOME/.obsolete" ]
-  # Manifest entry should still be there too — removal is aicoding-sync's job.
-  jq -e '.files["'"$HOME"'/.obsolete"]' "$AICODING_MANIFEST"
-}
-
 @test "install.sh: prints summary line in expected format" {
   run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   [ "$status" -eq 0 ]
-  echo "$output" | grep -qE '^INSTALL OK  blueprint [0-9a-f]+  new [0-9]+  restored [0-9]+  updated [0-9]+  merged [0-9]+  drifted [0-9]+  to_review [0-9]+$'
+  echo "$output" | grep -qE '^INSTALL OK  blueprint [0-9a-f]+  updated [0-9]+$'
 }
 
 @test "install summary identifies a Gitless immutable release" {
@@ -845,34 +597,28 @@ EOF
     _print_install_summary DEFERRED
   ' _ "$BLUEPRINT_ROOT" "$TMPDIR/release"
   [ "$status" -eq 0 ]
-  [[ "$output" == "INSTALL DEFERRED  blueprint 50120b9  new "* ]]
-}
-
-@test "install.sh: prints NOTE follow-up when drifted or to_review > 0" {
-  blueprint_copy
-  bash "$BP/install.sh" </dev/null
-  # Force a drifted_and_updating bucket.
-  echo "user local change" >> "$HOME/.tmux.conf"
-  echo "
-# blueprint also changed" >> "$BP/configs/tmux/tmux.conf"
-
-  run bash "$BP/install.sh" </dev/null
-  [ "$status" -eq 0 ]
-  echo "$output" | grep -qE '^NOTE: [0-9]+ drifted file\(s\), [0-9]+ file\(s\) to review'
-  [[ "$output" == *"INSTALL OK  blueprint"* ]]
+  [[ "$output" == "INSTALL DEFERRED  blueprint 50120b9  updated 0" ]]
 }
 
 @test "install.sh: ERR trap announces step name on failure" {
-  # Force a failure by stubbing jq to exit nonzero. install.sh uses jq heavily.
+  run env _AICODINGSETUP_NVS_STRIPPED=1 bash -c '
+    source "$1"
+    remove_legacy_project_templates() { false; }
+    main
+  ' _ "$BLUEPRINT_ROOT/install.sh" </dev/null
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -qE '^INSTALL FAILED  step=.*  line=[0-9]+$'
+}
+
+@test "install.sh: a broken jq fails managed config instead of silently skipping files" {
   cat > "$TMPDIR/stubs/jq" <<'STUB'
 #!/bin/sh
 exit 1
 STUB
   chmod +x "$TMPDIR/stubs/jq"
-
   run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   [ "$status" -ne 0 ]
-  echo "$output" | grep -qE '^INSTALL FAILED  step=.*  line=[0-9]+$'
+  [[ "$output" == *"Managed config could not be fully written"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -1281,11 +1027,6 @@ EOF
   grep -qx 'model_auto_compact_token_limit = 780000' "$HOME/.codex/config.toml"
   grep -qF 'FIRECRAWL_API_KEY = "fake-firecrawl-123"' "$HOME/.codex/config.toml"
   if grep -qF '{{FIRECRAWL_API_KEY}}' "$HOME/.codex/config.toml"; then false; fi
-  # Manifest records the smart-mode source identity; fingerprints and
-  # provenance live only in the private shared receipt.
-  jq -e '.schema_version == 2' "$AICODING_MANIFEST"
-  jq -e '.files["'"$HOME"'/.codex/config.toml"] == {"mode":"toml_merge","source":"configs/codex/config.toml"}' \
-    "$AICODING_MANIFEST"
 }
 
 @test "container profile keeps codex automode" {
@@ -1310,9 +1051,6 @@ EOF
   }
 }
 EOF
-  # Make sure first-deploy fires (no manifest yet); Plan 1's detect_install_mode
-  # picks 'adopt' when a managed file exists but no manifest is present, so
-  # cursor mcp.json on disk -> mode=adopt. Use --force-reinstall to force first.
   mkdir -p "$HOME/.aicodingsetup"
   cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
 FIRECRAWL_API_KEY=fake-firecrawl-123
@@ -1405,9 +1143,6 @@ EOF
   grep -q 'memory_search' "$HOME/.codex/AGENTS.md"
   grep -q 'homelab-wiki' "$HOME/.codex/AGENTS.md"
   grep -q 'kanban-post' "$HOME/.codex/AGENTS.md"
-  # Deployment is manifest-tracked (managed file, not a one-shot copy).
-  hash=$(jq -r '.files["'"$HOME"'/.codex/AGENTS.md"].deployed_hash' "$AICODING_MANIFEST")
-  [ -n "$hash" ]
 }
 
 @test "first-deploy: cursor global skill carries memory, kanban and secrets guidance" {
@@ -1428,9 +1163,6 @@ EOF
   grep -q 'memory_search' "$skill"
   grep -q 'kanban-post' "$skill"
   grep -q 'secrets-check' "$skill"
-  hash=$(jq -r '.files["'"$skill"'"].deployed_hash' "$AICODING_MANIFEST")
-  [ -n "$hash" ]
-  [ "$hash" != "null" ]
 }
 
 @test "merge: opencode.json mcp field preserves user-added server" {
@@ -1484,92 +1216,12 @@ EOF
   jq -e '.model == "openai/gpt-6.1-sol"' "$BLUEPRINT_ROOT/configs/opencode/opencode.json"
 }
 
-@test "reconcile: restores deleted ~/.codex/config.toml on rebuild" {
-  mkdir -p "$HOME/.aicodingsetup"
-  cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
-FIRECRAWL_API_KEY=fake-firecrawl-123
-BRAVE_API_KEY=fake-brave-456
-CLOUDFLARE_API_TOKEN=
-CLOUDFLARE_ACCOUNT_ID=
-EOF
-  # First-deploy seeds the manifest.
+@test "install.sh first-deploy: installs slash commands" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  [ -f "$HOME/.codex/config.toml" ]
-  local first_hash
-  first_hash=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
-
-  # Simulate a rebuild: manifest persists (bind-mount), file is wiped.
-  rm -f "$HOME/.codex/config.toml"
-  [ ! -f "$HOME/.codex/config.toml" ]
-
-  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  [ "$status" -eq 0 ]
-  # File restored, content byte-identical to pre-wipe.
-  [ -f "$HOME/.codex/config.toml" ]
-  local restored_hash
-  restored_hash=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
-  [ "$restored_hash" = "$first_hash" ]
-  # The setting-aware restore is counted as a smart update.
-  echo "$output" | grep -qE 'updated [1-9][0-9]* '
-  # Mode line announces reconcile.
-  echo "$output" | grep -q "Mode: reconcile"
-}
-
-@test "reconcile: preserves edited Codex bytes during a state-only blueprint change" {
-  mkdir -p "$HOME/.aicodingsetup"
-  cat > "$HOME/.aicodingsetup/.secrets.env" <<EOF
-FIRECRAWL_API_KEY=fake-firecrawl-123
-BRAVE_API_KEY=fake-brave-456
-CLOUDFLARE_API_TOKEN=
-CLOUDFLARE_ACCOUNT_ID=
-EOF
-  blueprint_copy
-  bash "$BP/install.sh" </dev/null
-
-  # User edits the file (drift).
-  echo "# user-added line" >> "$HOME/.codex/config.toml"
-  local edited_hash
-  edited_hash=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
-
-  # A comment-only blueprint edit changes provenance without changing the
-  # semantic candidate, exercising the smart state-only path.
-  echo "# blueprint also changed" >> "$BP/configs/codex/config.toml"
-
-  run bash "$BP/install.sh" </dev/null
-  [ "$status" -eq 0 ]
-  # User's edit preserved byte-for-byte (reconcile excludes drifted_and_updating).
-  local after_hash
-  after_hash=$(sha256sum "$HOME/.codex/config.toml" | awk '{print $1}')
-  [ "$after_hash" = "$edited_hash" ]
-  # State-only smart work is applied and counted without reporting drift.
-  echo "$output" | grep -qE 'updated [1-9][0-9]* '
-  echo "$output" | grep -qE 'drifted 0 '
-}
-
-@test "reconcile: reports a Codex engine error without claiming an update or stopping install" {
-  blueprint_copy
-  bash "$BP/install.sh" </dev/null
-  printf 'private-value = "do-not-print"\nbroken = [\n' > "$HOME/.codex/config.toml"
-
-  run bash "$BP/install.sh" </dev/null
-  [ "$status" -eq 0 ]
-  echo "$output" | grep -q 'invalid_destination_toml'
-  [[ "$output" != *"do-not-print"* ]]
-  echo "$output" | grep -q 'Completed with deferrals'
-  [[ "$output" != *"reconciled Codex settings"* ]]
-  grep -Fxq 'private-value = "do-not-print"' "$HOME/.codex/config.toml"
-}
-
-@test "install.sh first-deploy: installs slash commands and tracks them in the manifest" {
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  # Every blueprint command lands in ~/.claude/commands and is manifest-tracked.
   local cmd_file cmd_name
   for cmd_file in "$BLUEPRINT_ROOT/commands"/*.md; do
     cmd_name=$(basename "$cmd_file")
     [ -f "$HOME/.claude/commands/$cmd_name" ]
-    local h
-    h=$(jq -r '.files["'"$HOME"'/.claude/commands/'"$cmd_name"'"].deployed_hash' "$AICODING_MANIFEST")
-    [ "$h" != "null" ] && [ -n "$h" ]
   done
 }
 
@@ -1579,10 +1231,6 @@ EOF
   [ -f "$HOME/.claude/hooks/check-archived-docs.sh" ]
   [ -x "$HOME/.claude/hooks/check-archived-docs.sh" ]
   grep -q "check-archived-docs.sh" "$HOME/.claude/settings.json"
-  # Manifest tracks it as a managed overwrite file.
-  local h
-  h=$(jq -r '.files["'"$HOME"'/.claude/hooks/check-archived-docs.sh"].deployed_hash' "$AICODING_MANIFEST")
-  [ "$h" != "null" ] && [ -n "$h" ]
 }
 
 @test "install.sh: removes the legacy project-template mirror from ~/.aicodingsetup" {
@@ -1613,7 +1261,7 @@ EOF
   grep -q "{{PROJECT_NAME}}" "$src/AGENTS.md.tpl"
 }
 
-@test "install.sh reconcile mode: restores a deleted slash command" {
+@test "install.sh: a second run restores a deleted slash command" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   local one
   one=$(basename "$(ls "$BLUEPRINT_ROOT/commands"/*.md | head -1)")
@@ -1622,8 +1270,6 @@ EOF
 
   run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q "Mode: reconcile"
-  # The deleted command is restored by reconcile (classify → restore bucket).
   [ -f "$HOME/.claude/commands/$one" ]
 }
 
@@ -1632,26 +1278,15 @@ EOF
   [ -f "$HOME/.bashrc.d/aicoding-update-notify.sh" ]
   grep -q "aicoding-status --banner" "$HOME/.bashrc.d/aicoding-update-notify.sh"
   [ -x "$HOME/.local/bin/aicoding-status" ]
-  local h
-  h=$(jq -r '.files["'"$HOME"'/.bashrc.d/aicoding-update-notify.sh"].deployed_hash' "$AICODING_MANIFEST")
-  [ "$h" != "null" ] && [ -n "$h" ]
 }
 
-@test "install.sh reconcile: stamps blueprint_commit to the current blueprint HEAD" {
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null            # first-deploy stamps it
-  # Simulate a stale recorded commit (as if installed from an older blueprint).
-  local tmp; tmp=$(mktemp)
-  jq '.blueprint_commit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"' "$AICODING_MANIFEST" > "$tmp"
-  mv "$tmp" "$AICODING_MANIFEST"
+@test "install.sh stamps blueprint_commit to the current blueprint HEAD" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  echo deadbeefdeadbeefdeadbeefdeadbeefdeadbeef > "$HOME/.local/state/aicoding/blueprint_commit"
 
-  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null        # reconcile
+  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q "Mode: reconcile"
-  # Manifest must now record the actual deployed blueprint HEAD, not the stale one.
-  local head stamped
-  head=$(git -C "$BLUEPRINT_ROOT" rev-parse HEAD)
-  stamped=$(jq -r '.blueprint_commit' "$AICODING_MANIFEST")
-  [ "$stamped" = "$head" ]
+  [ "$(cat "$HOME/.local/state/aicoding/blueprint_commit")" = "$(git -C "$BLUEPRINT_ROOT" rev-parse HEAD)" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -1948,18 +1583,6 @@ EOF
   [[ "$output" == *"ldd failed"* ]]
 }
 
-@test "install stamps provision_commit in the container-local manifest" {
-  # Directly exercise the helper + the install.sh call site wiring.
-  TMP=$(mktemp -d)
-  export AICODING_MANIFEST="$TMP/state/manifest.json"
-  run bash -c '. "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"; manifest_stamp_provision deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
-  [ "$status" -eq 0 ]
-  [ "$(jq -r .provision_commit "$AICODING_MANIFEST")" = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" ]
-  # The source helper accepts both immutable Gitless releases and checkouts.
-  grep -qF 'manifest_stamp_provision "$(_aicoding_managed_source_version "$SCRIPT_DIR")"' "$BLUEPRINT_ROOT/install.sh"
-  rm -rf "$TMP"
-}
-
 @test "install.sh main(): registers the git credential helpers and logs gh in" {
   # Deliberately structural. A full network-enabled install.sh run is exactly
   # what the suite's AICODINGSETUP_SKIP_NETWORK=1 exists to prevent (and
@@ -2033,9 +1656,6 @@ EOF
   local hook="$HOME/.claude/hooks/kanban-work-hook.sh" hash
   [ -x "$hook" ]
   cmp "$BLUEPRINT_ROOT/configs/claude/hooks/kanban-work-hook.sh" "$hook"
-  hash=$(jq -r '.files["'"$hook"'"].deployed_hash' "$AICODING_MANIFEST")
-  [ -n "$hash" ]
-  [ "$hash" != null ]
 }
 
 @test "install.sh deploys Cursor hooks as managed overwrite with Kanban lifecycle wiring" {
@@ -2048,11 +1668,6 @@ EOF
   jq -e '.hooks.preToolUse | any(.failClosed == true)' "$hooks"
   jq -e '(.hooks.beforeMCPExecution // null) == null and
     (.hooks.afterMCPExecution // null) == null' "$hooks"
-  hash=$(jq -r '.files["'"$hooks"'"].deployed_hash' "$AICODING_MANIFEST")
-  mode=$(jq -r '.files["'"$hooks"'"].mode' "$AICODING_MANIFEST")
-  [ -n "$hash" ]
-  [ "$hash" != null ]
-  [ "$mode" = overwrite ]
 }
 
 @test "install.sh deploys the auto-discovered OpenCode Kanban plugin as managed overwrite" {
@@ -2060,15 +1675,10 @@ EOF
   local plugin="$HOME/.config/opencode/plugins/kanban-work.js" hash mode
   [ -f "$plugin" ]
   cmp "$BLUEPRINT_ROOT/configs/opencode/plugins/kanban-work.js" "$plugin"
-  hash=$(jq -r '.files["'"$plugin"'"].deployed_hash' "$AICODING_MANIFEST")
-  mode=$(jq -r '.files["'"$plugin"'"].mode' "$AICODING_MANIFEST")
-  [ -n "$hash" ]
-  [ "$hash" != null ]
-  [ "$mode" = overwrite ]
   jq -e 'has("plugin") | not' "$HOME/.config/opencode/opencode.json"
 }
 
-@test "install.sh reconcile updates the managed OpenCode plugin and preserves personal plugins" {
+@test "install.sh rerun updates the managed OpenCode plugin and preserves personal plugins" {
   blueprint_copy
   mkdir -p "$HOME/.config/opencode/plugins"
   printf '%s\n' 'export const PersonalPlugin = async () => ({})' \
@@ -2078,7 +1688,6 @@ EOF
   printf '%s\n' '// reconcile fixture' >> "$BP/configs/opencode/plugins/kanban-work.js"
   run bash "$BP/install.sh" </dev/null
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q "Mode: reconcile"
   cmp "$BP/configs/opencode/plugins/kanban-work.js" \
     "$HOME/.config/opencode/plugins/kanban-work.js"
   grep -qx 'export const PersonalPlugin = async () => ({})' \
@@ -2099,7 +1708,6 @@ EOF
   mv "$BP/configs/cursor/hooks.json.new" "$BP/configs/cursor/hooks.json"
   run bash "$BP/install.sh" </dev/null
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q "Mode: reconcile"
   jq -e '.hooks.preCompact[0].timeout == 17' "$HOME/.cursor/hooks.json"
   jq -e '.mcpServers.personal.command == "personal-mcp"' "$HOME/.cursor/mcp.json"
 }

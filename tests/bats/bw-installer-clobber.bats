@@ -20,7 +20,6 @@ setup() {
   TMPDIR_T=$(mktemp -d)
   export HOME="$TMPDIR_T"
   export SCRIPT_DIR="$BLUEPRINT_ROOT"
-  export AICODING_MANIFEST="$TMPDIR_T/manifest.json"
 
   HOOK_SRC="$BLUEPRINT_ROOT/configs/claude/hooks/bw-deny-files.sh"
   PI_SRC="$BLUEPRINT_ROOT/configs/pi/extensions/bw-deny-files.ts"
@@ -37,7 +36,7 @@ _inventory() {
 @test "the pi extension is a managed file, so every sync reconciles it" {
   run _inventory
   [ "$status" -eq 0 ]
-  [[ "$output" == *"$HOME/.pi/agent/extensions/bw-deny-files.ts|overwrite|configs/pi/extensions/bw-deny-files.ts"* ]]
+  [[ "$output" == *"$HOME/.pi/agent/extensions/bw-deny-files.ts|owned|configs/pi/extensions/bw-deny-files.ts"* ]]
 }
 
 @test "the blueprint's hook enforces with BW_DENY_PATTERNS_FILE unset" {

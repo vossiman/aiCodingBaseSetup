@@ -1,0 +1,41 @@
+{
+  "mixed": {
+    ".claude/settings.json": {
+      "source": "configs/claude/settings.json",
+      "owned": ["hooks.*", "statusLine", "env.*", "enabledPlugins.*", "permissions.deny[]", "permissions.allow[]"],
+      "seeded": ["effortLevel", "outputStyle", "autoMemoryEnabled", "crossSessionInbound", "isolatePeerMachines", "skipDangerousModePermissionPrompt"]
+    },
+    ".cursor/mcp.json": {
+      "source": "configs/cursor/mcp.json",
+      "owned": ["mcpServers.*"],
+      "seeded": []
+    },
+    ".cursor/cli-config.json": {
+      "source": "configs/cursor/cli-config.json",
+      "owned": ["permissions.deny[]", "statusLine"],
+      "seeded": ["approvalMode", "autoAcceptWebSearch"]
+    },
+    ".config/opencode/opencode.json": {
+      "source": "configs/opencode/opencode.json",
+      "owned": ["$schema", "mcp.*", "permission"],
+      "seeded": ["model", "provider", "provider.openai.models.*", "compaction", "agent"]
+    },
+    ".codex/config.toml": {
+      "source": "configs/codex/config.toml",
+      "owned": ["notify", "approval_policy", "sandbox_mode", "mcp_servers.*", "features.*"],
+      "seeded": ["model", "model_context_window", "model_auto_compact_token_limit", "tui.*"]
+    }
+  },
+  "retired_files": [
+    {"dest": ".claude/commands/scaffold-project.md", "source": "commands/scaffold-project.md"},
+    {"dest": ".claude/hooks/llmwiki-nudge.sh", "source": "configs/claude/hooks/llmwiki-nudge.sh"},
+    {"dest": ".claude/skills/dataprospectors-design/assets/dp-logo.svg", "source": "skills/dataprospectors-design/assets/dp-logo.svg"},
+    {"dest": ".claude/skills/dataprospectors-design/assets/dp-logo-dark.svg", "source": "skills/dataprospectors-design/assets/dp-logo-dark.svg"},
+    {"dest": ".claude/skills/logfire/SKILL.md", "source": "skills/logfire/SKILL.md"},
+    {"dest": ".aicodingsetup/templates/paseo-config.json", "source": "configs/paseo/config.json"}
+  ],
+  "retired_keys": [
+    {"dest": ".cursor/mcp.json", "path": ["mcpServers", "kanban"], "shipped": [{"command": "kanban-mcp"}]},
+    {"dest": ".config/opencode/opencode.json", "path": ["mcp", "kanban"], "shipped": [{"type": "local", "command": ["kanban-mcp"], "enabled": true}]}
+  ]
+}

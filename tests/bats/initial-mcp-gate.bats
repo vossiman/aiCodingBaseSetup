@@ -4,6 +4,7 @@ setup() {
   : "${BLUEPRINT_ROOT:?run via tests/bats/run.sh}"
   TEST_ROOT=$(mktemp -d)
   export HOME="$TEST_ROOT/home" SCRIPT_DIR="$TEST_ROOT/source"
+  export AICODING_BLUEPRINT_CLONE="$SCRIPT_DIR"
   export CLAUDE_DIR="$HOME/.claude" AICODING_REQUIRE_UPDATE_RECEIPT=1
   export AICODING_STATE_DIR="$TEST_ROOT/state" AICODING_DATA_DIR="$TEST_ROOT/data"
   mkdir -p "$SCRIPT_DIR/configs" "$SCRIPT_DIR/skills" "$SCRIPT_DIR/commands" \
@@ -20,29 +21,16 @@ setup() {
   source "$BLUEPRINT_ROOT/lib/update-components.sh"
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   source "$BLUEPRINT_ROOT/lib/provision-managed-files.sh"
-  manifest_stage_begin() { :; }
-  manifest_stage_commit() { :; }
-  manifest_stage_set_blueprint() { :; }
-  manifest_set_file() { printf '%s\n' "$1" >> "$TEST_ROOT/manifest-files"; }
-  deploy_marker_block() { :; }
-  managed_bashrc_block_body() { :; }
-  compute_managed_hash() { printf hash; }
-  enumerate_skill_files() { :; }
-  blueprint_origin() { echo test; }
+  header() { :; }
   ok() { :; }
   info() { :; }
-  BASHRC_BLOCK_START='# start'; BASHRC_BLOCK_END='# end'
   warn() { printf '%s\n' "$*" >> "$TEST_ROOT/warnings"; }
-  managed_inventory_overwrite() {
-    printf '%s|overwrite|%s\n' "$HOME/safe" configs/safe
-    printf '%s|overwrite|%s\n' "$HOME/.codex/config.toml" configs/codex
+  managed_retired_files() { :; }
+  managed_inventory() {
+    printf '%s|raw|%s\n' "$HOME/safe" configs/safe
+    printf '%s|raw|%s\n' "$HOME/.codex/config.toml" configs/codex
+    printf '%s|raw|%s\n' "$HOME/.claude/settings.json" configs/claude
   }
-  managed_inventory_merge() {
-    printf '%s|merge|%s\n' "$HOME/.claude/settings.json" configs/claude
-  }
-  deploy_overwrite_file_rendered() { cp "$1" "$2"; }
-  _ensure_merge_dest() { :; }
-  deploy_merge_file_substituted() { cp "$1" "$2"; }
   aicoding_config_is_compatible() {
     [ "$1" = "$HOME/safe" ] || [ "$1" = "$HOME/.codex/config.toml" ]
   }
@@ -51,47 +39,25 @@ setup() {
 teardown() { rm -rf "$TEST_ROOT"; }
 
 @test "first deployment preserves MCP-dependent config until its exact runtime is ready" {
-  deploy_all_managed_files
+  install_managed_config
 
   [ "$(cat "$HOME/safe")" = safe ]
   [ "$(cat "$HOME/.codex/config.toml")" = codex ]
   [ "$(cat "$HOME/.claude/settings.json")" = '{"personal":true}' ]
   grep -q 'runtime is not ready' "$TEST_ROOT/warnings"
   [ "$_AICODING_INITIAL_CONFIG_DEFERRED" = 1 ]
+  [ ! -e "$AICODING_STATE_DIR/blueprint_commit" ]
 }
 
-@test "adopt preserves incompatible existing config without recording it as applied" {
+@test "an incompatible existing config is left untouched and defers the install" {
   printf 'personal-codex\n' > "$HOME/.codex/config.toml"
   aicoding_config_is_compatible() { [ "$1" = "$HOME/safe" ]; }
 
-  adopt_existing_files
+  install_managed_config
 
   [ "$(cat "$HOME/.codex/config.toml")" = personal-codex ]
-  if grep -Fxq "$HOME/.codex/config.toml" "$TEST_ROOT/manifest-files" 2>/dev/null; then false; fi
+  [ "${MANAGED_RESULT[$HOME/.codex/config.toml]}" = blocked:runtime_compatibility_unavailable ]
   [ "$_AICODING_INITIAL_CONFIG_DEFERRED" = 1 ]
-}
-
-@test "persistent reconcile blocks ordinary and smart incompatible destinations before apply" {
-  classify_managed_files() {
-    BUCKETS["$HOME/.codex/config.toml"]=$TEST_BUCKET
-    FILE_MODE["$HOME/.codex/config.toml"]=overwrite
-    FILE_SOURCE["$HOME/.codex/config.toml"]=configs/codex
-  }
-  _is_owned_overwrite() { return 1; }
-  apply_managed_buckets() {
-    local dest="$HOME/.codex/config.toml"
-    printf '%s\n' "${BUCKETS[$dest]}" > "$TEST_ROOT/applied-bucket"
-  }
-  aicoding_config_is_compatible() { echo codex_update_not_verified; return 1; }
-
-  local TEST_BUCKET
-  for TEST_BUCKET in will_update smart_conflict; do
-    : > "$TEST_ROOT/applied-bucket"
-    _AICODING_INITIAL_CONFIG_DEFERRED=0
-    reconcile_existing_install
-    [ "$(cat "$TEST_ROOT/applied-bucket")" = blocked ]
-    [ "$_AICODING_INITIAL_CONFIG_DEFERRED" = 1 ]
-  done
 }
 
 @test "persistent container and host enrollment prepare exact MCPs before deployment" {

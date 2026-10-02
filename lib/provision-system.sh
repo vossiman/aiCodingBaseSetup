@@ -365,7 +365,7 @@ ensure_go() {
     || { warn "Go install failed"; return 0; }
   export PATH="/usr/local/go/bin:$PATH"
   # Persistence for future shells is handled by the managed ~/.bashrc block
-  # (deployed by deploy_all_managed_files / adopt_existing_files); we no
+  # (lib/blueprint-deploy.sh); we no
   # longer append a standalone export here.
 }
 

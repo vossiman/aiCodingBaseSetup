@@ -30,13 +30,15 @@ _aicoding_install_lock() {
 }
 
 _aicoding_install_profile() {
-  local selected=${AICODING_PROFILE:-} manifest="${AICODING_MANIFEST:-$AICODING_STATE_DIR/manifest.json}"
+  local selected=${AICODING_PROFILE:-}
   if [ -z "$selected" ] && [ -f "$AICODING_STATE_DIR/component-selection.json" ] \
       && command -v jq >/dev/null 2>&1; then
     selected=$(jq -r '.profile // empty' "$AICODING_STATE_DIR/component-selection.json" 2>/dev/null || true)
   fi
-  if [ -z "$selected" ] && [ -f "$manifest" ] && command -v jq >/dev/null 2>&1; then
-    selected=$(jq -r '.profile // empty' "$manifest" 2>/dev/null || true)
+  [ -n "$selected" ] || selected=$(cat "$AICODING_STATE_DIR/profile" 2>/dev/null) || selected=
+  if [ -z "$selected" ] && command -v jq >/dev/null 2>&1; then
+    # A host not yet synced on the profile-file release has it only here.
+    selected=$(jq -r '.profile // empty' "$AICODING_STATE_DIR/manifest.json" 2>/dev/null || true)
   fi
   case "$selected" in host|minimal-pi|container) printf '%s\n' "$selected" ;; *) printf 'container\n' ;; esac
 }

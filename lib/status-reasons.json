@@ -202,20 +202,15 @@
       "meaning": "Writing a managed config file failed.",
       "fix": "Run `aicoding-sync --yes` and read its output. `~/.local/state/aicoding/auto-update/worker.log` has the background run."
     },
-    "managed_config_conflict": {
+    "managed_config_malformed": {
       "kind": "action",
-      "meaning": "A managed config file was changed locally and also changed in the blueprint.",
-      "fix": "Run `aicoding-sync` interactively to review and merge the conflict."
+      "meaning": "A managed config file is not valid JSON or TOML, so sync leaves it untouched and cannot apply the blueprint's settings to it.",
+      "fix": "Fix the file's syntax, or delete it so the next sync writes a fresh copy, then run `aicoding-sync`."
     },
     "managed_install_failed": {
       "kind": "action",
       "meaning": "The dvw installer failed.",
       "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
-    },
-    "manifest_write_failed": {
-      "kind": "action",
-      "meaning": "The deploy manifest could not be written, so the sync result was not saved.",
-      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
     },
     "mcp_exact_version_staging_unavailable": {
       "kind": "action",

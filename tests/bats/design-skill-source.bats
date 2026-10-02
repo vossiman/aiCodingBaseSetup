@@ -20,26 +20,16 @@ teardown() {
 }
 
 @test "design skill: normal managed deployment installs portable bundle byte-for-byte" {
-  local scratch
-  scratch="$TEST_SCRATCH"
-  export HOME="$scratch/home" AICODING_MANIFEST="$scratch/manifest.json"
+  export HOME="$TEST_SCRATCH/home" AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT"
+  export AICODING_STATE_DIR="$TEST_SCRATCH/state"
   mkdir -p "$HOME"
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  manifest_stage_begin
-  local rel src dest
+  managed_config_apply >/dev/null
+  local rel
   while IFS= read -r rel; do
     [[ "$rel" == dataprospectors-design/* ]] || continue
-    src="$BLUEPRINT_ROOT/skills/$rel"
-    dest="$HOME/.claude/skills/$rel"
-    mkdir -p "$(dirname "$dest")"
-    if [[ "$rel" == *.md ]]; then
-      deploy_overwrite_file_prose "$src" "$dest" "skills/$rel"
-    else
-      deploy_overwrite_file "$src" "$dest" "skills/$rel"
-    fi
-    cmp -s "$src" "$dest"
+    cmp -s "$BLUEPRINT_ROOT/skills/$rel" "$HOME/.claude/skills/$rel"
   done < <(enumerate_skill_files "$BLUEPRINT_ROOT/skills")
-  manifest_stage_commit
   [ -f "$HOME/.claude/skills/dataprospectors-design/modules/consumption.md" ]
   [ -f "$HOME/.claude/skills/dataprospectors-design/references/native-theme.css" ]
   [ -f "$HOME/.claude/skills/dataprospectors-design/SOURCE.json" ]

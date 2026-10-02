@@ -1,8 +1,7 @@
-# aiCodingBaseSetup template. aicoding-sync preserves personal Codex settings
-# with a setting-level merge; local-only settings remain silent.
+# aiCodingBaseSetup template. configs/managed-config.json lists which keys
+# aicoding-sync enforces and which it only seeds; everything else is personal.
 #
-# Home directory and API key placeholders are substituted at deploy time
-# by the private smart-merge rendering pipeline.
+# Home directory and API key placeholders are substituted at deploy time.
 
 # This is a seed default, not an enforced fleet selection. An existing model
 # or model_reasoning_effort remains user-owned, including local Astra choices.
@@ -10,9 +9,8 @@
 
 model = "gpt-6.1-sol"
 
-# Subscription context budget. Sync applies these model-specific defaults only
-# when the selected model matches the blueprint model. Personal budgets follow
-# the normal setting-level merge. Actual capacity depends on the active catalog.
+# Subscription context budget, seeded only when missing so personal budgets
+# stay. Actual capacity depends on the active catalog.
 model_context_window = 872000
 model_auto_compact_token_limit = 780000
 
@@ -32,8 +30,7 @@ notify = ["{{HOME}}/.local/bin/codex-turn-done"]
 # trust screen and its [projects."<path>"].trust_level writes into this file
 # (spike-verified on 0.144). Codex 0.147 regressed that: it now auto-trusts
 # local projects and persists trust_level regardless (spike-verified
-# 2026-08-18). The sync-side smart merge now excludes [projects.*] from
-# blueprint ownership, so those writes are preserved without conflict warnings.
+# 2026-08-18). Sync never touches [projects.*], so those writes are preserved.
 #
 # Automode is PROFILE-GATED (2026-08-31). In the devpod container the
 # container itself is the isolation boundary, so codex runs with no prompts
@@ -41,7 +38,7 @@ notify = ["{{HOME}}/.local/bin/codex-turn-done"]
 # profile (WSL, the Mint desktop) has no such boundary: it holds the real
 # home directory, real keys and a forwarded ssh-agent, so it gets
 # workspace-write + on-request instead. The two values are substituted at
-# deploy time from the manifest profile; see _substitute_file_to in
+# deploy time from the machine profile; see _substitute_file_to in
 # lib/blueprint-deploy.sh. Values -- approval_policy:
 # untrusted|on-request|never; sandbox_mode:
 # read-only|workspace-write|danger-full-access.
@@ -66,9 +63,8 @@ multi_agent_v2 = true
 # Codex has no custom-command statusline (openai/codex#17827) — these
 # built-in items approximate the claude/cursor powerline script (context
 # bar + limits + branch/PR). Item names spike-verified against the 0.144
-# binary. Reconfigure interactively via /statusline. A local preference stays
-# silent while the blueprint value is unchanged; only incompatible blueprint
-# changes create a setting conflict.
+# binary. Reconfigure interactively via /statusline; [tui] keys are only
+# seeded, so a local preference stays.
 [tui]
 status_line = ["run-state", "context-used", "five-hour-limit", "weekly-limit", "branch-changes", "pull-request-number"]
 # Inline rendering instead of the alternate screen: in tmux the alt screen

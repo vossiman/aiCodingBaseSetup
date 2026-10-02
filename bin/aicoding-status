@@ -5,9 +5,9 @@
 #
 # INVARIANT: the per-tool JSON cache stores ONLY network-derived facts (the
 # remote `latest` SHA). The installed commit is read fresh from the active
-# immutable release, with the manifest as a legacy fallback, and compared with
+# immutable release, with a stamp file as a legacy fallback, and compared with
 # that cached latest. The cache must never hold `installed` or a precomputed
-# `status`: a frozen verdict makes every manifest writer responsible for
+# `status`: a frozen verdict makes every stamp writer responsible for
 # invalidating this cache, and that invariant failed six times (44a9d42 25deb8f
 # d6ee59b 43795ff 4f621bc 178f776) — new writers kept appearing, and
 # self-updating sync executes the previous library, so even a fixed writer
@@ -15,7 +15,7 @@
 set -uo pipefail
 
 # Container-local, NOT ~/.aicodingsetup: that path is a host bind mount shared
-# by every devpod container. Sharing this cache (and the manifest below) meant
+# by every devpod container. Sharing this cache (and the old manifest) meant
 # one container syncing stamped the global blueprint_commit to the new value,
 # so every OTHER container computed installed == latest and went quiet while
 # still running stale files — the CTA never fired where it was actually needed.
@@ -24,21 +24,8 @@ STATE="${AICODING_UPDATE_STATE:-$AICODING_STATE_DIR/updates}"
 TTL="${AICODING_UPDATE_TTL:-21600}"             # 6h
 NET_TIMEOUT="${AICODING_UPDATE_NET_TIMEOUT:-8}"
 LOCK="$STATE/.lock"
-: "${AICODING_MANIFEST:=$AICODING_STATE_DIR/manifest.json}"
 : "${AICODING_RESULTS_FILE:=$AICODING_STATE_DIR/update-results.json}"
 : "${AICODING_DATA_DIR:=$HOME/.local/share/aicoding}"
-
-# Mirror of blueprint-deploy.sh's manifest_adopt_shared. Duplicated rather than
-# sourced: this CLI runs on every tmux status-interval and must stay cheap, so
-# it does not pull in the full deploy library for six lines.
-_adopt_shared_manifest() {
-  local shared="$HOME/.aicodingsetup/manifest.json"
-  if [ -f "$AICODING_MANIFEST" ] || [ ! -f "$shared" ]; then return 0; fi
-  if [ "$shared" = "$AICODING_MANIFEST" ]; then return 0; fi
-  mkdir -p "$(dirname "$AICODING_MANIFEST")" 2>/dev/null || return 0
-  cp "$shared" "$AICODING_MANIFEST" 2>/dev/null || true
-  return 0
-}
 
 _active_aicoding_sha() {
   local current="$AICODING_DATA_DIR/current/aicoding" active versions sha
@@ -52,13 +39,12 @@ _active_aicoding_sha() {
 }
 
 # Installed-fns receive the tool name as $1 (most ignore it). Managed installs
-# read the physical active release; pre-runtime installs retain the manifest
-# fallback so status continues to work during migration.
+# read the physical active release; pre-runtime installs fall back to the
+# stamp written by their last clean sync.
 _installed_aicoding() {
   local active
   active=$(_active_aicoding_sha) && { printf '%s\n' "$active"; return 0; }
-  _adopt_shared_manifest
-  jq -r '.blueprint_commit // empty' "$AICODING_MANIFEST" 2>/dev/null
+  cat "$AICODING_STATE_DIR/blueprint_commit" 2>/dev/null
 }
 # Test seam. AICODING_UPDATE_TESTONLY_TOOL may hold a space-separated list;
 # with several tools each reads <INSTALLED_FILE>.<tool>, a single tool reads
@@ -109,10 +95,7 @@ _clone_dir() { echo "${AICODING_UPDATE_TESTONLY_CLONE:-${AICODING_BLUEPRINT_CLON
 
 _status_profile() {
   local p=${AICODING_PROFILE:-}
-  if [ -z "$p" ]; then
-    _adopt_shared_manifest
-    p=$(jq -r '.profile // "container"' "$AICODING_MANIFEST" 2>/dev/null) || p=container
-  fi
+  [ -n "$p" ] || p=$(cat "$AICODING_STATE_DIR/profile" 2>/dev/null) || p=
   case "$p" in host|container|minimal-pi) ;; *) p=container ;; esac
   printf '%s\n' "$p"
 }
@@ -127,7 +110,7 @@ _behind_paths() {
   [ -n "$(git -C "$clone" rev-list "$base"..origin/main -- "$@" 2>/dev/null | head -1)" ]
 }
 
-_provision_stamp() { _adopt_shared_manifest; jq -r '.provision_commit // empty' "$AICODING_MANIFEST" 2>/dev/null; }
+_provision_stamp() { cat "$AICODING_STATE_DIR/provision_commit" 2>/dev/null; }
 _provision_result() { jq -r '.components.provision.state // empty' "$AICODING_RESULTS_FILE" 2>/dev/null; }
 _provision_target() {
   jq -r '.components.provision.target_version // .components.provision.target // empty' \
@@ -186,7 +169,7 @@ _behind_extra() {
   if [ -n "$active" ]; then
     # Gitless immutable releases cannot answer history/pathspec questions.
     # The scheduled provision receipt is authoritative for the active release;
-    # the manifest stamp is the migration fallback when no receipt exists.
+    # the provision stamp is the fallback when no receipt exists.
     if ! _provision_result_current; then
       result=$(_provision_result)
       target=$(_provision_target)
@@ -314,7 +297,7 @@ _refresh_detached() {
 # _behind_tools — one behind tool name per line, registry order. The verdict is
 # computed HERE, at print time: cached latest vs a fresh installed read. No
 # network; either side missing/empty → no badge for that tool (fail-open). This
-# is what lets a stuck badge self-heal on the next tick after any manifest
+# is what lets a stuck badge self-heal on the next tick after any stamp
 # write, whether or not the writer invalidated the cache.
 _behind_tools() {
   local name remote branch ifn selector latest installed
@@ -360,7 +343,7 @@ _print_banner() {
 # --tmux: a compact, no-newline segment for the tmux status line — one `⬆<tool>`
 # per behind tool (space-joined), empty when all current/unknown. Like --banner
 # it kicks a throttled detached refresh, then reads only the cache and the
-# local manifest — no network — so it stays fast enough to run on every tmux
+# local stamps — no network — so it stays fast enough to run on every tmux
 # status-interval and never blocks the bar.
 #
 # The segment is APPENDED to status-right, immediately after the clock, so it

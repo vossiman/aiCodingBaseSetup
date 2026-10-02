@@ -222,7 +222,7 @@ NextElapseUSecMonotonic=$next"
   "cursor":{"state":"current","successful_version":"1.2.3","attempted_at":"2024-01-01T00:00:00Z","reason":"verified"},
   "config-cursor":{"state":"current","attempted_at":"2024-01-01T00:00:00Z","reason":"all_destinations_reconciled"},
   "config-codex":{"state":"blocked","attempted_at":"2024-01-01T00:00:00Z","reason":"mcp_exact_version_staging_unavailable"},
-  "config":{"state":"conflict","attempted_at":"2024-01-01T00:00:00Z","reason":"managed_config_conflict"}}}
+  "config":{"state":"failed","attempted_at":"2024-01-01T00:00:00Z","reason":"managed_config_apply_failed"}}}
 JSON
   run "$BIN"
   [ "$status" -eq 0 ]
@@ -230,7 +230,7 @@ JSON
   [[ "$output" == *"mcp exact version staging unavailable"* ]]
   local blockers="${output#*Unresolved recorded blockers}"
   [[ "$blockers" == *"config-codex: blocked"* ]]
-  [[ "$blockers" == *"config: conflict"* ]]
+  [[ "$blockers" == *"config: failed"* ]]
   if [[ "$blockers" == *"config-cursor:"* ]]; then false; fi
 }
 

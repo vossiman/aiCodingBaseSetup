@@ -280,8 +280,8 @@ EOF
   jq -e '.hooks.Stop[].hooks[] | select(.command | test("redact-sessions-hook")) | .async == true' "$s"
   jq -e '.hooks.SessionEnd[].hooks[] | select(.command | test("redact-sessions-hook"))' "$s"
   jq -e '.hooks.SessionStart[].hooks[] | select(.command | test("redact-sessions-pending"))' "$s"
-  grep -q 'hooks/redact-sessions-hook.sh|overwrite|' "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  grep -q 'hooks/redact-sessions-pending.sh|overwrite|' "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  grep -q 'hooks/redact-sessions-hook.sh|owned|' "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  grep -q 'hooks/redact-sessions-pending.sh|owned|' "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   grep -q '"redact-sessions-hook.sh"' "$BLUEPRINT_ROOT/lib/provision-managed-files.sh"
   grep -q '"redact-sessions-pending.sh"' "$BLUEPRINT_ROOT/lib/provision-managed-files.sh"
 }
@@ -312,7 +312,7 @@ TURN="$BLUEPRINT_ROOT/bin/codex-turn-done"
   jq -e '.hooks.stop[0].command | test("redact-sessions-hook.sh")' "$h"
   jq -e '.hooks.sessionEnd[0].command | test("redact-sessions-hook.sh")' "$h"
   jq -e '.hooks.sessionStart[0].command | test("redact-sessions-pending.sh")' "$h"
-  grep -q 'cursor/hooks.json|overwrite|configs/cursor/hooks.json' "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  grep -q 'cursor/hooks.json|owned|configs/cursor/hooks.json' "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
 }
 
 @test "on-start.sh runs a boot sweep when redact-sessions is on PATH" {

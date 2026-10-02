@@ -7,7 +7,7 @@ setup() {
   : "${BLUEPRINT_ROOT:?unset — run via tests/bats/run.sh; refusing to default to / and copy the whole filesystem}"
   TMPDIR=$(mktemp -d)
   export HOME="$TMPDIR"
-  export AICODING_MANIFEST="$TMPDIR/.aicodingsetup/manifest.json"
+  STAMPS="$TMPDIR/.local/state/aicoding"
   export AICODING_BLUEPRINT_CLONE="$TMPDIR/aicoding"
   export CODEX_MANAGED_DIR="$TMPDIR/etc-codex"
   # Build a stand-in "blueprint" by copying the real one (skipping .git).
@@ -104,13 +104,15 @@ EOF
   aicoding_result_record mcp-kanban current "$revision" verified "$revision"
 }
 
+stamp_blueprint() { mkdir -p "$STAMPS" && echo "$1" > "$STAMPS/blueprint_commit"; }
+
 commit_blueprint_fixture() {
   git -C "$AICODING_BLUEPRINT_CLONE" add -A
   git -C "$AICODING_BLUEPRINT_CLONE" \
     -c user.email=test@local -c user.name=test commit -q -m fixture-change
 }
 
-@test "aicoding-sync: exits with error when no manifest" {
+@test "aicoding-sync: a dry run needs no prior state and runs no maintenance" {
   local maintenance_log="$TMPDIR/maintenance.log" command
   for command in claude opencode agent cursor-agent npx npm; do
     printf '#!/bin/sh\necho "%s $*" >> "%s"\n' "$command" "$maintenance_log" \
@@ -118,23 +120,22 @@ commit_blueprint_fixture() {
     chmod +x "$TMPDIR/stubs/$command"
   done
 
-  run "$BLUEPRINT_ROOT/bin/aicoding-sync"
-  [ "$status" -ne 0 ]
-  echo "$output" | grep -q "no manifest"
+  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "would update: $HOME/.claude/CLAUDE.md"
+  [ ! -e "$HOME/.claude/CLAUDE.md" ]
   [ ! -s "$maintenance_log" ]
 }
 
-@test "aicoding-sync: reads existing manifest and prints blueprint commit" {
-  mkdir -p "$HOME/.aicodingsetup"
-  echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
+@test "aicoding-sync: prints the recorded blueprint commit" {
+  stamp_blueprint old123
   run "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" --dry-run
   [ "$status" -eq 0 ] || { echo "$output"; false; }
   echo "$output" | grep -q "old123"
 }
 
 @test "aicoding-sync --blueprint uses a dirty local checkout without fetch or reset" {
-  mkdir -p "$HOME/.aicodingsetup"
-  echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
+  stamp_blueprint old123
   echo "uncommitted local blueprint edit" >> "$AICODING_BLUEPRINT_CLONE/README.md"
 
   local real_git git_log git_stubs
@@ -175,48 +176,23 @@ EOF
   echo "$output" | grep -q "return to origin/main tracking"
 }
 
-@test "aicoding-sync: 'n' answer preserves the existing managed config" {
-  mkdir -p "$HOME/.aicodingsetup"
+@test "aicoding-sync never prompts: a hand-edited owned file follows the blueprint" {
   echo "user-line" > "$HOME/.tmux.conf"
   echo "blueprint-line" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
   commit_blueprint_fixture
-  cat > "$AICODING_MANIFEST" <<EOF
-{
-  "schema_version": 1,
-  "blueprint_commit": "old",
-  "files": {
-    "$HOME/.tmux.conf": {
-      "mode": "overwrite",
-      "source": "configs/tmux/tmux.conf",
-      "deployed_hash": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-    }
-  }
-}
-EOF
-  run bash -c "echo n | $AICODING_BLUEPRINT_CLONE/bin/aicoding-sync"
+  run bash -c "echo n | $AICODING_BLUEPRINT_CLONE/bin/aicoding-sync --dry-run"
   [ "$status" -eq 0 ] || { echo "$output"; false; }
+  [[ "$output" != *"[y/N]"* ]]
+  [[ "$output" == *"would update: $HOME/.tmux.conf"* ]]
   grep -q "^user-line$" "$HOME/.tmux.conf"
 }
 
 @test "aicoding-sync --yes: busts stale aicoding-status cache when commit advances" {
   seed_verified_config_dependencies
-  mkdir -p "$HOME/.aicodingsetup"
   echo "old-blueprint" > "$HOME/.tmux.conf"
   echo "new-blueprint" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
   commit_blueprint_fixture
-  cat > "$AICODING_MANIFEST" <<EOF
-{
-  "schema_version": 1,
-  "blueprint_commit": "old",
-  "files": {
-    "$HOME/.tmux.conf": {
-      "mode": "overwrite",
-      "source": "configs/tmux/tmux.conf",
-      "deployed_hash": "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')"
-    }
-  }
-}
-EOF
+  stamp_blueprint old
   # Seed a stale "behind" verdict, as aicoding-status would have cached it.
   mkdir -p "$AICODING_UPDATE_STATE"
   echo '{"tool":"aicoding","status":"behind"}' > "$AICODING_UPDATE_STATE/aicoding.json"
@@ -227,8 +203,7 @@ EOF
 }
 
 @test "aicoding-sync --dry-run: leaves aicoding-status cache untouched" {
-  mkdir -p "$HOME/.aicodingsetup"
-  echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
+  stamp_blueprint old123
   mkdir -p "$AICODING_UPDATE_STATE"
   echo '{"tool":"aicoding","status":"behind"}' > "$AICODING_UPDATE_STATE/aicoding.json"
   run "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" --dry-run
@@ -239,27 +214,14 @@ EOF
 
 @test "aicoding-sync --yes: records the FULL blueprint SHA (badge comparison needs >=12 chars)" {
   seed_verified_config_dependencies
-  mkdir -p "$HOME/.aicodingsetup"
   echo "old-blueprint" > "$HOME/.tmux.conf"
   echo "new-blueprint" > "$AICODING_BLUEPRINT_CLONE/configs/tmux/tmux.conf"
   commit_blueprint_fixture
-  cat > "$AICODING_MANIFEST" <<EOF
-{
-  "schema_version": 1,
-  "blueprint_commit": "old",
-  "files": {
-    "$HOME/.tmux.conf": {
-      "mode": "overwrite",
-      "source": "configs/tmux/tmux.conf",
-      "deployed_hash": "$(sha256sum "$HOME/.tmux.conf" | awk '{print $1}')"
-    }
-  }
-}
-EOF
+  stamp_blueprint old
   run "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" --yes
   [ "$status" -eq 0 ] || { echo "$output"; false; }
   local recorded full
-  recorded=$(jq -r '.blueprint_commit' "$AICODING_MANIFEST")
+  recorded=$(cat "$STAMPS/blueprint_commit")
   full=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD)
   [ "$recorded" = "$full" ]
   [ "${#recorded}" -eq 40 ]
@@ -269,8 +231,7 @@ EOF
   local legacy="$TMPDIR/legacy-tracking-clone"
   rsync -a --exclude=.git "$AICODING_BLUEPRINT_CLONE/" "$legacy/"
   printf '\nprintf "LEGACY_SOURCE_EXECUTED\\n"\n' >> "$legacy/lib/sync.sh"
-  mkdir -p "$HOME/.aicodingsetup"
-  echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
+  stamp_blueprint old123
 
   run env AICODING_BLUEPRINT_CLONE="$legacy" \
     "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" --dry-run
@@ -279,8 +240,7 @@ EOF
 }
 
 @test "normal dry-run leaves the immutable physical release untouched" {
-  mkdir -p "$HOME/.aicodingsetup"
-  echo '{"schema_version":1,"blueprint_commit":"old123","files":{}}' > "$AICODING_MANIFEST"
+  stamp_blueprint old123
   local before
   before=$(git -C "$AICODING_BLUEPRINT_CLONE" status --porcelain)
   run "$AICODING_BLUEPRINT_CLONE/bin/aicoding-sync" --dry-run
