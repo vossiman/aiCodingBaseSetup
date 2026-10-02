@@ -241,6 +241,18 @@ TOML
   jq -e '.mcp.kanban.command == ["my-kanban"]' "$HOME/.config/opencode/opencode.json"
 }
 
+@test "rule 3: the retired local Codex Kanban server is removed, a personal one kept" {
+  unset KANBAN_TOKEN
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$HOME/.codex"
+  printf '[mcp_servers.kanban]\ncommand = "kanban-mcp"\nrequired = true\nstartup_timeout_sec = 30\n' > "$HOME/.codex/config.toml"
+  managed_config_apply >/dev/null
+  if grep -q 'kanban' "$HOME/.codex/config.toml"; then false; fi
+  printf '[mcp_servers.kanban]\ncommand = "my-kanban"\n' > "$HOME/.codex/config.toml"
+  managed_config_apply >/dev/null
+  grep -qx 'command = "my-kanban"' "$HOME/.codex/config.toml"
+}
+
 @test "rule 4: profile comes from the env, then the profile file, else container" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   [ "$(aicoding_profile)" = container ]

@@ -36,6 +36,7 @@
   ],
   "retired_keys": [
     {"dest": ".cursor/mcp.json", "path": ["mcpServers", "kanban"], "shipped": [{"command": "kanban-mcp"}]},
-    {"dest": ".config/opencode/opencode.json", "path": ["mcp", "kanban"], "shipped": [{"type": "local", "command": ["kanban-mcp"], "enabled": true}]}
+    {"dest": ".config/opencode/opencode.json", "path": ["mcp", "kanban"], "shipped": [{"type": "local", "command": ["kanban-mcp"], "enabled": true}]},
+    {"dest": ".codex/config.toml", "path": ["mcp_servers", "kanban"], "shipped": [{"command": "kanban-mcp"}, {"command": "kanban-mcp", "required": true, "startup_timeout_sec": 30}]}
   ]
 }

@@ -366,6 +366,15 @@ EOF
   done
   if grep -q -e groupadd -e usermod "$TMP/ran.log" 2>/dev/null; then false; fi
 }
+@test "a dry run that cannot compute its plan fails" {
+  local clone="$TMP/broken-blueprint"
+  rsync -a --exclude=.git "$BLUEPRINT_ROOT/" "$clone/"
+  printf '{broken\n' > "$clone/configs/managed-config.json"
+  export AICODING_BLUEPRINT_CLONE="$clone" AICODING_BLUEPRINT_LOCAL=1 _SYNC_REFRESHED=1
+  run _sync_reconcile dry-run
+  [ "$status" -ne 0 ]
+}
+
 @test "clean sync still advances the blueprint_commit stamp" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   echo deadbeefdeadbeefdeadbeefdeadbeefdeadbeef > "$HOME/.local/state/aicoding/blueprint_commit"

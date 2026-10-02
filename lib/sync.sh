@@ -636,7 +636,7 @@ _sync_reconcile() {
   echo "Blueprint: ${old:0:7} -> ${new:0:7}"
   if [ "$mode" = dry-run ]; then
     managed_config_apply --dry-run
-    return 0
+    return
   fi
   aicoding_shared_locks_acquire_managed_roots || {
     echo "aicoding-sync: shared configuration writer is busy" >&2
