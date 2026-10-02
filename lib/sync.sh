@@ -497,7 +497,6 @@ _sync_stage_selected_blueprint() {
     aicoding_progress_run "blueprint: extracting source (timeout ${AICODING_VENDOR_TIMEOUT:-600}s)" _aicoding_progress_capture /dev/null timeout "${AICODING_VENDOR_TIMEOUT:-600}" git -C "$stage" checkout --quiet --detach "$sha" || { rm -rf "$stage"; return 1; }
     [ "$(git -C "$stage" rev-parse HEAD 2>/dev/null)" = "$sha" ] || { rm -rf "$stage"; return 1; }
     _sync_capture_generated_provenance "$stage" || { rm -rf "$stage"; return 1; }
-    git -C "$stage" log -1 --format=%ct > "$stage/.aicoding-commit-time" || { rm -rf "$stage"; return 1; }
     rm -rf "$stage/.git"
     printf '%s\n' "$sha" > "$stage/.aicoding-version"
     _sync_validate_blueprint_release "$stage" "$sha" || { rm -rf "$stage"; return 1; }

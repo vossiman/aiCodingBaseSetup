@@ -304,7 +304,8 @@ TOML
 
 @test "release order: an older release leaves shared files to the newer one" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  local mine; mine=$(_managed_release_time)
+  _managed_release_ordinal() { echo 500; }
+  local mine=500
   mkdir -p "$HOME/.claude/hooks"
   echo "$((mine + 100)) newer" > "$HOME/.claude/.aicoding-release"
   printf 'newer hook\n' > "$HOME/.claude/hooks/memory-hint.sh"
@@ -319,7 +320,8 @@ TOML
 
 @test "release order: a release at least as new writes and claims the shared roots" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  local mine; mine=$(_managed_release_time)
+  _managed_release_ordinal() { echo 500; }
+  local mine=500
   mkdir -p "$HOME/.claude"
   echo "$((mine - 100)) older" > "$HOME/.claude/.aicoding-release"
   managed_config_apply >/dev/null
@@ -329,10 +331,20 @@ TOML
   [ "$sha" = "$(git -C "$BLUEPRINT_ROOT" rev-parse HEAD)" ]
 }
 
+@test "release order: a shallow checkout has no ordinal and never holds back" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  git clone -q --depth 1 "file://$BLUEPRINT_ROOT" "$TMPDIR/shallow"
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/shallow"
+  run _managed_release_ordinal
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
 @test "release order: a local --blueprint run writes but never moves the marker" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   export AICODING_BLUEPRINT_LOCAL=1
-  local mine; mine=$(_managed_release_time)
+  _managed_release_ordinal() { echo 500; }
+  local mine=500
   mkdir -p "$HOME/.claude"
   echo "$((mine + 100)) newer" > "$HOME/.claude/.aicoding-release"
   managed_config_apply >/dev/null

@@ -10,7 +10,8 @@
 #      version the blueprint shipped.
 #   4. The machine profile lives in its own one-word file.
 # Containers share ~/.claude, ~/.codex and ~/.cursor, so an older release
-# leaves files there to the newest release that wrote them.
+# leaves files there to the newest release that wrote them. "Newer" is the
+# count of commits behind a release, which only grows along main.
 
 : "${AICODING_BLUEPRINT_CLONE:=/tmp/aicoding}"
 : "${AICODING_STATE_DIR:=$HOME/.local/state/aicoding}"
@@ -24,6 +25,17 @@ _aicoding_deploy_lib_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # Runs at source time on purpose: a container stuck on an older release only
 # executes new code by sourcing this file while it stages a newly selected one.
 aicoding_heal_release_bytecode_when_staging "$_aicoding_deploy_lib_dir" || true
+# Same trick for release ordering: whichever release does the staging, this
+# file is sourced from the new clone while its .git still exists.
+_aicoding_record_release_ordinal() {
+  local root
+  root=$(cd -- "$1/.." 2>/dev/null && pwd -P) || return 0
+  [[ "${root##*/}" =~ ^aicoding\.[0-9a-f]{40}\.[0-9]+$ ]] && [ -d "$root/.git" ] \
+    && [ ! -e "$root/.aicoding-release-ordinal" ] || return 0
+  git -C "$root" rev-list --count HEAD > "$root/.aicoding-release-ordinal" 2>/dev/null \
+    || rm -f "$root/.aicoding-release-ordinal"
+}
+_aicoding_record_release_ordinal "$_aicoding_deploy_lib_dir" || true
 _AICODING_MANAGED_TOML="$_aicoding_deploy_lib_dir/managed_toml.py"
 unset _aicoding_deploy_lib_dir
 
@@ -545,11 +557,14 @@ _managed_retire_files() {
 
 # --- Release ordering on shared roots ----------------------------------------
 
-_managed_release_time() {
-  local t
-  t=$(cat "$AICODING_BLUEPRINT_CLONE/.aicoding-commit-time" 2>/dev/null) || t=
-  [[ "$t" =~ ^[0-9]+$ ]] || t=$(git -C "$AICODING_BLUEPRINT_CLONE" log -1 --format=%ct 2>/dev/null) || t=
-  [[ "$t" =~ ^[0-9]+$ ]] && printf '%s\n' "$t"
+_managed_release_ordinal() {
+  local n
+  n=$(cat "$AICODING_BLUEPRINT_CLONE/.aicoding-release-ordinal" 2>/dev/null) || n=
+  if ! [[ "$n" =~ ^[0-9]+$ ]] \
+      && [ "$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse --is-shallow-repository 2>/dev/null)" = false ]; then
+    n=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-list --count HEAD 2>/dev/null) || n=
+  fi
+  [[ "$n" =~ ^[0-9]+$ ]] && printf '%s\n' "$n"
 }
 
 _managed_release_marker() { printf '%s\n' "$HOME/.claude/.aicoding-release"; }
@@ -563,11 +578,11 @@ _managed_is_shared() {
 
 # True when a newer release than this one has written the shared roots. A
 # local --blueprint run is development and always writes; so does a release
-# whose commit time is unknown.
+# whose ordinal is unknown.
 _managed_newer_release_owns_shared() {
   local mine theirs
   [[ "${AICODING_BLUEPRINT_LOCAL:-0}" != 1 ]] || return 1
-  mine=$(_managed_release_time) || return 1
+  mine=$(_managed_release_ordinal) || return 1
   read -r theirs _ < "$(_managed_release_marker)" 2>/dev/null || return 1
   [[ "$theirs" =~ ^[0-9]+$ ]] && (( theirs > mine ))
 }
@@ -577,7 +592,7 @@ _managed_newer_release_owns_shared() {
 _managed_claim_shared() {
   local time sha marker tmp
   [[ "${AICODING_BLUEPRINT_LOCAL:-0}" != 1 ]] || return 0
-  time=$(_managed_release_time) || return 0
+  time=$(_managed_release_ordinal) || return 0
   sha=$(cat "$AICODING_BLUEPRINT_CLONE/.aicoding-version" 2>/dev/null) \
     || sha=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD 2>/dev/null) || sha=unknown
   marker=$(_managed_release_marker)

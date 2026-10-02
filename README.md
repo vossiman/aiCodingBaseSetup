@@ -497,7 +497,8 @@ A destination whose tool is not installed or not yet verified is left alone
 and recorded as blocked until the tool is ready.
 
 Containers on one host share `~/.claude`, `~/.codex` and `~/.cursor`. Each
-pass records its release's commit time in `~/.claude/.aicoding-release`; a
+pass records its release's position on `main` (the number of commits
+behind it) in `~/.claude/.aicoding-release`; a
 container on an older release leaves files under those three directories to
 the newer one and only updates its own container-local files. A local
 `--blueprint` run always writes and never moves that marker.
