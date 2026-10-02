@@ -678,6 +678,7 @@ EOF
 
   release=$(_sync_stage_selected_blueprint "$sha")
   [ ! -d "$release/.git" ]
+  [ "$(cat "$release/.aicoding-commit-time")" = "$(git -C "$repo" log -1 --format=%ct)" ]
   export AICODING_BLUEPRINT_CLONE="$release"
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run owned_file_has_generated_provenance "$HOME/.claude/commands/scaffold-project.md" "$source_path"

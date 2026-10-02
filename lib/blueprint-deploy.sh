@@ -9,6 +9,8 @@
 #   3. Retired files and keys are removed only while they still match a
 #      version the blueprint shipped.
 #   4. The machine profile lives in its own one-word file.
+# Containers share ~/.claude, ~/.codex and ~/.cursor, so an older release
+# leaves files there to the newest release that wrote them.
 
 : "${AICODING_BLUEPRINT_CLONE:=/tmp/aicoding}"
 : "${AICODING_STATE_DIR:=$HOME/.local/state/aicoding}"
@@ -521,12 +523,13 @@ managed_retired_files() {
 # A retired file that no longer matches anything the blueprint shipped was
 # edited or created by hand: keep it and say so once.
 _managed_retire_files() {
-  local dry=$1 rel source dest retired kept="$AICODING_STATE_DIR/retired-kept"
+  local dry=$1 hold=${2:-0} rel source dest retired kept="$AICODING_STATE_DIR/retired-kept"
   retired=$(managed_retired_files) || return 1
   while IFS=$'\t' read -r rel source; do
     [[ -n "$rel" ]] || continue
     dest="$HOME/$rel"
     [[ -e "$dest" ]] || continue
+    [[ "$hold" == 1 ]] && _managed_is_shared "$dest" && continue
     if owned_file_has_generated_provenance "$dest" "$source"; then
       if [[ "$dry" == 1 ]]; then
         echo "      would remove retired file: $dest"
@@ -540,21 +543,70 @@ _managed_retire_files() {
   done <<< "$retired"
 }
 
+# --- Release ordering on shared roots ----------------------------------------
+
+_managed_release_time() {
+  local t
+  t=$(cat "$AICODING_BLUEPRINT_CLONE/.aicoding-commit-time" 2>/dev/null) || t=
+  [[ "$t" =~ ^[0-9]+$ ]] || t=$(git -C "$AICODING_BLUEPRINT_CLONE" log -1 --format=%ct 2>/dev/null) || t=
+  [[ "$t" =~ ^[0-9]+$ ]] && printf '%s\n' "$t"
+}
+
+_managed_release_marker() { printf '%s\n' "$HOME/.claude/.aicoding-release"; }
+
+_managed_is_shared() {
+  case "$1" in
+    "$HOME"/.claude/*|"$HOME"/.codex/*|"$HOME"/.cursor/*) return 0 ;;
+  esac
+  return 1
+}
+
+# True when a newer release than this one has written the shared roots. A
+# local --blueprint run is development and always writes; so does a release
+# whose commit time is unknown.
+_managed_newer_release_owns_shared() {
+  local mine theirs
+  [[ "${AICODING_BLUEPRINT_LOCAL:-0}" != 1 ]] || return 1
+  mine=$(_managed_release_time) || return 1
+  read -r theirs _ < "$(_managed_release_marker)" 2>/dev/null || return 1
+  [[ "$theirs" =~ ^[0-9]+$ ]] && (( theirs > mine ))
+}
+
+# Local runs never move the marker, so a dev branch cannot hold back the
+# released containers sharing these roots.
+_managed_claim_shared() {
+  local time sha marker tmp
+  [[ "${AICODING_BLUEPRINT_LOCAL:-0}" != 1 ]] || return 0
+  time=$(_managed_release_time) || return 0
+  sha=$(cat "$AICODING_BLUEPRINT_CLONE/.aicoding-version" 2>/dev/null) \
+    || sha=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD 2>/dev/null) || sha=unknown
+  marker=$(_managed_release_marker)
+  mkdir -p "$(dirname "$marker")" || return 1
+  tmp=$(mktemp "$marker.XXXXXX") || return 1
+  printf '%s %s\n' "$time" "$sha" > "$tmp" && mv -f "$tmp" "$marker" || { rm -f "$tmp"; return 1; }
+}
+
 # --- Apply -------------------------------------------------------------------
 
 # Bring every managed destination to its desired content. Sets
-# MANAGED_RESULT[dest] to unchanged, updated, pending (dry run), malformed,
-# failed or "blocked:<reason>". MANAGED_CONFIG_GATE may name a function that
+# MANAGED_RESULT[dest] to unchanged, updated, pending (dry run), held (a
+# newer release owns the shared roots), malformed, failed or
+# "blocked:<reason>". MANAGED_CONFIG_GATE may name a function that
 # vetoes a write (prints a reason, returns nonzero) when a destination's tool
 # is not ready for it. Returns nonzero when any write failed.
 managed_config_apply() {
-  local dry=0 dest kind source src out reason rc=0 changes=0 inventory
+  local dry=0 dest kind source src out reason rc=0 changes=0 inventory hold=0 held=0
   [[ "${1:-}" == --dry-run ]] && dry=1
   declare -gA MANAGED_RESULT=()
   inventory=$(managed_inventory) || { echo "      could not list managed files" >&2; return 1; }
+  _managed_newer_release_owns_shared && hold=1
   while IFS='|' read -r dest kind source; do
     [[ -n "$dest" ]] || continue
     src="$AICODING_BLUEPRINT_CLONE/$source"
+    if [[ "$hold" == 1 ]] && _managed_is_shared "$dest"; then
+      MANAGED_RESULT[$dest]=held; held=$((held + 1))
+      continue
+    fi
     if [[ "$kind" != block && ! -f "$src" ]]; then
       MANAGED_RESULT[$dest]=failed; rc=1
       echo "      missing blueprint source $source for $dest" >&2
@@ -586,7 +638,12 @@ managed_config_apply() {
     fi
     rm -f "$out"
   done <<< "$inventory"
-  _managed_retire_files "$dry" || rc=1
+  _managed_retire_files "$dry" "$hold" || rc=1
+  if [[ "$held" -gt 0 ]]; then
+    echo "      left $held shared files to the newer release in $(_managed_release_marker)"
+  elif [[ "$dry" == 0 && "$rc" == 0 ]]; then
+    _managed_claim_shared || rc=1
+  fi
   [[ "$changes" -gt 0 ]] || echo "      managed config already current"
   return "$rc"
 }

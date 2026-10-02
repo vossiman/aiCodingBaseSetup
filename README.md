@@ -496,6 +496,12 @@ resolve.
 A destination whose tool is not installed or not yet verified is left alone
 and recorded as blocked until the tool is ready.
 
+Containers on one host share `~/.claude`, `~/.codex` and `~/.cursor`. Each
+pass records its release's commit time in `~/.claude/.aicoding-release`; a
+container on an older release leaves files under those three directories to
+the newer one and only updates its own container-local files. A local
+`--blueprint` run always writes and never moves that marker.
+
 The `~/.bashrc.d/` convention for user additions: anything matching `local-*.sh` (or any name *not* prefixed `aicoding-`) is sourced by the managed block but never touched by the blueprint. Personal aliases, env vars, and shell tweaks belong there.
 
 > The container hostname is set to the workspace name via runArgs:
