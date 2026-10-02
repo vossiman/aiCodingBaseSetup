@@ -190,18 +190,13 @@ SH
   grep -qF -- '--config image/devcontainer.json' "$WORKFLOW"
 }
 
-@test "image workflow: auto-pins the blueprint after publish (non-PR only)" {
+@test "image workflow: only main moves tags, and nothing commits a pin" {
   WORKFLOW="$BLUEPRINT_ROOT/.github/workflows/build-base-image.yml"
-  # Push permission for the pin commit
-  grep -q 'contents: write' "$WORKFLOW"
-  # The pin step: sed rewrite of the digest + the commit message contract
-  grep -qF 'sha256:[0-9a-f]{64}' "$WORKFLOW"
-  grep -qF 'chore(image): pin devbox-base' "$WORKFLOW"
-  # Loud failure is the contract — no silent fallback wording
-  run grep -qiE 'continue-on-error: *true' "$WORKFLOW"
+  # Login and push are both gated on main, so a branch dispatch never
+  # publishes a build as :latest.
+  [ "$(grep -c "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'" "$WORKFLOW")" -eq 2 ]
+  run grep -qE 'contents: write|git push|chore\(image\): pin' "$WORKFLOW"
   [ "$status" -ne 0 ]
-  # Gate appears on login, push, AND pin steps
-  [ "$(grep -c "github.event_name != 'pull_request'" "$WORKFLOW")" -ge 3 ]
 }
 
 @test "image: Dockerfile points npm's global prefix at user space" {
