@@ -1,279 +1,87 @@
 # aiCodingBaseSetup — blueprint deployment primitives.
-# Sourced by install.sh and bin/aicoding-sync. Pure shell functions only;
-# the one top-level side effect is the staging-only release heal (below).
+# Sourced by install.sh, install-host.sh and lib/sync.sh. Pure shell functions
+# only; the one top-level side effect is the staging-only release heal (below).
 # Caller is responsible for `set -euo pipefail`.
+#
+# Managed config follows four rules (docs/managed-config.md):
+#   1. Blueprint-owned files are rendered and written whenever they differ.
+#   2. Mixed files get their owned keys enforced and seeded keys set once.
+#   3. Retired files and keys are removed only while they still match a
+#      version the blueprint shipped.
+#   4. The machine profile lives in its own one-word file.
 
-# Container-local, NOT ~/.aicodingsetup: that path is a host bind mount shared
-# by every devpod container, while this manifest describes container-local
-# paths (~/.bashrc, ~/.tmux.conf, ...) with per-file deployed_hash values.
-# Sharing it meant whichever container synced last spoke for all of them.
-: "${AICODING_MANIFEST:=$HOME/.local/state/aicoding/manifest.json}"
 : "${AICODING_BLUEPRINT_CLONE:=/tmp/aicoding}"
-# Must match bin/aicoding-status's default — this library invalidates that
-# CLI's cache whenever it advances the recorded blueprint commit.
-: "${AICODING_UPDATE_STATE:=$HOME/.local/state/aicoding/updates}"
+: "${AICODING_STATE_DIR:=$HOME/.local/state/aicoding}"
+# Must match bin/aicoding-status's default: a moved blueprint stamp drops
+# that CLI's cache.
+: "${AICODING_UPDATE_STATE:=$AICODING_STATE_DIR/updates}"
 
-# Resolve the smart-merge adapter relative to this sourced library. Sync and
-# host installation can execute from different blueprint locations.
 _aicoding_deploy_lib_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-# shellcheck source=codex-merge.sh
-. "$_aicoding_deploy_lib_dir/codex-merge.sh"
 # shellcheck source=release-heal.sh
 . "$_aicoding_deploy_lib_dir/release-heal.sh"
 # Runs at source time on purpose: a container stuck on an older release only
 # executes new code by sourcing this file while it stages a newly selected one.
 aicoding_heal_release_bytecode_when_staging "$_aicoding_deploy_lib_dir" || true
+_AICODING_MANAGED_TOML="$_aicoding_deploy_lib_dir/managed_toml.py"
 unset _aicoding_deploy_lib_dir
 
-# compute_hash <path> — echo the sha256 hex of file content; empty if missing.
-compute_hash() {
-  [ -e "$1" ] || { echo ""; return 0; }
-  sha256sum "$1" | awk '{print $1}'
+# --- Machine profile and stamps ---------------------------------------------
+
+# Losing "host" would switch Codex to no approvals and full access, so the
+# profile is a file of its own rather than a field in a disposable record.
+aicoding_profile() {
+  local p=${AICODING_PROFILE:-}
+  [ -n "$p" ] || p=$(cat "$AICODING_STATE_DIR/profile" 2>/dev/null) || p=
+  case "$p" in host|container|minimal-pi) ;; *) p=container ;; esac
+  printf '%s\n' "$p"
 }
 
-# compute_managed_hash <dest_path> — compute_hash, except for files where the
-# owning CLI writes runtime state into our managed config: that state is
-# stripped before hashing so it never registers as drift. Currently only
-# codex's config.toml: codex ≥0.147 auto-trusts local projects and persists
-# [projects."<dir>"] trust_level sections on every new directory it opens
-# (the both-keys-set suppression documented in configs/codex/config.toml no
-# longer holds). Strips each [projects...] section plus the blank lines codex
-# inserts before it; all other edits still count as drift. Must be used by
-# every site that hashes a managed dest (classify, deploy, adopt), or the
-# recorded deployed_hash and the compared hash disagree.
-compute_managed_hash() {
-  local dest=$1
-  case "$dest" in
-    "$HOME"/.codex/config.toml)
-      [ -e "$dest" ] || { echo ""; return 0; }
-      awk '
-        function flushbuf(i) { for (i = 1; i <= n; i++) print buf[i]; n = 0 }
-        /^[[:space:]]*$/ { if (!skip) buf[++n] = $0; next }
-        /^\[/ {
-          if ($0 ~ /^\[projects[]."]/) { skip = 1; n = 0 }
-          else { skip = 0; flushbuf(); print }
-          next
-        }
-        { if (!skip) { flushbuf(); print } }
-        END { if (!skip) flushbuf() }
-      ' "$dest" | sha256sum | awk '{print $1}'
-      ;;
-    *) compute_hash "$dest" ;;
-  esac
+aicoding_stamp_read() { cat "$AICODING_STATE_DIR/$1" 2>/dev/null || true; }
+
+aicoding_stamp_write() {
+  local name=$1 value=$2 tmp
+  [ -n "$value" ] || return 0
+  mkdir -p "$AICODING_STATE_DIR" || return 1
+  tmp=$(mktemp "$AICODING_STATE_DIR/.$name.XXXXXX") || return 1
+  printf '%s\n' "$value" > "$tmp" && mv -f "$tmp" "$AICODING_STATE_DIR/$name" || { rm -f "$tmp"; return 1; }
 }
 
-# compute_block_hash <path> <start_marker> <end_marker> — sha256 of content
-# strictly between the start and end marker lines (exclusive). Each captured
-# line retains its trailing newline (so two lines hash "line1\nline2\n").
-# Returns empty string if either marker is absent.
-compute_block_hash() {
-  local path=$1 start=$2 end=$3
-  [ -e "$path" ] || { echo ""; return 0; }
-  # Both markers must be present (as full-line matches) for a block to exist.
-  grep -qxF "$start" "$path" || { echo ""; return 0; }
-  grep -qxF "$end"   "$path" || { echo ""; return 0; }
-  awk -v s="$start" -v e="$end" '
-    $0 == s { in_block = 1; next }
-    $0 == e { in_block = 0; exit }
-    in_block { print }
-  ' "$path" | sha256sum | awk '{print $1}'
-}
-
-# manifest_adopt_shared — one-time adoption of a manifest left on the shared
-# host mount by an install that predates the container-local path. COPY rather
-# than move: sibling containers still need the shared file for their own
-# adoption, and the mount is shared, so removing it would strand them. The
-# copied commit stamp is only a prior — the next sync re-hashes the real files
-# on disk and replaces it with the truth for THIS container. No-op once the
-# container-local manifest exists.
-manifest_adopt_shared() {
-  local shared="$HOME/.aicodingsetup/manifest.json"
-  if [ -f "$AICODING_MANIFEST" ] || [ ! -f "$shared" ]; then return 0; fi
-  if [ "$shared" = "$AICODING_MANIFEST" ]; then return 0; fi
-  mkdir -p "$(dirname "$AICODING_MANIFEST")" 2>/dev/null || return 0
-  cp "$shared" "$AICODING_MANIFEST" 2>/dev/null || true
-  return 0
-}
-
-# read_manifest — echo the manifest JSON; empty manifest if missing.
-read_manifest() {
-  manifest_adopt_shared
-  if [ -f "$AICODING_MANIFEST" ]; then
-    cat "$AICODING_MANIFEST"
-  else
-    echo '{"schema_version":1,"files":{}}'
-  fi
-}
-
-# write_manifest <json> — atomically write the manifest JSON to disk.
-write_manifest() {
-  local json=$1
-  local dir rc
-  dir=$(dirname "$AICODING_MANIFEST")
-  mkdir -p "$dir" || return 1
-  local tmp="$AICODING_MANIFEST.tmp"
-  printf '%s\n' "$json" | jq '.' > "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }
-  mv "$tmp" "$AICODING_MANIFEST" || { rc=$?; rm -f "$tmp"; return "$rc"; }
-}
-
-# manifest_stamp_provision <sha> — record that full provisioning ran at this
-# blueprint commit. Container-local manifest only (never the shared bind
-# mount). Separate from blueprint_commit, which config-only syncs advance.
-manifest_stamp_provision() {
-  local sha=$1 dir tmp
-  [ -n "$sha" ] || return 0
-  dir=$(dirname "$AICODING_MANIFEST"); mkdir -p "$dir" 2>/dev/null || return 0
-  tmp="$AICODING_MANIFEST.tmp"
-  if [ -f "$AICODING_MANIFEST" ]; then
-    jq --arg s "$sha" '. + {provision_commit:$s}' "$AICODING_MANIFEST" > "$tmp" 2>/dev/null || return 0
-  else
-    jq -n --arg s "$sha" '{provision_commit:$s}' > "$tmp" 2>/dev/null || return 0
-  fi
-  mv "$tmp" "$AICODING_MANIFEST"
-}
-
-# manifest_get_profile — echo this machine's install profile: "host" or
-# "container". Precedence: AICODING_PROFILE env (set by install-host.sh
-# before the first manifest write) → manifest .profile → "container".
-# Absent key = container so every pre-profile machine behaves as before.
-manifest_get_profile() {
-  if [ -n "${AICODING_PROFILE:-}" ]; then
-    printf '%s' "$AICODING_PROFILE"
-    return 0
-  fi
-  if [ -f "$AICODING_MANIFEST" ]; then
-    jq -r '.profile // "container"' "$AICODING_MANIFEST" 2>/dev/null && return 0
-  fi
-  printf 'container'
-}
-
-# manifest_set_profile <profile> — persist the install profile. Same
-# create-or-amend pattern as manifest_stamp_provision.
-manifest_set_profile() {
-  local profile=$1 dir tmp
-  [ -n "$profile" ] || return 0
-  dir=$(dirname "$AICODING_MANIFEST"); mkdir -p "$dir" 2>/dev/null || return 0
-  tmp="$AICODING_MANIFEST.tmp"
-  if [ -f "$AICODING_MANIFEST" ]; then
-    jq --arg p "$profile" '. + {profile:$p}' "$AICODING_MANIFEST" > "$tmp" 2>/dev/null || return 0
-  else
-    jq -n --arg p "$profile" '{profile:$p}' > "$tmp" 2>/dev/null || return 0
-  fi
-  mv "$tmp" "$AICODING_MANIFEST"
-}
-
-# In-memory staged manifest; modified by manifest_set_file /
-# manifest_remove_file between stage_begin and stage_commit.
-_aicoding_pending_manifest=""
-
-manifest_stage_begin() {
-  _aicoding_pending_manifest=$(read_manifest)
-}
-
-manifest_stage_commit() {
-  local now updated rc
-  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  updated=$(printf '%s' "$_aicoding_pending_manifest" \
-    | jq --arg t "$now" '.deployed_at = $t') || return $?
-  _aicoding_pending_manifest=$updated
-  write_manifest "$_aicoding_pending_manifest" || { rc=$?; return "$rc"; }
-  _aicoding_pending_manifest=""
-}
-
-manifest_stage_set_top() {
-  local key=$1 val=$2
-  _aicoding_pending_manifest=$(printf '%s' "$_aicoding_pending_manifest" \
-    | jq --arg k "$key" --arg v "$val" '.[$k] = $v')
-}
-
-# manifest_stage_set_blueprint <commit> <origin> — stamp the blueprint this
-# manifest now describes and, when the commit actually moved, drop
-# aicoding-status's cache. Since the print-time-verdict change the cache holds
-# only the remote `latest` SHA (aicoding-status compares a fresh manifest read
-# against it when printing), so a stamp can no longer strand a wrong verdict.
-# The drop remains as defense in depth for one residual window: stamping a
-# commit NEWER than the cached latest (sync just pulled a main the cache hasn't
-# seen) would read as "behind" until the TTL; deleting the cache also un-
-# throttles _cache_fresh, so the next tick re-checks immediately instead.
-# Call between manifest_stage_begin and manifest_stage_commit. No network;
-# fail-open.
-manifest_stage_set_blueprint() {
-  local commit=$1 origin=$2 prev
-  prev=$(printf '%s' "$_aicoding_pending_manifest" \
-    | jq -r '.blueprint_commit // empty' 2>/dev/null || true)
-  manifest_stage_set_top blueprint_commit "$commit"
-  manifest_stage_set_top blueprint_origin "$origin"
-  if [ "$prev" != "$commit" ]; then
+# The installed-blueprint stamp also drops aicoding-status's cached `latest`
+# when it moves, so the next tick re-checks instead of reading "behind".
+aicoding_stamp_blueprint() {
+  local commit=$1
+  [ -n "$commit" ] && [ "$commit" != unknown ] || return 0
+  if [ "$(aicoding_stamp_read blueprint_commit)" != "$commit" ]; then
     rm -f "$AICODING_UPDATE_STATE"/*.json 2>/dev/null || true
   fi
-  return 0
+  aicoding_stamp_write blueprint_commit "$commit"
 }
 
-# manifest_get_file <path> — echo the per-file JSON object, or "null".
-manifest_get_file() {
-  read_manifest | jq --arg p "$1" '.files[$p] // null'
-}
-
-# manifest_set_file <path> <entry_json> — merge a per-file entry into the
-# in-memory staged manifest (caller must have called manifest_stage_begin).
-manifest_set_file() {
-  local path=$1 entry=$2
-  _aicoding_pending_manifest=$(printf '%s' "$_aicoding_pending_manifest" \
-    | jq --arg p "$path" --argjson e "$entry" '.files[$p] = $e')
-}
-
-# manifest_remove_file <path> — drop a per-file entry from the staged manifest.
-manifest_remove_file() {
-  local path=$1
-  _aicoding_pending_manifest=$(printf '%s' "$_aicoding_pending_manifest" \
-    | jq --arg p "$path" 'del(.files[$p])')
-}
-
-# Owned overwrite files: blueprint-managed plumbing the user is never meant to
-# hand-edit (escape hatch is ~/.bashrc.d/local-*.sh). After a home reset these
-# revert to stale base-image versions and classify as drifted_and_updating;
-# reconcile must force-restore them (with backup) rather than skip.
-_is_owned_overwrite() {
-  case "$1" in
-    "$HOME"/.bashrc.d/aicoding-*.sh) return 0 ;;
-    "$HOME"/.claude/hooks/*)         return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# Return success only when the current bytes are a version previously shipped
-# at the manifest's source path. This distinguishes a stale generated hook
-# restored from an image from a genuine local edit whose provenance is unknown.
-owned_file_has_generated_provenance() {
-  local dest=$1 source=$2 commit tmp historical
-  [ -f "$dest" ] || return 1
-  tmp=$(mktemp) || return 1
-
-  # Exact selected releases intentionally omit .git. Their staging path keeps
-  # only historical bytes for owned files, which lets this proof render them
-  # with the current HOME/profile without retaining a repository per release.
-  for historical in "$AICODING_BLUEPRINT_CLONE/.aicoding-generated-provenance/$source"/*; do
-    [ -f "$historical" ] || continue
-    cp "$historical" "$tmp" || continue
-    local rendered="$tmp.rendered"
-    _render_managed_source "$tmp" "$dest" "$rendered" 2>/dev/null || { rm -f "$rendered"; continue; }
-    if cmp -s "$rendered" "$dest"; then rm -f "$tmp" "$rendered"; return 0; fi
-    rm -f "$rendered"
-  done
-
-  if [ -d "$AICODING_BLUEPRINT_CLONE/.git" ]; then
-    while IFS= read -r commit; do
-      [ -n "$commit" ] || continue
-      git -C "$AICODING_BLUEPRINT_CLONE" show "$commit:$source" >"$tmp" 2>/dev/null || continue
-      local rendered="$tmp.rendered"
-      _render_managed_source "$tmp" "$dest" "$rendered" 2>/dev/null || { rm -f "$rendered"; continue; }
-      if cmp -s "$rendered" "$dest"; then rm -f "$tmp" "$rendered"; return 0; fi
-      rm -f "$rendered"
-    done < <(git -C "$AICODING_BLUEPRINT_CLONE" log --format=%H --all -- "$source" 2>/dev/null)
+# Carry the facts that outlive the old per-container manifest into their own
+# files. Runs before anything reads the profile; the manifest itself is only
+# deleted after a clean pass (aicoding_remove_legacy_state).
+aicoding_migrate_legacy_state() {
+  local manifest="$AICODING_STATE_DIR/manifest.json" value key
+  if [ ! -s "$AICODING_STATE_DIR/profile" ]; then
+    value=${AICODING_PROFILE:-}
+    [ -n "$value" ] || value=$(jq -r '.profile // empty' "$manifest" 2>/dev/null) || value=
+    case "$value" in host|container|minimal-pi) aicoding_stamp_write profile "$value" ;; esac
   fi
-  rm -f "$tmp"
-  return 1
+  [ -f "$manifest" ] || return 0
+  for key in provision_commit blueprint_commit; do
+    [ -n "$(aicoding_stamp_read "$key")" ] && continue
+    value=$(jq -r --arg k "$key" '.[$k] // empty' "$manifest" 2>/dev/null) || value=
+    aicoding_stamp_write "$key" "$value" || true
+  done
 }
+
+aicoding_remove_legacy_state() {
+  [ -s "$AICODING_STATE_DIR/profile" ] || [ ! -f "$AICODING_STATE_DIR/manifest.json" ] || return 0
+  rm -f "$AICODING_STATE_DIR/manifest.json" "$HOME/.aicodingsetup/manifest.json" 2>/dev/null || true
+  rm -rf "$HOME/.codex/.aicoding-sync" 2>/dev/null || true
+}
+
+# --- Shared-root writer locks ------------------------------------------------
 
 # Acquire non-blocking writer locks inside the physical shared destinations.
 # FDs stay open across a refresh exec, but the scheduled step releases them
@@ -308,9 +116,8 @@ aicoding_shared_locks_acquire() {
   done < <(printf '%s\n' "${roots[@]}" | LC_ALL=C sort)
 }
 
-# Lock every managed shared root before classification reads any destination.
-# The inventory always contains paths in these roots; fixed sentinels avoid a
-# read-before-lock cycle just to discover which roots need locking.
+# Lock every managed shared root before reading any destination, so a sibling
+# container cannot change a file between its read and its rewrite.
 aicoding_shared_locks_acquire_managed_roots() {
   aicoding_shared_locks_acquire \
     "$HOME/.claude/.aicoding-managed" \
@@ -320,8 +127,8 @@ aicoding_shared_locks_acquire_managed_roots() {
     "$HOME/.local/share/opencode/.aicoding-managed"
 }
 
-# Close every shared writer lock this process holds. Long local work (a tmux
-# build) must not keep other containers from updating shared config.
+# Long local work (a tmux build) must not keep other containers from updating
+# shared config.
 aicoding_shared_locks_release() {
   declare -p _AICODING_SHARED_LOCK_FDS >/dev/null 2>&1 || return 0
   local fd
@@ -332,442 +139,24 @@ aicoding_shared_locks_release() {
   declare -gA _AICODING_SHARED_LOCKED_ROOTS=()
 }
 
-# enumerate_skill_files <skills_root> — one file path per line, relative to
-# <skills_root>, sorted. The single source of truth for what a skill dir
-# ships: install (provision-managed-files.sh) and sync inventory
-# (classify_managed_files) both consume this, and MUST stay on it — if the
-# two ever enumerate differently, the sync-side to_remove sweep deletes
-# whatever install deployed.
-enumerate_skill_files() {
-  local root=$1 f
-  [[ -d "$root" ]] || return 0
-  while IFS= read -r f; do
-    printf '%s\n' "${f#"$root"/}"
-  done < <(find "$root" -type f | LC_ALL=C sort)
-}
+# --- Writing -----------------------------------------------------------------
 
-# classify_file <dest_path> <src_path> <mode> — echoes one of:
-#   up_to_date, will_update, drifted_but_aligned, drifted_and_updating,
-#   new_file, new_file_existing, to_remove, merge.
-classify_file() {
-  local dest=$1 src=$2 mode=$3
-
-  if [ "$mode" = "merge" ]; then
-    # Actionable only if a re-merge would change the target SEMANTICALLY.
-    # Simulate on a temp copy (substituted source, same as the deploy path)
-    # and compare canonicalized JSON — _json_merge_into's key ordering is not
-    # byte-stable across applications (first merge copies nested subtrees
-    # verbatim, later merges recurse and sort), so a byte compare would flag
-    # phantom drift. Missing targets and failed simulations (e.g. non-JSON
-    # target) stay "merge" — apply is idempotent, so fail-open is safe.
-    if [ -e "$dest" ]; then
-      local sim_src sim_dest canon_sim canon_dest
-      sim_src=$(mktemp) sim_dest=$(mktemp)
-      _substitute_file_to "$src" "$sim_src" 2>/dev/null
-      cp "$dest" "$sim_dest"
-      if _json_merge_into "$sim_dest" "$sim_src" 2>/dev/null; then
-        canon_sim=$(jq -S . "$sim_dest" 2>/dev/null)
-        canon_dest=$(jq -S . "$dest" 2>/dev/null)
-        if [ -n "$canon_dest" ] && [ "$canon_sim" = "$canon_dest" ]; then
-          rm -f "$sim_src" "$sim_dest"
-          echo "up_to_date"
-          return 0
-        fi
-      fi
-      rm -f "$sim_src" "$sim_dest"
-    fi
-    echo "merge"
-    return 0
-  fi
-
-  local entry
-  entry=$(manifest_get_file "$dest")
-
-  if [ "$entry" = "null" ]; then
-    if [ -e "$src" ]; then
-      # Untracked dest already on disk = a personal file the user put there
-      # before the blueprint started managing this path (e.g. a host's own
-      # ~/.codex/config.toml when the inventory grew). Deploying it as a
-      # plain new_file would silently clobber that file with no backup —
-      # classify it separately so apply backs it up and unattended modes
-      # can leave it for a human decision.
-      #
-      # Unless it already IS the blueprint content: ~/.claude is one host
-      # mount shared by every devpod container while the manifest is
-      # container-local, so a sibling container's deploy shows up here as
-      # "untracked but present". Backing up and rewriting an identical file
-      # once per workspace protects nothing; adopt it into the manifest.
-      if [ -e "$dest" ]; then
-        if _incoming_matches_dest "$mode" "$src" "$dest"; then
-          echo "drifted_but_aligned"
-        else
-          echo "new_file_existing"
-        fi
-        return 0
-      fi
-      echo "new_file"
-      return 0
-    fi
-    echo "up_to_date"  # neither tracked nor present in blueprint; no-op.
-    return 0
-  fi
-
-  if [ ! -e "$src" ]; then
-    echo "to_remove"
-    return 0
-  fi
-
-  # File tracked in manifest + blueprint source present + dest missing →
-  # restore (not drifted_and_updating, since the user didn't modify anything;
-  # the file just isn't on disk).
-  if [ ! -e "$dest" ]; then
-    echo "restore"
-    return 0
-  fi
-
-  local current new deployed
-  current=$(compute_managed_hash "$dest")
-  if [ "$mode" = "overwrite_raw" ]; then
-    # Verbatim files (skill assets/references): classify against the raw
-    # source — running the sed substitution over binaries corrupts them.
-    new=$(compute_hash "$src")
-  else
-    # Hash the SUBSTITUTED source — that's what the deploy path writes to
-    # disk and records as deployed_hash. Hashing the raw source leaves any
-    # file with a {{PLACEHOLDER}} permanently classified will_update
-    # (phantom drift).
-    local subst_tmp
-    subst_tmp=$(mktemp)
-    _render_managed_source "$src" "$dest" "$subst_tmp" 2>/dev/null
-    new=$(compute_hash "$subst_tmp")
-    rm -f "$subst_tmp"
-  fi
-  deployed=$(printf '%s' "$entry" | jq -r '.deployed_hash // empty')
-
-  if [ "$current" = "$deployed" ] && [ "$current" = "$new" ]; then
-    echo "up_to_date"
-  elif [ "$current" = "$deployed" ] && [ "$current" != "$new" ]; then
-    echo "will_update"
-  elif [ "$current" != "$deployed" ] && [ "$current" = "$new" ]; then
-    echo "drifted_but_aligned"
-  else
-    echo "drifted_and_updating"
-  fi
-}
-
-# Explain conservative conflicts using classification metadata only. Do not print
-# config diffs, key names, or values: managed config files can contain secrets.
-report_managed_conflict() {
-  local dest=$1 bucket=$2 reason
-  case "$bucket" in
-    drifted_and_updating)
-      reason="local content changed since its recorded deployment and differs from the incoming blueprint" ;;
-    new_file_existing)
-      reason="existing file differs from the incoming blueprint and has no recorded managed baseline" ;;
-    to_remove)
-      reason="the incoming blueprint no longer manages this file" ;;
-    *) return 0 ;;
-  esac
-  printf 'managed config conflict: %s (%s; preserved). Review locally with aicoding-sync --dry-run.\n' \
-    "$dest" "$reason" >&2
-}
-
-# _write_atomic <src> <dest> [mode] — THE writer for every deployed file.
-#
-# Deploys used a bare `cp`, which preserves the mode of an EXISTING
-# destination: a file that was once 664 stayed 664 through every later
-# deploy, and several deployed files carry credentials. Writing through a
-# temp file in the destination directory and renaming also means a reader
-# never observes a half-written credential file.
-#
-# Mode defaults to 0600. Callers pass 0700 for executables; nothing gets a
-# group or world bit.
+# Every deployed file goes through a private temp file in the destination
+# directory and an atomic rename: several carry credentials, and a bare `cp`
+# keeps whatever wide mode an existing destination already had.
 _write_atomic() {
   local src=$1 dest=$2 mode=${3:-0600}
   local dir tmp rc
   dir=$(dirname "$dest")
   mkdir -p "$dir" || return 1
-  # Same filesystem as dest, so the rename below is atomic.
   tmp=$(mktemp "$dir/.aicoding-deploy.XXXXXX") || return 1
   cat "$src" > "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }
   chmod "$mode" "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }
   mv -f "$tmp" "$dest" || { rc=$?; rm -f "$tmp"; return "$rc"; }
 }
 
-# _write_text_atomic <dest> <content> [mode] — same contract as _write_atomic
-# but the payload is a string rather than a file. Temp file lives in the
-# DESTINATION directory (so the rename is atomic), gets an explicit chmod,
-# and only then replaces dest. Used by the JSON merge path, whose final
-# `printf > "$target"` used to be a plain redirect: that preserves an
-# ALREADY-EXISTING destination's mode, so every machine provisioned before
-# the 0600 work kept ~/.cursor/mcp.json and ~/.config/opencode/opencode.json
-# at 0664 forever — the two most credential-dense files in the deploy set.
-_write_text_atomic() {
-  local dest=$1 content=$2 mode=${3:-0600}
-  local dir tmp rc
-  dir=$(dirname "$dest")
-  mkdir -p "$dir" || return 1
-  tmp=$(mktemp "$dir/.aicoding-deploy.XXXXXX") || return 1
-  printf '%s\n' "$content" > "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }
-  chmod "$mode" "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }
-  mv -f "$tmp" "$dest" || { rc=$?; rm -f "$tmp"; return "$rc"; }
-}
+# --- Rendering ---------------------------------------------------------------
 
-# _ensure_merge_dest <dest> — create an empty JSON merge target at 0600.
-# Was `echo '{}' > "$dest"` under the ambient umask in three places.
-_ensure_merge_dest() {
-  local dest=$1
-  [[ -f "$dest" ]] && return 0
-  local dir tmp
-  dir=$(dirname "$dest")
-  mkdir -p "$dir" || return 1
-  tmp=$(mktemp "$dir/.aicoding-deploy.XXXXXX") || return 1
-  printf '{}' > "$tmp" || { rm -f "$tmp"; return 1; }
-  chmod 0600 "$tmp" || { rm -f "$tmp"; return 1; }
-  mv -f "$tmp" "$dest" || { local rc=$?; rm -f "$tmp"; return "$rc"; }
-}
-
-# deploy_overwrite_file <src> <dest> <source_label_relative_to_blueprint>
-# Copies src to dest and records {mode: overwrite, source, deployed_hash}
-# in the pending manifest. Caller must wrap with manifest_stage_begin/commit.
-deploy_overwrite_file() {
-  local src=$1 dest=$2 label=$3
-  local mode=0600
-  [[ -x "$src" ]] && mode=0700
-  _write_atomic "$src" "$dest" "$mode" || return $?
-  local h
-  h=$(compute_managed_hash "$dest") || return $?
-  [ -n "$h" ] || return 1
-  local entry
-  entry=$(jq -n --arg s "$label" --arg h "$h" \
-    '{mode:"overwrite", source:$s, deployed_hash:$h}') || return $?
-  manifest_set_file "$dest" "$entry"
-}
-
-# _json_merge_into <target_path> <source_path> — deep-merge source into
-# target; source wins for scalars; "allow"/"deny" arrays are unioned (a sync
-# must never drop a user-added permission rule); other arrays: source wins.
-#
-# INVARIANT: keep "allow"/"deny" arrays SORTED in the blueprint configs. The
-# union below runs through jq `unique`, which sorts — but a first install of a
-# missing target copies the blueprint file verbatim (see the `cp` above). An
-# unsorted blueprint array therefore lands unsorted, and every later sync
-# re-sorts it and reports phantom drift forever. Caught by sync.bats
-# "sync right after install reports Nothing to do".
-KANBAN_MCP_URL="https://kanban.dataprospectors.at/mcp"
-
-_json_merge_into() {
-  local target=$1 source=$2
-  if [ ! -f "$target" ]; then
-    # Not `cp`: a first install of a credential-bearing merge target would
-    # land under the ambient umask (0664 under umask 0002).
-    _write_atomic "$source" "$target" 0600
-    return
-  fi
-  # If jq can't parse either side, fail WITHOUT touching the target — the
-  # fallthrough used to overwrite it with an empty line (data loss on a
-  # hand-broken user config) in sync's non-set-e context.
-  local merged
-  # A deep merge would graft the hosted kanban entry onto the stdio entry the
-  # blueprint used to ship, and would keep a revoked bearer when KANBAN_TOKEN
-  # is gone. Drop both blueprint-owned shapes first; other entries stay.
-  merged=$(jq -s --arg hosted "$KANBAN_MCP_URL" '
-    def retired_kanban:
-      . == {"command":"kanban-mcp"}
-      or . == {"type":"local","command":["kanban-mcp"],"enabled":true};
-    def drop_owned_kanban($src):
-      reduce ("mcpServers", "mcp") as $k (.;
-        if (.[$k]? | type) == "object" and (.[$k].kanban? | type) == "object"
-           and ((.[$k].kanban | retired_kanban)
-                or (.[$k].kanban.url == $hosted and (($src[$k].kanban? // null) == null)))
-        then .[$k] |= del(.kanban) else . end);
-    def deep_merge(key):
-      if length == 2 then
-        .[0] as $a | .[1] as $b |
-        if ($a|type)=="object" and ($b|type)=="object" then
-          ($a|keys_unsorted) + ($b|keys_unsorted) | unique
-          | map(. as $k |
-              if ($a|has($k)) and ($b|has($k)) then
-                {($k): ([$a[$k],$b[$k]] | deep_merge($k))}
-              elif ($b|has($k)) then {($k): $b[$k]}
-              else {($k): $a[$k]} end)
-          | add // {}
-        elif ($a|type)=="array" and ($b|type)=="array" then
-          if key == "allow" or key == "deny" then ($a + $b) | unique else $b end
-        else
-          if ($b == null or $b == "") then $a else $b end
-        end
-      else .[0] end;
-    .[1] as $src | [(.[0] | drop_owned_kanban($src)), $src] | deep_merge("")
-  ' "$target" "$source") || return 1
-  _write_text_atomic "$target" "$merged" 0600
-}
-
-# deploy_merge_file <src> <dest> <source_label>
-deploy_merge_file() {
-  local src=$1 dest=$2 label=$3
-  mkdir -p "$(dirname "$dest")" || return 1
-  _json_merge_into "$dest" "$src" || return $?
-  local entry
-  entry=$(jq -n --arg s "$label" '{mode:"merge", source:$s}') || return $?
-  manifest_set_file "$dest" "$entry"
-}
-
-# deploy_marker_block <dest> <body> <start_marker> <end_marker>
-# Inserts or replaces a guarded block in dest. If markers are absent,
-# appends `<start>\n<body>\n<end>` at the end. If markers exist, replaces
-# the content between them (the markers themselves are preserved).
-deploy_marker_block() {
-  local dest=$1 body=$2 start=$3 end=$4
-  mkdir -p "$(dirname "$dest")" || return 1
-  # The destination is the user's own dotfile (~/.bashrc), so an existing
-  # mode is theirs to keep. What must never happen is the rename below
-  # WIDENING it: the old "$dest.tmp" redirect took the ambient umask, so a
-  # 600 rc file came back 664 on every sync. A new file starts at 0600.
-  local mode=0600
-  [[ -f "$dest" ]] && mode=$(stat -c '%a' "$dest")
-  local tmp
-  tmp=$(mktemp) || return 1
-
-  if [[ -f "$dest" ]] && grep -qxF "$start" "$dest" && grep -qxF "$end" "$dest"; then
-    # Replace existing block.
-    awk -v s="$start" -v e="$end" -v b="$body" '
-      $0 == s { print; print b; in_block = 1; next }
-      $0 == e { print; in_block = 0; next }
-      !in_block { print }
-    ' "$dest" > "$tmp" || { rm -f "$tmp"; return 1; }
-  else
-    # Append a new block at the end.
-    {
-      [[ -f "$dest" ]] && cat "$dest"
-      printf '\n%s\n' "$start"
-      printf '%s\n' "$body"
-      printf '%s\n' "$end"
-    } > "$tmp" || { rm -f "$tmp"; return 1; }
-  fi
-  _write_atomic "$tmp" "$dest" "$mode" || { local rc=$?; rm -f "$tmp"; return "$rc"; }
-  rm -f "$tmp"
-
-  local h
-  h=$(compute_block_hash "$dest" "$start" "$end") || return $?
-  [ -n "$h" ] || return 1
-  local entry
-  entry=$(jq -n --arg s "$start" --arg e "$end" --arg h "$h" \
-    '{mode:"marker_block", source:"(composed)", marker_start:$s, marker_end:$e, deployed_block_hash:$h}') || return $?
-  manifest_set_file "$dest" "$entry"
-}
-
-remove_managed_file() {
-  local dest=$1
-  rm -f "$dest" || return $?
-  manifest_remove_file "$dest"
-}
-
-# ----------------------------------------------------------------------------
-# Managed inventory — single source of truth for both install.sh and
-# bin/aicoding-sync. Each emitter prints pipe-delimited rows of the form
-# <dest_abs_path>|<mode>|<source_rel_to_blueprint>. Callers consume with
-#   while IFS= read -r entry; do ... done < <(managed_inventory_overwrite)
-# (Do NOT read into a bash array via $() — the dest paths interpolate $HOME
-# and we want shell expansion to happen at emit time, not earlier.)
-# ----------------------------------------------------------------------------
-
-# managed_inventory_overwrite — whole-file managed deployments. Emits
-# "dest|overwrite|blueprint-relative-source" lines. Profile-aware: hosts
-# (manifest_get_profile = host) skip container-only environment wiring
-# (tmux, ssh-agent watcher) and gain the boot-sync trigger. Agent CLI
-# configs (codex) are managed on BOTH profiles, but codex's own
-# approval_policy/sandbox_mode values inside that file are further
-# profile-gated by _substitute_file_to (user decision 2026-08-31, revising
-# 2026-08-19: containers keep automode, host profiles get
-# workspace-write + on-request since they have no container isolation
-# boundary; repo-level AGENTS.md/config still overrides globals per each
-# CLI's own precedence rules).
-managed_inventory_overwrite() {
-  local profile
-  profile=$(manifest_get_profile)
-  cat <<EOF
-$HOME/.claude/hooks/custom-statusline.js|overwrite|configs/claude/hooks/custom-statusline.js
-$HOME/.claude/hooks/bw-deny-files.sh|overwrite|configs/claude/hooks/bw-deny-files.sh
-$HOME/.claude/hooks/kanban-work-hook.sh|overwrite|configs/claude/hooks/kanban-work-hook.sh
-$HOME/.pi/agent/extensions/bw-deny-files.ts|overwrite|configs/pi/extensions/bw-deny-files.ts
-$HOME/.claude/hooks/check-archived-docs.sh|overwrite|configs/claude/hooks/check-archived-docs.sh
-$HOME/.claude/hooks/llmwiki-distill.sh|overwrite|configs/claude/hooks/llmwiki-distill.sh
-$HOME/.claude/hooks/agent-waiting.sh|overwrite|configs/claude/hooks/agent-waiting.sh
-$HOME/.claude/hooks/agent-working.sh|overwrite|configs/claude/hooks/agent-working.sh
-$HOME/.claude/hooks/memory-hint.sh|overwrite|configs/claude/hooks/memory-hint.sh
-$HOME/.claude/hooks/opus-verbosity.sh|overwrite|configs/claude/hooks/opus-verbosity.sh
-$HOME/.claude/hooks/fable-guidance.sh|overwrite|configs/claude/hooks/fable-guidance.sh
-$HOME/.claude/hooks/redact-sessions-hook.sh|overwrite|configs/claude/hooks/redact-sessions-hook.sh
-$HOME/.claude/hooks/redact-sessions-pending.sh|overwrite|configs/claude/hooks/redact-sessions-pending.sh
-$HOME/.claude/agents/llmwiki-distiller.md|overwrite|configs/claude/agents/llmwiki-distiller.md
-$HOME/.claude/CLAUDE.md|overwrite|configs/claude/CLAUDE.md
-$HOME/.bashrc.d/aicoding-env.sh|overwrite|configs/bash/env.sh
-$HOME/.bashrc.d/aicoding-update-notify.sh|overwrite|configs/bash/update-notify.sh
-$HOME/.bashrc.d/aicoding-aliases.sh|overwrite|configs/bash/aliases.sh
-$HOME/.local/bin/git-credential-aicoding|overwrite|configs/git/git-credential-aicoding
-$HOME/.local/bin/memory-hint|overwrite|configs/memory/memory-hint
-$HOME/.local/bin/aicoding-worktree|overwrite_raw|bin/aicoding-worktree
-$HOME/.local/bin/cloudflare-render|overwrite|configs/cloudflare/cloudflare-render
-$HOME/.local/bin/secrets-check|overwrite|configs/secrets/secrets-check
-$HOME/.codex/AGENTS.md|overwrite|configs/codex/AGENTS.md
-$HOME/.cursor/skills/aicoding-estate/SKILL.md|overwrite|configs/cursor/skills/aicoding-estate/SKILL.md
-$HOME/.cursor/hooks.json|overwrite|configs/cursor/hooks.json
-$HOME/.config/opencode/plugins/kanban-work.js|overwrite|configs/opencode/plugins/kanban-work.js
-EOF
-  if [[ "$profile" == host ]]; then
-    echo "$HOME/.bashrc.d/aicoding-boot-sync.sh|overwrite|configs/bash/boot-sync.sh"
-  else
-    cat <<EOF
-$HOME/.tmux.conf|overwrite|configs/tmux/tmux.conf
-$HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|overwrite|configs/bash/ssh-auth-sock.sh
-EOF
-  fi
-}
-
-# managed_inventory_merge — JSON configs deep-merged into user files.
-# All agent CLI configs are managed on both profiles (see
-# managed_inventory_overwrite); merge mode keeps personal entries (e.g. a
-# host's own MCP servers) while adding/updating the blueprint's keys.
-managed_inventory_merge() {
-  cat <<EOF
-$HOME/.claude/settings.json|merge|configs/claude/settings.json
-$HOME/.config/opencode/opencode.json|merge|configs/opencode/opencode.json
-$HOME/.cursor/mcp.json|merge|configs/cursor/mcp.json
-$HOME/.cursor/cli-config.json|merge|configs/cursor/cli-config.json
-EOF
-}
-
-# managed_inventory_smart — setting-aware formats whose engine owns planning,
-# application, previews, and receipts. These paths must never enter overwrite,
-# backup, generic JSON merge, removal, or raw-diff handling.
-managed_inventory_smart() {
-  printf '%s\n' "$HOME/.codex/config.toml|toml_merge|configs/codex/config.toml"
-}
-
-# Fixed marker strings for the managed ~/.bashrc block.
-managed_marker_block_start() { printf '%s' '# >>> aicoding managed block — do not edit between markers >>>'; }
-managed_marker_block_end()   { printf '%s' '# <<< aicoding managed block <<<'; }
-
-# managed_bashrc_path — destination of the marker_block managed file.
-managed_bashrc_path() { printf '%s' "$HOME/.bashrc"; }
-
-# managed_bashrc_block_body — emit the body that lives between the markers.
-managed_bashrc_block_body() {
-  cat <<'EOF'
-# Sourced from configs/bash/* via the aicoding blueprint. Edit those
-# files (or your own ~/.bashrc.d/local-*.sh additions), not this block.
-export PATH="/usr/local/go/bin:$PATH"
-for _aicoding_f in "$HOME"/.bashrc.d/*.sh; do
-  [ -r "$_aicoding_f" ] && . "$_aicoding_f"
-done
-unset _aicoding_f
-EOF
-}
-
-# load_secrets_env — source ~/.aicodingsetup/.secrets.env if present so that
-# _substitute_file_to has the API-key env vars it needs. Idempotent and safe
-# to call with no file present (no-op).
 load_secrets_env() {
   local f="${AICODING_SECRETS_FILE:-$HOME/.aicodingsetup/.secrets.env}"
   if [ -f "$f" ]; then
@@ -778,18 +167,8 @@ load_secrets_env() {
   fi
 }
 
-# NOTE: a `substitute_secrets <content>` string helper used to live here. It
-# had no callers left, and it substituted credentials with no _is_prose_dest
-# gate — so the first future caller would have reintroduced CAF-003 (a live
-# key in a file an agent reads as prose) in a public repo. Deleted rather
-# than kept as a loaded gun. Use _render_managed_source / the deploy_*
-# wrappers below, which decide prose-vs-config from the DESTINATION.
-
-# _substitute_home_only <src> <dest_tmp> — expand {{HOME}} and NOTHING else.
-# Agent-readable prose (skills, commands) goes through this instead of
-# _substitute_file_to: a credential in a file an agent must read to use it
-# lands in model context and transcripts on every use (CAF-003). {{HOME}}
-# is kept because it is a path, not a secret, and skills genuinely need it.
+# Agent-readable prose gets {{HOME}} and nothing else: a credential in a file
+# an agent must read lands in model context and transcripts (CAF-003).
 _substitute_home_only() {
   local src=$1 out=$2
   local home_esc
@@ -797,17 +176,8 @@ _substitute_home_only() {
   sed -e "s/{{HOME}}/$home_esc/g" "$src" > "$out"
 }
 
-# _is_prose_dest <dest> — true when the destination is markdown an agent
-# reads as instructions: a deployed skill, slash command, subagent
-# definition, or a global CLAUDE.md / AGENTS.md. Those are the files that
-# must never be on the secret-substitution path.
-#
-# The list is deliberately wider than the sources that carry a placeholder
-# today. Nothing in configs/claude/CLAUDE.md or configs/codex/AGENTS.md
-# substitutes right now, but adding one {{PLACEHOLDER}} there would put a
-# live credential back into a file every agent reads at session start --
-# exactly CAF-003 in a new location. The route, not the current content,
-# is what has to be safe.
+# The route, not today's content, has to be safe: these destinations never
+# receive secrets even if a placeholder is added to their source later.
 _is_prose_dest() {
   case "$1" in
     */.claude/skills/*.md|*/.claude/commands/*.md|*/.claude/agents/*.md) return 0 ;;
@@ -816,10 +186,8 @@ _is_prose_dest() {
   esac
 }
 
-# _render_managed_source <src> <dest> <out> — render src exactly as it will
-# land at dest. The deploy path, classify's simulation and the backup check
-# all go through here: if any of them decided prose-vs-config differently,
-# every skill file would report phantom drift forever.
+# The destination decides prose versus config, so every path that renders
+# (deploy, retired-file provenance) agrees byte for byte.
 _render_managed_source() {
   local src=$1 dest=$2 out=$3
   if _is_prose_dest "$dest"; then
@@ -829,35 +197,24 @@ _render_managed_source() {
   fi
 }
 
-# _substitute_file_to <src> <dest_tmp> — expand {{HOME}}, {{*_API_KEY}} and
-# the profile-gated codex placeholders, reading from a file and writing to
-# another file, preserving the source's exact byte
-# content (including any trailing newline). Uses sed to avoid bash command
-# substitution's "strip trailing newlines" behavior.
-#
-# CONFIGS ONLY. Never point this at markdown an agent reads; see
-# _substitute_home_only above.
+# CONFIGS ONLY: renders credentials and the profile-gated Codex posture.
+# sed, not command substitution, so trailing newlines survive.
 _substitute_file_to() {
   local src=$1 out=$2
-  # This path renders credentials. Keep the output private before the first
-  # byte is written; redirecting to an existing file preserves this mode.
   if [[ -e "$out" ]]; then
     chmod 0600 "$out" || return 1
   else
     (umask 077; : > "$out") || return 1
   fi
-  # The placeholders are mutually independent; one sed pipeline handles
-  # all of them with each value safely quoted (we escape `&`, `/`, and `\`
-  # because they're sed-replacement metacharacters).
   local home_v="$HOME"
   local fc_v="${FIRECRAWL_API_KEY:-}"
   local br_v="${BRAVE_API_KEY:-}"
   local mr_v="${MEMORY_ROUTER_TOKEN:-}"
   local kb_v="${KANBAN_TOKEN:-}"
-  # Codex sandbox posture is PROFILE-GATED, not a secret: fixed literals from
-  # this function, never user input, so no _esc call needed for these two.
+  # Hosts have no container isolation boundary: they keep Codex prompting and
+  # sandboxed (user decision 2026-08-31).
   local codex_approval_v codex_sandbox_v
-  if [[ "$(manifest_get_profile)" == host ]]; then
+  if [[ "$(aicoding_profile)" == host ]]; then
     codex_approval_v="on-request"
     codex_sandbox_v="workspace-write"
   else
@@ -879,15 +236,9 @@ _substitute_file_to() {
   _strip_absent_secret_servers "$src" "$out"
 }
 
-# _strip_absent_secret_servers <src> <out>: with MEMORY_ROUTER_TOKEN or
-# KANBAN_TOKEN unset, substitution leaves "Bearer " in the agent CLI configs:
-# a broken-but-non-empty scalar that a merge would write over a user's valid
-# manual header, and that gives clean installs an enabled 401ing MCP. Match
-# Claude's behavior (install_claude_mcps skips the server without the token)
-# by stripping that server's entry from the rendered config instead.
-# Runs inside _substitute_file_to so classify's simulation and the deploy
-# path see identical content — stripping only at deploy time would leave the
-# classifier comparing against an entry that never lands (phantom drift).
+# A missing MEMORY_ROUTER_TOKEN or KANBAN_TOKEN would render "Bearer " into
+# an enabled MCP that 401s; drop that server from the rendered config instead,
+# matching Claude, which skips registering it.
 _strip_absent_secret_servers() {
   local src=$1 out=$2
   local -a servers=()
@@ -896,21 +247,11 @@ _strip_absent_secret_servers() {
   (( ${#servers[@]} )) || return 0
   local filter tmp names
   case "$src" in
-    */configs/cursor/mcp.json)
-      filter=cursor
-      ;;
-    */configs/opencode/opencode.json)
-      filter=opencode
-      ;;
-    */configs/codex/config.toml)
-      filter=codex
-      ;;
+    */configs/cursor/mcp.json) filter=cursor ;;
+    */configs/opencode/opencode.json) filter=opencode ;;
+    */configs/codex/config.toml) filter=codex ;;
     *) return 0 ;;
   esac
-
-  # Write filters to a separate private file so a failed tool cannot
-  # truncate the already-rendered source. mktemp creates mode 0600 even
-  # under the ordinary 0022 umask.
   tmp=$(mktemp "${out}.strip.XXXXXX") || return 1
   chmod 0600 "$tmp" || { rm -f -- "$tmp"; return 1; }
   names=$(printf '%s\n' "${servers[@]}" | jq -R . | jq -sc .) \
@@ -927,9 +268,6 @@ _strip_absent_secret_servers() {
         || { rm -f -- "$tmp"; return 1; }
       ;;
     codex)
-      # Drop each [mcp_servers.<name>] section (header through the line
-      # before the next [section] or EOF). Explanatory comments live inside
-      # the section so they disappear with the server.
       awk -v names="${servers[*]}" '
         BEGIN { n = split(names, list, " "); for (i = 1; i <= n; i++) drop["[mcp_servers." list[i] "]"] = 1 }
         /^\[/ { skip = ($0 in drop) }
@@ -938,440 +276,317 @@ _strip_absent_secret_servers() {
       ;;
   esac
   mv -- "$tmp" "$out" || { rm -f -- "$tmp"; return 1; }
-  return 0
 }
 
-# NOTE: `deploy_overwrite_file_substituted` used to live here. It had no
-# production callers (only tests), and it substituted credentials
-# unconditionally, with no _is_prose_dest gate — the exact shape of CAF-003.
-# Deleted; deploy_overwrite_file_rendered below is the replacement and lets
-# the destination decide.
+# --- Inventory ---------------------------------------------------------------
 
-# deploy_overwrite_file_prose <src> <dest> <label> — deploy agent-readable
-# markdown. Same as deploy_overwrite_file_rendered except only {{HOME}}
-# is expanded, so no credential can reach the deployed file.
-deploy_overwrite_file_prose() {
-  local src=$1 dest=$2 label=$3
-  local tmp rc; tmp=$(mktemp) || return 1
-  _substitute_home_only "$src" "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }
-  deploy_overwrite_file "$tmp" "$dest" "$label" || { rc=$?; rm -f "$tmp"; return "$rc"; }
-  rm -f "$tmp"
+enumerate_skill_files() {
+  local root=$1 f
+  [[ -d "$root" ]] || return 0
+  while IFS= read -r f; do
+    printf '%s\n' "${f#"$root"/}"
+  done < <(find "$root" -type f | LC_ALL=C sort)
 }
 
-# deploy_overwrite_file_rendered <src> <dest> <label> — deploy a managed
-# overwrite file, letting the DESTINATION decide whether it is prose or a
-# config. Use this for any loop that walks managed_inventory_overwrite: that
-# inventory mixes configs with markdown every agent reads (~/.claude/CLAUDE.md,
-# ~/.codex/AGENTS.md, ~/.claude/agents/*.md), and a single unconditional
-# substituted deploy over it is how a credential gets back into prose.
-deploy_overwrite_file_rendered() {
-  local src=$1 dest=$2 label=$3
-  local tmp rc; tmp=$(mktemp) || return 1
-  _render_managed_source "$src" "$dest" "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }
-  # Substitution writes through a 0600 mktemp, which strips the source's
-  # executable bit — fatal for hook scripts. Propagate +x, same as
-  # deploy_overwrite_file_rendered.
-  if [[ -x "$src" ]]; then chmod +x "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }; fi
-  deploy_overwrite_file "$tmp" "$dest" "$label" || { rc=$?; rm -f "$tmp"; return "$rc"; }
-  rm -f "$tmp"
-}
+_managed_config_data() { printf '%s\n' "$AICODING_BLUEPRINT_CLONE/configs/managed-config.json"; }
 
-# deploy_merge_file_substituted <src> <dest> <label>
-# Like deploy_merge_file, but expands placeholders in src before merging.
-deploy_merge_file_substituted() {
-  local src=$1 dest=$2 label=$3
-  local tmp rc; tmp=$(mktemp) || return 1
-  _substitute_file_to "$src" "$tmp" || { rc=$?; rm -f "$tmp"; return "$rc"; }
-  deploy_merge_file "$tmp" "$dest" "$label" || { rc=$?; rm -f "$tmp"; return "$rc"; }
-  rm -f "$tmp"
-}
-
-# manifest_check_schema — exit non-zero if the on-disk manifest's
-# schema_version is higher than this library understands. Call after
-# verifying the manifest file exists.
-manifest_check_schema() {
-  local current=2
-  local manifest_schema
-  manifest_schema=$(jq -r '.schema_version // 1' "$AICODING_MANIFEST" 2>/dev/null || echo 1)
-  if [[ "$manifest_schema" =~ ^[0-9]+$ ]] && (( manifest_schema > current )); then
-    echo "aicoding-sync: manifest schema_version $manifest_schema is newer than this tool (knows up to $current)." >&2
-    echo "Update aiCodingBaseSetup before running this." >&2
-    exit 3
-  fi
-}
-
-# classify_marker_block <dest> — echo a bucket like classify_file, specialized
-# for marker_block files. The "new" hash is what deploy_marker_block will
-# write (the body lines, each terminated by \n; matches compute_block_hash's
-# awk-print semantics). Returns one of: up_to_date, drifted_and_updating,
-# new_file.
-classify_marker_block() {
-  local dest=$1
-  local entry deployed current
-  entry=$(manifest_get_file "$dest")
-  local start; start=$(managed_marker_block_start)
-  local end;   end=$(managed_marker_block_end)
-
-  if [ "$entry" = "null" ]; then
-    # Not tracked yet. If the user happens to have an existing block, the
-    # caller (aicoding-sync) shouldn't be classifying this — adopt is
-    # install.sh's job. Treat as new_file so the apply step writes it.
-    echo "new_file"
-    return 0
-  fi
-
-  # File truly absent on disk → restore (not drift; nothing was edited away,
-  # the file simply isn't there). Distinguish from "file present but markers
-  # missing", which IS user-edit drift and stays drifted_and_updating.
-  if [ ! -e "$dest" ]; then
-    echo "restore"
-    return 0
-  fi
-
-  current=$(compute_block_hash "$dest" "$start" "$end")
-  deployed=$(printf '%s' "$entry" | jq -r '.deployed_block_hash // empty')
-
-  if [ -z "$current" ]; then
-    # File present but our managed markers absent. The dominant cause is an
-    # ephemeral-home reset (devpod recreate ships a fresh image ~/.bashrc with
-    # no markers) — NOT a user edit. Treat as restore so reconcile re-adds the
-    # block automatically; the block is self-contained between markers and only
-    # appends, so re-adding it never clobbers the user's own ~/.bashrc content.
-    # (Previously this was drifted_and_updating, which reconcile skips — that
-    # stranded the block, and anything in ~/.bashrc.d/*.sh, after every recreate.)
-    echo "restore"
-    return 0
-  fi
-
-  # Compare current block hash to the body the library would deploy. We
-  # build the expected hash by computing compute_block_hash on a temp file
-  # with the canonical body between the markers — guarantees the same awk
-  # semantics as the on-disk path.
-  local tmp_expected new_hash
-  tmp_expected=$(mktemp)
-  {
-    printf '%s\n' "$start"
-    managed_bashrc_block_body
-    printf '%s\n' "$end"
-  } > "$tmp_expected"
-  new_hash=$(compute_block_hash "$tmp_expected" "$start" "$end")
-  rm -f "$tmp_expected"
-
-  if [ "$current" = "$deployed" ] && [ "$current" = "$new_hash" ]; then
-    echo "up_to_date"
-  elif [ "$current" = "$deployed" ] && [ "$current" != "$new_hash" ]; then
-    # Tracked, user hasn't edited the block, blueprint advanced.
-    echo "will_update"
-  elif [ "$current" != "$deployed" ] && [ "$current" = "$new_hash" ]; then
-    echo "drifted_but_aligned"
+# Whole-file deployments as "dest|kind|source": kind "owned" is rendered,
+# "raw" is copied byte for byte. Hosts skip container-only wiring (tmux,
+# ssh-agent watcher) and gain the boot-sync trigger.
+managed_inventory_overwrite() {
+  cat <<EOF
+$HOME/.claude/hooks/custom-statusline.js|owned|configs/claude/hooks/custom-statusline.js
+$HOME/.claude/hooks/bw-deny-files.sh|owned|configs/claude/hooks/bw-deny-files.sh
+$HOME/.claude/hooks/kanban-work-hook.sh|owned|configs/claude/hooks/kanban-work-hook.sh
+$HOME/.pi/agent/extensions/bw-deny-files.ts|owned|configs/pi/extensions/bw-deny-files.ts
+$HOME/.claude/hooks/check-archived-docs.sh|owned|configs/claude/hooks/check-archived-docs.sh
+$HOME/.claude/hooks/llmwiki-distill.sh|owned|configs/claude/hooks/llmwiki-distill.sh
+$HOME/.claude/hooks/agent-waiting.sh|owned|configs/claude/hooks/agent-waiting.sh
+$HOME/.claude/hooks/agent-working.sh|owned|configs/claude/hooks/agent-working.sh
+$HOME/.claude/hooks/memory-hint.sh|owned|configs/claude/hooks/memory-hint.sh
+$HOME/.claude/hooks/opus-verbosity.sh|owned|configs/claude/hooks/opus-verbosity.sh
+$HOME/.claude/hooks/fable-guidance.sh|owned|configs/claude/hooks/fable-guidance.sh
+$HOME/.claude/hooks/redact-sessions-hook.sh|owned|configs/claude/hooks/redact-sessions-hook.sh
+$HOME/.claude/hooks/redact-sessions-pending.sh|owned|configs/claude/hooks/redact-sessions-pending.sh
+$HOME/.claude/agents/llmwiki-distiller.md|owned|configs/claude/agents/llmwiki-distiller.md
+$HOME/.claude/CLAUDE.md|owned|configs/claude/CLAUDE.md
+$HOME/.bashrc.d/aicoding-env.sh|owned|configs/bash/env.sh
+$HOME/.bashrc.d/aicoding-update-notify.sh|owned|configs/bash/update-notify.sh
+$HOME/.bashrc.d/aicoding-aliases.sh|owned|configs/bash/aliases.sh
+$HOME/.local/bin/git-credential-aicoding|owned|configs/git/git-credential-aicoding
+$HOME/.local/bin/memory-hint|owned|configs/memory/memory-hint
+$HOME/.local/bin/aicoding-worktree|raw|bin/aicoding-worktree
+$HOME/.local/bin/cloudflare-render|owned|configs/cloudflare/cloudflare-render
+$HOME/.local/bin/secrets-check|owned|configs/secrets/secrets-check
+$HOME/.codex/AGENTS.md|owned|configs/codex/AGENTS.md
+$HOME/.cursor/skills/aicoding-estate/SKILL.md|owned|configs/cursor/skills/aicoding-estate/SKILL.md
+$HOME/.cursor/hooks.json|owned|configs/cursor/hooks.json
+$HOME/.config/opencode/plugins/kanban-work.js|owned|configs/opencode/plugins/kanban-work.js
+EOF
+  if [[ "$(aicoding_profile)" == host ]]; then
+    echo "$HOME/.bashrc.d/aicoding-boot-sync.sh|owned|configs/bash/boot-sync.sh"
   else
-    echo "drifted_and_updating"
+    cat <<EOF
+$HOME/.tmux.conf|owned|configs/tmux/tmux.conf
+$HOME/.bashrc.d/aicoding-ssh-auth-sock.sh|owned|configs/bash/ssh-auth-sock.sh
+EOF
   fi
 }
 
-# classify_managed_files — populate the caller's BUCKETS, FILE_MODE, and
-# FILE_SOURCE associative arrays with one entry per managed file (overwrite,
-# merge, marker_block, blueprint skills) plus any manifest entries not in
-# the current blueprint inventory (bucketed to_remove).
-#
-# Caller must:
-#   - declare -A BUCKETS FILE_MODE FILE_SOURCE
-#   - set AICODING_BLUEPRINT_CLONE to the blueprint working tree
-#   - set AICODING_MANIFEST to the manifest path (read for to_remove sweep)
-#
-# Used by bin/aicoding-sync and by install.sh's reconcile mode.
-classify_managed_files() {
-  local smart_context=${1:-installer}
-  local dest mode source plan
-  # Each classification is a complete snapshot. Clearing caller-owned maps is
-  # especially important for smart_retired: after its manifest entry is
-  # removed, a second classification in the same shell must not announce it
-  # again from stale array state.
-  BUCKETS=()
-  FILE_MODE=()
-  FILE_SOURCE=()
-  declare -gA SMART_PLAN SMART_APPLY_RESULT SMART_DECISIONS
-  SMART_PLAN=()
-  SMART_APPLY_RESULT=()
-  SMART_DECISIONS=()
-  # Overwrite-mode files from the blueprint inventory.
-  while IFS='|' read -r dest mode source; do
-    [[ -z "$dest" ]] && continue
-    FILE_MODE[$dest]=$mode
-    FILE_SOURCE[$dest]=$source
-    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" "$mode")
-  done < <(managed_inventory_overwrite)
-
-  # Merge-mode files.
-  while IFS='|' read -r dest mode source; do
-    [[ -z "$dest" ]] && continue
-    FILE_MODE[$dest]=$mode
-    FILE_SOURCE[$dest]=$source
-    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" "$mode")
-  done < <(managed_inventory_merge)
-
-  # Setting-aware files retain the complete plan JSON because conflicts can
-  # coexist with safe config updates and receipt-only changes.
-  while IFS='|' read -r dest mode source; do
-    [[ -z "$dest" ]] && continue
-    FILE_MODE[$dest]=$mode
-    FILE_SOURCE[$dest]=$source
-    codex_smart_plan "$dest" "$AICODING_BLUEPRINT_CLONE/$source" "$smart_context"
-    plan=$CODEX_SMART_RESULT
-    SMART_PLAN[$dest]=$plan
-    BUCKETS[$dest]=$(codex_smart_bucket "$plan")
-    if [[ "${BUCKETS[$dest]}" == up_to_date ]] \
-       && [[ $(manifest_get_file "$dest") == null ]] \
-       && [[ $(printf '%s' "$plan" | jq -r '.unmanaged') == false ]]; then
-      # A valid shared receipt establishes management even when this
-      # container-local manifest has not recorded the path yet.
-      BUCKETS[$dest]=smart_update
-    fi
-  done < <(managed_inventory_smart)
-
-  # marker_block (~/.bashrc).
-  local bashrc_dest
-  bashrc_dest=$(managed_bashrc_path)
-  FILE_MODE[$bashrc_dest]=marker_block
-  FILE_SOURCE[$bashrc_dest]="(composed)"
-  BUCKETS[$bashrc_dest]=$(classify_marker_block "$bashrc_dest")
-
-  # Skills enumerated from the blueprint clone — every file, not just
-  # SKILL.md. Markdown keeps substitution; everything else is verbatim
-  # (overwrite_raw), because the sed substitution corrupts binaries.
-  local skill_rel
-  while IFS= read -r skill_rel; do
-    [[ -z "$skill_rel" ]] && continue
-    dest="$HOME/.claude/skills/$skill_rel"
-    source="skills/$skill_rel"
-    if [[ "$skill_rel" == *.md ]]; then
-      FILE_MODE[$dest]=overwrite
+# Every managed destination, one "dest|kind|source" row each. Kinds: owned,
+# raw, mixed (owned/seeded keys from configs/managed-config.json) and block
+# (the ~/.bashrc marker block).
+managed_inventory() {
+  local rel
+  managed_inventory_overwrite
+  jq -r --arg h "$HOME" '.mixed | to_entries[] | "\($h)/\(.key)|mixed|\(.value.source)"' \
+    "$(_managed_config_data)" || return 1
+  printf '%s|block|\n' "$HOME/.bashrc"
+  while IFS= read -r rel; do
+    [[ -n "$rel" ]] || continue
+    if [[ "$rel" == *.md ]]; then
+      printf '%s|owned|skills/%s\n' "$HOME/.claude/skills/$rel" "$rel"
     else
-      FILE_MODE[$dest]=overwrite_raw
+      printf '%s|raw|skills/%s\n' "$HOME/.claude/skills/$rel" "$rel"
     fi
-    FILE_SOURCE[$dest]=$source
-    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" "${FILE_MODE[$dest]}")
   done < <(enumerate_skill_files "$AICODING_BLUEPRINT_CLONE/skills")
-
-  # Slash commands enumerated from the blueprint clone.
-  local cmd_file cmd_name
-  for cmd_file in "$AICODING_BLUEPRINT_CLONE/commands"/*.md; do
-    [[ ! -f "$cmd_file" ]] && continue
-    cmd_name=$(basename "$cmd_file")
-    dest="$HOME/.claude/commands/$cmd_name"
-    source="commands/$cmd_name"
-    FILE_MODE[$dest]=overwrite
-    FILE_SOURCE[$dest]=$source
-    BUCKETS[$dest]=$(classify_file "$dest" "$AICODING_BLUEPRINT_CLONE/$source" overwrite)
+  for rel in "$AICODING_BLUEPRINT_CLONE/commands"/*.md; do
+    [[ -f "$rel" ]] || continue
+    printf '%s|owned|commands/%s\n' "$HOME/.claude/commands/${rel##*/}" "${rel##*/}"
   done
-
-  # Files in manifest but absent from blueprint inventory → to_remove.
-  local manifest_files
-  manifest_files=$(jq -r '.files | keys[]' "$AICODING_MANIFEST")
-  while IFS= read -r dest; do
-    [[ -z "$dest" ]] && continue
-    if [[ -z "${FILE_MODE[$dest]:-}" ]]; then
-      # Codex config is personal content even after its blueprint source is
-      # retired. Remove only local manifest tracking (legacy overwrite entries
-      # included); keep the config and shared receipt.
-      if [[ "$dest" == "$HOME/.codex/config.toml" ]]; then
-        mode=$(manifest_get_file "$dest" | jq -r '.mode // empty' 2>/dev/null)
-        if [[ "$mode" == toml_merge || "$mode" == overwrite ]]; then
-          FILE_MODE[$dest]=toml_merge
-          FILE_SOURCE[$dest]=$(manifest_get_file "$dest" | jq -r '.source // "configs/codex/config.toml"')
-          BUCKETS[$dest]=smart_retired
-          continue
-        fi
-      fi
-      BUCKETS[$dest]=to_remove
-    fi
-  done <<<"$manifest_files"
-  # Ensure a clean exit code under `set -e` — the while loop above ends with
-  # whatever the last short-circuit `&&` returned (often 1 when nothing was
-  # appended), which would otherwise propagate up and abort the script.
-  return 0
 }
 
-# apply_managed_buckets <bucket_list> — apply blueprint state to disk for
-# files whose bucket appears in the space-separated <bucket_list>. Buckets
-# not listed are silently skipped (the caller reports them separately).
-#
-# Caller must have already called classify_managed_files (populating
-# BUCKETS / FILE_MODE / FILE_SOURCE) and manifest_stage_begin. Caller is
-# responsible for manifest_stage_commit afterwards.
-#
-# Buckets the caller can request:
-#   restore               — file in manifest, missing on disk; redeploy.
-#   new_file              — in blueprint, not in manifest, dest absent; deploy.
-#   new_file_existing     — in blueprint, not in manifest, dest already on
-#                           disk (personal file); back up, then deploy.
-#   will_update           — tracked, unedited, blueprint changed; deploy.
-#   drifted_but_aligned   — refresh manifest hash, no file write.
-#   merge                 — re-merge JSON merge-mode files.
-#   drifted_and_updating  — back up current file, deploy blueprint version.
-#   will_update_owned     — like drifted_and_updating, but for owned overwrite
-#                           plumbing that must self-heal even in reconcile.
-#   to_remove             — delete file and drop from manifest.
-#   smart_update          — apply a safe Codex config/receipt update.
-#   smart_conflict        — apply safe updates; unresolved paths stay local.
-#   smart_error           — preserve smart state and continue other files.
-#   smart_retired         — remove only local smart-manifest tracking.
-apply_managed_buckets() {
-  local allowed=" $1 "  # space-pad for substring match
-  local smart_context=${2:-installer}
-  local dest src bucket mode plan expected decisions rc=0
-  declare -gA APPLY_FAILURES=()
-  for dest in "${!BUCKETS[@]}"; do
-    bucket=${BUCKETS[$dest]}
-    case "$allowed" in
-      *" $bucket "*) ;;
-      *) continue ;;
-    esac
-    mode=${FILE_MODE[$dest]:-overwrite}
-    src="$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]:-}"
+managed_marker_block_start() { printf '%s' '# >>> aicoding managed block — do not edit between markers >>>'; }
+managed_marker_block_end()   { printf '%s' '# <<< aicoding managed block <<<'; }
 
-    # Mode is the hard dispatch boundary: no smart path can fall through to a
-    # generic overwrite, backup, deletion, or raw diff regardless of bucket.
-    if [[ "$mode" == toml_merge ]]; then
-      case "$bucket" in
-        smart_retired)
-          manifest_remove_file "$dest"
-          ;;
-        smart_error)
-          :
-          ;;
-        *)
-          plan=${SMART_PLAN[$dest]:-}
-          expected=""
-          [[ "$smart_context" == interactive ]] \
-            && expected=$(printf '%s' "$plan" | jq -r '.token // empty')
-          decisions=${SMART_DECISIONS[$dest]:-[]}
-          codex_smart_apply "$dest" "$src" "${FILE_SOURCE[$dest]}" \
-            "$smart_context" "$expected" "$decisions"
-          SMART_APPLY_RESULT[$dest]=$CODEX_SMART_RESULT
-          ;;
-      esac
-      continue
-    fi
-    case "$bucket" in
-      restore|new_file|will_update)
-        _apply_deploy "$mode" "$dest" "$src" || { APPLY_FAILURES[$dest]=1; rc=1; }
-        ;;
-      drifted_and_updating|will_update_owned|new_file_existing)
-        if [[ -e "$dest" ]] && ! _incoming_matches_dest "$mode" "$src" "$dest"; then
-          _backup_file "$dest" || { APPLY_FAILURES[$dest]=1; rc=1; continue; }
-        fi
-        _apply_deploy "$mode" "$dest" "$src" || { APPLY_FAILURES[$dest]=1; rc=1; }
-        ;;
-      drifted_but_aligned)
-        if [[ "$mode" = "marker_block" ]]; then
-          local h
-          h=$(compute_block_hash "$dest" \
-              "$(managed_marker_block_start)" "$(managed_marker_block_end)") \
-            || { APPLY_FAILURES[$dest]=1; rc=1; continue; }
-          [ -n "$h" ] || { APPLY_FAILURES[$dest]=1; rc=1; continue; }
-          manifest_set_file "$dest" \
-            "$(jq -n --arg s "$(managed_marker_block_start)" \
-                     --arg e "$(managed_marker_block_end)" \
-                     --arg h "$h" \
-                '{mode:"marker_block",source:"(composed)",marker_start:$s,marker_end:$e,deployed_block_hash:$h}')" \
-            || { APPLY_FAILURES[$dest]=1; rc=1; }
-        else
-          local h
-          # compute_managed_hash, not compute_hash: classification compares
-          # managed hashes, so recording a raw hash here (which for codex's
-          # config.toml includes the ignored [projects.*] trust sections)
-          # would disagree with the next classify and re-drift every sync.
-          h=$(compute_managed_hash "$dest") || { APPLY_FAILURES[$dest]=1; rc=1; continue; }
-          [ -n "$h" ] || { APPLY_FAILURES[$dest]=1; rc=1; continue; }
-          manifest_set_file "$dest" \
-            "$(jq -n --arg s "${FILE_SOURCE[$dest]}" --arg h "$h" \
-                '{mode:"overwrite",source:$s,deployed_hash:$h}')" \
-            || { APPLY_FAILURES[$dest]=1; rc=1; }
-        fi
-        ;;
-      merge)
-        if [[ -f "$src" ]]; then
-          _apply_deploy merge "$dest" "$src" || { APPLY_FAILURES[$dest]=1; rc=1; }
-        else
-          APPLY_FAILURES[$dest]=1
-          rc=1
-        fi
-        ;;
-      to_remove)
-        remove_managed_file "$dest" || { APPLY_FAILURES[$dest]=1; rc=1; }
-        ;;
-    esac
-  done
+managed_bashrc_block_body() {
+  cat <<'EOF'
+# Sourced from configs/bash/* via the aicoding blueprint. Edit those
+# files (or your own ~/.bashrc.d/local-*.sh additions), not this block.
+export PATH="/usr/local/go/bin:$PATH"
+for _aicoding_f in "$HOME"/.bashrc.d/*.sh; do
+  [ -r "$_aicoding_f" ] && . "$_aicoding_f"
+done
+unset _aicoding_f
+EOF
+}
+
+# --- Desired content ---------------------------------------------------------
+
+_managed_bashrc() {
+  local dest=$1 out=$2 start end body
+  start=$(managed_marker_block_start); end=$(managed_marker_block_end)
+  body=$(managed_bashrc_block_body)
+  if [[ -f "$dest" ]] && grep -qxF "$start" "$dest" && grep -qxF "$end" "$dest"; then
+    awk -v s="$start" -v e="$end" -v b="$body" '
+      $0 == s { print; print b; in_block = 1; next }
+      $0 == e { print; in_block = 0; next }
+      !in_block { print }
+    ' "$dest" > "$out"
+  else
+    {
+      [[ -f "$dest" ]] && cat "$dest"
+      printf '\n%s\n%s\n%s\n' "$start" "$body" "$end"
+    } > "$out"
+  fi
+}
+
+_MANAGED_JSON_MERGE='
+def rule($s):
+  if ($s | endswith(".*")) then {p: ($s[:-2] | split(".")), k: "each"}
+  elif ($s | endswith("[]")) then {p: ($s[:-2] | split(".")), k: "union"}
+  else {p: ($s | split(".")), k: "whole"} end;
+def at($p): try getpath($p) catch null;
+def member($xs; $x): $xs | any(.[]; . == $x);
+.[0] as $b | .[1] as $raw
+| reduce $rules.owned[] as $s ($dest;
+    rule($s) as $r | ($b | at($r.p)) as $in
+    | if $r.k == "each" then
+        ((($raw | at($r.p)) // {}) | to_entries) as $shipped
+        | reduce $shipped[] as $e (.;
+            if (($in // {}) | has($e.key)) then .
+            elif ($e.value | type) == "object" and ($e.value.url // null) != null
+                 and (at($r.p + [$e.key]) | type) == "object"
+                 and at($r.p + [$e.key]).url == $e.value.url
+            then delpaths([$r.p + [$e.key]]) else . end)
+        | if $in == null then .
+          else reduce ($in | keys_unsorted[]) as $k (.; setpath($r.p + [$k]; $in[$k])) end
+      elif $in == null then .
+      elif $r.k == "union" then
+        at($r.p) as $cur
+        | if ($cur | type) == "array"
+          then setpath($r.p; $cur + [$in[] | select(member($cur; .) | not)])
+          else setpath($r.p; $in) end
+      else setpath($r.p; $in) end)
+| reduce $rules.seeded[] as $s (.;
+    rule($s) as $r | ($b | at($r.p)) as $in
+    | if $in == null then .
+      elif $r.k == "each" then
+        reduce ($in | keys_unsorted[]) as $k (.;
+          if at($r.p + [$k]) == null then setpath($r.p + [$k]; $in[$k]) else . end)
+      elif at($r.p) == null then setpath($r.p; $in)
+      else . end)
+| reduce $rules.retired[] as $x (.;
+    if member($x.shipped; at($x.path)) then delpaths([$x.path]) else . end)
+'
+
+# Owned keys take the blueprint value, seeded keys are set only when missing,
+# and everything else in the file stays personal. Returns 3 for a malformed
+# destination, which is never overwritten.
+_managed_mixed() {
+  local dest=$1 src=$2 out=$3 rel rules rendered rc=0
+  rel=${dest#"$HOME"/}
+  rules=$(jq -c --arg r "$rel" \
+    '.mixed[$r] + {retired: [.retired_keys[] | select(.dest == $r)]}' \
+    "$(_managed_config_data)") || return 1
+  rendered=$(mktemp) || return 1
+  _substitute_file_to "$src" "$rendered" || { rm -f "$rendered"; return 1; }
+  if [[ ! -s "$dest" ]]; then
+    cat "$rendered" > "$out"
+  elif [[ "$dest" == *.toml ]]; then
+    python3 "$_AICODING_MANAGED_TOML" "$dest" "$rendered" "$src" "$rules" "$out" || rc=$?
+  elif ! jq -e 'type == "object"' "$dest" >/dev/null 2>&1; then
+    rc=3
+  else
+    jq -s --argjson rules "$rules" --slurpfile dest "$dest" \
+      "\$dest[0] as \$dest | $_MANAGED_JSON_MERGE" "$rendered" "$src" > "$out" || rc=3
+  fi
+  rm -f "$rendered"
   return "$rc"
 }
 
-# Internal: dispatch deploy by mode. Substitutes secrets so {{HOME}} and
-# {{*_API_KEY}} never reach disk.
-_apply_deploy() {
-  local mode=$1 dest=$2 src=$3
-  case "$mode" in
-    overwrite)
-      deploy_overwrite_file_rendered "$src" "$dest" "${FILE_SOURCE[$dest]}"
-      ;;
-    overwrite_raw)
-      deploy_overwrite_file "$src" "$dest" "${FILE_SOURCE[$dest]}"
-      ;;
-    merge)
-      _ensure_merge_dest "$dest" || return $?
-      deploy_merge_file_substituted "$src" "$dest" "${FILE_SOURCE[$dest]}"
-      ;;
-    toml_merge)
-      # Smart files are applied above with their preview context and plan
-      # token. Reaching this branch would be a caller bug; never overwrite.
-      return 1
-      ;;
-    marker_block)
-      deploy_marker_block "$dest" \
-        "$(managed_bashrc_block_body)" \
-        "$(managed_marker_block_start)" "$(managed_marker_block_end)"
-      ;;
-  esac
-}
-
-# Internal: true when the incoming rendered content is byte-identical to what
-# is already on disk — a backup would only duplicate the live file (seen live:
-# 7 identical bw-deny-files.sh.bak.* accumulated on one container). Only the
-# overwrite path can predict its result cheaply; merge and marker_block stay
-# conservative (always back up).
-_incoming_matches_dest() {
-  local mode=$1 src=$2 dest=$3
-  [[ -f "$src" ]] || return 1
-  case "$mode" in
-    overwrite)
-      local tmp rc
-      tmp=$(mktemp)
-      _render_managed_source "$src" "$dest" "$tmp" 2>/dev/null
-      cmp -s "$tmp" "$dest"
-      rc=$?
-      rm -f "$tmp"
-      return "$rc"
-      ;;
-    overwrite_raw)
-      cmp -s "$src" "$dest"
-      ;;
+# Write the content <dest> should have into <out>.
+_managed_desired() {
+  local dest=$1 kind=$2 src=$3 out=$4
+  case "$kind" in
+    owned) _render_managed_source "$src" "$dest" "$out" ;;
+    raw) cat "$src" > "$out" ;;
+    mixed) _managed_mixed "$dest" "$src" "$out" ;;
+    block) _managed_bashrc "$dest" "$out" ;;
     *) return 1 ;;
   esac
 }
 
-# Internal: timestamped sibling backup. Caller already verified file exists.
-# Prints the backup-path announcement line to stdout — restores the visible
-# "      backup: <path>" line the original bin/aicoding-update backup_drifted
-# emitted, so users still see exactly where the backup landed.
-_backup_file() {
-  local dest=$1 stamp mode
-  stamp=$(date +%Y%m%d-%H%M%S)
-  # A backup of a credential-bearing file is a second copy of the
-  # credential. Copying the live file's mode is how the *.bak.* siblings of
-  # a 775 hook ended up 775 themselves; the backup gets no group or world
-  # bits, only the executable bit survives as 0700.
-  mode=0600
-  [[ -x "$dest" ]] && mode=0700
-  _write_atomic "$dest" "$dest.bak.$stamp" "$mode" || return $?
-  echo "      backup: $dest.bak.$stamp"
+_managed_differs() {
+  local dest=$1 kind=$2 src=$3 out=$4
+  [[ -e "$dest" ]] || return 0
+  if [[ "$kind" == mixed && "$dest" == *.json ]]; then
+    [[ "$(jq -S . "$dest" 2>/dev/null)" != "$(jq -S . "$out" 2>/dev/null)" ]] && return 0
+  else
+    cmp -s "$out" "$dest" || return 0
+  fi
+  [[ "$kind" == owned || "$kind" == raw ]] && [[ -x "$src" && ! -x "$dest" ]]
+}
+
+_managed_write() {
+  local dest=$1 kind=$2 src=$3 out=$4 mode=0600
+  case "$kind" in
+    owned|raw) [[ -x "$src" ]] && mode=0700 ;;
+    block) [[ -f "$dest" ]] && mode=$(stat -c '%a' "$dest") ;;
+  esac
+  _write_atomic "$out" "$dest" "$mode"
+}
+
+# --- Retired files -----------------------------------------------------------
+
+# True only when <dest> equals some version of <source> the blueprint once
+# shipped, rendered for this HOME/profile. Staged releases carry no .git, so
+# staging keeps those historical bytes under .aicoding-generated-provenance.
+owned_file_has_generated_provenance() {
+  local dest=$1 source=$2 commit tmp historical rendered
+  [ -f "$dest" ] || return 1
+  tmp=$(mktemp) || return 1
+  rendered="$tmp.rendered"
+  for historical in "$AICODING_BLUEPRINT_CLONE/.aicoding-generated-provenance/$source"/*; do
+    [ -f "$historical" ] || continue
+    _render_managed_source "$historical" "$dest" "$rendered" 2>/dev/null || continue
+    if cmp -s "$rendered" "$dest"; then rm -f "$tmp" "$rendered"; return 0; fi
+  done
+  if [ -d "$AICODING_BLUEPRINT_CLONE/.git" ]; then
+    while IFS= read -r commit; do
+      [ -n "$commit" ] || continue
+      git -C "$AICODING_BLUEPRINT_CLONE" show "$commit:$source" >"$tmp" 2>/dev/null || continue
+      _render_managed_source "$tmp" "$dest" "$rendered" 2>/dev/null || continue
+      if cmp -s "$rendered" "$dest"; then rm -f "$tmp" "$rendered"; return 0; fi
+    done < <(git -C "$AICODING_BLUEPRINT_CLONE" log --format=%H --all -- "$source" 2>/dev/null)
+  fi
+  rm -f "$tmp" "$rendered"
+  return 1
+}
+
+managed_retired_files() {
+  jq -r '.retired_files[] | "\(.dest)\t\(.source)"' "$(_managed_config_data)"
+}
+
+# A retired file that no longer matches anything the blueprint shipped was
+# edited or created by hand: keep it and say so once.
+_managed_retire_files() {
+  local dry=$1 rel source dest retired kept="$AICODING_STATE_DIR/retired-kept"
+  retired=$(managed_retired_files) || return 1
+  while IFS=$'\t' read -r rel source; do
+    [[ -n "$rel" ]] || continue
+    dest="$HOME/$rel"
+    [[ -e "$dest" ]] || continue
+    if owned_file_has_generated_provenance "$dest" "$source"; then
+      if [[ "$dry" == 1 ]]; then
+        echo "      would remove retired file: $dest"
+      elif rm -f "$dest"; then
+        echo "      removed retired file: $dest"
+      fi
+    elif ! grep -qxF "$dest" "$kept" 2>/dev/null; then
+      echo "      kept retired file (changed locally): $dest"
+      [[ "$dry" == 1 ]] || { mkdir -p "$AICODING_STATE_DIR" && printf '%s\n' "$dest" >> "$kept"; } || true
+    fi
+  done <<< "$retired"
+}
+
+# --- Apply -------------------------------------------------------------------
+
+# Bring every managed destination to its desired content. Sets
+# MANAGED_RESULT[dest] to unchanged, updated, pending (dry run), malformed,
+# failed or "blocked:<reason>". MANAGED_CONFIG_GATE may name a function that
+# vetoes a write (prints a reason, returns nonzero) when a destination's tool
+# is not ready for it. Returns nonzero when any write failed.
+managed_config_apply() {
+  local dry=0 dest kind source src out reason rc=0 changes=0 inventory
+  [[ "${1:-}" == --dry-run ]] && dry=1
+  declare -gA MANAGED_RESULT=()
+  inventory=$(managed_inventory) || { echo "      could not list managed files" >&2; return 1; }
+  while IFS='|' read -r dest kind source; do
+    [[ -n "$dest" ]] || continue
+    src="$AICODING_BLUEPRINT_CLONE/$source"
+    if [[ "$kind" != block && ! -f "$src" ]]; then
+      MANAGED_RESULT[$dest]=failed; rc=1
+      echo "      missing blueprint source $source for $dest" >&2
+      continue
+    fi
+    out=$(mktemp) || { MANAGED_RESULT[$dest]=failed; rc=1; continue; }
+    reason=0
+    _managed_desired "$dest" "$kind" "$src" "$out" || reason=$?
+    if [[ "$reason" == 3 ]]; then
+      MANAGED_RESULT[$dest]=malformed
+      echo "      left unreadable file unchanged (fix or remove it): $dest" >&2
+    elif [[ "$reason" != 0 ]]; then
+      MANAGED_RESULT[$dest]=failed; rc=1
+      echo "      could not render $dest" >&2
+    elif ! _managed_differs "$dest" "$kind" "$src" "$out"; then
+      MANAGED_RESULT[$dest]=unchanged
+    elif [[ "$dry" == 1 ]]; then
+      MANAGED_RESULT[$dest]=pending; changes=$((changes + 1))
+      echo "      would update: $dest"
+    elif [[ -n "${MANAGED_CONFIG_GATE:-}" ]] && ! reason=$("$MANAGED_CONFIG_GATE" "$dest"); then
+      MANAGED_RESULT[$dest]="blocked:${reason:-runtime_compatibility_unavailable}"
+      echo "      blocked (${reason:-runtime_compatibility_unavailable}): $dest"
+    elif _managed_write "$dest" "$kind" "$src" "$out"; then
+      MANAGED_RESULT[$dest]=updated; changes=$((changes + 1))
+      echo "      updated: $dest"
+    else
+      MANAGED_RESULT[$dest]=failed; rc=1
+      echo "      could not write $dest" >&2
+    fi
+    rm -f "$out"
+  done <<< "$inventory"
+  _managed_retire_files "$dry" || rc=1
+  [[ "$changes" -gt 0 ]] || echo "      managed config already current"
+  return "$rc"
 }

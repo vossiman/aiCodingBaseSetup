@@ -38,12 +38,6 @@ export AICODING_BLUEPRINT_CLONE
 # Auth plumbing helpers (seed_github_known_host, credential helpers, …).
 . "$SCRIPT_DIR/lib/sync.sh"
 
-# Managed file inventory + marker-block content live in lib/blueprint-deploy.sh
-# (managed_inventory_overwrite, managed_inventory_merge, managed_bashrc_*).
-# Cache the marker strings once; the body is re-emitted on each deploy.
-BASHRC_BLOCK_START="$(managed_marker_block_start)"
-BASHRC_BLOCK_END="$(managed_marker_block_end)"
-
 CLAUDE_DIR="$HOME/.claude"
 OPENCODE_DIR="$HOME/.config/opencode"
 SECRETS_DIR="$HOME/.aicodingsetup"
@@ -85,16 +79,10 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then check_prerequisites; fi
 . "$SCRIPT_DIR/lib/provision-integrations.sh"
 
 main() {
-  local force_reinstall=0 persistent_provision_failed=0
+  local persistent_provision_failed=0
   local _AICODING_INITIAL_CONFIG_DEFERRED=0 _AICODING_PREPARATION_DEFERRED=0
   local _AICODING_GUARDED_PROVISION_DEFERRED=0
   local _AICODING_INSTALL_SHARED_LOCKS_READY=1
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --force-reinstall) force_reinstall=1; shift ;;
-      *) shift ;;
-    esac
-  done
 
   if [[ "${ENV_TYPE:-}" == wsl ]]; then
     err "Container installer cannot run directly in WSL; use --profile host with bootstrap-aicoding.sh. For a local blueprint: AICODING_PROFILE=host aicoding-install --blueprint /path/to/checkout"
@@ -105,10 +93,8 @@ main() {
 
   seed_github_known_host
 
-  if [[ $force_reinstall -eq 1 ]]; then
-    info "--force-reinstall: deleting existing manifest"
-    rm -f "$AICODING_MANIFEST"
-  fi
+  aicoding_migrate_legacy_state
+  [[ -s "$AICODING_STATE_DIR/profile" ]] || aicoding_stamp_write profile container
 
   load_or_prompt_secrets
   # Authenticate git and gh HERE, not only at sync time. install-host.sh has
@@ -123,8 +109,8 @@ main() {
   ensure_gh_credential_helper
   ensure_gh_stored_auth
   ensure_git_credential_file_fallback
-  # Hold writer locks before any tool-owned mutation or managed-file mode
-  # detection. A busy shared root is handled per destination as a deferral so
+  # Hold writer locks before any tool-owned mutation or managed-file
+  # write. A busy shared root is handled per destination as a deferral so
   # confirmed-local setup can continue.
   _provision_recover_scheduler_locks
   if ! aicoding_shared_locks_acquire_managed_roots; then
@@ -167,27 +153,8 @@ main() {
   remove_deprecated_shims
   install_ssh_agent_watch_symlink
 
-  local mode
-  if [[ $force_reinstall -eq 1 ]]; then
-    mode=first
-  else
-    mode=$(detect_install_mode)
-  fi
-
-  case "$mode" in
-    first)
-      info "Mode: first-deploy (no manifest, no managed files on disk)"
-      deploy_all_managed_files
-      ;;
-    adopt)
-      info "Mode: adopt-existing (no manifest, managed files present)"
-      adopt_existing_files
-      ;;
-    reconcile)
-      info "Mode: reconcile (manifest exists — restoring missing files, applying safe blueprint updates)"
-      reconcile_existing_install
-      ;;
-  esac
+  install_managed_config \
+    || { warn "Managed config could not be fully written"; persistent_provision_failed=1; }
 
   remove_legacy_project_templates
   ensure_agents_skills_symlink
@@ -224,11 +191,10 @@ main() {
     _print_install_summary DEFERRED
     return 0
   else
-    manifest_stamp_provision "$(_aicoding_managed_source_version "$SCRIPT_DIR")"
+    aicoding_stamp_write provision_commit "$(_aicoding_managed_source_version "$SCRIPT_DIR")"
   fi
 
   header "Done!"
-  info "Mode: $mode"
   info "Secrets: $SECRETS_FILE"
   info "Claude Code: $CLAUDE_DIR"
 

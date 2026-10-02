@@ -25,10 +25,6 @@ if [ "${AICODING_SYNC_LOCK_PID:-}" != "$$" ] || [ -z "${AICODING_SYNC_LOCK_FD:-}
   fi
   export AICODING_SYNC_LOCK_FD AICODING_SYNC_LOCK_PID=$$
 fi
-# NO AICODING_MANIFEST default here. lib/sync.sh and blueprint-deploy.sh share
-# the canonical container-local default. A duplicate entrypoint default once
-# silently won — `:=` in the libraries became a no-op — so sync wrote the old
-# shared ~/.aicodingsetup manifest while aicoding-status read the local one.
 . "$SCRIPT_DIR/lib/blueprint-source.sh"
 AICODING_BLUEPRINT_LOCAL=0
 aicoding_parse_blueprint_args aicoding-sync "$@" || exit $?

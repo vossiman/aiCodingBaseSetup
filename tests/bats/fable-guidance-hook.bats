@@ -73,7 +73,7 @@ teardown() { rm -rf "$TMPDIR"; }
   [ "$status" -eq 0 ]; [ -z "$output" ]
 }
 
-@test "registered in settings.json, the deploy manifest and MANAGED_HOOKS" {
+@test "registered in settings.json, the deploy inventory and MANAGED_HOOKS" {
   grep -q 'hooks/fable-guidance.sh' "$BLUEPRINT_ROOT/configs/claude/settings.json"
   grep -q 'hooks/fable-guidance.sh' "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   grep -q '"fable-guidance.sh"' "$BLUEPRINT_ROOT/lib/provision-managed-files.sh"

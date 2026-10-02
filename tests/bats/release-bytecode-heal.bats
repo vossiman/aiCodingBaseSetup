@@ -11,7 +11,6 @@ setup() {
   export HOME="$TEST_ROOT/home"
   export AICODING_DATA_DIR="$TEST_ROOT/data"
   export AICODING_STATE_DIR="$TEST_ROOT/state"
-  export AICODING_MANIFEST="$TEST_ROOT/manifest.json"
   export AICODING_RELEASE_HEALER_SECONDS=4
   export AICODING_RELEASE_HEALER_INTERVAL=0.1
   mkdir -p "$HOME"

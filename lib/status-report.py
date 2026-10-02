@@ -334,9 +334,12 @@ def installed(tool):
             return f"{effective}; selected local release {clean(version)}"
         return f"{clean(version)} (selected local release)"
     if key == "aicoding":
-        manifest = document(Path(os.environ.get("AICODING_MANIFEST", STATE / "manifest.json")))
-        if manifest.get("blueprint_commit"):
-            return f"{clean(manifest['blueprint_commit'])} (saved installation manifest; not freshly verified)"
+        try:
+            stamp = (STATE / "blueprint_commit").read_text().strip()
+        except OSError:
+            stamp = ""
+        if stamp:
+            return f"{clean(stamp)} (saved installation stamp; not freshly verified)"
     if key == "bw-AICode":
         vendor = Path(os.environ.get("AICODING_VENDOR_DIR", DATA / "vendor")) / "bw-AICode"
         marker = read(vendor / ".aicoding-version")
@@ -468,9 +471,10 @@ def shared_fleet_root_confirmed():
 
 
 def retired(reason):
-    """Fleet-gate reasons (removed 2026-09-28) can no longer be produced; old receipts are obsolete."""
+    """Reasons no code produces any more (fleet gate 2026-09-28, config conflicts 2026-10-02)."""
     reason = str(reason or "")
-    return reason in ("claude_consumers_incompatible", "shared_registration_consumers_incompatible") \
+    return reason in ("claude_consumers_incompatible", "shared_registration_consumers_incompatible",
+                      "managed_config_conflict") \
         or reason.endswith("_shared_consumers_incompatible")
 
 

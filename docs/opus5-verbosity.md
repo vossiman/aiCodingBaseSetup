@@ -85,7 +85,7 @@ The match is `*opus-5*`, so context-window variants like
 `claude-opus-5[1m]` are covered. Registered in three places, all covered
 by `tests/bats/opus-verbosity-hook.bats`: `configs/claude/settings.json`
 (second `UserPromptSubmit` hook, after `memory-hint.sh`), the
-`blueprint-deploy.sh` manifest, and `MANAGED_HOOKS`.
+`blueprint-deploy.sh` inventory, and `MANAGED_HOOKS`.
 
 A `UserPromptSubmit` hook, `configs/claude/hooks/opus-verbosity.sh`, that:
 

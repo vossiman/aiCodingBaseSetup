@@ -90,10 +90,10 @@ literal codes, and `tests/bats/run.sh` fails the run when a test records a
 reason the catalog does not cover.
 
 Config results such as `config-cursor` cover multiple managed destinations.
-Reconciliation records recovery only when all relevant destinations have
-compatible prerequisites and verified reconciliation outcomes. A remaining
-conflict, blocked destination, failed apply, or failed manifest write prevents
-that group from being marked recovered. Components not examined in a pass
+Reconciliation records a group as current only when every destination in it
+was written or already matched the blueprint. A blocked destination, an
+unreadable file or a failed write keeps the group from being marked
+recovered. Components not examined in a pass
 retain their previous result. Aggregate `config` or `provision` success does
 not by itself supersede individual blockers.
 
@@ -269,9 +269,9 @@ On the container profile, every sync pass except `--dry-run` also runs
 it installs what is missing and swaps binaries atomically. It never stops a
 process, restarts a container, or deletes anything outside its own temp and
 state files. Hosts (Mint, WSL) skip it; they never ran install-time system
-provisioning. Because old manifests without a profile default to the container
-profile, the step also requires a second signal: an explicit container profile,
-or a container runtime (`/.dockerenv`, `/run/.containerenv`, or the devcontainer
+provisioning. Because a machine with no recorded profile defaults to the
+container profile, the step also requires a second signal: an explicit container
+profile, or a container runtime (`/.dockerenv`, `/run/.containerenv`, or the devcontainer
 and Codespaces variables).
 
 What it covers is a fixed descriptor: the apt packages

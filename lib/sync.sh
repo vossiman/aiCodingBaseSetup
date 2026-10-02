@@ -1,7 +1,7 @@
 # lib/sync.sh — the one routine that brings THIS container current.
 # Steps: (1) auth plumbing [always], (2) blueprint config reconcile,
-# (3) binary refresh [throttled]. Modes: --first (provision), --boot
-# (non-interactive, throttled), default (interactive). Independent components
+# (3) binary refresh [throttled]. Config applies the same in every mode;
+# --boot throttles binaries, --dry-run writes nothing. Independent components
 # continue after a failure; the aggregate status remains nonzero.
 # Sourced (no shebang / set -e); matches the lib/*.sh style.
 
@@ -10,7 +10,6 @@
 : "${AICODING_BLUEPRINT_LOCAL:=0}"
 : "${AICODING_UPDATE_TTL:=21600}"
 : "${AICODING_STATE_DIR:=$HOME/.local/state/aicoding}"
-: "${AICODING_MANIFEST:=$HOME/.local/state/aicoding/manifest.json}"
 # Container-local — must match bin/aicoding-status. ~/.aicodingsetup is a host
 # bind mount shared by every container; keeping this cache there let one
 # container's sync silence the update CTA in all the others.
@@ -296,54 +295,32 @@ ensure_claude_runtime_scope() {
 # no KVM simply skips.
 # NOTE: membership only reaches NEW login sessions — the shell that ran this
 # still lacks it, so the first boot after adoption needs a session restart.
-# The deployment profile this sync is running under: `host` for bare-metal thin
-# clients (the Mint desktop, jumpi), `container` for devpods. Guarded — an old
-# blueprint clone may predate manifest_get_profile, and `container` is the safe
-# default because it is what every pre-profile clone actually was.
-#
-# Plumbing steps that touch machine state MUST consult this. _sync_plumbing
-# runs on EVERY profile, so a step that quietly
-# reconfigures the box will do it to somebody's real desktop. Do not lean on a
-# `sudo -n` failing to provide the gate — a desktop user may have passwordless
-# sudo, and then it simply succeeds.
-_sync_profile() {
+# The deployment profile this sync runs under: `host` for bare-metal thin
+# clients (the Mint desktop, jumpi), `container` for devpods. Plumbing steps
+# that touch machine state MUST consult this: _sync_plumbing runs on every
+# profile, and a desktop user may have passwordless sudo.
+# Read before blueprint-deploy.sh is sourced, so it reads the files directly.
+_sync_explicit_profile() {
   local p=${AICODING_PROFILE:-}
   if [ -z "$p" ] && command -v jq >/dev/null 2>&1 \
       && [ -f "$AICODING_STATE_DIR/component-selection.json" ]; then
     p=$(jq -r '.profile // empty' "$AICODING_STATE_DIR/component-selection.json" 2>/dev/null) || p=
   fi
-  if [ -z "$p" ] && command -v manifest_get_profile >/dev/null 2>&1; then
-    p=$(manifest_get_profile)
-  fi
-  # aicoding_sync deliberately runs plumbing before reconcile sources
-  # blueprint-deploy.sh. Read the manifest directly on that production call
-  # path so a host is never briefly treated as a container. Old/pre-profile
-  # manifests still keep the historical container default.
-  if [ -z "$p" ] && command -v jq >/dev/null 2>&1 && [ -f "$AICODING_MANIFEST" ]; then
-    p=$(jq -r '.profile // "container"' "$AICODING_MANIFEST" 2>/dev/null) || p=container
-  fi
+  [ -n "$p" ] || p=$(cat "$AICODING_STATE_DIR/profile" 2>/dev/null) || p=
+  printf '%s\n' "$p"
+}
+
+_sync_profile() {
+  local p
+  p=$(_sync_explicit_profile)
   case "$p" in host|container|minimal-pi) ;; *) p=container ;; esac
   printf '%s\n' "$p"
 }
 
-# Explicit-only variant of the profile lookup, for step 5 of aicoding_sync
-# below. _sync_profile above intentionally falls back to "container" so old
-# clones keep their historical behavior, but that same fallback would let a
-# legacy host install (predating profiles) run step 5's apt installs and
-# tmux build. This lookup performs the same checks but returns failure when
-# nothing explicitly names a profile: no default. Deliberately does not call
-# manifest_get_profile (lib/blueprint-deploy.sh), which also defaults to
-# container; the manifest is read directly here instead.
+# A legacy host with no recorded profile must never run step 5's apt
+# installs or tmux build, so the container default alone does not count.
 _sync_explicit_container_profile() {
-  local p=${AICODING_PROFILE:-}
-  if [ -z "$p" ] && command -v jq >/dev/null 2>&1 \
-      && [ -f "$AICODING_STATE_DIR/component-selection.json" ]; then
-    p=$(jq -r '.profile // empty' "$AICODING_STATE_DIR/component-selection.json" 2>/dev/null) || p=
-  fi
-  if [ -z "$p" ] && command -v jq >/dev/null 2>&1 && [ -f "$AICODING_MANIFEST" ]; then
-    p=$(jq -r '.profile // empty' "$AICODING_MANIFEST" 2>/dev/null) || p=
-  fi
-  [ "$p" = container ]
+  [ "$(_sync_explicit_profile)" = container ]
 }
 
 # Mirrors the container test in detect_environment() (lib/provision-system.sh).
@@ -360,12 +337,8 @@ _sync_is_container_runtime() {
     || [ -n "${CODESPACES:-}" ]
 }
 
-# Step 5's gate (aicoding_sync, below). _sync_profile alone is not enough:
-# it falls back to container for legacy/pre-profile manifests, and a host
-# must never run step 5's apt installs or tmux build. Require a second,
-# independent signal too: either something explicitly names container
-# (env, component selection, or the manifest's own .profile key with no
-# default), or the runtime environment itself looks like a container.
+# Step 5's gate (aicoding_sync, below): the profile must say container and
+# either something names it explicitly or the runtime looks like a container.
 _sync_system_provision_allowed() {
   [ "$(_sync_profile)" = container ] || return 1
   _sync_explicit_container_profile || _sync_is_container_runtime
@@ -431,17 +404,6 @@ _sync_plumbing() {            # never throttled — must be correct now
   command -v ensure_kvm_group_access >/dev/null 2>&1 && ensure_kvm_group_access || true
 }
 
-# Return the provenance stored in manifest.json. A local source is deliberately
-# distinguishable from a released remote blueprint even when both share HEAD.
-blueprint_origin() {
-  local path=${1:-$AICODING_BLUEPRINT_CLONE}
-  if [[ "$AICODING_BLUEPRINT_LOCAL" == 1 ]]; then
-    printf 'local:%s\n' "$path"
-  else
-    git -C "$path" remote get-url origin 2>/dev/null || echo unknown
-  fi
-}
-
 # Report enough local-checkout identity to make an accidental source selection
 # obvious. Read-only: no fetch, checkout, reset, or index mutation.
 report_local_blueprint() {
@@ -496,37 +458,25 @@ _sync_validate_blueprint_release() {
   [ -x "$root/bin/aicoding-sync" ]
 }
 
-# Preserve only the historical source bytes needed to prove that an owned
-# generated file came from this repository. Selected releases stay Gitless,
-# while provenance checks can still render an old version for the current
-# HOME/profile before deciding an unattended overwrite is safe.
+# Selected releases stay Gitless, so keep the historical bytes of every
+# retired source: retirement deletes a file only when it still equals one.
 _sync_capture_generated_provenance() {
   local root=$1
   [ -d "$root/.git" ] || return 1
   (
     export AICODING_BLUEPRINT_CLONE="$root"
     . "$root/lib/blueprint-deploy.sh" || exit 1
-    local provenance="$root/.aicoding-generated-provenance"
-    local profile dest mode source commit count
-    declare -A captured=()
+    local provenance="$root/.aicoding-generated-provenance" rel source commit
     mkdir -p "$provenance" || exit 1
-    for profile in container host; do
-      while IFS='|' read -r dest mode source; do
-        [ -n "$source" ] && _is_owned_overwrite "$dest" || continue
-        [ -z "${captured[$source]:-}" ] || continue
-        case "$source" in /*|*..*) exit 1 ;; esac
-        captured[$source]=1
-        mkdir -p "$provenance/$source" || exit 1
-        count=0
-        while IFS= read -r commit; do
-          [ -n "$commit" ] || continue
-          git -C "$root" show "$commit:$source" > "$provenance/$source/$commit" 2>/dev/null \
-            || { rm -f "$provenance/$source/$commit"; exit 1; }
-          count=$((count + 1))
-        done < <(git -C "$root" log --format=%H --all -- "$source" 2>/dev/null)
-        [ "$count" -gt 0 ] || exit 1
-      done < <(AICODING_PROFILE="$profile" managed_inventory_overwrite)
-    done
+    while IFS=$'\t' read -r rel source; do
+      case "$source" in ''|/*|*..*) exit 1 ;; esac
+      mkdir -p "$provenance/$source" || exit 1
+      while IFS= read -r commit; do
+        [ -n "$commit" ] || continue
+        git -C "$root" show "$commit:$source" > "$provenance/$source/$commit" 2>/dev/null \
+          || rm -f "$provenance/$source/$commit"
+      done < <(git -C "$root" log --format=%H --all -- "$source" 2>/dev/null)
+    done < <(managed_retired_files)
   )
 }
 
@@ -604,832 +554,101 @@ _sync_reconcile_running_launchers() {
   }
 }
 
-_sync_has_smart_errors() {
-  local dest
-  for dest in "${!BUCKETS[@]}"; do
-    [[ ${BUCKETS[$dest]} == smart_error ]] && return 0
-    if [[ -n "${SMART_APPLY_RESULT[$dest]:-}" ]] \
-       && [[ $(printf '%s' "${SMART_APPLY_RESULT[$dest]}" | jq -r '.error != null') == true ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-# Value-free smart preview: only paths, operation names, and fixed diagnostic
-# codes are public. Rendered/local TOML and receipt fingerprints stay private.
-_sync_print_smart_details() {
-  local dest plan code item path operation
-  # Compatibility can block any managed destination, including non-smart files.
-  while IFS= read -r dest; do
-    [[ -n "$dest" && "${BUCKETS[$dest]}" == blocked ]] || continue
-    if declare -F aicoding_ui_active >/dev/null && aicoding_ui_active; then
-      aicoding_ui_section "Config"
-      aicoding_ui_line warn "$dest" "blocked by tool compatibility, not applied"
-      continue
-    fi
-    printf '      blocked by tool compatibility (no changes applied): %s\n' "$dest"
-  done < <(printf '%s\n' "${!BUCKETS[@]}" | sort)
-  while IFS= read -r dest; do
-    [[ -n "$dest" ]] || continue
-    [[ "${BUCKETS[$dest]:-}" != blocked ]] || continue
-    plan=${SMART_PLAN[$dest]:-}
-    [[ -n "$plan" ]] || continue
-    code=$(codex_smart_error_text "$plan")
-    if [[ -n "$code" ]]; then
-      printf '  ERROR: Codex config merge failed for %s (%s)\n' "$dest" "$code" >&2
-      continue
-    fi
-    while IFS= read -r item; do
-      [[ -n "$item" ]] || continue
-      path=$(printf '%s' "$item" | codex_smart_path_text)
-      operation=$(printf '%s' "$item" | jq -r '.operation')
-      printf '      safe %s: %s :: %s\n' "$operation" "$dest" "$path"
-    done < <(printf '%s' "$plan" | jq -c '.changes[]')
-    while IFS= read -r item; do
-      [[ -n "$item" ]] || continue
-      path=$(printf '%s' "$item" | codex_smart_path_text)
-      printf '      conflict (kept local): %s :: %s\n' "$dest" "$path"
-    done < <(printf '%s' "$plan" | jq -c '.conflicts[]')
-    while IFS= read -r item; do
-      [[ -n "$item" ]] || continue
-      path=$(printf '%s' "$item" | codex_smart_path_text)
-      printf '      profile adoption notice (kept local): %s :: %s\n' "$dest" "$path"
-    done < <(printf '%s' "$plan" | jq -c '.adoption_notices[]')
-  done < <(printf '%s\n' "${!SMART_PLAN[@]}" | sort)
-}
-
-# Collect optional path-level conflict/adoption decisions after the existing
-# overall apply confirmation. Empty input or EOF preserves local without
-# acknowledging the incoming value; an explicit local choice acknowledges it.
-_sync_collect_smart_decisions() {
-  local dest plan item path_json path kind answer decisions
-  for dest in "${!SMART_PLAN[@]}"; do
-    case "${BUCKETS[$dest]:-}" in smart_update|smart_conflict) ;; *) continue ;; esac
-    plan=${SMART_PLAN[$dest]}
-    decisions='[]'
-    # Keep the plan stream on fd 3 so the nested prompt still reads the
-    # caller's stdin. Redirecting the whole loop's stdin to jq would consume
-    # the next JSON item (or EOF) as the user's answer.
-    while IFS= read -r item <&3; do
-      [[ -n "$item" ]] || continue
-      path_json=$(printf '%s' "$item" | jq -c '.path')
-      path=$(printf '%s' "$item" | codex_smart_path_text)
-      kind=$(printf '%s' "$item" | jq -r '.kind')
-      if [[ "$kind" == adoption ]]; then
-        printf 'Codex profile adoption at %s :: %s — [l]ocal/[b]lueprint/[Enter skips]: ' "$dest" "$path"
-      else
-        printf 'Codex conflict at %s :: %s — [l]ocal/[b]lueprint/[Enter skips]: ' "$dest" "$path"
-      fi
-      if ! read -r answer; then
-        [ -t 0 ] || echo
-        break
-      fi
-      [ -t 0 ] || echo
-      case "$answer" in
-        l|L|local)
-          decisions=$(printf '%s' "$decisions" \
-            | jq --argjson path "$path_json" '. + [{path:$path,choice:"local"}]')
-          ;;
-        b|B|blueprint)
-          decisions=$(printf '%s' "$decisions" \
-            | jq --argjson path "$path_json" '. + [{path:$path,choice:"blueprint"}]')
-          ;;
-        *) : ;;
-      esac
-    done 3< <(printf '%s' "$plan" | jq -c \
-      '(.conflicts[] | . + {kind:"conflict"}), (.adoption_notices[] | . + {kind:"adoption"})')
-    SMART_DECISIONS[$dest]=$decisions
-  done
-}
-
-# First Codex smart-merge error text ("code: detail"), optionally limited to
-# one config component, for recorded results. Empty when none failed.
-_sync_smart_error_detail() {
-  local want=${1:-} d result text
-  while IFS= read -r d; do
-    [[ -n "$d" ]] || continue
-    if [[ -n "$want" ]] && [[ "$(_aicoding_config_component "$d" 2>/dev/null)" != "$want" ]]; then
-      continue
-    fi
-    result=${SMART_APPLY_RESULT[$d]:-${SMART_PLAN[$d]:-}}
-    [[ -n "$result" ]] || continue
-    text=$(codex_smart_error_text "$result")
-    if [[ -n "$text" ]]; then printf '%s\n' "$text"; return 0; fi
-  done < <(printf '%s\n' "${!SMART_PLAN[@]}" | sort)
-}
-
-# Which harness preparations deferred provisioning, and the first smart-merge
-# error behind them, so a blocked provision record names its cause.
+# Which harness preparations deferred provisioning, so a blocked provision
+# record names its cause.
 _sync_provision_deferral_detail() {
-  local keys smart
+  local keys
   keys=$(printf '%s\n' "${!_SYNC_DEFERRED_PROVISION_COMPONENTS[@]}" | sed '/^$/d' | sort | paste -sd, -)
-  [[ -n "$keys" ]] || return 0
-  smart=$(_sync_smart_error_detail)
-  printf 'deferred by %s%s\n' "$keys" "${smart:+ (codex merge: $smart)}"
-}
-
-# Several destinations can share one component receipt. Reason and detail are
-# replaced as a pair, and an MCP staging reason (whose cause may only be a
-# wait) never replaces another destination's reason, which is actionable.
-_sync_note_config_blocker() {
-  local component=$1 reason=$2 dest=$3 mcp=mcp_exact_version_staging_unavailable
-  if [[ "$reason" == "$mcp" && -n "${blocked_reasons[$component]:-}" \
-      && "${blocked_reasons[$component]}" != "$mcp" ]]; then
-    return 0
-  fi
-  blocked_reasons[$component]=$reason
-  blocked_details[$component]=
-  if [[ "$reason" == "$mcp" ]]; then
-    blocked_details[$component]=$(aicoding_exact_mcp_config_cause "$dest") || true
-  fi
-}
-
-# Record a component only after considering EVERY destination in its inventory.
-# A successful tool install or aggregate config receipt is not recovery evidence:
-# another destination for that same harness may still be blocked or conflicted.
-# $2 lists buckets whose application completed; an empty list means no-op only.
-_sync_record_config_results() {
-  local target=$1 applied=" ${2:-} " d component bucket rank result state reason detail
-  command -v aicoding_result_record >/dev/null 2>&1 || return 0
-  command -v _aicoding_config_component >/dev/null 2>&1 || return 0
-  [ "$target" != unknown ] || return 0
-  # Severity wins across destinations: verified < unexamined < blocked < conflict < failed.
-  local -A ranks=()
-  declare -gA _SYNC_RECOVERY_UNVERIFIED
-  for d in "${!BUCKETS[@]}"; do
-    component=$(_aicoding_config_component "$d")
-    case "$component" in config-*) ;; *) continue ;; esac
-    bucket=${BUCKETS[$d]}
-    rank=1
-    if [[ "${APPLY_FAILURES[$d]:-0}" == 1 || "$bucket" == smart_error ]]; then
-      rank=5
-    elif [[ "$bucket" == blocked ]]; then
-      rank=3
-    elif [[ "${_SYNC_RECOVERY_UNVERIFIED[$d]:-0}" == 1 ]]; then
-      rank=2
-    elif [[ "$bucket" == smart_update || "$bucket" == smart_conflict \
-        || ( "${FILE_MODE[$d]:-}" == toml_merge && "$bucket" != up_to_date && "$bucket" != smart_retired ) ]]; then
-      result=${SMART_APPLY_RESULT[$d]:-}
-      if [[ -z "$result" ]]; then
-        rank=2
-      elif ! printf '%s' "$result" | jq -e 'type == "object" and (.error == null)' >/dev/null 2>&1; then
-        rank=5
-      elif ! printf '%s' "$result" | jq -e '.conflicts == []' >/dev/null 2>&1; then
-        rank=4
-      elif ! printf '%s' "$result" | jq -e '.applied == true and .unmanaged == false' >/dev/null 2>&1; then
-        rank=2
-      fi
-    else
-      case "$bucket" in
-        up_to_date|drifted_but_aligned) ;;
-        *)
-          case "$applied" in
-            *" $bucket "*) ;;
-            *)
-              case "$bucket" in
-                drifted_and_updating|new_file_existing|to_remove) rank=4 ;;
-                *) rank=2 ;; # Not applied or not understood: retain prior evidence.
-              esac
-              ;;
-          esac
-          ;;
-      esac
-    fi
-    (( rank <= ${ranks[$component]:-0} )) || ranks[$component]=$rank
-  done
-  for component in "${!ranks[@]}"; do
-    case "${ranks[$component]}" in
-      1) aicoding_result_record "$component" current "$target" reconciliation_verified "$target" || true ;;
-      2) : ;;
-      *)
-        case "${ranks[$component]}" in
-          3) state=blocked; reason=${blocked_reasons[$component]:-partial_config_blocked} ;;
-          4) state=conflict; reason=managed_config_conflict ;;
-          5) state=failed; reason=managed_config_apply_failed ;;
-        esac
-        detail=
-        [ "${ranks[$component]}" -ne 3 ] || detail=${blocked_details[$component]:-}
-        [ "${ranks[$component]}" -ne 5 ] || detail=$(_sync_smart_error_detail "$component")
-        aicoding_result_record "$component" "$state" "$target" "$reason" "" "$detail" || true
-        ;;
-    esac
-  done
-}
-
-# Config reconcile: classify managed files, preview/prompt/apply per mode,
-# stamp the manifest. Ported from the old aicoding-update CLI and folded in.
-# $1 = mode: boot | first | dry-run | yes | interactive.
-# Returns nonzero for manual no-manifest and smart-merge errors. Boot/first
-# remain fail-open so unattended maintenance continues.
-_sync_reconcile() {
-  local mode=$1
-  declare -gA _SYNC_DEFERRED_PROVISION_COMPONENTS=() _SYNC_RECOVERY_UNVERIFIED=()
-  # Clear prior classifications before any early return. The caller uses this
-  # snapshot to distinguish actual smart errors from ordinary reconcile
-  # failures that must still abort before maintenance.
-  declare -gA BUCKETS FILE_MODE FILE_SOURCE SMART_PLAN SMART_APPLY_RESULT SMART_DECISIONS APPLY_FAILURES
-  BUCKETS=()
-  FILE_MODE=()
-  FILE_SOURCE=()
-  SMART_PLAN=()
-  SMART_APPLY_RESULT=()
-  SMART_DECISIONS=()
-  APPLY_FAILURES=()
-  if _sync_color_on; then _SYNC_COLOR=1; else _SYNC_COLOR=0; fi
-
-  # _sync_refresh_and_reexec already fetched in this process; a second fetch
-  # would only cost network time.
-  if [[ "${_SYNC_REFRESHED:-0}" != 1 ]]; then
-    refresh_blueprint || return $?
-  fi
-
-  [ -f "$AICODING_BLUEPRINT_CLONE/lib/blueprint-deploy.sh" ] || return 0
-  . "$AICODING_BLUEPRINT_CLONE/lib/blueprint-deploy.sh"
-  command -v load_secrets_env >/dev/null 2>&1 && load_secrets_env || true
-
-  if [[ ! -f "$AICODING_MANIFEST" ]]; then
-    case "$mode" in
-      boot|first) return 0 ;;  # nothing provisioned yet — tolerate
-      *)
-        echo "aicoding-sync: no manifest at $AICODING_MANIFEST" >&2
-        echo "Run install.sh first to provision this container." >&2
-        return 1
-        ;;
-    esac
-  fi
-
-  manifest_check_schema
-
-  # Destination bytes and hashes are part of the write transaction. Acquire
-  # physical shared-root locks before classification so no sibling can change
-  # them between the decision and apply phases.
-  if [ "$mode" != dry-run ]; then
-    aicoding_shared_locks_acquire_managed_roots || {
-      echo "aicoding-sync: shared configuration writer is busy" >&2
-      return 1
-    }
-  fi
-
-  local OLD_COMMIT NEW_COMMIT
-  OLD_COMMIT=$(jq -r '.blueprint_commit // "unknown"' "$AICODING_MANIFEST")
-  # Full SHA, matching install.sh. aicoding-status compares the first 12 chars
-  # of this against `git ls-remote`'s full SHA; a 7-char `--short` would never
-  # match, leaving the ⬆ badge stuck "behind" even right after a sync.
-  NEW_COMMIT=$(_sync_blueprint_version "$AICODING_BLUEPRINT_CLONE" || echo unknown)
-  echo "Blueprint: ${OLD_COMMIT:0:7} -> ${NEW_COMMIT:0:7}"
-
-  declare -gA BUCKETS FILE_MODE FILE_SOURCE
-  export AICODING_BLUEPRINT_CLONE
-  classify_managed_files "$mode"
-
-  # Re-bucket owned overwrites: a drifted-but-blueprint-owned file is ours to
-  # update without a "needs your decision" prompt.
-  local d
-  for d in "${!BUCKETS[@]}"; do
-    if [[ "${BUCKETS[$d]}" == drifted_and_updating ]] && _is_owned_overwrite "$d" \
-        && owned_file_has_generated_provenance "$d" "${FILE_SOURCE[$d]}"; then
-      BUCKETS[$d]=will_update_owned
-    fi
-  done
-
-  local blocked_count=0 reason component
-  local -A blocked_reasons=() blocked_details=() recovery_components=()
-  # Recheck prerequisites for a no-op only when retiring an unresolved receipt.
-  # Otherwise unchanged config must not introduce update work for absent tools.
-  if [ -f "${AICODING_RESULTS_FILE:-}" ]; then
-    while IFS= read -r component; do
-      recovery_components[$component]=1
-    done < <(jq -r '(.components // {}) | to_entries[]
-      | select(.value.state == "blocked" or .value.state == "conflict" or .value.state == "failed")
-      | .key | select(startswith("config-"))' "$AICODING_RESULTS_FILE" 2>/dev/null)
-  fi
-  if [ "$mode" != dry-run ] && command -v aicoding_config_is_compatible >/dev/null 2>&1; then
-    export AICODING_REQUIRE_UPDATE_RECEIPT=1
-    for d in "${!BUCKETS[@]}"; do
-      case "${BUCKETS[$d]}" in
-        up_to_date)
-          component=$(_aicoding_config_component "$d")
-          [[ "${recovery_components[$component]:-0}" == 1 ]] || continue
-          ;;
-        restore|new_file|will_update|will_update_owned|drifted_but_aligned|merge|smart_update|smart_conflict) ;;
-        smart_error)
-          _SYNC_DEFERRED_PROVISION_COMPONENTS[codex]=1
-          continue
-          ;;
-        *) continue ;;
-      esac
-      if ! reason=$(aicoding_config_is_compatible "$d"); then
-        if [[ "${BUCKETS[$d]}" == up_to_date ]]; then
-          # No update is pending here. Retain the old receipt without renewing
-          # its timestamp or downgrading an unconfirmed failure to a new block.
-          # Recovery uncertainty must not gate the stamp or invent deferrals.
-          _SYNC_RECOVERY_UNVERIFIED[$d]=1
-          continue
-        fi
-        BUCKETS[$d]=blocked
-        blocked_count=$((blocked_count + 1))
-        component=$(_aicoding_config_component "$d")
-        _sync_note_config_blocker "$component" "$reason" "$d"
-        case "$component" in
-          config-*) _SYNC_DEFERRED_PROVISION_COMPONENTS[${component#config-}]=1 ;;
-        esac
-      fi
-    done
-    unset AICODING_REQUIRE_UPDATE_RECEIPT
-    if command -v aicoding_result_record >/dev/null 2>&1; then
-      for component in "${!blocked_reasons[@]}"; do
-        aicoding_result_record "$component" blocked "$NEW_COMMIT" "${blocked_reasons[$component]}" "" \
-          "${blocked_details[$component]:-}" || true
-      done
-    fi
-  fi
-
-  declare -A COUNT
-  local b
-  for b in up_to_date will_update will_update_owned drifted_but_aligned \
-           drifted_and_updating restore new_file new_file_existing to_remove merge \
-           smart_update smart_conflict smart_error smart_retired blocked; do
-    COUNT[$b]=0
-  done
-  for d in "${!BUCKETS[@]}"; do
-    b=${BUCKETS[$d]}
-    COUNT[$b]=$(( ${COUNT[$b]:-0} + 1 ))
-  done
-  local conflict_count=0
-  if [ "$mode" = boot ]; then
-    conflict_count=$(( COUNT[drifted_and_updating] + COUNT[new_file_existing] + COUNT[to_remove] ))
-  fi
-
-  if [[ "$mode" == dry-run ]]; then
-    if declare -F aicoding_ui_active >/dev/null && aicoding_ui_active; then
-      local parts=()
-      for b in up_to_date will_update will_update_owned drifted_but_aligned \
-               drifted_and_updating restore new_file new_file_existing to_remove merge \
-               smart_update smart_conflict smart_error smart_retired blocked; do
-        (( COUNT[$b] > 0 )) && parts+=("${COUNT[$b]} ${b//_/ }")
-      done
-      local joined
-      joined=$(printf ' · %s' "${parts[@]}")
-      aicoding_ui_section "Config (dry run)"
-      aicoding_ui_line info "${joined:3}"
-    else
-      for b in up_to_date will_update will_update_owned drifted_but_aligned \
-               drifted_and_updating restore new_file new_file_existing to_remove merge \
-               smart_update smart_conflict smart_error smart_retired blocked; do
-        echo "  ${COUNT[$b]} $b"
-      done
-    fi
-    _sync_print_smart_details
-    _sync_has_smart_errors && return 1
-    return 0
-  fi
-
-  # Interactive preview (default mode only): counts + inline diffs.
-  if [[ "$mode" == interactive ]]; then
-    _sync_print_summary
-    _sync_print_smart_details
-  else
-    _sync_print_smart_details
-  fi
-
-  # Nothing actionable across every apply bucket?
-  # drifted_but_aligned (on-disk already matches blueprint; only a stale manifest
-  # hash) and up_to_date are NOT actionable, so they're excluded here — otherwise
-  # a pure manifest-hash refresh would wrongly trigger an Apply? prompt.
-  if (( COUNT[will_update] + COUNT[will_update_owned] + COUNT[drifted_and_updating] \
-        + COUNT[restore] + COUNT[new_file] + COUNT[new_file_existing] \
-        + COUNT[to_remove] + COUNT[merge] + COUNT[smart_update] \
-        + COUNT[smart_conflict] + COUNT[smart_retired] == 0 )); then
-    if (( COUNT[smart_error] > 0 )); then
-      echo "No managed config changes applied."
-    else
-      echo "Nothing to do."
-    fi
-    # Still advance the blueprint_commit stamp: the blueprint may have moved
-    # without touching any managed file (lib/tests/bin-only changes). Leaving
-    # the old commit recorded keeps aicoding-status on "behind" forever.
-    if _sync_has_smart_errors; then
-      _sync_record_config_results "$NEW_COMMIT" ""
-      _SYNC_DEFERRED_PROVISION_COMPONENTS[codex]=1
-      _SYNC_PASS_DEFERRED=1
-      command -v aicoding_result_record >/dev/null 2>&1 \
-        && aicoding_result_record config failed "$NEW_COMMIT" managed_config_apply_failed "" \
-          "$(_sync_smart_error_detail)" || true
-      if [[ "$mode" != boot && "$mode" != first ]]; then return 1; fi
-      return 0
-    elif [ "$blocked_count" -gt 0 ]; then
-      _sync_record_config_results "$NEW_COMMIT" ""
-      echo "$blocked_count managed config update(s) blocked by tool compatibility"
-      command -v aicoding_result_record >/dev/null 2>&1 \
-        && aicoding_result_record config blocked "$NEW_COMMIT" partial_config_blocked || true
-      _SYNC_PASS_DEFERRED=1
-      return 0
-    elif [ "$OLD_COMMIT" != "$NEW_COMMIT" ] && [ "$NEW_COMMIT" != unknown ]; then
-      manifest_stage_begin || return $?
-      local origin
-      origin=$(blueprint_origin "$AICODING_BLUEPRINT_CLONE")
-      # Stamps and drops the now-stale aicoding-status verdict together.
-      manifest_stage_set_blueprint "$NEW_COMMIT" "$origin" || return $?
-      if ! manifest_stage_commit; then
-        command -v aicoding_result_record >/dev/null 2>&1 \
-          && aicoding_result_record config failed "$NEW_COMMIT" manifest_write_failed || true
-        return 1
-      fi
-    fi
-    _sync_record_config_results "$NEW_COMMIT" ""
-    command -v aicoding_result_record >/dev/null 2>&1 && [ "$NEW_COMMIT" != unknown ] \
-      && aicoding_result_record config current "$NEW_COMMIT" applied "$NEW_COMMIT" || true
-    return 0
-  fi
-
-  if [[ "$mode" == interactive ]]; then
-    echo 'This choice only controls config changes; tool updates and provisioning continue either way.'
-    printf 'Apply managed config changes? [y/N] '
-    local answer
-    read -r answer
-    [ -t 0 ] || echo
-    case "$answer" in
-      y|Y|yes) ;;
-      *)
-        echo "Skipped managed config changes. Continuing the rest of sync."
-        if _sync_has_smart_errors; then return 1; fi
-        return 0
-        ;;
-    esac
-    _sync_collect_smart_decisions
-  fi
-
-  manifest_stage_begin || return $?
-
-  local buckets
-  if [[ "$mode" == boot ]]; then
-    # Conservative on boot: preserve user edits (no drifted_and_updating, no
-    # new_file_existing, no to_remove) since boot runs unattended on every
-    # container start — a personal file at a newly managed path must never be
-    # replaced without a human in the loop.
-    buckets="restore new_file will_update will_update_owned drifted_but_aligned merge smart_update smart_conflict smart_retired"
-    if [ "$conflict_count" -gt 0 ]; then
-      for d in "${!BUCKETS[@]}"; do
-        case "${BUCKETS[$d]}" in
-          drifted_and_updating|new_file_existing|to_remove)
-            component=$(_aicoding_config_component "$d")
-            case "$component" in
-              config-*) _SYNC_DEFERRED_PROVISION_COMPONENTS[${component#config-}]=1 ;;
-            esac
-            report_managed_conflict "$d" "${BUCKETS[$d]}" ;;
-        esac
-      done
-    fi
-  else
-    # interactive / yes / first: full reconcile.
-    buckets="restore new_file new_file_existing will_update will_update_owned drifted_but_aligned drifted_and_updating merge to_remove smart_update smart_conflict smart_retired"
-  fi
-  # The receipt's diffs must be taken before apply: afterwards dest == source.
-  local -A DIFFS=()
-  local bucket
-  if [[ "$mode" == interactive || "$mode" == yes ]]; then
-    for d in "${!BUCKETS[@]}"; do
-      bucket=${BUCKETS[$d]}
-      case " $buckets " in *" $bucket "*) ;; *) continue ;; esac
-      DIFFS[$d]=$(_sync_diff_for_bucket "$d" "$bucket")
-    done
-  fi
-
-  local apply_rc=0 smart_error_count=0
-  apply_managed_buckets "$buckets" "$mode" || apply_rc=1
-  if [ "$apply_rc" -ne 0 ]; then
-    for d in "${!APPLY_FAILURES[@]}"; do
-      component=$(_aicoding_config_component "$d")
-      case "$component" in
-        config-*) _SYNC_DEFERRED_PROVISION_COMPONENTS[${component#config-}]=1 ;;
-      esac
-    done
-  fi
-
-  # The smart adapter reports value-safe failures in JSON so set -e callers
-  # can continue unrelated work. Fold those results back into the shared
-  # apply/deferred accounting before provisioning or result recording.
-  for d in "${!SMART_PLAN[@]}"; do
-    local smart_result smart_code
-    case "${BUCKETS[$d]:-}" in
-      smart_update|smart_conflict|smart_error) ;;
-      *) continue ;;
-    esac
-    smart_result=${SMART_APPLY_RESULT[$d]:-${SMART_PLAN[$d]}}
-    smart_code=$(codex_smart_error_code "$smart_result")
-    if [[ -n "$smart_code" ]]; then
-      APPLY_FAILURES[$d]=1
-      smart_error_count=$((smart_error_count + 1))
-      _SYNC_DEFERRED_PROVISION_COMPONENTS[codex]=1
-    elif (( $(printf '%s' "$smart_result" | jq '.conflicts | length') > 0 )); then
-      conflict_count=$((conflict_count + 1))
-      _SYNC_DEFERRED_PROVISION_COMPONENTS[codex]=1
-    fi
-  done
-
-  # Per-bucket announcements (interactive output, not deploy behavior). Only
-  # report buckets that were actually in the applied set for this mode. Boot
-  # and first-run output goes to logs nobody reads, so those stay one-liners.
-  while IFS= read -r d; do
-    bucket=${BUCKETS[$d]}
-    case " $buckets " in *" $bucket "*) ;; *) continue ;; esac
-    [[ "${FILE_MODE[$d]:-}" != toml_merge ]] || continue
-    case "$bucket" in
-      restore|new_file|new_file_existing|will_update|will_update_owned|drifted_and_updating|merge|to_remove) ;;
-      *) continue ;;
-    esac
-    if [[ "$mode" == interactive || "$mode" == yes ]]; then
-      _sync_change_report "$(_sync_bucket_verb "$bucket")" "$d" "${DIFFS[$d]:-}"
-    else
-      echo "      $(_sync_bucket_verb "$bucket"): $d"
-    fi
-  done < <(printf '%s\n' "${!BUCKETS[@]}" | sort)
-
-  # Smart application results are intentionally not described as a complete
-  # merge when conflicts remain, and never reuse the raw-diff reporter.
-  while IFS= read -r d; do
-    [[ -n "$d" ]] || continue
-    bucket=${BUCKETS[$d]}
-    case " $buckets " in *" $bucket "*) ;; *) continue ;; esac
-    if [[ "$bucket" == smart_retired ]]; then
-      echo "      retired Codex management (config preserved): $d"
-      continue
-    fi
-    [[ -n "${SMART_APPLY_RESULT[$d]:-}" ]] || continue
-    local smart_result smart_code smart_config_changed smart_state_changed
-    smart_result=${SMART_APPLY_RESULT[$d]}
-    smart_code=$(codex_smart_error_code "$smart_result")
-    smart_config_changed=$(printf '%s' "$smart_result" | jq -r '.config_changed')
-    smart_state_changed=$(printf '%s' "$smart_result" | jq -r '.state_changed')
-    if [[ -n "$smart_code" ]]; then
-      printf '  ERROR: Codex config merge failed for %s (%s)\n' "$d" "$(codex_smart_error_text "$smart_result")" >&2
-    elif (( $(printf '%s' "$smart_result" | jq '.conflicts | length') > 0 )); then
-      if [[ "$smart_config_changed" == true ]]; then
-        echo "      applied safe Codex updates; conflicting settings kept local: $d"
-      elif [[ "$smart_state_changed" == true ]]; then
-        echo "      updated Codex merge state; conflicting settings kept local: $d"
-      else
-        echo "      conflicting Codex settings kept local; no updates applied: $d"
-      fi
-    elif [[ "$smart_config_changed" == true ]]; then
-      echo "      merged Codex settings: $d"
-    elif [[ "$smart_state_changed" == true ]]; then
-      echo "      updated Codex merge state (config bytes preserved): $d"
-    fi
-  done < <(printf '%s\n' "${!BUCKETS[@]}" | sort)
-
-  local origin
-  origin=$(blueprint_origin "$AICODING_BLUEPRINT_CLONE")
-  # Stamps the new commit and drops aicoding-status's cached `latest`, so the
-  # next tick re-fetches instead of comparing against a pre-sync remote SHA
-  # (see the helper's comment for why that drop still matters).
-  if [ "$blocked_count" -eq 0 ] && [ "$conflict_count" -eq 0 ] \
-      && [ "$smart_error_count" -eq 0 ] && [ "$apply_rc" -eq 0 ]; then
-    if ! manifest_stage_set_blueprint "$NEW_COMMIT" "$origin"; then
-      apply_rc=1
-      _SYNC_DEFERRED_PROVISION_COMPONENTS[claude]=1
-      _SYNC_DEFERRED_PROVISION_COMPONENTS[codex]=1
-    fi
-  fi
-
-  local commit_rc=0
-  manifest_stage_commit || commit_rc=1
-  if [ "$commit_rc" -ne 0 ]; then
-    _SYNC_DEFERRED_PROVISION_COMPONENTS[claude]=1
-    _SYNC_DEFERRED_PROVISION_COMPONENTS[codex]=1
-  fi
-  if [ "$commit_rc" -eq 0 ]; then
-    _sync_record_config_results "$NEW_COMMIT" "$buckets"
-  fi
-  if command -v aicoding_result_record >/dev/null 2>&1; then
-    if [ "$commit_rc" -ne 0 ]; then
-      aicoding_result_record config failed "$NEW_COMMIT" manifest_write_failed || true
-    elif [ "$apply_rc" -ne 0 ] || [ "$smart_error_count" -gt 0 ]; then
-      aicoding_result_record config failed "$NEW_COMMIT" managed_config_apply_failed "" \
-        "$(_sync_smart_error_detail)" || true
-    elif [ "$conflict_count" -gt 0 ]; then
-      aicoding_result_record config conflict "$NEW_COMMIT" managed_config_conflict || true
-    elif [ "$blocked_count" -eq 0 ] && [ "$NEW_COMMIT" != unknown ]; then
-      aicoding_result_record config current "$NEW_COMMIT" applied "$NEW_COMMIT" || true
-    else
-      aicoding_result_record config blocked "$NEW_COMMIT" partial_config_blocked || true
-    fi
-  fi
-  if [ "$blocked_count" -gt 0 ] || [ "$conflict_count" -gt 0 ] \
-      || [ "$smart_error_count" -gt 0 ]; then
-    _SYNC_PASS_DEFERRED=1
-  fi
-  if [ "$smart_error_count" -gt 0 ] && [[ "$mode" != boot && "$mode" != first ]]; then
-    return 1
-  fi
-  [ "$apply_rc" -eq 0 ] && [ "$commit_rc" -eq 0 ]
-}
-
-# --- Change report ----------------------------------------------------------
-# One block per file: a double ruler, "verb: path" with the verb in the
-# action's colour, the ruler again, then the diff indented. Colour only when
-# stdout is a terminal (FORCE_COLOR=1 overrides, NO_COLOR wins), so boot logs
-# and captured output stay plain.
-# _sync_reconcile pins the answer in _SYNC_COLOR up front: the diff bodies are
-# built inside command substitution, where stdout is a pipe and `-t 1` would
-# say no even on a terminal.
-_sync_color_on() {
-  case "${_SYNC_COLOR:-}" in 1) return 0 ;; 0) return 1 ;; esac
-  [ -z "${NO_COLOR:-}" ] || return 1
-  [ -n "${FORCE_COLOR:-}" ] || [ -t 1 ]
-}
-
-_sync_verb_color() {
-  case "$1" in
-    new*|restored*|merged*) printf '32' ;;
-    removed*)               printf '31' ;;
-    *)                      printf '33' ;;
-  esac
-}
-
-# _sync_change_report <verb> <dest> <diff-body>
-_sync_change_report() {
-  local verb=$1 dest=$2 body=$3 rule i=''
-  for ((i=0; i<72; i++)); do rule+='═'; done
-  if _sync_color_on; then
-    printf '\e[36m%s\e[0m\n' "$rule"
-    printf ' \e[1;%sm%s\e[0m: %s\n' "$(_sync_verb_color "$verb")" "$verb" "$dest"
-    printf '\e[36m%s\e[0m\n' "$rule"
-  else
-    printf '%s\n %s: %s\n%s\n' "$rule" "$verb" "$dest" "$rule"
-  fi
-  [ -n "$body" ] && printf '%s\n' "$body" | sed 's/^/    /'
-  echo
-}
-
-# _sync_diff_body <dest> <src> — hunks of dest -> src, src rendered exactly as
-# deploy would write it (so {{HOME}} and friends never show as noise), then
-# every secrets-file value scrubbed: a config file's on-disk copy carries the
-# substituted credentials, and this output lands in transcripts.
-# Verbatim (overwrite_raw) sources deploy unrendered and are compared unrendered.
-_sync_diff_body() {
-  local dest=$1 src=$2 file_mode=${3:-overwrite} rendered color=never rules secrets
-  [ -f "$dest" ] && [ -f "$src" ] || return 0
-  rendered=$(mktemp)
-  if [ "$file_mode" != overwrite_raw ] && command -v _render_managed_source >/dev/null 2>&1; then
-    _render_managed_source "$src" "$dest" "$rendered" 2>/dev/null || cp "$src" "$rendered"
-  else
-    cp "$src" "$rendered"
-  fi
-  _sync_color_on && color=always
-  rules=''
-  if [ -f "$AICODING_BLUEPRINT_CLONE/lib/redact-literal.sh" ]; then
-    # shellcheck source=redact-literal.sh
-    . "$AICODING_BLUEPRINT_CLONE/lib/redact-literal.sh"
-    secrets="${AICODING_SECRETS_FILE:-$HOME/.aicodingsetup/.secrets.env}"
-    if ! rules=$(redact_literal_rules transcript "$secrets"); then
-      # Fail closed: a secrets file that cannot be turned into rules means
-      # the diff cannot be scrubbed, so it is not shown at all.
-      rm -f "$rendered"
-      echo "(diff withheld: secrets file present but unreadable, so it cannot be scrubbed)"
-      return 0
-    fi
-  fi
-  git -c color.diff.new=green -c color.diff.old=red -c color.diff.frag=cyan \
-    diff --no-index --color="$color" -- "$dest" "$rendered" 2>/dev/null \
-    | tail -n +5 | sed -E -f <(printf '%s' "$rules")
-  rm -f "$rendered"
+  [[ -n "$keys" ]] && printf 'deferred by %s\n' "$keys"
   return 0
 }
 
-# _sync_diff_for_bucket <dest> <bucket> — the diff a bucket's report shows;
-# empty for buckets with nothing to compare (new, restore, remove) and for
-# marker blocks and merges, whose on-disk shape is not the source's.
-_sync_diff_for_bucket() {
-  local dest=$1 bucket=$2
-  case "$bucket" in
-    will_update|will_update_owned|drifted_and_updating|new_file_existing) ;;
-    *) return 0 ;;
-  esac
-  [ "${FILE_MODE[$dest]:-overwrite}" != marker_block ] || return 0
-  [ "${FILE_MODE[$dest]:-overwrite}" != toml_merge ] || return 0
-  _sync_diff_body "$dest" "$AICODING_BLUEPRINT_CLONE/${FILE_SOURCE[$dest]}" "${FILE_MODE[$dest]:-overwrite}"
+_sync_config_gate() {
+  command -v aicoding_config_is_compatible >/dev/null 2>&1 || return 0
+  AICODING_REQUIRE_UPDATE_RECEIPT=1 aicoding_config_is_compatible "$1"
 }
 
-_sync_bucket_verb() {
-  case "$1" in
-    restore)              printf 'restored' ;;
-    new_file)             printf 'new' ;;
-    new_file_existing)    printf 'new (existing file backed up)' ;;
-    will_update)          printf 'updated' ;;
-    will_update_owned)    printf 'updated' ;;
-    drifted_and_updating) printf 'updated (with backup)' ;;
-    merge)                printf 'merged' ;;
-    to_remove)            printf 'removed' ;;
-  esac
-}
-
-# Interactive summary: tally + a change report per actionable file.
-# Reads the COUNT / BUCKETS / FILE_MODE / FILE_SOURCE state from the caller.
-_sync_print_summary() {
-  echo
-  echo "  ${COUNT[up_to_date]} up to date"
-
-  if (( COUNT[will_update] > 0 )); then
-    echo "  ${COUNT[will_update]} will update         (no drift):"
-    for dest in "${!BUCKETS[@]}"; do
-      [[ ${BUCKETS[$dest]} == will_update ]] && echo "      $dest"
-    done
-  fi
-
-  if (( COUNT[will_update_owned] > 0 )); then
-    echo "  ${COUNT[will_update_owned]} will update (owned) (blueprint-owned, will refresh):"
-    for dest in "${!BUCKETS[@]}"; do
-      [[ ${BUCKETS[$dest]} == will_update_owned ]] && echo "      $dest"
-    done
-  fi
-
-  if (( COUNT[restore] > 0 )); then
-    echo "  ${COUNT[restore]} restore             (file missing, will be restored from blueprint):"
-    for dest in "${!BUCKETS[@]}"; do
-      [[ ${BUCKETS[$dest]} == restore ]] && echo "      $dest"
-    done
-  fi
-
-  if (( COUNT[drifted_and_updating] > 0 )); then
-    echo "  ${COUNT[drifted_and_updating]} needs your decision (you've modified, blueprint also changed):"
-    for dest in "${!BUCKETS[@]}"; do
-      [[ ${BUCKETS[$dest]} != drifted_and_updating ]] && continue
-      echo "      $dest"
-    done
-  fi
-
-  if (( COUNT[to_remove] > 0 )); then
-    echo "  ${COUNT[to_remove]} to remove           (no longer in blueprint):"
-    for dest in "${!BUCKETS[@]}"; do
-      [[ ${BUCKETS[$dest]} == to_remove ]] && echo "      $dest"
-    done
-  fi
-
-  if (( COUNT[new_file] > 0 )); then
-    echo "  ${COUNT[new_file]} new files           (will be deployed):"
-    for dest in "${!BUCKETS[@]}"; do
-      [[ ${BUCKETS[$dest]} == new_file ]] && echo "      $dest"
-    done
-  fi
-
-  if (( COUNT[new_file_existing] > 0 )); then
-    echo "  ${COUNT[new_file_existing]} newly managed       (your existing file will be backed up, then replaced):"
-    for dest in "${!BUCKETS[@]}"; do
-      [[ ${BUCKETS[$dest]} == new_file_existing ]] && echo "      $dest"
-    done
-  fi
-
-  if (( COUNT[merge] > 0 )); then
-    echo "  ${COUNT[merge]} merge target(s)     (will re-merge, additions preserved):"
-    for dest in "${!BUCKETS[@]}"; do
-      [[ ${BUCKETS[$dest]} == merge ]] && echo "      $dest"
-    done
-  fi
-
-  if (( COUNT[smart_update] > 0 )); then
-    echo "  ${COUNT[smart_update]} Codex smart update(s) (safe setting/receipt changes):"
-    for dest in "${!BUCKETS[@]}"; do
-      [[ ${BUCKETS[$dest]} == smart_update ]] && echo "      $dest"
-    done
-  fi
-
-  if (( COUNT[smart_conflict] > 0 )); then
-    echo "  ${COUNT[smart_conflict]} Codex config(s) with path-level choices (local preserved by default):"
-    for dest in "${!BUCKETS[@]}"; do
-      [[ ${BUCKETS[$dest]} == smart_conflict ]] && echo "      $dest"
-    done
-  fi
-
-  if (( COUNT[smart_error] > 0 )); then
-    echo "  ${COUNT[smart_error]} Codex smart merge error(s) (config preserved):"
-    for dest in "${!BUCKETS[@]}"; do
-      [[ ${BUCKETS[$dest]} == smart_error ]] && echo "      $dest"
-    done
-  fi
-
-  if (( COUNT[smart_retired] > 0 )); then
-    echo "  ${COUNT[smart_retired]} retired Codex target(s) (config and receipt preserved):"
-    for dest in "${!BUCKETS[@]}"; do
-      [[ ${BUCKETS[$dest]} == smart_retired ]] && echo "      $dest"
-    done
-  fi
-
-  echo
-  # One report per file that has something to read before "Apply?". Files
-  # without a diff (new, restored, removed, merged) are covered by the tally.
-  local body verb
-  while IFS= read -r dest; do
-    body=$(_sync_diff_for_bucket "$dest" "${BUCKETS[$dest]}")
-    [ -n "$body" ] || continue
-    case "${BUCKETS[$dest]}" in
-      drifted_and_updating) verb="you edited, blueprint changed" ;;
-      new_file_existing)    verb="will replace (backup kept)" ;;
-      *)                    verb="will update" ;;
+# Record every config component from the outcome of all destinations it owns.
+# The worst outcome wins: failed > malformed > blocked > current.
+_sync_record_config_results() {
+  local target=$1 d component result rank worst=1
+  local -A ranks=() reasons=() details=()
+  for d in "${!MANAGED_RESULT[@]}"; do
+    component=$(_aicoding_config_component "$d" 2>/dev/null || echo config)
+    result=${MANAGED_RESULT[$d]}
+    case "$result" in
+      failed) rank=4 ;;
+      malformed) rank=3 ;;
+      blocked:*) rank=2 ;;
+      *) rank=1 ;;
     esac
-    _sync_change_report "$verb" "$dest" "$body"
-  done < <(printf '%s\n' "${!BUCKETS[@]}" | sort)
+    if (( rank > worst )); then worst=$rank; fi
+    if [[ ( "$rank" == 2 || "$rank" == 4 ) && "$component" == config-* ]]; then
+      _SYNC_DEFERRED_PROVISION_COMPONENTS[${component#config-}]=1
+    fi
+    # An MCP staging wait never hides another destination's actionable reason.
+    if (( rank < ${ranks[$component]:-0} )); then continue; fi
+    if (( rank == ${ranks[$component]:-0} )); then
+      [[ "$rank" == 2 && "${reasons[$component]}" == mcp_exact_version_staging_unavailable \
+        && "$result" != blocked:mcp_exact_version_staging_unavailable ]] || continue
+    fi
+    ranks[$component]=$rank
+    if [[ "$result" == blocked:* ]]; then
+      reasons[$component]=${result#blocked:}
+      details[$component]=
+      if [[ "${reasons[$component]}" == mcp_exact_version_staging_unavailable ]]; then
+        details[$component]=$(aicoding_exact_mcp_config_cause "$d" 2>/dev/null) || true
+      fi
+    fi
+  done
+  if (( worst == 2 || worst == 4 )); then _SYNC_PASS_DEFERRED=1; fi
+  command -v aicoding_result_record >/dev/null 2>&1 && [ "$target" != unknown ] || return 0
+  for component in "${!ranks[@]}"; do
+    [[ "$component" == config-* ]] || continue
+    case "${ranks[$component]}" in
+      1) aicoding_result_record "$component" current "$target" reconciliation_verified "$target" ;;
+      2) aicoding_result_record "$component" blocked "$target" "${reasons[$component]}" "" "${details[$component]}" ;;
+      3) aicoding_result_record "$component" blocked "$target" managed_config_malformed ;;
+      4) aicoding_result_record "$component" failed "$target" managed_config_apply_failed ;;
+    esac || true
+  done
+  case "$worst" in
+    1) aicoding_result_record config current "$target" applied "$target" ;;
+    2) aicoding_result_record config blocked "$target" partial_config_blocked ;;
+    3) aicoding_result_record config blocked "$target" managed_config_malformed ;;
+    4) aicoding_result_record config failed "$target" managed_config_apply_failed ;;
+  esac || true
+}
+
+# Bring managed config to the blueprint's state (lib/blueprint-deploy.sh's
+# four rules). Every mode applies the same way; --dry-run only reports.
+_sync_reconcile() {
+  local mode=$1 old new rc=0
+  declare -gA _SYNC_DEFERRED_PROVISION_COMPONENTS=() MANAGED_RESULT=()
+  if [[ "${_SYNC_REFRESHED:-0}" != 1 ]]; then
+    refresh_blueprint || return $?
+  fi
+  [ -f "$AICODING_BLUEPRINT_CLONE/lib/blueprint-deploy.sh" ] || return 0
+  . "$AICODING_BLUEPRINT_CLONE/lib/blueprint-deploy.sh"
+  load_secrets_env
+  old=$(aicoding_stamp_read blueprint_commit)
+  new=$(_sync_blueprint_version "$AICODING_BLUEPRINT_CLONE" || echo unknown)
+  echo "Blueprint: ${old:0:7} -> ${new:0:7}"
+  if [ "$mode" = dry-run ]; then
+    managed_config_apply --dry-run
+    return
+  fi
+  aicoding_shared_locks_acquire_managed_roots || {
+    echo "aicoding-sync: shared configuration writer is busy" >&2
+    return 1
+  }
+  MANAGED_CONFIG_GATE=_sync_config_gate managed_config_apply || rc=1
+  _sync_record_config_results "$new"
+  if [ "$rc" -eq 0 ] && [ "${#_SYNC_DEFERRED_PROVISION_COMPONENTS[@]}" -eq 0 ]; then
+    aicoding_stamp_blueprint "$new"
+    aicoding_remove_legacy_state
+  fi
+  return "$rc"
 }
 
 # Codex has no self-update subcommand; a refresh means re-running the
@@ -1561,7 +780,7 @@ _sync_provision() {
   command -v load_secrets_env >/dev/null 2>&1 && load_secrets_env || true
 
   # Reconcile normally holds these descriptors through the rest of the pass.
-  # Acquire independently as well: boot with no manifest or a busy/failed
+  # Acquire independently as well: a busy or failed
   # reconcile still reaches provisioning so unrelated local repairs can run.
   if ! command -v aicoding_shared_locks_acquire_managed_roots >/dev/null 2>&1 \
       && [ -f "$blueprint_lib/blueprint-deploy.sh" ]; then
@@ -1761,8 +980,8 @@ _sync_provision() {
   target=$(_sync_blueprint_version "$(dirname "$blueprint_lib")" || echo unknown)
   [ "$target" != unknown ] || rc=1
   if [ "$rc" -eq 0 ] && [ "$provision_deferred" -eq 0 ]; then
-    command -v manifest_stamp_provision >/dev/null 2>&1 && [ "$target" != unknown ] \
-      && manifest_stamp_provision "$target"
+    command -v aicoding_stamp_write >/dev/null 2>&1 && [ "$target" != unknown ] \
+      && aicoding_stamp_write provision_commit "$target"
     command -v aicoding_result_record >/dev/null 2>&1 \
       && aicoding_result_record provision current "$target" verified "$target" || true
   elif [ "$rc" -ne 0 ]; then
@@ -1847,8 +1066,8 @@ _sync_system_provision() {
 }
 
 aicoding_sync() {
-  # Parse the FIRST recognized flag; no flag = interactive.
-  local mode=interactive arg
+  # Parse the FIRST recognized flag. --yes is kept for old callers.
+  local mode=default arg
   for arg in "$@"; do
     [ "$arg" = --full ] && export AICODING_SYNC_FULL=1
   done
@@ -1888,6 +1107,10 @@ aicoding_sync() {
     _sync_refresh_and_reexec "$@" || overall_rc=1
   fi
 
+  if [ -f "$AICODING_BLUEPRINT_CLONE/lib/blueprint-deploy.sh" ]; then
+    . "$AICODING_BLUEPRINT_CLONE/lib/blueprint-deploy.sh"
+    [ "$mode" = dry-run ] || aicoding_migrate_legacy_state
+  fi
   local profile
   profile=$(_sync_profile)
 

@@ -37,6 +37,17 @@ teardown() { rm -rf "$TMP" 2>/dev/null || true; return 0; }
 
 cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
 
+# stamps <json>: write profile/provision_commit/blueprint_commit as the
+# one-line state files status reads; keys absent from <json> are removed.
+stamps() {
+  local dir=${AICODING_STATE_DIR:-$HOME/.local/state/aicoding} key value
+  mkdir -p "$dir"
+  for key in profile provision_commit blueprint_commit; do
+    value=$(jq -r --arg k "$key" '.[$k] // empty' <<< "$1")
+    if [ -n "$value" ]; then printf '%s\n' "$value" > "$dir/$key"; else rm -f "$dir/$key"; fi
+  done
+}
+
 @test "behind: installed != latest -> banner shows CTA" {
   echo 2222222222222222222222222222222222222222 > "$AICODING_UPDATE_TESTONLY_INSTALLED_FILE"
   FAKE_LATEST=1111111111111111111111111111111111111111 run "$BIN" --refresh
@@ -145,28 +156,19 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   [ -f "$HOME/.local/state/aicoding/updates/demo.json" ]
 }
 
-@test "manifest: adopts a shared-mount manifest once, leaving the shared copy intact" {
-  unset AICODING_MANIFEST
+@test "status ignores a shared-mount manifest and reads its own stamp files" {
+  unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE
   mkdir -p "$HOME/.aicodingsetup"
-  echo '{"schema_version":1,"blueprint_commit":"abc123","files":{}}' \
+  echo '{"schema_version":1,"profile":"host","blueprint_commit":"2222222222222222222222222222222222222222","files":{}}' \
     > "$HOME/.aicodingsetup/manifest.json"
-
-  # Sourcing alone must NOT migrate — the library documents "no top-level side
-  # effects". Adoption happens on the first manifest read.
-  run bash -c ". '$BLUEPRINT_ROOT/lib/blueprint-deploy.sh'; printf '%s' \"\$AICODING_MANIFEST\""
-  [ "$status" -eq 0 ]
-  local local_manifest="$HOME/.local/state/aicoding/manifest.json"
-  [ "$output" = "$local_manifest" ]
-  [ ! -e "$local_manifest" ]
-
-  run bash -c ". '$BLUEPRINT_ROOT/lib/blueprint-deploy.sh'; read_manifest >/dev/null"
-  [ "$status" -eq 0 ]
-
-  # migrated into the container, and the shared original is NOT removed:
-  # other containers still need it for their own one-time adoption.
-  [ -f "$local_manifest" ]
-  [ "$(jq -r .blueprint_commit "$local_manifest")" = "abc123" ]
-  [ -f "$HOME/.aicodingsetup/manifest.json" ]
+  selector_stub
+  FAKE_SELECTED=1111111111111111111111111111111111111111 "$BIN" --refresh
+  run "$BIN" --tmux
+  [ -z "$output" ]
+  [ ! -e "$HOME/.local/state/aicoding/manifest.json" ]
+  stamps '{"blueprint_commit":"2222222222222222222222222222222222222222"}'
+  run "$BIN" --tmux
+  [[ "$output" == *"⬆sync"* ]]
 }
 
 # --- print-time verdict (see: six stranded-cache fixes) ---------------------
@@ -223,15 +225,15 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   [ "$(cache | jq 'has("installed") or has("status")')" = "false" ]
 }
 
-@test "no writer stamps blueprint_commit outside manifest_stage_set_blueprint" {
+@test "no writer stamps blueprint_commit outside aicoding_stamp_blueprint" {
   # Stamping the commit and invalidating this cache must never drift apart: a
   # site that does the first without the second leaves the badge asserting the
   # pre-run commit, and _cache_fresh then suppresses re-checks for the whole
   # TTL. install.sh's three provision sites did exactly that (2026-07-26).
-  # manifest_stage_set_blueprint does both, so it is the only legal writer —
-  # the helper's own set_top call in blueprint-deploy.sh is the sole exception.
+  # aicoding_stamp_blueprint does both, so it is the only legal writer;
+  # its own call in blueprint-deploy.sh is the sole exception.
   local hits
-  hits=$(grep -rn 'manifest_stage_set_top blueprint_commit' \
+  hits=$(grep -rn 'aicoding_stamp_write blueprint_commit' \
     "$BLUEPRINT_ROOT/bin" "$BLUEPRINT_ROOT/lib" "$BLUEPRINT_ROOT/install.sh" 2>/dev/null \
     | grep -v '/lib/blueprint-deploy.sh:' || true)
   if [ -n "$hits" ]; then
@@ -241,7 +243,7 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   fi
 }
 
-@test "no shipped entrypoint re-defaults manifest/update-state to the shared mount" {
+@test "no shipped entrypoint re-defaults update-state to the shared mount" {
   # Files in bin/ have NO extension, so a `--include='*.sh'` grep misses them —
   # exactly how bin/aicoding-sync kept the old shared default while everything
   # else moved container-local. An entrypoint that pre-sets the var silently
@@ -250,7 +252,6 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
   # badge could never clear. Scan by path, never by extension.
   local hits
   hits=$(grep -rn \
-    -e 'AICODING_MANIFEST:=' -e 'AICODING_MANIFEST:-' \
     -e 'AICODING_UPDATE_STATE:=' -e 'AICODING_UPDATE_STATE:-' \
     "$BLUEPRINT_ROOT/bin" "$BLUEPRINT_ROOT/lib" 2>/dev/null \
     | grep 'aicodingsetup' || true)
@@ -263,8 +264,7 @@ cache() { cat "$AICODING_UPDATE_STATE/demo.json"; }
 
 @test "badge label: aicoding renders as ⬆sync, banner still says aicoding-sync" {
   unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE
-  export AICODING_MANIFEST="$TMP/manifest.json"
-  jq -n '{blueprint_commit:"2222222222222222222222222222222222222222"}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n '{blueprint_commit:"2222222222222222222222222222222222222222"}')"
   selector_stub
   FAKE_SELECTED=1111111111111111111111111111111111111111 "$BIN" --refresh
   run "$BIN" --tmux
@@ -304,11 +304,9 @@ _activate_gitless_aicoding() {
   local active=2222222222222222222222222222222222222222
   unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE \
     AICODING_UPDATE_TESTONLY_INSTALLED_FILE
-  export AICODING_MANIFEST="$TMP/manifest.json"
   export AICODING_RESULTS_FILE="$TMP/results.json"
   _activate_gitless_aicoding "$active"
-  jq -n --arg old "$old" '{blueprint_commit:$old,provision_commit:$old,profile:"container"}' \
-    > "$AICODING_MANIFEST"
+  stamps "$(jq -n --arg old "$old" '{blueprint_commit:$old,provision_commit:$old,profile:"container"}')"
   mkdir -p "$AICODING_UPDATE_STATE"
   jq -n --arg active "$active" '{tool:"aicoding",latest:$active}' \
     > "$AICODING_UPDATE_STATE/aicoding.json"
@@ -335,10 +333,9 @@ _activate_gitless_aicoding() {
   local newer=2626262626262626262626262626262626262626
   unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE \
     AICODING_UPDATE_TESTONLY_INSTALLED_FILE
-  export AICODING_MANIFEST="$TMP/manifest.json"
   export AICODING_RESULTS_FILE="$TMP/missing-results.json"
   _activate_gitless_aicoding "$active"
-  jq -n '{profile:"container"}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n '{profile:"container"}')"
   mkdir -p "$AICODING_UPDATE_STATE"
   jq -n --arg newer "$newer" '{tool:"aicoding",latest:$newer}' \
     > "$AICODING_UPDATE_STATE/aicoding.json"
@@ -351,16 +348,15 @@ _activate_gitless_aicoding() {
   [[ "$output" != *"run:"* ]]
 }
 
-@test "Gitless status honors the common state root for cache manifest and receipts" {
+@test "Gitless status honors the common state root for cache, stamps and receipts" {
   local active=2424242424242424242424242424242424242424
   unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE \
     AICODING_UPDATE_TESTONLY_INSTALLED_FILE AICODING_UPDATE_STATE \
-    AICODING_MANIFEST AICODING_RESULTS_FILE
+    AICODING_RESULTS_FILE
   export AICODING_STATE_DIR="$TMP/custom-state"
   _activate_gitless_aicoding "$active"
   mkdir -p "$AICODING_STATE_DIR/updates"
-  jq -n --arg active "$active" '{blueprint_commit:$active,provision_commit:$active,profile:"container"}' \
-    > "$AICODING_STATE_DIR/manifest.json"
+  stamps "$(jq -n --arg active "$active" '{blueprint_commit:$active,provision_commit:$active,profile:"container"}')"
   jq -n --arg active "$active" '{tool:"aicoding",latest:$active}' \
     > "$AICODING_STATE_DIR/updates/aicoding.json"
   jq -n --arg active "$active" \
@@ -377,10 +373,8 @@ _activate_gitless_aicoding() {
   local active=2323232323232323232323232323232323232323
   unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE \
     AICODING_UPDATE_TESTONLY_INSTALLED_FILE
-  export AICODING_MANIFEST="$TMP/manifest.json"
   _activate_gitless_aicoding "$active"
-  jq -n --arg active "$active" '{blueprint_commit:$active,profile:"minimal-pi"}' \
-    > "$AICODING_MANIFEST"
+  stamps "$(jq -n --arg active "$active" '{blueprint_commit:$active,profile:"minimal-pi"}')"
   mkdir -p "$AICODING_UPDATE_STATE"
   jq -n --arg active "$active" '{tool:"aicoding",latest:$active}' \
     > "$AICODING_UPDATE_STATE/aicoding.json"
@@ -392,9 +386,8 @@ _activate_gitless_aicoding() {
 }
 
 @test "provision drift: provisioning path touched since stamp -> ⬆install badge" {
-  export AICODING_MANIFEST="$TMP/manifest.json"
   _mk_clone lib/provision-system.sh
-  jq -n --arg s "$A_SHA" '{provision_commit:$s}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n --arg s "$A_SHA" '{provision_commit:$s}')"
   run "$BIN" --tmux
   [[ "$output" == *"⬆install"* ]]
   run "$BIN" --banner
@@ -402,10 +395,9 @@ _activate_gitless_aicoding() {
 }
 
 @test "failed automatic provisioning reports its receipt without obsolete install advice" {
-  export AICODING_MANIFEST="$TMP/manifest.json"
   export AICODING_RESULTS_FILE="$TMP/results.json"
   _mk_clone lib/provision-system.sh
-  jq -n --arg s "$A_SHA" '{provision_commit:$s}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n --arg s "$A_SHA" '{provision_commit:$s}')"
   jq -n '{schema:1,components:{provision:{state:"blocked",reason:"partial_provision_failure",target:"target"}}}' > "$AICODING_RESULTS_FILE"
   run "$BIN" --banner
   [[ "$output" == *"automatic provisioning blocked"* ]]
@@ -413,52 +405,48 @@ _activate_gitless_aicoding() {
 }
 
 @test "successful provisioning receipt suppresses stale legacy provision stamp" {
-  export AICODING_MANIFEST="$TMP/manifest.json"
   export AICODING_RESULTS_FILE="$TMP/results.json"
   _mk_clone lib/provision-system.sh
   local head; head=$(git -C "$CLONE" rev-parse HEAD)
-  jq -n --arg s "$A_SHA" '{provision_commit:$s}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n --arg s "$A_SHA" '{provision_commit:$s}')"
   jq -n --arg h "$head" '{schema:1,components:{provision:{state:"current",reason:"verified",successful_version:$h}}}' > "$AICODING_RESULTS_FILE"
   run "$BIN" --banner
   [[ "$output" != *"provisioning behind"* ]]
 }
 
 @test "host provision drift tracks install-host.sh instead of install.sh" {
-  export AICODING_MANIFEST="$TMP/manifest.json"
   _mk_clone install-host.sh
-  jq -n --arg s "$A_SHA" '{profile:"host", provision_commit:$s}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n --arg s "$A_SHA" '{profile:"host", provision_commit:$s}')"
   run "$BIN" --tmux
   [[ "$output" == *"⬆install"* ]]
 
   rm -rf "$CLONE"
   _mk_clone install.sh
-  jq -n --arg s "$A_SHA" '{profile:"host", provision_commit:$s}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n --arg s "$A_SHA" '{profile:"host", provision_commit:$s}')"
   run "$BIN" --tmux
   [[ "$output" != *"⬆install"* ]]
 }
 
 @test "provision drift: only non-provisioning paths touched -> no badge" {
-  export AICODING_MANIFEST="$TMP/manifest.json"
   _mk_clone docs/notes.md
-  jq -n --arg s "$A_SHA" '{provision_commit:$s}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n --arg s "$A_SHA" '{provision_commit:$s}')"
   run "$BIN" --tmux
   [[ "$output" != *"⬆install"* ]]
 }
 
 @test "provision drift fail-open: missing stamp / stamp not ancestor -> no badge" {
-  export AICODING_MANIFEST="$TMP/manifest.json"
   _mk_clone lib/provision-system.sh
-  jq -n '{}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n '{}')"
   run "$BIN" --tmux
   [[ "$output" != *"⬆install"* ]]
-  jq -n '{provision_commit:"3333333333333333333333333333333333333333"}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n '{provision_commit:"3333333333333333333333333333333333333333"}')"
   run "$BIN" --tmux
   [ "$status" -eq 0 ]
   [[ "$output" != *"⬆install"* ]]
 }
 
 @test "image staleness: image/ touched since baked sha -> ⬆rebuild + laptop CTA" {
-  export AICODING_MANIFEST="$TMP/manifest.json"; jq -n '{}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n '{}')"
   _mk_clone image/Dockerfile
   export AICODING_IMAGE_RELEASE_FILE="$TMP/release.json"
   jq -n --arg s "$A_SHA" '{sha:$s, built:"2026-08-08T00:00:00Z"}' > "$AICODING_IMAGE_RELEASE_FILE"
@@ -469,9 +457,8 @@ _activate_gitless_aicoding() {
 }
 
 @test "host status excludes container image and published-date rebuild notices" {
-  export AICODING_MANIFEST="$TMP/manifest.json"
   _mk_clone image/Dockerfile
-  jq -n --arg s "$A_SHA" '{profile:"host", provision_commit:$s}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n --arg s "$A_SHA" '{profile:"host", provision_commit:$s}')"
   export AICODING_IMAGE_RELEASE_FILE="$TMP/release.json"
   jq -n --arg s "$A_SHA" '{sha:$s, built:"2026-08-08T00:00:00Z"}' > "$AICODING_IMAGE_RELEASE_FILE"
   mkdir -p "$AICODING_UPDATE_STATE"
@@ -484,7 +471,7 @@ _activate_gitless_aicoding() {
 }
 
 @test "image staleness fail-open: no release file / empty sha -> no badge" {
-  export AICODING_MANIFEST="$TMP/manifest.json"; jq -n '{}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n '{}')"
   _mk_clone image/Dockerfile
   export AICODING_IMAGE_RELEASE_FILE="$TMP/absent.json"
   run "$BIN" --tmux
@@ -495,7 +482,7 @@ _activate_gitless_aicoding() {
 }
 
 @test "image staleness: image/ untouched since baked sha -> no badge" {
-  export AICODING_MANIFEST="$TMP/manifest.json"; jq -n '{}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n '{}')"
   _mk_clone docs/notes.md
   export AICODING_IMAGE_RELEASE_FILE="$TMP/release.json"
   jq -n --arg s "$A_SHA" '{sha:$s, built:"2026-08-08T00:00:00Z"}' > "$AICODING_IMAGE_RELEASE_FILE"
@@ -509,9 +496,8 @@ _activate_gitless_aicoding() {
   # Run from any aicoding checkout the pathspec froze to the locally-present
   # filenames, and a newly ADDED provisioning lib upstream matched nothing —
   # a silent, cwd-dependent false negative.
-  export AICODING_MANIFEST="$TMP/manifest.json"
   _mk_clone lib/provision-newthing.sh   # upstream ADDS a lib absent locally
-  jq -n --arg s "$A_SHA" '{provision_commit:$s}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n --arg s "$A_SHA" '{provision_commit:$s}')"
 
   mkdir -p "$TMP/cwd/lib"               # a cwd that HAS other provision libs
   : > "$TMP/cwd/lib/provision-system.sh"
@@ -559,10 +545,9 @@ _activate_gitless_aicoding() {
 @test "no false positives: a rendered-content change alone produces no badge" {
   unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE \
         AICODING_UPDATE_TESTONLY_INSTALLED_FILE
-  export AICODING_MANIFEST="$TMP/manifest.json"
   export AICODING_IMAGE_RELEASE_FILE="$TMP/release.json"
   _mk_clone docs/notes.md                       # no gated path touched
-  jq -n --arg s "$A_SHA" '{blueprint_commit:$s, provision_commit:$s}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n --arg s "$A_SHA" '{blueprint_commit:$s, provision_commit:$s}')"
   jq -n --arg s "$A_SHA" '{sha:$s}' > "$AICODING_IMAGE_RELEASE_FILE"
   FAKE_LATEST="$A_SHA" "$BIN" --refresh
 
@@ -599,7 +584,7 @@ _activate_gitless_aicoding() {
 }
 
 @test "image staleness: newer published date tag than built date -> ⬆rebuild" {
-  export AICODING_MANIFEST="$TMP/manifest.json"; jq -n '{}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n '{}')"
   _mk_clone docs/notes.md   # source check negative: no image/ commits after A
   export AICODING_IMAGE_RELEASE_FILE="$TMP/release.json"
   jq -n --arg s "$A_SHA" '{sha:$s, built:"2026-08-01T04:00:00Z"}' > "$AICODING_IMAGE_RELEASE_FILE"
@@ -639,7 +624,7 @@ STUB
 }
 
 @test "image staleness: published tag equal to built date -> no badge (fail-open)" {
-  export AICODING_MANIFEST="$TMP/manifest.json"; jq -n '{}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n '{}')"
   _mk_clone docs/notes.md
   export AICODING_IMAGE_RELEASE_FILE="$TMP/release.json"
   jq -n --arg s "$A_SHA" '{sha:$s, built:"2026-08-08T04:00:00Z"}' > "$AICODING_IMAGE_RELEASE_FILE"
@@ -703,10 +688,9 @@ _provision_fixture() {
   local active=2727272727272727272727272727272727272727
   unset AICODING_UPDATE_TESTONLY_TOOL AICODING_UPDATE_TESTONLY_REMOTE \
     AICODING_UPDATE_TESTONLY_INSTALLED_FILE
-  export AICODING_MANIFEST="$TMP/manifest.json"
   export AICODING_RESULTS_FILE="$TMP/results.json"
   _activate_gitless_aicoding "$active"
-  jq -n --arg a "$active" '{blueprint_commit:$a,provision_commit:$a,profile:"container"}' > "$AICODING_MANIFEST"
+  stamps "$(jq -n --arg a "$active" '{blueprint_commit:$a,provision_commit:$a,profile:"container"}')"
   mkdir -p "$AICODING_UPDATE_STATE"
   jq -n --arg a "$active" '{tool:"aicoding",latest:$a}' > "$AICODING_UPDATE_STATE/aicoding.json"
   jq -n --arg a "$active" '{schema:1,components:{
@@ -725,10 +709,18 @@ _provision_fixture() {
 
 @test "provision badge: one action-kind blocker lights it" {
   _provision_fixture
-  jq '.components.config={state:"conflict",reason:"managed_config_conflict"}' \
+  jq '.components.config={state:"failed",reason:"managed_config_apply_failed"}' \
     "$AICODING_RESULTS_FILE" > "$TMP/r" && mv "$TMP/r" "$AICODING_RESULTS_FILE"
   run "$BIN" --tmux
   [[ "$output" == *"⬆provision!"* ]]
+}
+
+@test "provision badge: a stale managed-config conflict receipt no longer lights it" {
+  _provision_fixture
+  jq '.components["config-claude"]={state:"conflict",reason:"managed_config_conflict"}' \
+    "$AICODING_RESULTS_FILE" > "$TMP/r" && mv "$TMP/r" "$AICODING_RESULTS_FILE"
+  run "$BIN" --tmux
+  [[ "$output" != *"provision!"* ]]
 }
 
 @test "provision badge: an uncatalogued reason still lights it" {
@@ -747,7 +739,7 @@ _provision_fixture() {
   "$BIN" --tmux >/dev/null
   "$BIN" --tmux >/dev/null
   [ "$(wc -l < "$TMP/python-calls")" -eq 1 ]
-  jq '.components.config={state:"conflict",reason:"managed_config_conflict"}' \
+  jq '.components.config={state:"failed",reason:"managed_config_apply_failed"}' \
     "$AICODING_RESULTS_FILE" > "$TMP/r" && mv "$TMP/r" "$AICODING_RESULTS_FILE"
   run "$BIN" --tmux
   [[ "$output" == *"⬆provision!"* ]]

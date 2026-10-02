@@ -5,7 +5,7 @@ injects a short response-shape block only when the session model is Fable 5
 or Mythos 5 (same model, matched as `*fable-5*` and `*mythos-5*`). It is the
 Fable twin of `opus-verbosity.sh` (see `opus5-verbosity.md`): same model
 detection, same silent exit 0 on every failure, same four wiring points
-(`configs/claude/settings.json`, the `blueprint-deploy.sh` manifest,
+(`configs/claude/settings.json`, the `blueprint-deploy.sh` inventory,
 `MANAGED_HOOKS`, and `tests/bats/fable-guidance-hook.bats`).
 
 Source: Anthropic's prompting guide for this model,

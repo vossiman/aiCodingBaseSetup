@@ -35,10 +35,10 @@ teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
   [ ! -f "$HOME/notify-args" ]
 }
 
-@test "settings.json wires the hook and manifest deploys it" {
+@test "settings.json wires the hook and the inventory deploys it" {
   grep -q 'agent-waiting.sh' "$BLUEPRINT_ROOT/configs/claude/settings.json"
   grep -q 'Notification' "$BLUEPRINT_ROOT/configs/claude/settings.json"
-  grep -q '.claude/hooks/agent-waiting.sh|overwrite|configs/claude/hooks/agent-waiting.sh' \
+  grep -q '.claude/hooks/agent-waiting.sh|owned|configs/claude/hooks/agent-waiting.sh' \
     "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
 }
 
@@ -48,7 +48,7 @@ teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
   [ "$status" -eq 0 ]
   grep -qx -- '--clear' "$HOME/notify-args"
   grep -q 'agent-working.sh' "$BLUEPRINT_ROOT/configs/claude/settings.json"
-  grep -q '.claude/hooks/agent-working.sh|overwrite|configs/claude/hooks/agent-working.sh' \
+  grep -q '.claude/hooks/agent-working.sh|owned|configs/claude/hooks/agent-working.sh' \
     "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   grep -q '^\[\[hooks.UserPromptSubmit\]\]' "$BLUEPRINT_ROOT/configs/codex/requirements.toml"
   grep -q 'hooks/agent-working.sh' "$BLUEPRINT_ROOT/configs/codex/requirements.toml"

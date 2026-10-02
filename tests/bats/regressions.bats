@@ -1,17 +1,14 @@
 #!/usr/bin/env bats
 
-# Regression coverage for three bugs the final review of blueprint-sync
-# surfaced:
-#   1. the sync CLI (then aicoding-update) was sweeping ~/.bashrc into to_remove and deleting it.
+# Regression coverage for bugs the final review of blueprint-sync surfaced:
+#   1. the sync CLI (then aicoding-update) deleted ~/.bashrc.
 #   2. it wrote raw {{HOME}}/{{*_API_KEY}} placeholders into
 #      ~/.claude/settings.json and skill SKILL.md files (no substitution).
-#   3. it didn't refuse manifests with a newer schema_version.
 
 setup() {
   : "${BLUEPRINT_ROOT:?unset — run via tests/bats/run.sh; refusing to default to / and copy the whole filesystem}"
   TMPDIR=$(mktemp -d)
   export HOME="$TMPDIR"
-  export AICODING_MANIFEST="$TMPDIR/.aicodingsetup/manifest.json"
   export AICODING_BLUEPRINT_CLONE="$TMPDIR/aicoding"
   export AICODINGSETUP_NONINTERACTIVE=1
   export CODEX_MANAGED_DIR="$TMPDIR/etc-codex"
@@ -100,8 +97,8 @@ EOF
 
 @test "regression: Python bytecode caches are ignored throughout the blueprint" {
   run git -C "$BLUEPRINT_ROOT" check-ignore --no-index -v \
-    lib/__pycache__/codex_merge.cpython-312.pyc \
-    tests/__pycache__/test_codex_merge.cpython-312.pyc
+    lib/__pycache__/managed_toml.cpython-312.pyc \
+    tests/__pycache__/status_reasons.cpython-312.pyc
   [ "$status" -eq 0 ]
   [ "${#lines[@]}" -eq 2 ]
 }
@@ -150,8 +147,6 @@ EOF
   # User's hand-edits outside the block also survived.
   grep -qF "user-added line below the managed block" "$HOME/.bashrc"
 
-  # Manifest still records ~/.bashrc as marker_block (not removed).
-  jq -e '.files["'"$HOME"'/.bashrc"].mode == "marker_block"' "$AICODING_MANIFEST"
 }
 
 # Bug 2 regression: substitute_secrets must apply on aicoding-sync too.
@@ -172,9 +167,9 @@ EOF
     .hooks.PreToolUse[0].hooks[0].command | contains($h)
   ' "$HOME/.claude/settings.json"
 
-  # Advance the blueprint: add a benign field via the blueprint's source
-  # JSON, commit, then run aicoding-sync.
-  jq '. + {"_blueprintAdvance":"v2"}' \
+  # Advance the blueprint: add a benign owned env entry via the blueprint's
+  # source JSON, commit, then run aicoding-sync.
+  jq '.env._BLUEPRINT_ADVANCE = "v2"' \
     "$AICODING_BLUEPRINT_CLONE/configs/claude/settings.json" \
     > "$AICODING_BLUEPRINT_CLONE/configs/claude/settings.json.tmp"
   mv "$AICODING_BLUEPRINT_CLONE/configs/claude/settings.json.tmp" \
@@ -191,8 +186,8 @@ EOF
     .hooks.PreToolUse[0].hooks[0].command | contains($h)
   ' "$HOME/.claude/settings.json"
 
-  # The blueprint's new field merged in.
-  jq -e '._blueprintAdvance == "v2"' "$HOME/.claude/settings.json"
+  # The blueprint's new owned entry merged in.
+  jq -e '.env._BLUEPRINT_ADVANCE == "v2"' "$HOME/.claude/settings.json"
 
   # Skill SKILL.md files also stay substituted (no {{*}} placeholders),
   # if any are present in the blueprint.
@@ -203,48 +198,26 @@ EOF
   fi
 }
 
-# Bug 1 + to_remove safety: an actually-orphaned file (in manifest but not
-# in blueprint inventory) is removed, AND ~/.bashrc is left alone.
-@test "regression: to_remove removes orphan but not ~/.bashrc" {
+# Only files on the retired list are ever deleted: an unknown file next to
+# managed ones stays, and ~/.bashrc keeps its block.
+@test "regression: sync never deletes an unlisted file or ~/.bashrc" {
   bash "$AICODING_BLUEPRINT_CLONE/install.sh" </dev/null
-
-  # Inject an orphan: a file in manifest with no corresponding blueprint source.
   echo "orphan content" > "$HOME/.bashrc.d/aicoding-orphan.sh"
-  local h
-  h=$(sha256sum "$HOME/.bashrc.d/aicoding-orphan.sh" | awk '{print $1}')
-  local updated
-  updated=$(jq --arg p "$HOME/.bashrc.d/aicoding-orphan.sh" --arg h "$h" \
-    '.files[$p] = {mode:"overwrite",source:"configs/bash/nonexistent.sh",deployed_hash:$h}' \
-    "$AICODING_MANIFEST")
-  printf '%s\n' "$updated" > "$AICODING_MANIFEST"
-
-  # Sanity: ~/.bashrc is present and marker block is intact pre-update.
-  [ -f "$HOME/.bashrc" ]
 
   run "$HOME/.local/bin/aicoding-sync" --yes --blueprint "$AICODING_BLUEPRINT_CLONE"
   [ "$status" -eq 0 ]
 
-  # Orphan removed, manifest entry gone.
-  [ ! -e "$HOME/.bashrc.d/aicoding-orphan.sh" ]
-  jq -e '.files | has("'"$HOME"'/.bashrc.d/aicoding-orphan.sh") | not' "$AICODING_MANIFEST"
-
-  # ~/.bashrc untouched (still exists, still has the managed block).
+  [ "$(cat "$HOME/.bashrc.d/aicoding-orphan.sh")" = "orphan content" ]
   [ -f "$HOME/.bashrc" ]
   grep -qxF '# >>> aicoding managed block — do not edit between markers >>>' "$HOME/.bashrc"
-  # Manifest still tracks it as marker_block.
-  jq -e '.files["'"$HOME"'/.bashrc"].mode == "marker_block"' "$AICODING_MANIFEST"
 }
 
-# Cosmetic regression: a managed file in the manifest but absent from disk
-# must be cleanly restored — no `diff: ... No such file` stderr, no
-# "updated (with backup)" misleading line, no silent cp failures inside
-# backup_drifted. Should classify as `restore` and re-deploy.
+# A deleted managed file is written back with no diff noise and no backup.
 @test "regression: aicoding-sync restores missing managed file cleanly" {
   bash "$AICODING_BLUEPRINT_CLONE/install.sh" </dev/null
   rm -f "$HOME/.bashrc.d/aicoding-env.sh"
   [ ! -e "$HOME/.bashrc.d/aicoding-env.sh" ]
 
-  # aicoding-sync should classify as restore, deploy without trying to diff.
   run "$HOME/.local/bin/aicoding-sync" --yes --blueprint "$AICODING_BLUEPRINT_CLONE"
   [ "$status" -eq 0 ]
 
@@ -253,23 +226,8 @@ EOF
 
   # No "diff: ... No such file" error in output.
   if echo "$output" | grep -q "diff:.*No such file"; then false; fi
-  # Output mentions "restored:" not "updated (with backup): <env.sh>".
-  echo "$output" | grep -q "restored:"
-  if echo "$output" | grep -q "updated (with backup): $HOME/.bashrc.d/aicoding-env.sh"; then false; fi
-  # Summary section labeled "restore" not "needs your decision".
-  echo "$output" | grep -q "restore"
-}
-
-# Bug 3 regression: manifest schema_version higher than supported aborts.
-@test "regression: aicoding-sync refuses newer manifest schema_version" {
-  mkdir -p "$HOME/.aicodingsetup"
-  cat > "$AICODING_MANIFEST" <<'EOF'
-{"schema_version":99,"blueprint_commit":"old","files":{}}
-EOF
-  run "$BLUEPRINT_ROOT/bin/aicoding-sync" --dry-run
-  [ "$status" -ne 0 ]
-  # The error must mention schema_version so the user knows what to fix.
-  echo "$output" | grep -q "schema_version"
+  echo "$output" | grep -qF "updated: $HOME/.bashrc.d/aicoding-env.sh"
+  if echo "$output" | grep -q "backup"; then false; fi
 }
 
 # `! cmd` at command level is exempt from errexit, so a bare-negation

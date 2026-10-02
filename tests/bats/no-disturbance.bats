@@ -8,7 +8,6 @@ setup() {
   export TMP; TMP=$(mktemp -d); export HOME="$TMP/home" TMPDIR="$TMP/tmp"
   mkdir -p "$HOME/.local/bin" "$TMPDIR" "$TMP/stubs" "$TMP/prefix/bin" "$TMP/prefix/share/aicoding" "$TMP/terminfo/x"
   export AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT" AICODING_BLUEPRINT_LOCAL=1
-  export AICODING_MANIFEST="$HOME/.aicodingsetup/manifest.json"
   export AICODING_UPDATE_STATE="$TMP/state/updates"
   export CODEX_MANAGED_DIR="$TMP/etc-codex" AICODINGSETUP_NONINTERACTIVE=1
   export AICODING_SYSTEM_PROVISION_RUN_OFFLINE=1
