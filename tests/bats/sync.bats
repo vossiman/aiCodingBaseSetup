@@ -659,16 +659,20 @@ EOF
 }
 
 @test "selected Gitless release retains the shipped bytes of retired files" {
-  local repo="$TMP/provenance-repo" sha release source_path=commands/scaffold-project.md commit
+  local repo="$TMP/provenance-repo" sha release source_path=commands/scaffold-project.md
   blueprint_snapshot "$repo"
   git -C "$repo" config user.email test@example.invalid
   git -C "$repo" config user.name test
+  # Ship then retire the source here: CI checks out a shallow clone.
+  printf 'shipped scaffold command\n' > "$repo/$source_path"
+  git -C "$repo" add -A
+  git -C "$repo" commit -q -m ship
+  git -C "$repo" rm -q "$source_path"
   printf '1\n' > "$repo/.aicoding-bootstrap-version"
   git -C "$repo" add -A
   git -C "$repo" commit -q --allow-empty -m release
-  commit=$(git -C "$repo" log --format=%H -1 -- "$source_path")
   mkdir -p "$HOME/.claude/commands"
-  git -C "$repo" show "$commit^:$source_path" > "$HOME/.claude/commands/scaffold-project.md"
+  printf 'shipped scaffold command\n' > "$HOME/.claude/commands/scaffold-project.md"
   sha=$(git -C "$repo" rev-parse HEAD)
   export AICODING_BLUEPRINT_REMOTE="$repo" AICODING_DATA_DIR="$TMP/data"
 
