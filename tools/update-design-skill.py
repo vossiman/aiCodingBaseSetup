@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from urllib.parse import urlsplit, unquote
 
 REPOSITORY = 'https://github.com/vossiman/dataprospectors-design-system'
 DESTINATION = Path(__file__).resolve().parents[1] / 'skills/dataprospectors-design'
@@ -37,6 +38,27 @@ def check(dest):
     return metadata
 
 
+def canonical_origin(origin):
+    """Recognize the canonical repo through common HTTPS/SSH transports."""
+    if re.fullmatch(r'git@github\.com:vossiman/dataprospectors-design-system(?:\.git)?/?', origin, re.I):
+        return True
+    try:
+        url = urlsplit(origin)
+        if '?' in origin or '#' in origin or url.hostname != 'github.com' or url.password:
+            return False
+        if url.scheme == 'https':
+            if url.username or url.port not in (None, 443):
+                return False
+        elif url.scheme == 'ssh':
+            if url.username not in (None, 'git') or url.port not in (None, 22):
+                return False
+        else:
+            return False
+        return unquote(url.path).lower().rstrip('/').removesuffix('.git') == '/vossiman/dataprospectors-design-system'
+    except ValueError:
+        return False
+
+
 def refresh(source, revision, dest=DESTINATION):
     source, dest = Path(source).resolve(), Path(dest).resolve()
     if not re.fullmatch(r'[a-f0-9]{40}', revision):
@@ -47,6 +69,12 @@ def refresh(source, revision, dest=DESTINATION):
         raise ValueError('Source HEAD differs from requested revision')
     if git('status', '--porcelain'):
         raise ValueError('Source checkout must be clean')
+    origin = subprocess.run(['git', '-C', str(source), 'remote', 'get-url', 'origin'],
+                            capture_output=True, text=True)
+    if origin.returncode or not canonical_origin(origin.stdout.strip()):
+        # Never echo origin: an operator's URL could contain credentials.
+        raise ValueError('Source origin must identify the canonical design repository')
+
     dest.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.design-skill-', dir=dest.parent) as tmp:
         staged = Path(tmp) / 'bundle'

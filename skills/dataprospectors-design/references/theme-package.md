@@ -73,4 +73,4 @@ The theme package is the native integration foundation. The controls in
 page. Adoption into a consuming application uses a checked dependency baseline.
 The showroom's COMPATIBILITY.md and package-lock.json record the
 selected dependency baseline. Versioned consumption and skill installation are documented in
-[the consumption module](https://github.com/vossiman/dataprospectors-design-system/blob/7097aa55ca7e41f1582a8b1e35c943326803a069/skills/dataprospectors-design/modules/consumption.md).
+[the consumption module](../modules/consumption.md).

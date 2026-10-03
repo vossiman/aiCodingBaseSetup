@@ -28,7 +28,7 @@ python3 tools/update-design-skill.py --check
 bash tests/bats/run.sh
 ```
 
-The refresh rejects dirty or mismatched source, invokes that revision's exporter
+The refresh rejects dirty or mismatched source and noncanonical origin, invokes that revision's exporter
 in a temporary sibling directory, checks provenance/file hashes, then replaces
 the bundle. Failed export/validation leaves the previous bundle unchanged.
 No moving branch, runtime private-repository fetch or second hand-maintained
@@ -47,3 +47,10 @@ consumption module and each app's own checks. Original `references/dp-tokens.css
 `theme.css`, `registry.json` and assets remain present for old reference users;
 new native input is `references/native-theme.css`. Installed file modes and
 Markdown substitution follow the existing credential-safe skill deploy policy.
+
+Origin validation accepts the canonical GitHub repository through HTTPS,
+`git@github.com:vossiman/dataprospectors-design-system[.git]`, or
+`ssh://git@github.com/vossiman/dataprospectors-design-system[.git]` (default SSH
+port22). Credentials, wrong repositories/hosts and query/fragment suffixes are
+rejected before export without echoing the URL. Git/gh authentication remains
+external to the bundle and refresh tool.

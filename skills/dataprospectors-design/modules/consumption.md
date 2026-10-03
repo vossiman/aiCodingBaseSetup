@@ -88,3 +88,12 @@ use normal sync. Keep the last known good package/bundle until validation passes
 
 `npm run verify` in the source repo exercises an isolated packed consumer;
 that is integration evidence, not a substitute for the consuming app's checks.
+
+The exporter copies only this skill tree's Markdown/CSS/JSON/brand resources
+and its explicit canonical theme, asset, compatibility and pattern-map inputs.
+Hidden/private files, noncanonical symlink targets and unsupported resource types
+are rejected before copying. Adding a new external input requires updating the
+exporter's canonical file list deliberately. Links between bundled resources stay
+local; other source links use encoded file/directory URLs at the pinned revision.
+Disposable package-verification archives include `-dirty` when the checkout has
+uncommitted changes; published source bundles still require a clean checkout.

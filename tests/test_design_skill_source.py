@@ -24,6 +24,7 @@ class RefreshTests(unittest.TestCase):
         self.git('init', '-q')
         self.git('config', 'user.email', 'test@example.invalid')
         self.git('config', 'user.name', 'Fixture')
+        self.git('remote', 'add', 'origin', mod.REPOSITORY+'.git')
         (self.source / 'scripts').mkdir()
         (self.source / 'scripts/export-skill.mjs').write_text("throw new Error('fixture export failure');")
         self.git('add', '.')
@@ -74,6 +75,33 @@ writeFileSync(dest+'/SOURCE.json',JSON.stringify({repository:'https://github.com
         self.assertEqual((self.dest / 'SKILL.md').read_text(), 'new bundle')
         self.assertFalse((self.dest / 'keep').exists())
         self.assertEqual(mod.check(self.dest)['revision'], sha)
+
+    def test_canonical_origin_accepts_https_and_standard_ssh_routes(self):
+        for origin in [
+            mod.REPOSITORY, mod.REPOSITORY+'.git',
+            'git@github.com:vossiman/dataprospectors-design-system.git',
+            'ssh://git@github.com/vossiman/dataprospectors-design-system',
+            'ssh://git@github.com:22/vossiman/dataprospectors-design-system.git',
+        ]:
+            self.assertTrue(mod.canonical_origin(origin), origin)
+
+    def test_origin_rejection_precedes_export_and_preserves_previous_bundle(self):
+        for origin in [
+            'https://github.com/other-owner/dataprospectors-design-system.git',
+            'https://github.com.evil.invalid/vossiman/dataprospectors-design-system.git',
+            'https://github.com/vossiman/dataprospectors-design-system-extra.git',
+            'https://fixture-user:fixture-credential@github.com/vossiman/dataprospectors-design-system.git',
+            'ssh://git@github.com/vossiman/dataprospectors-design-system.git?ref=main',
+        ]:
+            self.git('remote', 'set-url', 'origin', origin)
+            with self.assertRaisesRegex(ValueError, 'origin') as error:
+                mod.refresh(self.source, self.sha, self.dest)
+            self.assertNotIn('fixture-credential', str(error.exception))
+            self.assert_old_bundle()
+        self.git('remote','remove','origin')
+        with self.assertRaisesRegex(ValueError,'origin'):
+            mod.refresh(self.source,self.sha,self.dest)
+        self.assert_old_bundle()
 
     def test_check_detects_changed_missing_extra_and_escaping_files(self):
         (self.dest / 'keep').unlink()
