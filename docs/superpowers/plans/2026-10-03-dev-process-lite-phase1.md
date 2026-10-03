@@ -1302,6 +1302,8 @@ setup() {
   export HOME="$TMPDIR/home" AICODING_BLUEPRINT_CLONE="$BLUEPRINT_ROOT"
   export AICODING_STATE_DIR="$TMPDIR/state"
   export GIT_CEILING_DIRECTORIES="$TMPDIR"
+  export DEV_PROCESS_LITE_CODEX_MODELS="$BLUEPRINT_ROOT/tests/bats/fixtures/dev-process-lite/codex-models.json"
+  export DEV_PROCESS_LITE_CURSOR_MODELS="$BLUEPRINT_ROOT/tests/bats/fixtures/dev-process-lite/cursor-models.txt"
   mkdir -p "$HOME"
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   managed_config_apply >/dev/null
