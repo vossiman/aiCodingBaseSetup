@@ -19,3 +19,7 @@ CREATE TABLE projection_turns (
 CREATE TABLE projection_pending_approvals (
   request_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, turn_id TEXT,
   status TEXT NOT NULL, decision TEXT, created_at TEXT NOT NULL, resolved_at TEXT);
+CREATE TABLE projection_projects (
+  project_id TEXT PRIMARY KEY, title TEXT NOT NULL, workspace_root TEXT NOT NULL,
+  scripts_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  deleted_at TEXT);

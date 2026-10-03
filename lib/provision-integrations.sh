@@ -174,7 +174,7 @@ install_t3_symlinks() {
   header "T3 Code commands"
   local name src
   mkdir -p "$HOME/.local/bin"
-  for name in t3-setup t3-adopt t3-start t3-stop t3-update t3-auto t3-status t3-migrate; do
+  for name in t3-setup t3-adopt t3-start t3-stop t3-update t3-auto t3-status t3-migrate t3-projects; do
     src="$SCRIPT_DIR/bin/$name"
     [[ -f "$src" ]] || { warn "bin/$name not found, skipping"; continue; }
     chmod +x "$src"

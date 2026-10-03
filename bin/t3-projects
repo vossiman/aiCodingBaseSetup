@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# t3-projects: clone back any t3 project folder a rebuild removed and print
+# each project with its recorded remote. t3-start runs the same check.
+set -uo pipefail
+. "$(dirname "$(readlink -f "$0")")/../lib/t3.sh"
+t3_cmd_projects "$@"
