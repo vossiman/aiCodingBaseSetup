@@ -128,6 +128,20 @@ old() { t3_iso '-2 hours'; }
   [[ "$output" == *process_make* ]]
 }
 
+@test "procs: the server's own resource monitor is allowed only as its direct child" {
+  # A native binary, as upstream ships it: a script's argv[0] is its interpreter.
+  t3_bin_as t3-resource-monitor python3; t3_bin_as claude bash
+  t3_fake_setup
+  T3_TEST_CHILDREN="t3-resource-monitor=import time; time.sleep(3600)" "$B/t3-start"
+  run procs
+  [ "$status" -eq 0 ]
+  "$B/t3-stop"
+  T3_TEST_CHILDREN="claude=$TMP/bin/t3-resource-monitor -c 'import time; time.sleep(3600)'; :" "$B/t3-start"
+  run procs
+  [ "$status" -eq 1 ]
+  [[ "$output" == *process_t3-resource-mon* ]]
+}
+
 @test "procs: a non-allowed process in scope blocks" {
   t3_bin_as make sleep
   t3_fake_setup
