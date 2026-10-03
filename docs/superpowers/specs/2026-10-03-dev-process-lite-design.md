@@ -254,12 +254,12 @@ names `cursor` in its text. An explicit argument wins.
 | entry | role | harness | family | effort | resolves today |
 |---|---|---|---|---|---|
 | claude | overseer | claude | `opus` | high | `claude-opus-5-5` |
-| claude | implementer | claude | `opus` | low | `claude-opus-5-5` |
+| claude | implementer | claude | `sonnet` | medium | `claude-sonnet-5-5` |
 | claude | complex-implementer | claude | `opus` | high | `claude-opus-5-5` |
 | claude | reviewer | codex | `sol` | high | `gpt-6.1-sol` |
 | claude | assessor | claude | `opus` | high | `claude-opus-5-5` |
 | codex | overseer | codex | `sol` | high | `gpt-6.1-sol` |
-| codex | implementer | codex | `sol` | low | `gpt-6.1-sol` |
+| codex | implementer | codex | `luna` | medium | `gpt-6-luna` |
 | codex | complex-implementer | codex | `sol` | high | `gpt-6.1-sol` |
 | codex | reviewer | claude | `opus` | high | `claude-opus-5-5` |
 | codex | assessor | codex | `sol` | high | `gpt-6.1-sol` |
@@ -271,16 +271,29 @@ names `cursor` in its text. An explicit argument wins.
 
 Notes on the rows:
 
-- The implementer follows task complexity, not a cheaper model (owner
-  decision 2026-10-03): both implementer roles run the workhorse family
-  and differ in effort. `sonnet` (Claude) and `luna` (Codex, `gpt-6-luna`)
-  are documented cheaper alternatives a project may pin for bounded work;
-  they are not defaults.
-- Cursor's `implementer` uses `medium`, not `low`: Cursor's unlabeled
-  default selector is the `high` one (`cursor-grok-4.6-high` prints as
-  plain "Grok 4.6"), so `medium` is the one step below default, the same
-  distance `low` is below Claude's and Codex's `medium` default. Grok's
-  `low` selectors are a cost tier, not a bounded-work tier.
+- The implementer follows task complexity (owner decision 2026-10-03,
+  revised the same day). `implementer` runs the balanced tier at `medium`:
+  Sonnet 5.5 scores 70.6% on Terminal-Bench 4.0 against Opus 5.5's 66.4%,
+  sits within about two points on CursorBench, and costs half
+  (https://www.anthropic.com/claude-sonnet-5-5). `medium` is the vendor's
+  documented level for well-specified tasks and the default effort of
+  Opus 5.5 and Sol 6.1
+  (https://platform.claude.com/docs/en/build-with-claude/effort). A
+  mechanical edit (rename, formatting, docs) may drop to `low`; low
+  effort also means fewer tool calls and checks, so it is not for anything
+  a test has to prove.
+- Codex `luna` is the owner's choice as the Sonnet-level counterpart.
+  There is no public evidence that `gpt-6-luna` is Sonnet-level; the row
+  is marked "unproven, revisit with own evals" in the JSON comment and in
+  Evidence and caveats below.
+- `complex-implementer` runs the workhorse at `high`, the level the vendor
+  documents for harder and longer tasks. Use `xhigh` for a long-horizon
+  task expected to run past about 30 minutes (same source). Opus and Sol
+  at `medium` are the documented middle step between the two roles.
+- Cursor's `implementer` uses `medium`: Cursor's unlabeled default selector
+  is the `high` one (`cursor-grok-4.6-high` prints as plain "Grok 4.6"), so
+  `medium` is the one step below default, matching the Claude and Codex
+  rows. Grok's `low` selectors are the mechanical-edit tier.
 - Every reviewer is cross-vendor to the entry harness.
 - The Cursor reviewer row is the one place a frontier family sits in the
   defaults. The global rule says Fable and Astra need an explicit user
@@ -304,12 +317,39 @@ A task is `implementer` work when all of these hold:
 4. a worker can finish it in about an hour (the same bound section 2 uses
    for widening scope).
 
-Anything else, including a fix for a failed `implementer` attempt that
-shows the task was misjudged, is `complex-implementer`. An escalation after
-a failed attempt is recorded under Decisions as a reassignment naming the
-first task, the way balance-extract records reviewer escalations
-(`docs/DEV_PROCESS.md:57-59`), and the failed attempt's branch is dropped,
-not patched. A task never moves the other way.
+Anything else is `complex-implementer`.
+
+**Escalation ladder.** After a failed attempt the overseer raises effort
+first (`medium` to `high`, then `xhigh`), and only then moves up a model
+tier (`sonnet` to `opus`, `luna` to `sol`, which is the
+`complex-implementer` route). Each step is recorded under Decisions as a
+reassignment naming the first task, the way balance-extract records
+reviewer escalations (`docs/DEV_PROCESS.md:57-59`); the failed attempt's
+branch is dropped, not patched. A task never moves down. There is no
+direct public evidence for escalate-on-failure cascades in coding agents;
+the ladder is the cheapest ordering of the two levers and is one of the
+things the effort sweep below should test.
+
+**Tests are the contract.** When the acceptance tests were written in a
+prior step (red first), an implementer does not edit the tests it is
+judged by. A test change needs the overseer's approval, recorded under
+Decisions with the reason. The cross-vendor review stays the backstop for
+an implementer that quietly weakened a test.
+
+**Evidence and caveats.** The numbers above are vendor numbers: Opus 5.5
+at `medium` beating Opus 5 at `max` at about a fifth of the cost
+(https://www.anthropic.com/claude-opus-5-5) and the Sonnet 5.5 figures
+come from Anthropic's own pages. Effort gains are not monotonic (Sonnet
+5.5 at `max` scores below `xhigh` on one benchmark on the same page).
+Pass rate overstates quality, and the gap grows with task size and for
+weaker models (SpecBench, https://arxiv.org/html/2605.21384v1); SWE-bench
+Verified is contaminated and no longer a usable signal
+(https://openai.com/index/why-we-no-longer-evaluate-swe-bench-verified/).
+So the defaults are a starting point. Once phase 4 has produced real runs,
+run an effort sweep on this estate's own tasks (the vendor's advice at the
+effort page) across `implementer` at `low`, `medium` and `high` and
+`luna` against `sol`, and move the defaults by PR with the results in the
+spec.
 
 **Tier parity** across the three entry harnesses, as resolved today. A
 route names the tier; this table is the reference for what that means per
@@ -319,7 +359,7 @@ vendor and is refreshed when the resolver's rules change:
 |---|---|---|---|
 | frontier | `fable` (`claude-fable-5-1`) | `astra` (`gpt-6-astra`) | `claude-fable` (`claude-fable-5-thinking-high`); no Grok or GPT frontier listed |
 | workhorse | `opus` (`claude-opus-5-5`) | `sol` (`gpt-6.1-sol`) | `grok` (`grok-4.7-xhigh`) |
-| cheaper alternative (documented, not a default) | `sonnet` (`claude-sonnet-5-5`) | `luna` (`gpt-6-luna`) | `grok` at `low` (`grok-4.7-low`) |
+| balanced (implementer) | `sonnet` (`claude-sonnet-5-5`) | `luna` (`gpt-6-luna`, unproven) | `grok` at `medium` (`grok-4.7-medium`) |
 | reviewer of this entry | Codex `sol` | Claude `opus` | Codex `astra` (alt: Claude `fable`) |
 
 **Relationship to existing prose.** The reviewer families match the
@@ -637,8 +677,10 @@ like every other suite (`CLAUDE.md`, section Tests):
    and exactly the three entry tables `claude`, `codex`, `cursor`, each
    with the five roles; each role has `harness` and exactly one of `model`
    or `family`; `implementer` and `complex-implementer` share `harness`
-   and `family` in every entry and differ only in `effort`, with
-   `implementer` the lower one; every reviewer row has `harness` different from its entry;
+   in every entry, `implementer` has the lower `effort`, and the
+   `claude` and `codex` implementer rows name the balanced family
+   (`sonnet`, `luna`) while their complex rows name the workhorse
+   (`opus`, `sol`); every reviewer row has `harness` different from its entry;
    no row names a frontier family (`fable`, `astra`) or a frontier exact
    id except `cursor.reviewer`, which must. `routes.sh` is tested against
    fixture model lists under `tests/fixtures/dev-process-lite/`: a `codex
