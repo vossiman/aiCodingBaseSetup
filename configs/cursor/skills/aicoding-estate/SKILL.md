@@ -54,6 +54,15 @@ credential-safe recovery CLI; it is not a status-transition bypass. Its enum
 values: status `backlog|todo|doing|done`, priority `low|normal|high` (default
 `normal`), swimlane `required|nice_to_have|waiting_for_feedback|needs_decision`.
 
+## Dev process
+
+A repo with `docs/DEV_PROCESS.md` follows that document and its own skills.
+Any other repo follows the shared `dev-process-lite` skill when a session
+coordinates more than one task: an overseer log per run, the finish-in-the-run
+ticket rules, the short list of reasons to interrupt the owner, and a routes
+table for harness, model and effort per role. Assess a finished run from a
+fresh session with `assess-run`. A single-ticket session needs none of this.
+
 ## Secrets: never read them
 
 `~/.aicodingsetup/.secrets.env` and any private key (`*.pem`, `*.key`,
