@@ -119,8 +119,11 @@ keeps chasing, so do not treat a block as proof nothing else works.
 - Local estate skills are shared through `~/.agents/skills`. For an independent
   PR review, use `review-by-harness` with an explicit `--harness`, `--model`,
   and supported `--effort`. Choose Claude for a different-vendor review unless
-  the user chose otherwise. Default to Opus 5 (`claude-opus-5`) or GPT-5.6 Sol
-  (`gpt-5.6-sol`) for the selected harness. Fable and Astra require an explicit
+  the user chose otherwise. Default to
+  the Opus family for Claude and the Sol family for Codex at `high` effort;
+  resolve the exact id with
+  `bash ~/.claude/skills/dev-process-lite/routes.sh <entry> reviewer` (today
+  the `opus` alias and `gpt-6.1-sol`). Fable and Astra require an explicit
   user override. Verify findings against code.
 - `housekeep` archives completed docs and prunes dated completed TODO entries.
 - To start a project, copy `templates/project/` from the aiCodingBaseSetup

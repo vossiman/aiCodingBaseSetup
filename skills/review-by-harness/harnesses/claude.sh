@@ -2,7 +2,7 @@
 # Claude Code adapter. Preserve user/managed hooks, including the secrets guard.
 # Contract: review <worktree> <base-ref> <outdir> | fix <worktree> <outdir>
 set -euo pipefail
-MODEL="${REVIEW_MODEL:-claude-opus-5}"
+MODEL="${REVIEW_MODEL:-opus}"
 EFFORT="${REVIEW_EFFORT:-high}"
 # The reviewer prompt inlines whole diffs; keep it out of the memory router.
 export MEMORY_HINT=off
