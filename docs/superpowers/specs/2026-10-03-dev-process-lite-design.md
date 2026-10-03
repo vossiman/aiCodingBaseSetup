@@ -345,15 +345,7 @@ Pass rate overstates quality, and the gap grows with task size and for
 weaker models (SpecBench, https://arxiv.org/html/2605.21384v1); SWE-bench
 Verified is contaminated and no longer a usable signal
 (https://openai.com/index/why-we-no-longer-evaluate-swe-bench-verified/).
-So the defaults are a starting point, and the `implementer` effort is an
-open question: `low` or `medium`. The phase 1 build measures it by running
-this process on itself. Two or three tasks run twice in separate worktrees,
-once at `low` and once at `medium`. The other tasks start at `low` and
-follow the escalation ladder. Each task records pass or fail, review
-findings, escalations and tokens. The defaults then move by PR, with those
-numbers replacing the vendor ones here. A wider effort sweep (the vendor's
-advice at the effort page), including `luna` against `sol`, follows once
-phase 4 has produced real runs.
+So the defaults are a starting point. The phase 1 build measured `implementer` effort by running this process on itself (PR #249): three tasks ran twice from the same base, once at `low` and once at `medium`, on Sonnet 5.5 with a plan that carried the code. All three pairs produced byte-identical commits, the same cross-vendor review result and similar cost (0.29 to 0.37 USD per run); `medium` took 6 to 20 seconds longer. Every other task passed at `low` without escalation, and the verified review findings were defects in the plan, not in the implementer output. This supports `low` for briefs that carry the code; it says nothing about briefs that leave design to the implementer. Whether the default moves is the owner's call. A wider effort sweep (the vendor's advice at the effort page), including `luna` against `sol`, follows once phase 4 has produced real runs.
 
 **Tier parity** across the three entry harnesses, as resolved today. A
 route names the tier; this table is the reference for what that means per
@@ -389,10 +381,10 @@ session."
 
 Body, in order:
 
-1. Run `detect.sh`. If it prints `project <path>`, say so in one line and
+1. Run `bash ~/.claude/skills/dev-process-lite/detect.sh`. If it prints `project <path>`, say so in one line and
    stop; that repo's own skills apply. (Section "Precedence".)
 2. Read `policy.md` beside this file.
-3. Run `routes.sh [entry]` beside this file: it applies the section 4
+3. Run `bash ~/.claude/skills/dev-process-lite/routes.sh [entry]`: it applies the section 4
    lookup order and entry detection, prints the selected table as JSON, and
    prints a fallback note when it substituted the `claude` table.
 4. Keep the overseer log; add `.claude/dev-process-runs/` to
@@ -400,7 +392,9 @@ Body, in order:
    rule handles `.claude/worktrees/` (`configs/claude/CLAUDE.md:153-159`).
 5. Use `worktree-session` for every worker branch and `review-by-harness`
    for the one integrated review, with the reviewer route passed as
-   `--harness`, `--model`, `--effort`.
+   `--harness` and `--model`, plus `--effort` only when the reviewer
+   harness is claude or codex (Cursor's effort is in its model selector;
+   `review-by-harness/run.sh` rejects `--effort` for cursor).
 6. Before closeout, check the Board section against policy section 2.
 
 No new tool names. The skill describes tasks, so Codex can follow it with
