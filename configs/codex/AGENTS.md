@@ -133,6 +133,15 @@ keeps chasing, so do not treat a block as proof nothing else works.
   `memory_feedback` with `confirmed` or `wrong` when the outcome is known.
 
 
+## Dev process
+
+A repo with `docs/DEV_PROCESS.md` follows that document and its own skills.
+Any other repo follows the shared `dev-process-lite` skill when a session
+coordinates more than one task: an overseer log per run, the finish-in-the-run
+ticket rules, the short list of reasons to interrupt the owner, and a routes
+table for harness, model and effort per role. Assess a finished run from a
+fresh session with `assess-run`. A single-ticket session needs none of this.
+
 ## Worktree isolation and session coordination
 
 For branch implementation, use the shared `worktree-session` skill. Create a
