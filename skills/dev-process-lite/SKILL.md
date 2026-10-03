@@ -8,12 +8,12 @@ description: Use when coordinating more than one task in a repo that has no docs
 The scripts and the policy sit beside this file, in
 `~/.claude/skills/dev-process-lite/` when deployed.
 
-1. Run `bash detect.sh` from the repo. If it prints `project <path>`, say in
+1. Run `bash ~/.claude/skills/dev-process-lite/detect.sh` from the repo. If it prints `project <path>`, say in
    one line that this repo has its own process at that path, and stop:
    that document and the repo's own skills apply.
 2. Read `policy.md`. It is the policy; this file only orders the steps.
-3. Run `bash routes.sh [entry]` to see the routes table, and
-   `bash routes.sh [entry] <role>` before each launch. Exit 2 means
+3. Run `bash ~/.claude/skills/dev-process-lite/routes.sh [entry]` to see the routes table, and
+   `bash ~/.claude/skills/dev-process-lite/routes.sh [entry] <role>` before each launch. Exit 2 means
    blocked: report the message, never pick another model. Write each
    resolved model id into the log's Plan section.
 4. Keep the overseer log from policy section 1 at
@@ -25,7 +25,7 @@ The scripts and the policy sit beside this file, in
    and what to hand back. Choose `implementer` or `complex-implementer` by
    policy section 4 and record the choice under Decisions.
 6. Run one integrated review with `review-by-harness`, passing the
-   `reviewer` route as `--harness`, `--model` and `--effort`. Fix verified
+   `reviewer` route as `--harness` and `--model`, plus `--effort` only when the reviewer harness is claude or codex. Fix verified
    findings on the open branch (policy section 2).
 7. Before closeout, check the Board section against policy section 2, and
    stop for the owner only for the reasons in policy section 3.

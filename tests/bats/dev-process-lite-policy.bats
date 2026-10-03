@@ -58,3 +58,15 @@ setup() {
   grep -q 'ListAgents' "$S/assess-run/SKILL.md"
   grep -qi 'report only' "$S/assess-run/SKILL.md"
 }
+
+@test "skills: helpers are invoked by deployed path, never by bare name" {
+  run grep -nE 'bash (detect|routes)\.sh' "$S/dev-process-lite/SKILL.md" "$S/dev-process-lite/policy.md" "$S/assess-run/SKILL.md"
+  [ "$status" -eq 1 ]
+  grep -q 'bash ~/.claude/skills/dev-process-lite/detect.sh' "$S/dev-process-lite/SKILL.md"
+  grep -q 'bash ~/.claude/skills/dev-process-lite/routes.sh' "$S/dev-process-lite/SKILL.md"
+}
+
+@test "skills: --effort is only passed for claude and codex reviewers" {
+  grep -q 'only when the reviewer harness is claude or codex' "$S/dev-process-lite/SKILL.md"
+  grep -q 'only when the reviewer harness is claude or codex' "$S/dev-process-lite/policy.md"
+}

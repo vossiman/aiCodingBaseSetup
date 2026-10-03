@@ -97,7 +97,7 @@ finishes the rest and leaves one closeout.
 ## 4. Routes
 
 Model and effort per role come from the routes table, never from prose.
-Run `routes.sh [entry] [role]` beside this file. It reads
+Run `bash ~/.claude/skills/dev-process-lite/routes.sh [entry] [role]` from the repo. It reads
 `.dev-process/routes.json` at the repo root when present, else
 `routes.default.json` beside it, resolves a family to the newest installed
 model, and blocks (exit 2) rather than substitute. Write the resolved id
@@ -128,5 +128,5 @@ earlier step, the implementer does not edit them. A test change needs the
 overseer's approval, recorded under Decisions with the reason.
 
 **Review.** One integrated review per run with `review-by-harness`, passing
-the reviewer route as `--harness`, `--model` and `--effort`. Every
+the reviewer route as `--harness` and `--model`, plus `--effort` only when the reviewer harness is claude or codex. Every
 reviewer is from another vendor than the entry harness.
