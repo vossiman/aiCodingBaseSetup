@@ -1,0 +1,10 @@
+Available models
+
+auto - Auto (default)
+grok-4.7-xhigh - Grok 4.7  Extra High
+grok-4.7-medium - Grok 4.7  Medium
+cursor-grok-4.6-xhigh - Grok 4.6 Extra High
+cursor-grok-4.6-high-fast - Grok 4.6 Fast
+claude-fable-5-thinking-high - Claude Fable 5 1M Thinking (NO ZDR)
+claude-opus-5-5-high - Claude Opus 5.5 1M High
+gpt-5.6-sol-high - GPT-5.6 Sol 1M High

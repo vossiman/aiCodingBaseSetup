@@ -1,0 +1,11 @@
+{
+  "models": [
+    { "slug": "gpt-7-sol", "visibility": "hide", "upgrade": null },
+    { "slug": "gpt-6.1-sol", "visibility": "list", "upgrade": null },
+    { "slug": "gpt-6-astra", "visibility": "list", "upgrade": null },
+    { "slug": "gpt-6-luna", "visibility": "list", "upgrade": null },
+    { "slug": "gpt-5.6-sol", "visibility": "list", "upgrade": null },
+    { "slug": "gpt-9-sol", "visibility": "list", "upgrade": { "model": "gpt-6.1-sol" } },
+    { "slug": "gpt-5.5", "visibility": "list", "upgrade": { "model": "gpt-6.1-sol" } }
+  ]
+}
