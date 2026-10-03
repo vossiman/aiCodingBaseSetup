@@ -482,6 +482,20 @@ project_repo() {
   [[ "$stderr" == "blocked: "*".dev-process/routes.json"* ]]
 }
 
+@test "resolver: project file with the wrong shape blocks and names the file" {
+  project_repo "$TMPDIR/repo" '{"version":1,"routes":[]}'
+  cd "$TMPDIR/repo"
+  run --separate-stderr bash "$R" claude implementer
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  [[ "$stderr" == "blocked: "*".dev-process/routes.json"* ]]
+  project_repo "$TMPDIR/repo2" '{"version":1,"routes":{"claude":"x"}}'
+  cd "$TMPDIR/repo2"
+  run --separate-stderr bash "$R" claude implementer
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == "blocked: "*".dev-process/routes.json"* ]]
+}
+
 @test "resolver: an effort outside the known levels blocks" {
   project_repo "$TMPDIR/repo" '{"version":1,"routes":{"claude":{"overseer":{"harness":"claude","family":"opus","effort":"turbo"}}}}'
   cd "$TMPDIR/repo"
@@ -527,7 +541,7 @@ gpt-5.6-sol-high - GPT-5.6 Sol 1M High
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `bash tests/bats/run.sh dev-process-lite-resolver`
-Expected: all 13 tests FAIL (`routes.sh` does not exist).
+Expected: all 14 tests FAIL (`routes.sh` does not exist).
 
 - [ ] **Step 3: Write the implementation**
 
@@ -568,7 +582,8 @@ note=""
 root=$(git rev-parse --show-toplevel 2>/dev/null || true)
 if [ -n "$root" ] && [ -f "$root/.dev-process/routes.json" ]; then
   source_file="$root/.dev-process/routes.json"
-  jq -e . "$source_file" >/dev/null 2>&1 || block "$source_file is not valid JSON"
+  jq -e '(.routes | type == "object") and all(.routes[]; type == "object") and all(.routes[][]; type == "object")' \
+    "$source_file" >/dev/null 2>&1 || block "$source_file is not valid JSON with routes.<entry>.<role> objects"
 fi
 table=$(jq -c --arg e "$entry" '.routes[$e] // empty' "$source_file")
 if [ -z "$table" ]; then
@@ -639,7 +654,7 @@ Then: `chmod 0755 skills/dev-process-lite/routes.sh`.
 - [ ] **Step 4: Run it to verify it passes**
 
 Run: `bash tests/bats/run.sh dev-process-lite-resolver`
-Expected: 13 tests, all `ok`.
+Expected: 14 tests, all `ok`.
 
 - [ ] **Step 5: Commit**
 
@@ -763,7 +778,7 @@ Append to `tests/bats/dev-process-lite-resolver.bats`:
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `bash tests/bats/run.sh dev-process-lite-resolver`
-Expected: the 13 Task 3 tests pass; the 9 new tests FAIL with `harness 'codex' resolution is not implemented yet` or `harness 'cursor' ...`.
+Expected: the 14 Task 3 tests pass; the 9 new tests FAIL with `harness 'codex' resolution is not implemented yet` or `harness 'cursor' ...`.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -853,7 +868,7 @@ Note for the implementer: with `set -o pipefail`, a `grep` that matches nothing 
 - [ ] **Step 4: Run them to verify they pass**
 
 Run: `bash tests/bats/run.sh dev-process-lite-resolver`
-Expected: 22 tests, all `ok`.
+Expected: 23 tests, all `ok`.
 
 - [ ] **Step 5: Commit**
 
