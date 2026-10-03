@@ -13,3 +13,7 @@ On top of the shared conventions above, Claude Code adds:
   and prune stale `TODO.md` items.
 - A `SessionStart` hook prints a one-line reminder when archive-eligible docs
   exist, so you know when to run `/housekeep`.
+- A `SessionStart` hook injects `docs/REQUIREMENTS.md`, when present, as the
+  project's North Star (warning instead when it passes 200 lines).
+- A `PostToolUse` hook reads `docs/SHIP_CHECK.md`, when present, back after
+  every `git commit`.
