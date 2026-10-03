@@ -233,6 +233,40 @@ EOF
   [ "$status" -eq 1 ]
 }
 
+@test "direct install registers Context7 and Playwright on a fresh container with a shared ~/.claude" {
+  unset AICODING_SYNC_MODE MEMORY_ROUTER_TOKEN FIRECRAWL_API_KEY BRAVE_API_KEY KANBAN_TOKEN
+  mkdir -p "$HOME/.claude"
+  export AICODING_SHARED_CONFIG_ROOTS="$HOME/.claude"
+  export AICODING_MCP_STATE="$TMP/mcp-fingerprints"
+  mkdir -p "$AICODING_MCP_STATE"
+  : > "$AICODING_MCP_STATE/logfire.sha256"
+  _managed_launcher context7-mcp mcp-context7 4.1.0
+  _managed_launcher playwright-mcp mcp-playwright 0.0.83
+  cat > "$TMP/stubs/claude" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$TMP/claude-calls"
+case "$*" in
+  '--version') echo '2.1.50 (Claude Code)' ;;
+  'mcp get logfire') printf 'logfire:\n  URL: https://logfire-eu.pydantic.dev/mcp\n' ;;
+  'mcp get context7')
+    [ -f "$TMP/added-context7" ] || exit 1
+    printf 'Command: %s/.local/bin/context7-mcp\n' "$HOME" ;;
+  'mcp get playwright')
+    [ -f "$TMP/added-playwright" ] || exit 1
+    printf 'Command: %s/.local/bin/playwright-mcp\nArgs: --browser chromium\n' "$HOME" ;;
+  'mcp get '*) exit 1 ;;
+  'mcp add context7 -s user -- '*'/context7-mcp') : > "$TMP/added-context7" ;;
+  'mcp add playwright -s user -- '*'/playwright-mcp --browser chromium') : > "$TMP/added-playwright" ;;
+esac
+STUB
+  chmod +x "$TMP/stubs/claude"
+
+  run install_claude_mcps
+  [ "$status" -eq 0 ]
+  [ -f "$TMP/added-context7" ]
+  [ -f "$TMP/added-playwright" ]
+}
+
 _kanban_claude_stub() {
   # $1: what `claude mcp get kanban` reports before any change.
   printf '%s' "$1" > "$TMP/kanban-before"

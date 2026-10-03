@@ -482,12 +482,16 @@ install_claude_mcps() {
     return 0
   fi
 
-  local ready_rc=0
-  _provision_tool_ready claude claude "" "$HOME/.claude" || ready_rc=$?
-  if [ "$ready_rc" -ne 0 ]; then
-    warn "Claude MCP provisioning deferred until its update and shared consumers are verified"
-    [ -z "${AICODING_SYNC_MODE:-}" ] && return 0
-    return "$ready_rc"
+  # Registrations live in the container-local ~/.claude.json, not the shared
+  # ~/.claude, so the installer never defers them; sync only maintains what
+  # exists and could not create them later.
+  if [ -n "${AICODING_SYNC_MODE:-}" ]; then
+    local ready_rc=0
+    _provision_tool_ready claude claude "" "$HOME/.claude" || ready_rc=$?
+    if [ "$ready_rc" -ne 0 ]; then
+      warn "Claude MCP provisioning deferred until its update and shared consumers are verified"
+      return "$ready_rc"
+    fi
   fi
 
   local rc=0 deferred=0 registration_rc
