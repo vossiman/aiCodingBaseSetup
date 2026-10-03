@@ -54,12 +54,35 @@ _fleet() {
 }
 
 @test "doctor explains a catalogued blocker and exits 1" {
-  aicoding_result_record mcp-registration-claude-context7 blocked abc registration_not_selected
+  aicoding_result_record bw-AICode failed abc activation_failed
   run "$BIN" --doctor
   [ "$status" -eq 1 ]
-  [[ "$output" == *"mcp-registration-claude-context7: blocked (registration_not_selected)"* ]]
-  [[ "$output" == *"Why: This MCP is not registered in Claude"* ]]
+  [[ "$output" == *"bw-AICode: failed (activation_failed)"* ]]
+  [[ "$output" == *"Why: The new release was staged but could not be switched to active."* ]]
   [[ "$output" == *"Fix: "* ]]
+}
+
+@test "doctor lists an info-kind record as a note, not a blocker, and exits 0" {
+  aicoding_result_record mcp-registration-claude-context7 blocked abc registration_not_selected
+  run "$BIN" --doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"No recorded blockers"* ]]
+  local notes="${output#*Notes (nothing to fix unless you want the feature)}"
+  [ "$notes" != "$output" ]
+  [[ "$notes" == *"mcp-registration-claude-context7: blocked (registration_not_selected)"* ]]
+  [[ "$notes" == *"Why: This MCP is not registered in Claude"* ]]
+}
+
+@test "doctor keeps notes visible next to real blockers and still exits 1" {
+  aicoding_result_record mcp-registration-claude-playwright blocked abc registration_not_selected
+  aicoding_result_record bw-AICode failed abc activation_failed
+  run "$BIN" --doctor
+  [ "$status" -eq 1 ]
+  local blockers="${output#*Blockers}"
+  blockers="${blockers%%Notes (*}"
+  [[ "$blockers" == *"bw-AICode: failed"* ]]
+  [[ "$blockers" != *"mcp-registration-claude-playwright"* ]]
+  [[ "${output#*Notes (}" == *"mcp-registration-claude-playwright: blocked (registration_not_selected)"* ]]
 }
 
 @test "doctor explains a reason through its family pattern" {

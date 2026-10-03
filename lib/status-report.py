@@ -558,13 +558,17 @@ def main():
         print(f"  {clean(key)}: {result_text(records.get(key))}")
     if tmux_restart_pending():
         print("  tmux: updated, active after restart (the running server keeps the previous binary)")
-    blockers = unresolved(records)
+    blockers, notes = split_notes(records, reason_catalog())
     print("\nUnresolved recorded blockers — last observation, not a fresh check")
     if blockers:
         for key, record in sorted(blockers):
             print(f"  {clean(key)}: {result_text(record)}")
     else:
         print("  None recorded. This does not establish that every tool is current.")
+    if notes:
+        print("\nNotes — nothing to fix unless you want the feature")
+        for key, record in notes:
+            print(f"  {clean(key)}: {result_text(record)}")
     print("\nTrigger an update: aicoding-auto-update --once")
     print("Scope: supported coding tools and managed blueprint provisioning; not an OS updater.")
 
@@ -604,6 +608,15 @@ def unresolved(records):
     return sorted((key, rec) for key, rec in records.items()
                   if isinstance(rec, dict) and rec.get("state") in ("blocked", "conflict", "failed")
                   and not superseded(key, rec, records) and not retired(rec.get("reason")))
+
+
+def split_notes(records, catalog):
+    """Unresolved records as (blockers, notes); a note's reason is catalogued kind "info"."""
+    blockers, notes = [], []
+    for key, rec in unresolved(records):
+        entry = explain(clean(rec.get("reason", "")), catalog)
+        (notes if entry is not None and entry.get("kind") == "info" else blockers).append((key, rec))
+    return blockers, notes
 
 
 def provision_actionable():
@@ -659,7 +672,8 @@ def doctor():
     records = document(Path(os.environ.get("AICODING_RESULTS_FILE", STATE / "update-results.json"))).get("components", {})
     if not isinstance(records, dict):
         records = {}
-    blockers = unresolved(records)
+    catalog = reason_catalog()
+    blockers, notes = split_notes(records, catalog)
     fleet_expected = bool(fleet_proof_roots()) or shared_fleet_root_confirmed()
     fleet = fleet_proof_text(force=True) if fleet_expected else None
     if fleet is not None and not fleet.startswith("valid"):
@@ -676,24 +690,31 @@ def doctor():
                 names = ", ".join(f"{i} (this container)" if me and i == me else i for i in sorted(ids))
                 print(f"    {len(ids)} {label}: {names}")
         print("  Tidy up: on the host, stop containers you no longer use.")
-    catalog = reason_catalog()
     print("\nBlockers")
     if not blockers:
         print("  No recorded blockers. This does not establish that every tool is current.")
     for key, rec in blockers:
         problems += 1
-        reason = clean(rec.get("reason", "")) or "unknown"
-        entry = explain(reason, catalog)
-        print(f"  {clean(key)}: {clean(rec.get('state'))} ({reason}), {local_time(rec.get('attempted_at'))}")
-        if rec.get("detail"):
-            print(f"    Detail: {clean(rec.get('detail'))}")
-        if entry is None:
-            print("    Why: this reason is not in the doctor catalog yet (lib/status-reasons.json).")
-            print(f"    Fix: {UNKNOWN_FIX}")
-        else:
-            print(f"    Why: {clean(entry.get('meaning', ''))}")
-            print(f"    Fix: {clean(entry.get('fix', UNKNOWN_FIX))}")
+        explain_record(key, rec, catalog)
+    if notes:
+        print("\nNotes (nothing to fix unless you want the feature)")
+        for key, rec in notes:
+            explain_record(key, rec, catalog)
     return 1 if problems else 0
+
+
+def explain_record(key, rec, catalog):
+    reason = clean(rec.get("reason", "")) or "unknown"
+    entry = explain(reason, catalog)
+    print(f"  {clean(key)}: {clean(rec.get('state'))} ({reason}), {local_time(rec.get('attempted_at'))}")
+    if rec.get("detail"):
+        print(f"    Detail: {clean(rec.get('detail'))}")
+    if entry is None:
+        print("    Why: this reason is not in the doctor catalog yet (lib/status-reasons.json).")
+        print(f"    Fix: {UNKNOWN_FIX}")
+    else:
+        print(f"    Why: {clean(entry.get('meaning', ''))}")
+        print(f"    Fix: {clean(entry.get('fix', UNKNOWN_FIX))}")
 
 
 if __name__ == "__main__":
