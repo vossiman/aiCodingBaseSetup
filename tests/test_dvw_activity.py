@@ -48,6 +48,17 @@ class ActivityTests(unittest.TestCase):
         self.process(51, '/usr/bin/python3', argv=['python3', 'serve'])
         self.assertEqual(self.collect()['t3_servers'], 0)
 
+    def test_deleted_t3_binary_serve_is_counted(self):
+        self.process(1)
+        self.process(50, self.T3 + ' (deleted)', argv=[self.T3, 'serve', '/home/u/checkouts'])
+        self.assertEqual(self.collect()['t3_servers'], 1)
+
+    def test_empty_t3_cmdline_is_null(self):
+        self.process(1)
+        d = self.process(50, self.T3)
+        (d / 'cmdline').write_bytes(b'')
+        self.assertIsNone(self.collect()['t3_servers'])
+
     def test_unreadable_t3_cmdline_is_null(self):
         self.process(1)
         d = self.process(50, self.T3)          # exe is t3, cmdline missing

@@ -304,8 +304,9 @@ def collect_activity(proc, budget):
     """Observation only; current uid, default tmux socket and DevPod IDE TCP.
 
     Counts terminal devices, not shells, and established loopback socket pairs,
-    not IDE processes. Reads command arguments only for a t3 binary, to tell its server from its other commands; never environment. Custom
-    tmux sockets and IDE transports other than DevPod TCP are outside scope.
+    not IDE processes. Reads command arguments only for a t3 binary, to tell
+    its server from its other commands; never environment. Custom tmux sockets
+    and IDE transports other than DevPod TCP are outside scope.
     Incomplete metadata gives null rather than a potentially unsafe zero.
     A null tmux_sessions carries `tmux_unmeasured` naming which path produced
     it; consumers that do not know the key ignore it.
@@ -387,9 +388,12 @@ def collect_activity(proc, budget):
                 continue  # zombies have no executable or live sockets
             try:
                 exe = os.readlink(os.path.join(d, 'exe'))
-                if os.path.basename(exe) == 't3':
+                # A binary replaced under a running server reads "<path> (deleted)".
+                if os.path.basename(exe.removesuffix(' (deleted)')) == 't3':
                     argv = _read(os.path.join(d, 'cmdline')).split(b'\0')
-                    if len(argv) > 1 and argv[1] == b'serve':
+                    if not any(argv):
+                        t3_ok = False  # empty cmdline: mid-exec or mid-exit
+                    elif len(argv) > 1 and argv[1] == b'serve':
                         t3 += 1
                 if (os.path.basename(exe) == 'tmux' and out['tmux_sessions'] == 0
                         and session in (None, name)):
