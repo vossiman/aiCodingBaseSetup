@@ -30,6 +30,8 @@
 
 Route: `implementer`, `low`.
 
+> **Delivered differently:** the `"if": "Bash(git commit*)"` filter below missed `git -c ... commit` and `git -C <dir> commit` (live check and review). The shipped `settings.json.tpl` has no `if`; `ship-check.sh` reads `tool_input.command` from stdin and matches git with any global options before `commit` (commit a67d0de). The shipped files and tests are the authority.
+
 **Files:**
 - Create: `templates/project/dot-claude/hooks/north-star.sh` (mode 0755)
 - Create: `templates/project/dot-claude/hooks/ship-check.sh` (mode 0755)
