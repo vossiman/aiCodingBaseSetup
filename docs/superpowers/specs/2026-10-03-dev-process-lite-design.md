@@ -345,11 +345,15 @@ Pass rate overstates quality, and the gap grows with task size and for
 weaker models (SpecBench, https://arxiv.org/html/2605.21384v1); SWE-bench
 Verified is contaminated and no longer a usable signal
 (https://openai.com/index/why-we-no-longer-evaluate-swe-bench-verified/).
-So the defaults are a starting point. Once phase 4 has produced real runs,
-run an effort sweep on this estate's own tasks (the vendor's advice at the
-effort page) across `implementer` at `low`, `medium` and `high` and
-`luna` against `sol`, and move the defaults by PR with the results in the
-spec.
+So the defaults are a starting point, and the `implementer` effort is an
+open question: `low` or `medium`. The phase 1 build measures it by running
+this process on itself. Two or three tasks run twice in separate worktrees,
+once at `low` and once at `medium`. The other tasks start at `low` and
+follow the escalation ladder. Each task records pass or fail, review
+findings, escalations and tokens. The defaults then move by PR, with those
+numbers replacing the vendor ones here. A wider effort sweep (the vendor's
+advice at the effort page), including `luna` against `sol`, follows once
+phase 4 has produced real runs.
 
 **Tier parity** across the three entry harnesses, as resolved today. A
 route names the tier; this table is the reference for what that means per
@@ -734,7 +738,11 @@ and one `assess-run` session that reads it.
 1. **Policy and skills.** `skills/dev-process-lite/` (SKILL.md, policy.md, routes.sh,
    detect.sh, routes.default.json) and `skills/assess-run/SKILL.md`. Tests
    1 to 4, 8, 9. No change to any managed instruction file yet, so a
-   session that never invokes the skill sees nothing new.
+   session that never invokes the skill sees nothing new. Built with this
+   process, run by hand from this spec: an overseer log, routed
+   implementers, a cross-vendor review and an assessment, plus the
+   `low` against `medium` implementer measurement in "Evidence and
+   caveats".
 2. **Global rule and parity.** The "## Dev process" paragraph in the three
    managed files; one sentence in `review-by-harness` about the PR section;
    the stale identifier table in `skills/review-by-harness/SKILL.md:33-42`
