@@ -74,8 +74,9 @@ Managed by the aiCodingBaseSetup blueprint (`configs/claude/CLAUDE.md`);
 - **Starting a brand-new project?** Copy the reference layout from
   `templates/project/` in the aiCodingBaseSetup checkout (`/tmp/aicoding` in
   containers, refreshed on boot): substitute `{{PROJECT_NAME}}` and
-  `{{PURPOSE}}`, strip the `.tpl` suffixes, and rename `dot-claude/` to
-  `.claude/`. There is no scaffold command; the templates in the repo are the
+  `{{PURPOSE}}`, strip the `.tpl` suffixes, and turn every `dot-` prefix
+  into `.` (`dot-claude/`, `dot-github/`, `dot-dev-process/`,
+  `dot-gitignore`), keeping the hook scripts executable. There is no scaffold command; the templates in the repo are the
   source of truth.
 
 ## Kanban work

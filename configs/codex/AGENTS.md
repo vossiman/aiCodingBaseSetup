@@ -128,7 +128,9 @@ keeps chasing, so do not treat a block as proof nothing else works.
 - `housekeep` archives completed docs and prunes dated completed TODO entries.
 - To start a project, copy `templates/project/` from the aiCodingBaseSetup
   checkout (`/tmp/aicoding` in containers), substitute `{{PROJECT_NAME}}` and
-  `{{PURPOSE}}`, strip `.tpl` suffixes, and rename `dot-claude/` to `.claude/`.
+  `{{PURPOSE}}`, strip `.tpl` suffixes, and turn every `dot-` prefix into `.`
+  (`dot-claude/`, `dot-github/`, `dot-dev-process/`, `dot-gitignore`), keeping
+  the hook scripts executable.
   The retired scaffold command is not needed.
 - Put deliverable files in `out/` at the repo root for `dvw pull`. Preserve
   existing contents and announce the path.
