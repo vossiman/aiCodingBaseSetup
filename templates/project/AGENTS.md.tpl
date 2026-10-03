@@ -48,7 +48,9 @@ This repo has no `docs/DEV_PROCESS.md`, so the shared `dev-process-lite`
 skill applies whenever a session coordinates more than one task. Model routes
 for this repo are pinned in `.dev-process/routes.json`; edit that file to
 change them, and add `docs/DEV_PROCESS.md` only when the repo needs its own
-full process, which then replaces the lite one. `docs/REQUIREMENTS.md`, when
-present, is the North Star and is injected at session start, so keep it under
-about 150 lines. `docs/SHIP_CHECK.md`, when present, is read back to the agent
-after every `git commit`.
+full process, which then replaces the lite one. `docs/REQUIREMENTS.md`, when present, is the North Star; keep it under about
+150 lines. `docs/SHIP_CHECK.md`, when present, lists questions to answer after
+every commit. Claude Code injects the first at session start and reads the
+second back after each `git commit` through the project hooks in
+`.claude/settings.json`. Other agents read both files themselves: the North
+Star at the start of a session, the ship check after each commit.

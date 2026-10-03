@@ -43,3 +43,9 @@ setup() {
     grep -q 'every `dot-` prefix' "$BLUEPRINT_ROOT/$f"
   done
 }
+
+@test "templates: automatic injection is scoped to Claude Code, other agents read the files" {
+  local f="$T/AGENTS.md.tpl"
+  grep -q 'Claude Code injects' "$f"
+  grep -q 'Other agents read' "$f"
+}
