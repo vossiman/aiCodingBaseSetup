@@ -254,7 +254,7 @@ names `cursor` in its text. An explicit argument wins.
 | entry | role | harness | family | effort | resolves today |
 |---|---|---|---|---|---|
 | claude | overseer | claude | `opus` | high | `claude-opus-5-5` |
-| claude | implementer | claude | `sonnet` | medium | `claude-sonnet-5-5` |
+| claude | implementer | claude | `sonnet` | low | `claude-sonnet-5-5` |
 | claude | complex-implementer | claude | `opus` | high | `claude-opus-5-5` |
 | claude | reviewer | codex | `sol` | high | `gpt-6.1-sol` |
 | claude | assessor | claude | `opus` | high | `claude-opus-5-5` |
@@ -272,16 +272,17 @@ names `cursor` in its text. An explicit argument wins.
 Notes on the rows:
 
 - The implementer follows task complexity (owner decision 2026-10-03,
-  revised the same day). `implementer` runs the balanced tier at `medium`:
-  Sonnet 5.5 scores 70.6% on Terminal-Bench 4.0 against Opus 5.5's 66.4%,
-  sits within about two points on CursorBench, and costs half
-  (https://www.anthropic.com/claude-sonnet-5-5). `medium` is the vendor's
-  documented level for well-specified tasks and the default effort of
-  Opus 5.5 and Sol 6.1
-  (https://platform.claude.com/docs/en/build-with-claude/effort). A
-  mechanical edit (rename, formatting, docs) may drop to `low`; low
-  effort also means fewer tool calls and checks, so it is not for anything
-  a test has to prove.
+  revised the same day). `implementer` runs the balanced tier: Sonnet 5.5
+  scores 70.6% on Terminal-Bench 4.0 against Opus 5.5's 66.4%, sits within
+  about two points on CursorBench, and costs half
+  (https://www.anthropic.com/claude-sonnet-5-5). The vendor documents
+  `medium` for well-specified tasks
+  (https://platform.claude.com/docs/en/build-with-claude/effort), and low
+  effort means fewer tool calls and checks. The phase 1 measurement
+  (Evidence and caveats) found no difference between `low` and `medium`
+  when the plan carries the code, so the `claude` row ships at `low`; the
+  overseer raises it to `medium` when a brief leaves design choices to
+  the implementer. Codex and Cursor rows stay at `medium` until measured.
 - Codex `luna` is the owner's choice as the Sonnet-level counterpart.
   There is no public evidence that `gpt-6-luna` is Sonnet-level; the row
   is marked "unproven, revisit with own evals" in the JSON comment and in
@@ -345,7 +346,7 @@ Pass rate overstates quality, and the gap grows with task size and for
 weaker models (SpecBench, https://arxiv.org/html/2605.21384v1); SWE-bench
 Verified is contaminated and no longer a usable signal
 (https://openai.com/index/why-we-no-longer-evaluate-swe-bench-verified/).
-So the defaults are a starting point. The phase 1 build measured `implementer` effort by running this process on itself (PR #249): three tasks ran twice from the same base, once at `low` and once at `medium`, on Sonnet 5.5 with a plan that carried the code. All three pairs produced byte-identical commits, the same cross-vendor review result and similar cost (0.29 to 0.37 USD per run); `medium` took 6 to 20 seconds longer. Every other task passed at `low` without escalation, and the verified review findings were defects in the plan, not in the implementer output. This supports `low` for briefs that carry the code; it says nothing about briefs that leave design to the implementer. Whether the default moves is the owner's call. A wider effort sweep (the vendor's advice at the effort page), including `luna` against `sol`, follows once phase 4 has produced real runs.
+So the defaults are a starting point. The phase 1 build measured `implementer` effort by running this process on itself (PR #249): three tasks ran twice from the same base, once at `low` and once at `medium`, on Sonnet 5.5 with a plan that carried the code. All three pairs produced byte-identical commits, the same cross-vendor review result and similar cost (0.29 to 0.37 USD per run); `medium` took 6 to 20 seconds longer. Every other task passed at `low` without escalation, and the verified review findings were defects in the plan, not in the implementer output. This supports `low` for briefs that carry the code; it says nothing about briefs that leave design to the implementer. The owner moved the `claude` implementer default to `low` on 2026-10-03; Codex and Cursor stay at `medium` until measured. Use `medium` when a brief leaves design choices to the implementer. A wider effort sweep (the vendor's advice at the effort page), including `luna` against `sol`, follows once phase 4 has produced real runs.
 
 **Tier parity** across the three entry harnesses, as resolved today. A
 route names the tier; this table is the reference for what that means per

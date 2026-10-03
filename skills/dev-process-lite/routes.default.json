@@ -4,7 +4,7 @@
   "routes": {
     "claude": {
       "overseer": { "harness": "claude", "family": "opus", "effort": "high" },
-      "implementer": { "harness": "claude", "family": "sonnet", "effort": "medium" },
+      "implementer": { "harness": "claude", "family": "sonnet", "effort": "low", "note": "low since 2026-10-03: phase 1 low/medium pairs were byte-identical for plans that carry the code; use medium when the brief leaves design to the implementer." },
       "complex-implementer": { "harness": "claude", "family": "opus", "effort": "high" },
       "reviewer": { "harness": "codex", "family": "sol", "effort": "high" },
       "assessor": { "harness": "claude", "family": "opus", "effort": "high" }
