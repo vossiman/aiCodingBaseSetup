@@ -22,6 +22,14 @@ t3_tty_quiet() {
   [ "$a" -lt "$limit" ] && [ "$m" -lt "$limit" ]
 }
 
+# t3 serve starts its own resource sampler for its whole life (comm is cut
+# to 15 characters, so the full name comes from argv[0]).
+t3_resource_monitor() {
+  local -a a
+  mapfile -d '' -t a 2>/dev/null < "/proc/$1/cmdline" || return 1
+  [ "${a[0]##*/}" = t3-resource-monitor ]
+}
+
 # Check 3. A provider is allowed when it and every ancestor up to the server
 # is provider-named (covers a node launcher with a native child).
 t3_idle_procs() {
@@ -42,6 +50,7 @@ t3_idle_procs() {
     name=${nm[$p]}
     [ "$p" = "$server" ] && continue
     [ "$name" = cloudflared ] && continue
+    [ "$name" = t3-resource-mon ] && [ "${par[$p]}" = "$server" ] && t3_resource_monitor "$p" && continue
     if [[ "$T3_PROVIDERS" == *" $name "* ]]; then
       q=${par[$p]}
       while [ -n "$q" ] && [ "$q" != "$server" ] && [[ "$T3_PROVIDERS" == *" ${nm[$q]:-} "* ]]; do q=${par[$q]:-}; done
