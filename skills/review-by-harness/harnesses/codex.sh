@@ -3,7 +3,7 @@
 # Contract: review <worktree> <base-ref> <outdir> | fix <worktree> <outdir>
 set -euo pipefail
 
-MODEL="${REVIEW_MODEL:-gpt-5.6-sol}"
+MODEL="${REVIEW_MODEL:-gpt-6.1-sol}"
 EFFORT="${REVIEW_EFFORT:-high}"
 
 # Codex's own sandbox is bubblewrap. The devpod host denies unprivileged user
