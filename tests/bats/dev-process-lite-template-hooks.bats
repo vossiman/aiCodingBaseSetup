@@ -21,7 +21,7 @@ teardown() {
   [ "$(jq -r '.hooks.SessionStart[0].matcher' "$s")" = "startup|resume" ]
   [[ "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$s")" == *'/.claude/hooks/north-star.sh' ]]
   [ "$(jq -r '.hooks.PostToolUse[0].matcher' "$s")" = "Bash" ]
-  [ "$(jq -r '.hooks.PostToolUse[0].hooks[0].if' "$s")" = "Bash(git commit*)" ]
+  [ "$(jq '.hooks.PostToolUse[0].hooks[0] | has("if")' "$s")" = "false" ]
   [[ "$(jq -r '.hooks.PostToolUse[0].hooks[0].command' "$s")" == *'/.claude/hooks/ship-check.sh' ]]
   [ "$(jq -r '.permissions.allow | length' "$s")" = "0" ]
 }
@@ -61,18 +61,33 @@ teardown() {
 }
 
 @test "ship-check: no SHIP_CHECK.md prints nothing and exits 0" {
-  run env CLAUDE_PROJECT_DIR="$TMPDIR/proj" bash "$H/ship-check.sh"
+  run bash -c "printf '%s' '{\"tool_input\":{\"command\":\"git commit -m x\"}}' | CLAUDE_PROJECT_DIR='$TMPDIR/proj' bash '$H/ship-check.sh'"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
 
 @test "ship-check: awkward content round-trips through valid JSON" {
   printf 'Say "done" only if:\n\tC:\\path holds\nUmlaut \xc3\xa4 ok\n' > "$TMPDIR/proj/docs/SHIP_CHECK.md"
-  run env CLAUDE_PROJECT_DIR="$TMPDIR/proj" bash "$H/ship-check.sh"
+  run bash -c "printf '%s' '{\"tool_input\":{\"command\":\"git commit -m x\"}}' | CLAUDE_PROJECT_DIR='$TMPDIR/proj' bash '$H/ship-check.sh'"
   [ "$status" -eq 0 ]
   jq -e '.hookSpecificOutput.hookEventName == "PostToolUse"' <<<"$output" >/dev/null
   jq -j '.hookSpecificOutput.additionalContext' <<<"$output" > "$TMPDIR/back"
   cmp -s "$TMPDIR/proj/docs/SHIP_CHECK.md" "$TMPDIR/back"
+}
+
+@test "ship-check: fires for git commit with global options or chains, not for other commands" {
+  echo "check" > "$TMPDIR/proj/docs/SHIP_CHECK.md"
+  local c out
+  for c in "git commit -m x" "git -c user.email=a@b commit -m x" "git -C /tmp/w commit -m x" "git add f && git -C w commit -m x" "cd w; git commit --amend"; do
+    out=$(jq -cn --arg c "$c" '{tool_input:{command:$c}}' | CLAUDE_PROJECT_DIR="$TMPDIR/proj" bash "$H/ship-check.sh")
+    [ -n "$out" ] || { echo "no output for: $c"; false; }
+  done
+  for c in "git status" "git log --grep commit" "echo git commit" "git commit-tree abc"; do
+    out=$(jq -cn --arg c "$c" '{tool_input:{command:$c}}' | CLAUDE_PROJECT_DIR="$TMPDIR/proj" bash "$H/ship-check.sh")
+    [ -z "$out" ] || { echo "output for: $c"; false; }
+  done
+  out=$(CLAUDE_PROJECT_DIR="$TMPDIR/proj" bash "$H/ship-check.sh" </dev/null)
+  [ -z "$out" ]
 }
 
 @test "template: SHIP_CHECK.md example ships with three questions" {
