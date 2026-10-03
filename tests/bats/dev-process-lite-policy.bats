@@ -33,3 +33,28 @@ setup() {
   run grep -rlF '{{' "$S/dev-process-lite" "$S/assess-run" --include='*.md'
   [ "$status" -eq 1 ]
 }
+
+@test "skills: frontmatter names match directories and descriptions defer to a project process" {
+  local s
+  for s in dev-process-lite assess-run; do
+    run sed -n '2p' "$S/$s/SKILL.md"
+    [ "$output" = "name: $s" ]
+    grep -q '^description: .*docs/DEV_PROCESS.md' "$S/$s/SKILL.md"
+  done
+}
+
+@test "skills: both run detect.sh first" {
+  grep -q 'detect.sh' "$S/dev-process-lite/SKILL.md"
+  grep -q 'detect.sh' "$S/assess-run/SKILL.md"
+}
+
+@test "skills: no shared skill shadows a project skill name" {
+  [ ! -e "$S/assess" ]
+  [ ! -e "$S/dev-process" ]
+}
+
+@test "skills: assess-run states the 120-line cap and the conditional hand-back" {
+  grep -q '120' "$S/assess-run/SKILL.md"
+  grep -q 'ListAgents' "$S/assess-run/SKILL.md"
+  grep -qi 'report only' "$S/assess-run/SKILL.md"
+}
