@@ -18,16 +18,52 @@ class ActivityTests(unittest.TestCase):
         for name in ('tcp', 'tcp6'):
             (self.proc / 'net' / name).write_text('  sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n')
 
-    def process(self, pid, exe='/usr/bin/bash', tty=0, sockets=(), session=None):
+    def process(self, pid, exe='/usr/bin/bash', tty=0, sockets=(), session=None, argv=None):
         d = self.proc / str(pid)
         d.mkdir()
         session = pid if session is None else session
         (d / 'stat').write_text(f'{pid} (name with spaces) S 1 1 {session} {tty} 0 0')
         (d / 'exe').symlink_to(exe)
         (d / 'fd').mkdir()
+        if argv is not None:
+            (d / 'cmdline').write_bytes(b'\0'.join(a.encode() for a in argv) + b'\0')
         for n, inode in enumerate(sockets):
             (d / 'fd' / str(n)).symlink_to(f'socket:[{inode}]')
         return d
+
+    T3 = '/home/u/.local/share/t3-runtime/0.0.45/node_modules/@t3code/t3-linux-x64/t3'
+
+    def test_t3_serve_process_is_counted(self):
+        self.process(1)
+        self.process(50, self.T3, argv=[self.T3, 'serve', '/home/u/checkouts'])
+        self.assertEqual(self.collect()['t3_servers'], 1)
+
+    def test_no_t3_server_is_zero_not_null(self):
+        self.process(1)
+        self.assertEqual(self.collect()['t3_servers'], 0)
+
+    def test_t3_binary_running_another_command_is_not_a_server(self):
+        self.process(1)
+        self.process(50, self.T3, argv=[self.T3, 'status'])
+        self.process(51, '/usr/bin/python3', argv=['python3', 'serve'])
+        self.assertEqual(self.collect()['t3_servers'], 0)
+
+    def test_deleted_t3_binary_serve_is_counted(self):
+        self.process(1)
+        self.process(50, self.T3 + ' (deleted)', argv=[self.T3, 'serve', '/home/u/checkouts'])
+        self.assertEqual(self.collect()['t3_servers'], 1)
+
+    def test_empty_t3_cmdline_is_null(self):
+        self.process(1)
+        d = self.process(50, self.T3)
+        (d / 'cmdline').write_bytes(b'')
+        self.assertIsNone(self.collect()['t3_servers'])
+
+    def test_unreadable_t3_cmdline_is_null(self):
+        self.process(1)
+        d = self.process(50, self.T3)          # exe is t3, cmdline missing
+        (d / 'cmdline').mkdir()                # reading a directory raises EISDIR
+        self.assertIsNone(self.collect()['t3_servers'])
 
     def collect(self):
         fn = P.get('collect_activity')
@@ -58,7 +94,7 @@ class ActivityTests(unittest.TestCase):
         self.process(2, '/usr/bin/tmux', session=1)
         self.assertEqual(self.collect(), dict(tmux_sessions=0, terminals=0,
                                               cursor_connections=0,
-                                              vscode_connections=0))
+                                              vscode_connections=0, t3_servers=0))
 
     def test_unparsable_list_sessions_says_why(self):
         self.process(1)
@@ -91,7 +127,7 @@ class ActivityTests(unittest.TestCase):
 
     def test_baseline_and_background_bash(self):
         self.process(1)
-        self.assertEqual(self.collect(), dict(tmux_sessions=0, terminals=0, cursor_connections=0, vscode_connections=0))
+        self.assertEqual(self.collect(), dict(tmux_sessions=0, terminals=0, cursor_connections=0, vscode_connections=0, t3_servers=0))
 
     def test_terminal_open_then_closed(self):
         d = self.process(1, tty=34816)
@@ -134,7 +170,7 @@ class ActivityTests(unittest.TestCase):
         (d / 'exe').unlink()
         self.assertEqual(self.collect(), dict(tmux_sessions=0, terminals=0,
                                               cursor_connections=0,
-                                              vscode_connections=0))
+                                              vscode_connections=0, t3_servers=0))
 
     def test_malformed_tcp_address_is_unknown(self):
         tcp = self.proc / 'net' / 'tcp'
@@ -188,7 +224,7 @@ class ActivityTests(unittest.TestCase):
             with patch.object(os, 'listdir', listing):
                 result = fn(str(self.proc), budget)
         self.assertEqual(result, dict(tmux_sessions=0, terminals=0,
-                                      cursor_connections=0, vscode_connections=0))
+                                      cursor_connections=0, vscode_connections=0, t3_servers=0))
         self.assertFalse(budget.partial)
 
     def test_budget_exhaustion_is_unknown(self):

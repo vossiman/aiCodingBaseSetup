@@ -304,14 +304,15 @@ def collect_activity(proc, budget):
     """Observation only; current uid, default tmux socket and DevPod IDE TCP.
 
     Counts terminal devices, not shells, and established loopback socket pairs,
-    not IDE processes. Does not read command arguments or environment. Custom
-    tmux sockets and IDE transports other than DevPod TCP are outside scope.
+    not IDE processes. Reads command arguments only for a t3 binary, to tell
+    its server from its other commands; never environment. Custom tmux sockets
+    and IDE transports other than DevPod TCP are outside scope.
     Incomplete metadata gives null rather than a potentially unsafe zero.
     A null tmux_sessions carries `tmux_unmeasured` naming which path produced
     it; consumers that do not know the key ignore it.
     """
     out = dict(tmux_sessions=None, terminals=None,
-               cursor_connections=None, vscode_connections=None)
+               cursor_connections=None, vscode_connections=None, t3_servers=None)
     why = None
     try:
         # Force the default socket even if invoked from inside another tmux.
@@ -338,6 +339,7 @@ def collect_activity(proc, budget):
     terminals, owners = set(), {}
     terminals_ok = ide_ok = True
     tmux_metadata_ok = True
+    t3_ok, t3 = True, 0
     uid = _int(os.environ.get('DVW_PROBE_UID'), os.getuid())
     try:
         names = os.listdir(proc)
@@ -365,7 +367,7 @@ def collect_activity(proc, budget):
                 # normal case, not a measurement failure: distrusting the whole
                 # sample for it makes a busy workspace permanently unmeasurable.
                 if exc.errno not in _GONE:
-                    terminals_ok = ide_ok = tmux_metadata_ok = False
+                    terminals_ok = ide_ok = tmux_metadata_ok = t3_ok = False
                 continue
             state = session = None
             try:
@@ -386,6 +388,13 @@ def collect_activity(proc, budget):
                 continue  # zombies have no executable or live sockets
             try:
                 exe = os.readlink(os.path.join(d, 'exe'))
+                # A binary replaced under a running server reads "<path> (deleted)".
+                if os.path.basename(exe.removesuffix(' (deleted)')) == 't3':
+                    argv = _read(os.path.join(d, 'cmdline')).split(b'\0')
+                    if not any(argv):
+                        t3_ok = False  # empty cmdline: mid-exec or mid-exit
+                    elif len(argv) > 1 and argv[1] == b'serve':
+                        t3 += 1
                 if (os.path.basename(exe) == 'tmux' and out['tmux_sessions'] == 0
                         and session in (None, name)):
                     # A tmux *server* daemonises into its own session, so it is
@@ -414,12 +423,14 @@ def collect_activity(proc, budget):
                 # apart. Neither can be an IDE or devpod process, so skipping
                 # is exact rather than merely tolerant.
                 if exc.errno not in _GONE:
-                    ide_ok = tmux_metadata_ok = False
+                    ide_ok = tmux_metadata_ok = t3_ok = False
         if not tmux_metadata_ok and out['tmux_sessions'] == 0:
             out['tmux_sessions'] = None
             why = 'process-metadata-unreadable'
         if terminals_ok:
             out['terminals'] = len(terminals)
+        if t3_ok:
+            out['t3_servers'] = t3
         sockets = {}
         live_ide = {"cursor_connections": set(), "vscode_connections": set()}
         for version in ('tcp', 'tcp6'):
@@ -451,7 +462,7 @@ def collect_activity(proc, budget):
                     sockets[(version, local, remote)] = owners.get(inode, set())
         if time.monotonic() >= deadline:
             budget.partial = True
-            return _explained(dict(out, terminals=None), why)
+            return _explained(dict(out, terminals=None, t3_servers=None), why)
         if ide_ok:
             for kind in ('cursor_connections', 'vscode_connections'):
                 matched = {endpoint for endpoint in live_ide[kind]
@@ -631,7 +642,7 @@ def main():
         cg = os.environ.get("DVW_PROBE_CGROUP", "/sys/fs/cgroup")
         doc = {"schema": SCHEMA, "ts": int(time.time()), "partial": False,
                "tmux": None, "agents": None, "git": None, "cgroup": None,
-               "activity": dict(tmux_sessions=None, terminals=None, cursor_connections=None, vscode_connections=None),
+               "activity": dict(tmux_sessions=None, terminals=None, cursor_connections=None, vscode_connections=None, t3_servers=None),
                "capabilities": None}
         _arm_deadline(doc, seconds)
         # Capabilities first: one small file read that the fleet proof needs
