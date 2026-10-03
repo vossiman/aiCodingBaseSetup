@@ -49,3 +49,10 @@ section() {
   grep -q 'MODEL="${REVIEW_MODEL:-gpt-6.1-sol}"' "$BLUEPRINT_ROOT/skills/review-by-harness/harnesses/codex.sh"
   grep -q 'MODEL="${REVIEW_MODEL:-grok-4.7-high-fast}"' "$BLUEPRINT_ROOT/skills/review-by-harness/harnesses/cursor.sh"
 }
+
+@test "reviewer defaults: run.sh defaults match the adapters" {
+  local f="$BLUEPRINT_ROOT/skills/review-by-harness/run.sh"
+  grep -q 'REVIEW_MODEL="${REVIEW_MODEL:-opus}"' "$f"
+  grep -q 'REVIEW_MODEL="${REVIEW_MODEL:-gpt-6.1-sol}"' "$f"
+  grep -q 'REVIEW_MODEL="${REVIEW_MODEL:-grok-4.7-high-fast}"' "$f"
+}
