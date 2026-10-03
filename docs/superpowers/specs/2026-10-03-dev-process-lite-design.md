@@ -250,13 +250,13 @@ names `cursor` in its text. An explicit argument wins.
 
 | entry | role | harness | family | effort | resolves today |
 |---|---|---|---|---|---|
-| claude | overseer | claude | `opus` | high | `claude-opus-5` |
-| claude | implementer | claude | `sonnet` | high | `claude-sonnet-5` |
+| claude | overseer | claude | `opus` | high | `claude-opus-5-5` |
+| claude | implementer | claude | `sonnet` | high | `claude-sonnet-5-5` |
 | claude | reviewer | codex | `sol` | high | `gpt-6.1-sol` |
-| claude | assessor | claude | `opus` | high | `claude-opus-5` |
+| claude | assessor | claude | `opus` | high | `claude-opus-5-5` |
 | codex | overseer | codex | `sol` | high | `gpt-6.1-sol` |
 | codex | implementer | codex | `sol` | high | `gpt-6.1-sol` |
-| codex | reviewer | claude | `opus` | high | `claude-opus-5` |
+| codex | reviewer | claude | `opus` | high | `claude-opus-5-5` |
 | codex | assessor | codex | `sol` | high | `gpt-6.1-sol` |
 | cursor | overseer | cursor | `grok` | xhigh | `cursor-grok-4.6-xhigh` |
 | cursor | implementer | cursor | `grok` | high | `cursor-grok-4.6-high` |
@@ -285,8 +285,8 @@ vendor and is refreshed when the resolver's rules change:
 | tier | Claude | Codex | Cursor |
 |---|---|---|---|
 | frontier | `fable` (`claude-fable-5-1`) | `astra` (`gpt-6-astra`) | `claude-fable` (`claude-fable-5-thinking-high`); no Grok or GPT frontier listed |
-| workhorse | `opus` (`claude-opus-5`) | `sol` (`gpt-6.1-sol`) | `grok` (`cursor-grok-4.6-xhigh`) |
-| balanced | `sonnet` (`claude-sonnet-5`) | none current-gen; `luna` (`gpt-6-luna`) is the cheap tier | `grok` at `high-fast` (`cursor-grok-4.6-high-fast`) |
+| workhorse | `opus` (`claude-opus-5-5`) | `sol` (`gpt-6.1-sol`) | `grok` (`cursor-grok-4.6-xhigh`) |
+| balanced | `sonnet` (`claude-sonnet-5-5`) | none current-gen; `luna` (`gpt-6-luna`) is the cheap tier | `grok` at `high` (`cursor-grok-4.6-high`) |
 | reviewer of this entry | Codex `sol` | Claude `opus` | Codex `astra` (alt: Claude `fable`) |
 
 **Relationship to existing prose.** The reviewer families match the
@@ -295,7 +295,7 @@ and `skills/review-by-harness/SKILL.md:24-29` at the family level (Opus for
 Claude, Sol for Codex). Those texts and the identifier table in
 `skills/review-by-harness/SKILL.md:33-42` (verified 2026-09-09) name exact
 ids that are already stale: Codex now lists `gpt-6.1-sol` as the current
-Sol and marks `gpt-5.6-sol` older. Phase 2 updates them to name families
+Sol and marks `gpt-5.6-sol` older, and Claude reports `claude-opus-5-5` for the `opus` alias. Phase 2 updates them to name families
 with the current ids as examples, and the guard test compares families, not
 frozen ids (Testing, item 4). `review-by-harness` must keep working in a
 repo with no routes file and in a session that never loaded the lite skill,
