@@ -923,7 +923,7 @@ _sync_provision() {
   local name source dest
   for name in dvw-probe agent-notify aicoding-status kanban-post kanban-work measure-remote \
               dokploy-api bugsink-api aicoding-root-install kuma-admin redact-transcript redact-sessions codex-turn-done \
-              t3-setup t3-adopt t3-start t3-stop t3-update t3-auto t3-status t3-migrate; do
+              t3-setup t3-adopt t3-start t3-stop t3-update t3-auto t3-status t3-migrate t3-projects; do
     source="$(dirname "$blueprint_lib")/bin/$name"
     dest="$HOME/.local/bin/$name"
     [ -f "$source" ] || continue

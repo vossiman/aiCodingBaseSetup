@@ -9,6 +9,7 @@ t3_cmd_scheduled() {
   t3_control_lock || { echo "result blocked t3_lock_busy - control-lock-held"; return 1; }
   t3_recover_if_needed
   t3_set_up || { echo "result blocked t3_not_set_up - -"; return 1; }
+  t3_projects_restore
   cur=$(t3_selected_version)
   if [ "$(t3_mode)" = held ]; then echo "result current t3_held $cur -"; return 0; fi
   latest=$(t3_latest) || { echo "result blocked t3_npm_unavailable $cur -"; return 1; }

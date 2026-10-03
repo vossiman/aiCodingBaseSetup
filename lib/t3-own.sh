@@ -225,6 +225,7 @@ t3_cmd_start() {
     [ -d "$dir" ] || t3_die "no such directory: $dir"
     t3_write_file "$T3_STATE/serve-dir" "$(readlink -f "$dir")"
   fi
+  t3_projects_restore
   if t3_running; then t3_say "already running (supervisor $(t3_owner_field pid))"; return 0; fi
   t3_orphans
   if [ ${#T3_ORPHANS_TOKEN[@]} -gt 0 ] || [ ${#T3_ORPHANS_SESSION[@]} -gt 0 ]; then
