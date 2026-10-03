@@ -104,7 +104,8 @@ call. Hard cap: 120 lines. Five fixed sections, in this order:
   `~/.claude/sessions/*.json` entry whose `sessionId` matches; read it, do
   not wait for a rename).
 - **Decisions**: each decision the plan did not settle, with a one-sentence
-  reason and the record, commit or file that shows it.
+  reason and the record, commit or file that shows it. The implementer
+  role chosen per task (section 4) and any reassignment go here.
 - **Deviations**: where delivery differs from the plan, including unmet
   acceptance criteria, skipped validation, diff-only reviews and overridden
   blocking findings, each with the reason.
@@ -184,7 +185,8 @@ and the owner reads one closeout.
 ### 4. Routes
 
 Executable model and effort choices per role come from a routes table, not
-from prose. Lite roles: `overseer`, `implementer`, `reviewer`, `assessor`.
+from prose. Lite roles: `overseer`, `implementer`, `complex-implementer`,
+`reviewer`, `assessor`, the same role names balance-extract uses.
 Entry harnesses: `claude`, `codex`, `cursor`. OpenCode is not an entry
 point: it reads the policy through `AGENTS.md` and can do single-ticket
 work, but a run that coordinates tasks starts from Claude, Codex or Cursor,
@@ -226,12 +228,13 @@ on 2026-10-03:
   versioned selectors with the effort in the name and no aliases except
   `auto`. A family is the vendor-model token (`grok`, `claude-opus`,
   `claude-fable`, `gpt`), the selector pattern is
-  `cursor-<family>-<version>-<effort>[-fast]` for Cursor-native models and
-  `<family>-<version>-<effort>` otherwise, and the resolver picks the
-  highest version that has the route's effort suffix. Today `grok` with
-  `xhigh` resolves to `cursor-grok-4.6-xhigh`; Cursor lists no `gpt-6`
-  selector at all, so a `gpt` family on Cursor resolves to a 5.6 selector
-  or blocks.
+  `[cursor-]<family>-<version>-<effort>[-fast]`; the `cursor-` prefix
+  marks a Cursor-tuned variant and is matched but not required, because
+  the list on 2026-10-03 carries `grok-4.7-*` without the prefix next to
+  `cursor-grok-4.6-*` with it. The resolver picks the highest version that
+  has the route's effort suffix. Today `grok` with `xhigh` resolves to
+  `grok-4.7-xhigh`; Cursor lists no `gpt-6` selector at all, so a `gpt`
+  family on Cursor resolves to a 5.6 selector or blocks.
 
 **Failure.** No match blocks the launch with the family, the harness and
 the list consulted. The resolver never substitutes another family or
@@ -251,23 +254,33 @@ names `cursor` in its text. An explicit argument wins.
 | entry | role | harness | family | effort | resolves today |
 |---|---|---|---|---|---|
 | claude | overseer | claude | `opus` | high | `claude-opus-5-5` |
-| claude | implementer | claude | `sonnet` | high | `claude-sonnet-5-5` |
+| claude | implementer | claude | `opus` | low | `claude-opus-5-5` |
+| claude | complex-implementer | claude | `opus` | high | `claude-opus-5-5` |
 | claude | reviewer | codex | `sol` | high | `gpt-6.1-sol` |
 | claude | assessor | claude | `opus` | high | `claude-opus-5-5` |
 | codex | overseer | codex | `sol` | high | `gpt-6.1-sol` |
-| codex | implementer | codex | `sol` | high | `gpt-6.1-sol` |
+| codex | implementer | codex | `sol` | low | `gpt-6.1-sol` |
+| codex | complex-implementer | codex | `sol` | high | `gpt-6.1-sol` |
 | codex | reviewer | claude | `opus` | high | `claude-opus-5-5` |
 | codex | assessor | codex | `sol` | high | `gpt-6.1-sol` |
-| cursor | overseer | cursor | `grok` | xhigh | `cursor-grok-4.6-xhigh` |
-| cursor | implementer | cursor | `grok` | high | `cursor-grok-4.6-high` |
+| cursor | overseer | cursor | `grok` | xhigh | `grok-4.7-xhigh` |
+| cursor | implementer | cursor | `grok` | medium | `grok-4.7-medium` |
+| cursor | complex-implementer | cursor | `grok` | xhigh | `grok-4.7-xhigh` |
 | cursor | reviewer | codex | `astra` | high | `gpt-6-astra` |
-| cursor | assessor | cursor | `grok` | xhigh | `cursor-grok-4.6-xhigh` |
+| cursor | assessor | cursor | `grok` | xhigh | `grok-4.7-xhigh` |
 
 Notes on the rows:
 
-- Codex has no current-generation balanced tier, so the implementer runs on
-  `sol` as well; `luna` (`gpt-6-luna`) is the cheap option a project may
-  pin for bounded work.
+- The implementer follows task complexity, not a cheaper model (owner
+  decision 2026-10-03): both implementer roles run the workhorse family
+  and differ in effort. `sonnet` (Claude) and `luna` (Codex, `gpt-6-luna`)
+  are documented cheaper alternatives a project may pin for bounded work;
+  they are not defaults.
+- Cursor's `implementer` uses `medium`, not `low`: Cursor's unlabeled
+  default selector is the `high` one (`cursor-grok-4.6-high` prints as
+  plain "Grok 4.6"), so `medium` is the one step below default, the same
+  distance `low` is below Claude's and Codex's `medium` default. Grok's
+  `low` selectors are a cost tier, not a bounded-work tier.
 - Every reviewer is cross-vendor to the entry harness.
 - The Cursor reviewer row is the one place a frontier family sits in the
   defaults. The global rule says Fable and Astra need an explicit user
@@ -278,6 +291,26 @@ Notes on the rows:
   file. Project routes files are the owner's override in writing and are
   not checked (balance-extract pins Fable and Astra).
 
+**Choosing the implementer role.** The overseer picks the role per task
+and records the choice under Decisions with the criterion that decided it.
+A task is `implementer` work when all of these hold:
+
+1. the plan or spec names the files to touch and the acceptance criteria,
+   so the worker makes no design choice;
+2. it stays inside one module or one mechanism, with no change to an
+   interface, a data format, a lock or ownership model, or a public CLI;
+3. a unit test or a scripted check can prove it done without a person
+   reading the result;
+4. a worker can finish it in about an hour (the same bound section 2 uses
+   for widening scope).
+
+Anything else, including a fix for a failed `implementer` attempt that
+shows the task was misjudged, is `complex-implementer`. An escalation after
+a failed attempt is recorded under Decisions as a reassignment naming the
+first task, the way balance-extract records reviewer escalations
+(`docs/DEV_PROCESS.md:57-59`), and the failed attempt's branch is dropped,
+not patched. A task never moves the other way.
+
 **Tier parity** across the three entry harnesses, as resolved today. A
 route names the tier; this table is the reference for what that means per
 vendor and is refreshed when the resolver's rules change:
@@ -285,8 +318,8 @@ vendor and is refreshed when the resolver's rules change:
 | tier | Claude | Codex | Cursor |
 |---|---|---|---|
 | frontier | `fable` (`claude-fable-5-1`) | `astra` (`gpt-6-astra`) | `claude-fable` (`claude-fable-5-thinking-high`); no Grok or GPT frontier listed |
-| workhorse | `opus` (`claude-opus-5-5`) | `sol` (`gpt-6.1-sol`) | `grok` (`cursor-grok-4.6-xhigh`) |
-| balanced | `sonnet` (`claude-sonnet-5-5`) | none current-gen; `luna` (`gpt-6-luna`) is the cheap tier | `grok` at `high` (`cursor-grok-4.6-high`) |
+| workhorse | `opus` (`claude-opus-5-5`) | `sol` (`gpt-6.1-sol`) | `grok` (`grok-4.7-xhigh`) |
+| cheaper alternative (documented, not a default) | `sonnet` (`claude-sonnet-5-5`) | `luna` (`gpt-6-luna`) | `grok` at `low` (`grok-4.7-low`) |
 | reviewer of this entry | Codex `sol` | Claude `opus` | Codex `astra` (alt: Claude `fable`) |
 
 **Relationship to existing prose.** The reviewer families match the
@@ -602,19 +635,22 @@ like every other suite (`CLAUDE.md`, section Tests):
    <path>` with it, `lite` outside any repo, exit 0 in all three.
 4. Routes and resolver: `routes.default.json` parses, has `version: 1`
    and exactly the three entry tables `claude`, `codex`, `cursor`, each
-   with the four roles; each role has `harness` and exactly one of `model`
-   or `family`; every reviewer row has `harness` different from its entry;
+   with the five roles; each role has `harness` and exactly one of `model`
+   or `family`; `implementer` and `complex-implementer` share `harness`
+   and `family` in every entry and differ only in `effort`, with
+   `implementer` the lower one; every reviewer row has `harness` different from its entry;
    no row names a frontier family (`fable`, `astra`) or a frontier exact
    id except `cursor.reviewer`, which must. `routes.sh` is tested against
    fixture model lists under `tests/fixtures/dev-process-lite/`: a `codex
    debug models` JSON with `gpt-5.5` (upgrade set), `gpt-5.6-sol`,
    `gpt-6.1-sol`, `gpt-6-astra` and `gpt-6-luna`, where `sol` resolves to
    `gpt-6.1-sol`, `astra` to `gpt-6-astra`, and `terra` blocks; a
-   `cursor-agent --list-models` text with `cursor-grok-4.6-xhigh`,
-   `cursor-grok-4.6-high`, `cursor-grok-4.6-high-fast`,
+   `cursor-agent --list-models` text with `grok-4.7-xhigh`,
+   `grok-4.7-medium`, `cursor-grok-4.6-xhigh`, `cursor-grok-4.6-high-fast`,
    `claude-fable-5-thinking-high` and `gpt-5.6-sol-high`, where `grok` at
-   `xhigh` resolves to `cursor-grok-4.6-xhigh`, `grok` at `high` with fast
-   to `-high-fast`, and `gpt` at `xhigh` blocks; a Claude route where the
+   `xhigh` resolves to `grok-4.7-xhigh` (unprefixed 4.7 beats prefixed
+   4.6), `grok` at `high` with fast to `cursor-grok-4.6-high-fast`, and
+   `gpt` at `xhigh` blocks; a Claude route where the
    alias passes through unchanged. An exact `model` pin present in the
    fixture list is returned unchanged with `family` ignored; a pin absent
    from the list blocks; an `opencode` or unknown entry blocks with the
