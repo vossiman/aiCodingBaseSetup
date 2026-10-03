@@ -22,8 +22,8 @@ _fleet() {
     schema: 1, generated_at: $now, newest_container_started_at: ($now - 100),
     roots: [{shared_root: "'"$HOME"'/.claude", inventory_complete: false, expires_at: ($now + 300),
       consumers: [
-        {id: "aaaaaaaaaaaa1111", components: {claude: {}, codex: {}, cursor: {}, "mcp-context7": {}, "mcp-playwright": {}, "mcp-kanban": {}}},
-        {id: "bbbbbbbbbbbb2222", components: {claude: {}, codex: {}, cursor: {}, "mcp-context7": {}, "mcp-playwright": {}}},
+        {id: "aaaaaaaaaaaa1111", components: {claude: {}, codex: {}, cursor: {}, "mcp-context7": {}, "mcp-playwright": {}}},
+        {id: "bbbbbbbbbbbb2222", components: {claude: {}, codex: {}, cursor: {}, "mcp-context7": {}}},
         {id: "cccccccccccc3333", components: {}},
         {id: "dddddddddddd4444", components: {}}
       ]}]}' > "$AICODING_SHARED_CONSUMERS_FILE"
@@ -54,10 +54,10 @@ _fleet() {
 }
 
 @test "doctor explains a catalogued blocker and exits 1" {
-  aicoding_result_record mcp-registration-claude-kanban blocked abc registration_not_selected
+  aicoding_result_record mcp-registration-claude-context7 blocked abc registration_not_selected
   run "$BIN" --doctor
   [ "$status" -eq 1 ]
-  [[ "$output" == *"mcp-registration-claude-kanban: blocked (registration_not_selected)"* ]]
+  [[ "$output" == *"mcp-registration-claude-context7: blocked (registration_not_selected)"* ]]
   [[ "$output" == *"Why: This MCP is not registered in Claude"* ]]
   [[ "$output" == *"Fix: "* ]]
 }
@@ -70,7 +70,7 @@ _fleet() {
 }
 
 @test "doctor prefers an exact entry over a matching pattern" {
-  aicoding_result_record mcp-kanban failed abc python_runtime_unavailable
+  aicoding_result_record mcp-context7 failed abc python_runtime_unavailable
   run "$BIN" --doctor
   [[ "$output" == *"Why: \`python3\` is missing"* ]]
 }
@@ -88,7 +88,7 @@ _fleet() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"1 of 4 containers pass"* ]]
   [[ "$output" == *"2 probed nothing"*"cccccccccccc"*"dddddddddddd"* ]]
-  [[ "$output" == *"1 missing mcp-kanban: bbbbbbbbbbbb"* ]]
+  [[ "$output" == *"1 missing mcp-playwright: bbbbbbbbbbbb"* ]]
   [[ "$output" != *"aaaaaaaaaaaa (this container)"*"missing"* ]]
 }
 
@@ -133,29 +133,29 @@ _fleet() {
 
 @test "doctor prints a blocker's recorded detail" {
   aicoding_result_record config-claude blocked target mcp_exact_version_staging_unavailable "" \
-    "mcp-kanban: blocked exact_package_not_staged"
+    "mcp-context7: blocked exact_package_not_staged"
   run "$BIN" --doctor
-  [[ "$output" == *"Detail: mcp-kanban: blocked exact_package_not_staged"* ]]
+  [[ "$output" == *"Detail: mcp-context7: blocked exact_package_not_staged"* ]]
 }
 
 @test "provision actionability follows the recorded MCP cause" {
   local report="$BLUEPRINT_ROOT/lib/status-report.py"
   aicoding_result_record config-codex blocked target mcp_exact_version_staging_unavailable "" \
-    "mcp-kanban: blocked offline_exact_package_not_ready"
+    "mcp-context7: blocked offline_exact_package_not_ready"
   run python3 "$report" --provision-actionable
   [ "$status" -eq 1 ]
   aicoding_result_record config-codex blocked target mcp_exact_version_staging_unavailable "" \
-    "mcp-kanban: failed build_failed"
+    "mcp-context7: failed build_failed"
   run python3 "$report" --provision-actionable
   [ "$status" -eq 0 ]
   aicoding_result_record config-codex blocked target mcp_exact_version_staging_unavailable "" \
-    "mcp-kanban: active launcher invalid"
+    "mcp-context7: active launcher invalid"
   run python3 "$report" --provision-actionable
   [ "$status" -eq 0 ]
 }
 
 @test "a retired fleet-gate blocker left on disk is neither listed nor badged" {
-  aicoding_result_record mcp-registration-claude-kanban blocked abc claude_consumers_incompatible
+  aicoding_result_record mcp-registration-claude-context7 blocked abc claude_consumers_incompatible
   aicoding_result_record provision-codex blocked "" codex_shared_consumers_incompatible
   run "$BIN" --doctor
   [ "$status" -eq 0 ]
@@ -173,8 +173,7 @@ _fleet() {
           codex: {version: "0.140.0", config_compatible: true},
           cursor: {version: "2026.09.26", config_compatible: false},
           "mcp-context7": {version: "4.1.1", config_compatible: true},
-          "mcp-playwright": {version: "0.0.82", config_compatible: true},
-          "mcp-kanban": {version: "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3", config_compatible: true}}' \
+          "mcp-playwright": {version: "0.0.82", config_compatible: true}}' \
     "$AICODING_SHARED_CONSUMERS_FILE" > "$TMP/f" && mv "$TMP/f" "$AICODING_SHARED_CONSUMERS_FILE"
   run "$BIN" --doctor
   [ "$status" -eq 0 ]

@@ -30,10 +30,6 @@
             "mcp-playwright": {
               "version": "1.2.3",
               "config_compatible": true
-            },
-            "mcp-kanban": {
-              "version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3",
-              "config_compatible": true
             }
           }
         },
@@ -58,10 +54,6 @@
             },
             "mcp-playwright": {
               "version": "1.2.3",
-              "config_compatible": true
-            },
-            "mcp-kanban": {
-              "version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3",
               "config_compatible": true
             }
           }
@@ -95,10 +87,6 @@
             "mcp-playwright": {
               "version": "1.2.3",
               "config_compatible": true
-            },
-            "mcp-kanban": {
-              "version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3",
-              "config_compatible": true
             }
           }
         },
@@ -123,10 +111,6 @@
             },
             "mcp-playwright": {
               "version": "1.2.3",
-              "config_compatible": true
-            },
-            "mcp-kanban": {
-              "version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3",
               "config_compatible": true
             }
           }
@@ -160,10 +144,6 @@
             "mcp-playwright": {
               "version": "1.2.3",
               "config_compatible": true
-            },
-            "mcp-kanban": {
-              "version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3",
-              "config_compatible": true
             }
           }
         },
@@ -188,10 +168,6 @@
             },
             "mcp-playwright": {
               "version": "1.2.3",
-              "config_compatible": true
-            },
-            "mcp-kanban": {
-              "version": "a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3",
               "config_compatible": true
             }
           }

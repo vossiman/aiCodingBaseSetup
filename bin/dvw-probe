@@ -25,15 +25,9 @@ import time
 SCHEMA = 1
 AGENT_CLIS = ("claude", "codex", "cursor-agent", "opencode")
 WRAPPERS = ("node", "python", "python3", "bun")
-CAPABILITY_COMPONENTS = ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright",
-                         "mcp-kanban")
+CAPABILITY_COMPONENTS = ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright")
 MAX_RECEIPTS = 1024 * 1024
 _VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+")
-# mcp-kanban is pinned to a git revision, not a release. The probe is
-# intentionally stricter than the updater's shared gate: \Z rejects a
-# trailing newline that the gate's jq `$` would accept.
-_REVISION = re.compile(r"^[0-9a-f]{40}\Z")
-_VERSION_SHAPES = {"mcp-kanban": _REVISION}
 
 # Caps mirrored from the consumer's model (dvw catalog): a document that
 # breaks them is rejected wholesale there, so truncate here instead and say
@@ -585,7 +579,7 @@ def collect_capabilities(budget):
         version = rec.get("successful_version") if isinstance(rec, dict) else None
         ok = (isinstance(rec, dict) and rec.get("state") in ("current", "updated")
               and isinstance(version, str)
-              and _VERSION_SHAPES.get(name, _VERSION).match(version) is not None)
+              and _VERSION.match(version) is not None)
         out[name] = {"version": version, "config_compatible": True} if ok else None
     return out
 

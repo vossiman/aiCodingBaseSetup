@@ -12,8 +12,6 @@ if ! declare -F aicoding_activate_version >/dev/null 2>&1; then
   unset _aicoding_runtime_root
 fi
 
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/update-kanban.sh"
-
 _aicoding_command_is_linux() {
   local path
   path=$(command -v "$1" 2>/dev/null) || return 1
@@ -44,7 +42,6 @@ aicoding_installed_components() {
   _aicoding_command_is_linux brave-search-mcp-server && printf 'mcp-brave\n'
   _aicoding_mcp_selected context7 && printf 'mcp-context7\n'
   _aicoding_mcp_selected playwright && printf 'mcp-playwright\n'
-  _aicoding_mcp_selected kanban && printf 'mcp-kanban\n'
   if _aicoding_command_is_linux bw || _aicoding_command_is_linux claude-bw \
       || [ -d "${AICODING_VENDOR_DIR:-$AICODING_DATA_DIR/vendor}/bw-AICode/.git" ]; then
     printf 'bw-AICode\n'
@@ -68,7 +65,6 @@ _aicoding_mcp_selected() {
   case "$name" in
     context7) command_name=context7-mcp ;;
     playwright) command_name=playwright-mcp ;;
-    kanban) command_name=kanban-mcp ;;
     *) return 1 ;;
   esac
   _aicoding_command_is_linux "$command_name" && return 0
@@ -88,19 +84,6 @@ _aicoding_mcp_selected() {
       jq -e '.mcp.playwright // .mcpServers.playwright' "$HOME/.config/opencode/opencode.json" >/dev/null 2>&1 && return 0
       jq -e '.mcpServers.playwright' "$HOME/.cursor/mcp.json" >/dev/null 2>&1 && return 0
       jq -e '.enabledPlugins["playwright@claude-plugins-official"] == true' "$HOME/.claude/settings.json" >/dev/null 2>&1 && return 0
-      ;;
-    kanban)
-      grep -Eq '^\[mcp_servers\.kanban\][[:space:]]*$' "$HOME/.codex/config.toml" 2>/dev/null && return 0
-      jq -e '.mcp.kanban // .mcpServers.kanban' "$HOME/.config/opencode/opencode.json" >/dev/null 2>&1 && return 0
-      jq -e '.mcpServers.kanban' "$HOME/.cursor/mcp.json" >/dev/null 2>&1 && return 0
-      # Managed configs require the pinned Kanban MCP, so a consuming harness
-      # must bootstrap it; otherwise no sync ever stages it and configs block.
-      _aicoding_kanban_pinned_revision >/dev/null 2>&1 || return 1
-      _aicoding_command_is_linux claude && return 0
-      _aicoding_command_is_linux codex && return 0
-      _aicoding_command_is_linux opencode && return 0
-      _aicoding_command_is_linux agent && return 0
-      _aicoding_command_is_linux cursor-agent && return 0
       ;;
   esac
   return 1
@@ -1230,7 +1213,6 @@ _aicoding_update_component_impl() {
     mcp-brave) aicoding_update_npm_entry_component mcp-brave brave-search-mcp-server @brave/brave-search-mcp-server ;;
     mcp-context7) aicoding_update_npm_entry_component mcp-context7 context7-mcp @upstash/context7-mcp ;;
     mcp-playwright) aicoding_update_npm_entry_component mcp-playwright playwright-mcp @playwright/mcp ;;
-    mcp-kanban) aicoding_update_kanban_mcp ;;
     *) return 0 ;;
   esac
 }
