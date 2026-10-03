@@ -573,3 +573,18 @@ PY
   [ "$status" -eq 0 ]
   if [[ "$output" == *"provision-system"* ]]; then false; fi
 }
+
+@test "status lists an info-kind record under Notes, not under unresolved blockers" {
+  cat > "$AICODING_RESULTS_FILE" <<'JSON'
+{"schema":1,"components":{
+  "mcp-registration-claude-context7":{"state":"blocked","attempted_at":"2024-01-01T00:00:00Z","reason":"registration_not_selected"},
+  "config":{"state":"failed","attempted_at":"2024-01-01T00:00:00Z","reason":"managed_config_apply_failed"}}}
+JSON
+  run "$BIN"
+  [ "$status" -eq 0 ]
+  local blockers="${output#*Unresolved recorded blockers}"
+  blockers="${blockers%%Notes —*}"
+  [[ "$blockers" == *"config: failed"* ]]
+  [[ "$blockers" != *"mcp-registration-claude-context7"* ]]
+  [[ "${output#*Notes — nothing to fix unless you want the feature}" == *"mcp-registration-claude-context7: blocked"* ]]
+}

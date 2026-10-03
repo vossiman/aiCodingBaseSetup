@@ -37,7 +37,7 @@ EOF
 @test "catalog entries are well formed" {
   jq -e '.schema == 1
     and ([.reasons[], .patterns[]] | all(
-      (.kind | IN("ok", "wait", "action"))
+      (.kind | IN("ok", "wait", "action", "info"))
       and (.meaning | type == "string" and length > 0)
       and (if .kind == "ok" then true else (.fix | type == "string" and length > 0) end)))
     and ([.patterns[] | .source_marker | type == "string" and length > 0] | all)' \

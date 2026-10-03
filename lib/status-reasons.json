@@ -270,7 +270,7 @@
       "fix": "Check `claude mcp list`, then run `aicoding-sync --yes`."
     },
     "registration_not_selected": {
-      "kind": "wait",
+      "kind": "info",
       "meaning": "This MCP is not registered in Claude, and sync only updates registrations that exist.",
       "fix": "Nothing is wrong unless you want the server. Run `claude mcp add` or enable the plugin."
     },
