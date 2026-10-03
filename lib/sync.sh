@@ -582,6 +582,11 @@ _sync_record_config_results() {
       blocked:*) rank=2 ;;
       *) rank=1 ;;
     esac
+    # A newer release owns the shared roots, so this one also leaves that
+    # harness's shared plugins and MCP registrations alone.
+    if [[ "$result" == held && "$component" == config-* ]]; then
+      _SYNC_DEFERRED_PROVISION_COMPONENTS[${component#config-}]=1
+    fi
     if (( rank > worst )); then worst=$rank; fi
     if [[ ( "$rank" == 2 || "$rank" == 4 ) && "$component" == config-* ]]; then
       _SYNC_DEFERRED_PROVISION_COMPONENTS[${component#config-}]=1

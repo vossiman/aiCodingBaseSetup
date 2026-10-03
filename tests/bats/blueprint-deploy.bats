@@ -302,6 +302,62 @@ TOML
   [ -e "$AICODING_UPDATE_STATE/aicoding.json" ]
 }
 
+@test "release order: an older release leaves shared files to the newer one" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  _managed_release_ordinal() { echo 500; }
+  local mine=500
+  mkdir -p "$HOME/.claude/hooks"
+  echo "$((mine + 100)) newer" > "$HOME/.claude/.aicoding-release"
+  printf 'newer hook\n' > "$HOME/.claude/hooks/memory-hint.sh"
+  run managed_config_apply
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"left "*" shared files to the newer release"* ]]
+  [ "$(cat "$HOME/.claude/hooks/memory-hint.sh")" = 'newer hook' ]
+  [ ! -e "$HOME/.codex/config.toml" ]
+  [ -f "$HOME/.bashrc.d/aicoding-env.sh" ]
+  [ "$(cat "$HOME/.claude/.aicoding-release")" = "$((mine + 100)) newer" ]
+}
+
+@test "release order: a release at least as new writes and claims the shared roots" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  _managed_release_ordinal() { echo 500; }
+  local mine=500
+  mkdir -p "$HOME/.claude"
+  echo "$((mine - 100)) older" > "$HOME/.claude/.aicoding-release"
+  managed_config_apply >/dev/null
+  [ -f "$HOME/.claude/CLAUDE.md" ]
+  read -r time sha < "$HOME/.claude/.aicoding-release"
+  [ "$time" = "$mine" ]
+  [ "$sha" = "$(git -C "$BLUEPRINT_ROOT" rev-parse HEAD)" ]
+}
+
+@test "release order: a release without an ordinal yields to any marker" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  git clone -q --depth 1 "file://$BLUEPRINT_ROOT" "$TMPDIR/shallow"
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/shallow"
+  run _managed_release_ordinal
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+  run _managed_newer_release_owns_shared
+  [ "$status" -ne 0 ]
+  mkdir -p "$HOME/.claude"
+  echo "1 someone" > "$HOME/.claude/.aicoding-release"
+  run _managed_newer_release_owns_shared
+  [ "$status" -eq 0 ]
+}
+
+@test "release order: a local --blueprint run writes but never moves the marker" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  export AICODING_BLUEPRINT_LOCAL=1
+  _managed_release_ordinal() { echo 500; }
+  local mine=500
+  mkdir -p "$HOME/.claude"
+  echo "$((mine + 100)) newer" > "$HOME/.claude/.aicoding-release"
+  managed_config_apply >/dev/null
+  [ -f "$HOME/.claude/CLAUDE.md" ]
+  [ "$(cat "$HOME/.claude/.aicoding-release")" = "$((mine + 100)) newer" ]
+}
+
 @test "managed_inventory: covers owned, raw, mixed, block, skills and commands" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run managed_inventory
