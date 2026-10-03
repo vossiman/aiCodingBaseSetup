@@ -311,3 +311,113 @@ Run in a balance-extract clone against the deployed phase 1 skills, while the ta
 6. `codex exec` in the clone lists exactly one `dev-process` skill, from `.agents/skills`.
 
 Results go into the PR body under Validation.
+
+---
+
+### Task 4: Codex reviews read docs and config claims (added during the run)
+
+Route: `implementer`, `low`. Added 2026-10-03 after a Codex review elsewhere answered a docs-only diff with "no executable code, no defects": `codex exec review --base` refuses a custom prompt (verified on codex-cli 0.160.0: "the argument '--base <BRANCH>' cannot be used with '[PROMPT]'"), so the adapter only ever ran Codex's generic, code-focused review instructions. A prompt without `--base` is accepted.
+
+**Files:**
+- Modify: `skills/review-by-harness/prompts/review.md`
+- Modify: `skills/review-by-harness/harnesses/codex.sh` (the `review)` arm only; Task 2 owns line 6)
+- Test: `tests/bats/review-by-harness-codex-prompt.bats`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/bats/review-by-harness-codex-prompt.bats`:
+
+```bash
+#!/usr/bin/env bats
+# The codex adapter runs review mode with the shared review prompt and the
+# diff range in the prompt, never `--base` (which drops a custom prompt).
+
+bats_require_minimum_version 1.5.0
+
+setup() {
+  : "${BLUEPRINT_ROOT:?unset, run via tests/bats/run.sh}"
+  TMPDIR=$(mktemp -d)
+  mkdir -p "$TMPDIR/bin" "$TMPDIR/out" "$TMPDIR/wt"
+  cat > "$TMPDIR/bin/codex" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$CODEX_ARGS_FILE"
+exit 0
+STUB
+  chmod +x "$TMPDIR/bin/codex"
+  export CODEX_ARGS_FILE="$TMPDIR/args"
+}
+
+teardown() {
+  rm -rf "$TMPDIR"
+}
+
+@test "codex adapter: review passes the shared prompt and the range, not --base" {
+  PATH="$TMPDIR/bin:$PATH" run bash "$BLUEPRINT_ROOT/skills/review-by-harness/harnesses/codex.sh" review "$TMPDIR/wt" abc123 "$TMPDIR/out"
+  [ "$status" -eq 0 ]
+  run grep -qx -- '--base' "$TMPDIR/args"
+  [ "$status" -eq 1 ]
+  grep -q 'abc123' "$TMPDIR/args"
+  grep -q 'git diff abc123...HEAD' "$TMPDIR/args"
+  grep -q 'Documentation, specs, plans, prompts and configuration are in scope' "$TMPDIR/args"
+  grep -qx 'review' "$TMPDIR/args"
+}
+
+@test "review prompt: prose claims are in scope and no-code is not a result" {
+  grep -q 'Documentation, specs, plans, prompts and configuration are in scope' "$BLUEPRINT_ROOT/skills/review-by-harness/prompts/review.md"
+  grep -q 'is not a review result' "$BLUEPRINT_ROOT/skills/review-by-harness/prompts/review.md"
+}
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `bash tests/bats/run.sh review-by-harness-codex-prompt`
+Expected: both FAIL.
+
+- [ ] **Step 3: Extend the shared prompt**
+
+In `skills/review-by-harness/prompts/review.md`, after the paragraph ending "Say so plainly if the diff looks correct.", insert:
+
+```markdown
+Documentation, specs, plans, prompts and configuration are in scope, not only
+executable code. For every factual claim the diff makes (a path, a line
+number, a command or flag, a model id, a default, a described behavior),
+check it against the code and tools it names, and report the ones that are
+wrong. "No executable code changed" is not a review result: when the diff is
+prose, review what the prose claims.
+```
+
+- [ ] **Step 4: Change the codex review arm**
+
+In `skills/review-by-harness/harnesses/codex.sh`, replace the `review)` arm's comment and command with:
+
+```bash
+  review)
+    base="$3"
+    out="$4"
+    # `codex exec review --base` refuses a custom prompt, and the built-in
+    # instructions alone dismiss docs-only diffs. Name the range in the
+    # prompt instead, so the shared review instructions apply.
+    prompt="Review the changes from $base to HEAD in this repository (run \`git diff $base...HEAD\` to see them).
+
+$(cat "$here/../prompts/review.md")"
+    ( cd "$wt" && codex exec review \
+        -m "$MODEL" -c model_reasoning_effort="$EFFORT" \
+        --json -o "$out/review.md" \
+        "$prompt" \
+        </dev/null >"$out/review.jsonl" 2>"$out/review.err" )
+    ;;
+```
+
+- [ ] **Step 5: Run the tests**
+
+Run: `bash tests/bats/run.sh review-by-harness-codex-prompt review-by-harness`
+Expected: all `ok`. Then `bash tests/bats/run.sh`, all `ok`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add skills/review-by-harness/prompts/review.md skills/review-by-harness/harnesses/codex.sh tests/bats/review-by-harness-codex-prompt.bats
+git commit -m "fix(review-by-harness): codex reviews use the shared prompt, docs claims in scope
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
+```
