@@ -22,12 +22,16 @@ case "$verb" in
   review)
     base="$3"
     out="$4"
-    # `codex exec review --base` refuses a custom prompt argument, so codex's
-    # own review instructions are what run here. prompts/review.md is used by
-    # harnesses that have no built-in review mode.
-    ( cd "$wt" && codex exec review --base "$base" \
+    # `codex exec review --base` refuses a custom prompt, and the built-in
+    # instructions alone dismiss docs-only diffs. Name the range in the
+    # prompt instead, so the shared review instructions apply.
+    prompt="Review the changes from $base to HEAD in this repository (run \`git diff $base...HEAD\` to see them).
+
+$(cat "$here/../prompts/review.md")"
+    ( cd "$wt" && codex exec review \
         -m "$MODEL" -c model_reasoning_effort="$EFFORT" \
         --json -o "$out/review.md" \
+        "$prompt" \
         </dev/null >"$out/review.jsonl" 2>"$out/review.err" )
     ;;
   fix)
