@@ -578,15 +578,23 @@ _managed_is_shared() {
 
 # True when a newer release than this one has written the shared roots. A
 # local --blueprint run is development and always writes. A release with no
-# ordinal (a bootstrap tarball, a shallow checkout) yields to any marker: the
-# next staged update gives it one.
+# ordinal (a bootstrap tarball, a shallow checkout) yields to any marker but
+# its own commit's: the next staged update gives it one.
 _managed_newer_release_owns_shared() {
-  local mine theirs
+  local mine theirs their_sha
   [[ "${AICODING_BLUEPRINT_LOCAL:-0}" != 1 ]] || return 1
-  read -r theirs _ < "$(_managed_release_marker)" 2>/dev/null || return 1
+  read -r theirs their_sha < "$(_managed_release_marker)" 2>/dev/null || return 1
   [[ "$theirs" =~ ^[0-9]+$ ]] || return 1
-  mine=$(_managed_release_ordinal) || return 0
+  if ! mine=$(_managed_release_ordinal); then
+    [[ "$their_sha" != "$(_managed_release_sha)" ]]
+    return
+  fi
   (( theirs > mine ))
+}
+
+_managed_release_sha() {
+  cat "$AICODING_BLUEPRINT_CLONE/.aicoding-version" 2>/dev/null \
+    || git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD 2>/dev/null || echo unknown
 }
 
 # Local runs never move the marker, so a dev branch cannot hold back the
@@ -595,8 +603,7 @@ _managed_claim_shared() {
   local time sha marker tmp
   [[ "${AICODING_BLUEPRINT_LOCAL:-0}" != 1 ]] || return 0
   time=$(_managed_release_ordinal) || return 0
-  sha=$(cat "$AICODING_BLUEPRINT_CLONE/.aicoding-version" 2>/dev/null) \
-    || sha=$(git -C "$AICODING_BLUEPRINT_CLONE" rev-parse HEAD 2>/dev/null) || sha=unknown
+  sha=$(_managed_release_sha)
   marker=$(_managed_release_marker)
   mkdir -p "$(dirname "$marker")" || return 1
   tmp=$(mktemp "$marker.XXXXXX") || return 1
@@ -607,7 +614,8 @@ _managed_claim_shared() {
 
 # Bring every managed destination to its desired content. Sets
 # MANAGED_RESULT[dest] to unchanged, updated, pending (dry run), held (a
-# newer release owns the shared roots), malformed, failed or
+# newer release owns the shared roots), absent (the gate reported the tool
+# as not installed), malformed, failed or
 # "blocked:<reason>". MANAGED_CONFIG_GATE may name a function that
 # vetoes a write (prints a reason, returns nonzero) when a destination's tool
 # is not ready for it. Returns nonzero when any write failed.
@@ -644,8 +652,13 @@ managed_config_apply() {
       MANAGED_RESULT[$dest]=pending; changes=$((changes + 1))
       echo "      would update: $dest"
     elif [[ -n "${MANAGED_CONFIG_GATE:-}" ]] && ! reason=$("$MANAGED_CONFIG_GATE" "$dest"); then
-      MANAGED_RESULT[$dest]="blocked:${reason:-runtime_compatibility_unavailable}"
-      echo "      blocked (${reason:-runtime_compatibility_unavailable}): $dest"
+      if [[ "$reason" == *_not_installed ]]; then
+        MANAGED_RESULT[$dest]=absent
+        echo "      skipped ($reason): $dest"
+      else
+        MANAGED_RESULT[$dest]="blocked:${reason:-runtime_compatibility_unavailable}"
+        echo "      blocked (${reason:-runtime_compatibility_unavailable}): $dest"
+      fi
     elif _managed_write "$dest" "$kind" "$src" "$out"; then
       MANAGED_RESULT[$dest]=updated; changes=$((changes + 1))
       echo "      updated: $dest"
