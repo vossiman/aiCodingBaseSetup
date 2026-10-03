@@ -17,7 +17,7 @@
 - Run tests only through `bash tests/bats/run.sh [name]`, never bare `bats`; never write into `$BLUEPRINT_ROOT` from a test.
 - Never assert with bare `! cmd`; use `run` plus a status check.
 - No test may call a real `claude`, `codex` or `cursor-agent`: `routes.sh` reads `DEV_PROCESS_LITE_CODEX_MODELS` and `DEV_PROCESS_LITE_CURSOR_MODELS` (file paths) when set, and every test sets them.
-- Every test unsets `CLAUDECODE` and `CODEX_THREAD_ID` in `setup`; the suite runs inside Claude Code sessions, which set `CLAUDECODE`.
+- Every test that runs `routes.sh` unsets `CLAUDECODE` and `CODEX_THREAD_ID` first; the suite runs inside Claude Code sessions, which set `CLAUDECODE`.
 - Shared skill names are exactly `dev-process-lite` and `assess-run`; no `skills/assess` or `skills/dev-process` directory.
 - Entries: `claude`, `codex`, `cursor`. Roles: `overseer`, `implementer`, `complex-implementer`, `reviewer`, `assessor`. Efforts, low to high: `low medium high xhigh max`.
 - `policy.md` under 150 lines; overseer log cap is 120 lines and the number `120` appears in `policy.md` and `skills/assess-run/SKILL.md`.
