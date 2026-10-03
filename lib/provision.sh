@@ -219,8 +219,6 @@ aicoding_prepare_exact_mcps() {
       && aicoding_result_record mcp-context7 failed "" staged_updater_unavailable || true
     command -v aicoding_result_record >/dev/null 2>&1 \
       && aicoding_result_record mcp-playwright failed "" staged_updater_unavailable || true
-    command -v aicoding_result_record >/dev/null 2>&1 \
-      && aicoding_result_record mcp-kanban failed "" staged_updater_unavailable || true
     return 1
   }
   if [ "${AICODINGSETUP_SKIP_NETWORK:-0}" = 1 ]; then
@@ -232,17 +230,9 @@ aicoding_prepare_exact_mcps() {
       _provision_record_blocked mcp-playwright offline_exact_package_not_ready
       _AICODING_PREPARATION_DEFERRED=1
     fi
-    local kanban_revision
-    kanban_revision=$(_aicoding_kanban_pinned_revision) || kanban_revision=
-    if [ -n "$kanban_revision" ] && _aicoding_active_kanban_mcp_valid "$kanban_revision"; then
-      aicoding_result_record mcp-kanban current "$kanban_revision" offline_verified "$kanban_revision"
-    else
-      _provision_record_blocked mcp-kanban offline_exact_package_not_ready
-      _AICODING_PREPARATION_DEFERRED=1
-    fi
     return 0
   fi
-  for component in mcp-context7 mcp-playwright mcp-kanban; do
+  for component in mcp-context7 mcp-playwright; do
     component_rc=0
     AICODING_COMPONENT_ATTEMPT_DISPOSITION=
     AICODING_COMPONENT_LAST_RESULT=
@@ -442,6 +432,27 @@ _provision_retire_stdio_kanban() {
   fi
   warn "kanban MCP: failed to remove the local stdio registration"
   return 1
+}
+
+# The local kanban-mcp install is gone (the board serves only its hosted MCP).
+# Remove what earlier syncs left: the launcher only when it is ours, its
+# releases, and its update receipt. Missing pieces are fine; nothing here fails.
+_provision_remove_local_kanban_mcp() {
+  local launcher="$HOME/.local/bin/kanban-mcp" data="${AICODING_DATA_DIR:-$HOME/.local/share/aicoding}"
+  local state="${AICODING_STATE_DIR:-$HOME/.local/state/aicoding}" removed=0 path
+  if [ -f "$launcher" ] && grep -qxF '# Managed by aicoding immutable runtime.' "$launcher" 2>/dev/null; then
+    rm -f -- "$launcher" 2>/dev/null && removed=1
+  fi
+  for path in "$data/versions/mcp-kanban" "$data/current/mcp-kanban" "$data/previous/mcp-kanban" \
+      "$state/locks/mcp-kanban.lock" "$state/diagnostics/mcp-kanban-uv.log"; do
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      rm -rf -- "$path" 2>/dev/null && removed=1
+    fi
+  done
+  _provision_ensure_update_components >/dev/null 2>&1 || true
+  command -v aicoding_result_forget >/dev/null 2>&1 && aicoding_result_forget mcp-kanban || true
+  [ "$removed" -eq 0 ] || info "kanban MCP: removed the retired local kanban-mcp install"
+  return 0
 }
 
 # Without KANBAN_TOKEN, a hosted registration left from an earlier sync would
@@ -665,6 +676,7 @@ install_claude_plugins() {
 # sweep them off existing machines. (install.sh no longer creates them.)
 remove_deprecated_shims() {
   rm -f "$HOME/.local/bin/aicoding-update" "$HOME/.local/bin/update-status"
+  _provision_remove_local_kanban_mcp
 }
 
 # --- Codex marketplace plugins ---

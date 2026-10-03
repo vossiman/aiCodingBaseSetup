@@ -11,11 +11,6 @@
       "meaning": "The staged release could not be moved into place.",
       "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
     },
-    "active_controller_invalid": {
-      "kind": "action",
-      "meaning": "The active kanban MCP release does not match its pin or does not start.",
-      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
-    },
     "applied": {
       "kind": "ok",
       "meaning": "The selected aicoding release is active."
@@ -129,11 +124,6 @@
       "meaning": "The release failed validation after it was committed.",
       "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
     },
-    "controller_wrapper_failed": {
-      "kind": "action",
-      "meaning": "The kanban MCP launcher could not be made bytecode-free.",
-      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
-    },
     "current": {
       "kind": "ok",
       "meaning": "Already at the target version; nothing to do."
@@ -167,11 +157,6 @@
       "kind": "action",
       "meaning": "Installing frogmouth failed.",
       "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
-    },
-    "frozen_sync_failed": {
-      "kind": "action",
-      "meaning": "Installing the kanban MCP dependencies from its lockfile failed.",
-      "fix": "Check `~/.local/state/aicoding/diagnostics/mcp-kanban-uv.log`, then run `aicoding-auto-update --once`."
     },
     "go_install_failed": {
       "kind": "action",
@@ -214,7 +199,7 @@
     },
     "mcp_exact_version_staging_unavailable": {
       "kind": "action",
-      "meaning": "The config needs the exact MCP packages (context7, playwright, kanban) and at least one is not installed, verified or fleet-compatible.",
+      "meaning": "The config needs the exact MCP packages (context7, playwright) and at least one is not installed, verified or fleet-compatible.",
       "fix": "Fix the `mcp-*` and `mcp-registration-claude-*` blockers doctor lists first, then run `aicoding-sync --yes`."
     },
     "network_disabled": {
@@ -232,10 +217,6 @@
       "meaning": "Network is off and the exact MCP package is not installed yet.",
       "fix": "Run `aicoding-auto-update --once` with network access."
     },
-    "offline_verified": {
-      "kind": "ok",
-      "meaning": "Network is off, but the installed package was checked and is valid."
-    },
     "package_inventory_unavailable": {
       "kind": "action",
       "meaning": "The npm package's install scripts could not be inspected.",
@@ -250,11 +231,6 @@
       "kind": "action",
       "meaning": "One or more provisioning steps failed.",
       "fix": "Run `aicoding-sync --yes` and read its output. `~/.local/state/aicoding/auto-update/worker.log` has the background run."
-    },
-    "pinned_revision_invalid": {
-      "kind": "action",
-      "meaning": "The kanban MCP pin file in the blueprint is missing or not a commit SHA.",
-      "fix": "Fix `configs/versions/kanban-mcp.rev` in aiCodingBaseSetup via PR."
     },
     "playwright_system_libs_unavailable": {
       "kind": "action",
@@ -296,7 +272,7 @@
     "registration_not_selected": {
       "kind": "wait",
       "meaning": "This MCP is not registered in Claude, and sync only updates registrations that exist.",
-      "fix": "Nothing is wrong unless you want the server. For kanban, install its launcher (`aicoding-auto-update --once`); for others run `claude mcp add` or enable the plugin."
+      "fix": "Nothing is wrong unless you want the server. Run `claude mcp add` or enable the plugin."
     },
     "registration_recovery_cleanup_failed": {
       "kind": "action",
@@ -332,11 +308,6 @@
       "meaning": "The staged release could not be committed or failed validation afterwards.",
       "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
     },
-    "relocatable_venv_failed": {
-      "kind": "action",
-      "meaning": "Creating the kanban MCP Python environment failed (often a root-owned `~/.cache/uv`).",
-      "fix": "Check `~/.local/state/aicoding/diagnostics/mcp-kanban-uv.log`. If uv reports a permission error, run `sudo chown -R \"$USER\" ~/.cache/uv`, then `aicoding-auto-update --once`."
-    },
     "runtime_compatibility_unavailable": {
       "kind": "action",
       "meaning": "The managed file could not be checked against the installed tool.",
@@ -346,11 +317,6 @@
       "kind": "wait",
       "meaning": "Another process held the lock on the shared Claude settings.",
       "fix": "Usually clears on the next pass. Otherwise run `aicoding-sync --yes`."
-    },
-    "source_cleanup_failed": {
-      "kind": "action",
-      "meaning": "The downloaded source could not be removed after staging.",
-      "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
     },
     "source_stage_failed": {
       "kind": "action",
@@ -396,11 +362,6 @@
       "kind": "action",
       "meaning": "The staging directory could not be created.",
       "fix": "Check free disk space and that `~/.local/share/aicoding` is writable by you, then run `aicoding-auto-update --once`."
-    },
-    "staged_controller_invalid": {
-      "kind": "action",
-      "meaning": "The staged kanban MCP launcher does not start correctly.",
-      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
     },
     "staged_metadata_mismatch": {
       "kind": "action",

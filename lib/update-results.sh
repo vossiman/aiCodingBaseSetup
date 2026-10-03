@@ -80,3 +80,27 @@ aicoding_result_record() {
   if [ "$mv_rc" -eq 0 ]; then AICODING_COMPONENT_LAST_RESULT=$component; fi
   return "$mv_rc"
 }
+
+# aicoding_result_forget COMPONENT: drop a retired component's record. A
+# missing file or record is not an error.
+aicoding_result_forget() {
+  local component=${1:-} dir lock tmp fd rc=0
+  [[ "$component" =~ ^[A-Za-z0-9._-]+$ ]] || return 2
+  [ -f "$AICODING_RESULTS_FILE" ] || return 0
+  dir=$(dirname "$AICODING_RESULTS_FILE")
+  lock="$dir/.update-results.lock"
+  exec {fd}>"$lock" || return 1
+  flock "$fd" || { exec {fd}>&-; return 1; }
+  if jq -e --arg c "$component" '.components | type == "object" and has($c)' \
+      "$AICODING_RESULTS_FILE" >/dev/null 2>&1; then
+    tmp=$(mktemp "$dir/.update-results.XXXXXX") || { exec {fd}>&-; return 1; }
+    if jq --arg c "$component" 'del(.components[$c])' "$AICODING_RESULTS_FILE" >"$tmp"; then
+      chmod 0600 "$tmp" 2>/dev/null || true
+      mv -f "$tmp" "$AICODING_RESULTS_FILE" || { rm -f "$tmp"; rc=1; }
+    else
+      rm -f "$tmp"; rc=1
+    fi
+  fi
+  exec {fd}>&-
+  return "$rc"
+}

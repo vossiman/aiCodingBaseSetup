@@ -119,11 +119,11 @@ EOF
   }
   run aicoding_prepare_exact_mcps --register-claude
   [ "$status" -eq 0 ]
-  [ "$(cat "$TMP/prepared")" = $'mcp-context7|1|0\nmcp-playwright|1|0\nmcp-kanban|1|0' ]
+  [ "$(cat "$TMP/prepared")" = $'mcp-context7|1|0\nmcp-playwright|1|0' ]
   rm "$TMP/prepared"
   run aicoding_prepare_exact_mcps
   [ "$status" -eq 0 ]
-  [ "$(cat "$TMP/prepared")" = $'mcp-context7|0|1\nmcp-playwright|0|1\nmcp-kanban|0|1' ]
+  [ "$(cat "$TMP/prepared")" = $'mcp-context7|0|1\nmcp-playwright|0|1' ]
 }
 
 @test "offline exact MCP preprovision reports a nonfatal deferral when local packages are not ready" {
@@ -136,34 +136,8 @@ EOF
   [ ! -e "$TMP/network-called" ]
   jq -e '.components["mcp-context7"].state == "blocked"
     and .components["mcp-playwright"].state == "blocked"
-    and .components["mcp-kanban"].state == "blocked"
-    and .components["mcp-kanban"].reason == "offline_exact_package_not_ready"' \
+    and (.components | has("mcp-kanban") | not)' \
     "$AICODING_STATE_DIR/update-results.json"
-}
-
-@test "scheduled provision adds an exact user-scope Kanban registration" {
-  _managed_launcher kanban-mcp mcp-kanban a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3
-  aicoding_result_record claude current 2.1.50 installed 2.1.50
-  cat > "$TMP/stubs/claude" <<'EOF'
-#!/bin/sh
-echo "$*" >> "$TMP/claude-calls"
-case "$*" in
-  '--version') echo '2.1.50 (Claude Code)' ;;
-  'mcp get kanban')
-    [ -f "$TMP/registered-kanban" ] || exit 1
-    printf 'Command: %s/.local/bin/kanban-mcp\nArgs: \n' "$HOME" ;;
-  'mcp add kanban -s user -- '*'/kanban-mcp') : > "$TMP/registered-kanban" ;;
-esac
-EOF
-  chmod +x "$TMP/stubs/claude"
-
-  AICODING_MCP_REGISTRATION_FORCE=1 run _provision_reconcile_exact_mcp \
-    kanban mcp-kanban kanban-mcp
-
-  [ "$status" -eq 0 ]
-  grep -q 'mcp add kanban -s user -- .*/kanban-mcp$' "$TMP/claude-calls"
-  jq -e '.components["mcp-registration-claude-kanban"].state == "updated"' \
-    "$AICODING_RESULTS_FILE"
 }
 
 @test "Kanban is included in managed MCP inventory" {
@@ -351,7 +325,86 @@ EOF
   [ ! -f "$TMP/removed" ]
 }
 
-@test "the kanban package updater no longer writes a Claude registration" {
-  if grep -q '_aicoding_reconcile_claude_mcp_registration' "$BLUEPRINT_ROOT/lib/update-kanban.sh"; then false; fi
-  if grep -q 'mcp-registration-claude-kanban' "$BLUEPRINT_ROOT/lib/update-components.sh"; then false; fi
+
+_seed_retired_kanban_install() {
+  local release="$AICODING_DATA_DIR/versions/mcp-kanban/a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3"
+  mkdir -p "$release/.venv/bin" "$AICODING_DATA_DIR/current" "$AICODING_DATA_DIR/previous" \
+    "$AICODING_STATE_DIR/locks" "$AICODING_STATE_DIR/diagnostics"
+  printf '#!/bin/sh\n' > "$release/.venv/bin/kanban-mcp"
+  ln -s ../versions/mcp-kanban/a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3 "$AICODING_DATA_DIR/current/mcp-kanban"
+  ln -s ../versions/mcp-kanban/gone "$AICODING_DATA_DIR/previous/mcp-kanban"
+  : > "$AICODING_STATE_DIR/locks/mcp-kanban.lock"
+  : > "$AICODING_STATE_DIR/diagnostics/mcp-kanban-uv.log"
+  printf '%s\n' '#!/usr/bin/env bash' '# Managed by aicoding immutable runtime.' 'exit 0' \
+    > "$HOME/.local/bin/kanban-mcp"
+  chmod +x "$HOME/.local/bin/kanban-mcp"
+  aicoding_result_record mcp-kanban current a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3 installed \
+    a71a8bdcd12e39fcb74be3ecc0e45f757118f0e3
+  aicoding_result_record mcp-context7 current 4.1.0 installed 4.1.0
+}
+
+@test "provision removes the retired local kanban-mcp install and its receipt" {
+  _seed_retired_kanban_install
+
+  run _provision_remove_local_kanban_mcp
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"removed the retired local kanban-mcp install"* ]]
+  [ ! -e "$HOME/.local/bin/kanban-mcp" ]
+  [ ! -e "$AICODING_DATA_DIR/versions/mcp-kanban" ]
+  [ ! -L "$AICODING_DATA_DIR/current/mcp-kanban" ]
+  [ ! -L "$AICODING_DATA_DIR/previous/mcp-kanban" ]
+  [ ! -e "$AICODING_STATE_DIR/locks/mcp-kanban.lock" ]
+  [ ! -e "$AICODING_STATE_DIR/diagnostics/mcp-kanban-uv.log" ]
+  jq -e '(.components | has("mcp-kanban") | not)
+    and .components["mcp-context7"].state == "current"' "$AICODING_RESULTS_FILE"
+}
+
+@test "provision keeps a kanban-mcp launcher it did not write" {
+  printf '#!/bin/sh\necho mine\n' > "$HOME/.local/bin/kanban-mcp"
+  chmod +x "$HOME/.local/bin/kanban-mcp"
+
+  run _provision_remove_local_kanban_mcp
+  [ "$status" -eq 0 ]
+  [ -x "$HOME/.local/bin/kanban-mcp" ]
+  [ "$("$HOME/.local/bin/kanban-mcp")" = mine ]
+}
+
+@test "provision kanban-mcp cleanup is silent and succeeds when nothing is left" {
+  run _provision_remove_local_kanban_mcp
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ ! -e "$AICODING_RESULTS_FILE" ]
+
+  aicoding_result_record mcp-context7 current 4.1.0 installed 4.1.0
+  before=$(cat "$AICODING_RESULTS_FILE")
+  run _provision_remove_local_kanban_mcp
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$(cat "$AICODING_RESULTS_FILE")" = "$before" ]
+}
+
+@test "provision kanban-mcp cleanup does not fail on an unreadable results file" {
+  _seed_retired_kanban_install
+  printf 'not json' > "$AICODING_RESULTS_FILE"
+
+  run _provision_remove_local_kanban_mcp
+  [ "$status" -eq 0 ]
+  [ ! -e "$HOME/.local/bin/kanban-mcp" ]
+  [ "$(cat "$AICODING_RESULTS_FILE")" = 'not json' ]
+}
+
+@test "the retired kanban package updater and pin are gone" {
+  [ ! -e "$BLUEPRINT_ROOT/lib/update-kanban.sh" ]
+  [ ! -e "$BLUEPRINT_ROOT/configs/versions/kanban-mcp.rev" ]
+  if grep -q 'mcp-kanban)' "$BLUEPRINT_ROOT/lib/update-components.sh"; then false; fi
+}
+
+@test "deprecated-shim removal also retires the local kanban-mcp install" {
+  _seed_retired_kanban_install
+  rm -f "$TMP/stubs/claude"
+
+  run remove_deprecated_shims
+  [ "$status" -eq 0 ]
+  [ ! -e "$HOME/.local/bin/kanban-mcp" ]
+  [ ! -e "$AICODING_DATA_DIR/versions/mcp-kanban" ]
 }

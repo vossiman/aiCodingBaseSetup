@@ -397,8 +397,7 @@ RECEIPTS
   [ "$status" -eq 0 ]
   echo "$output" | jq -e '.capabilities.claude == {"version":"2.1.280","config_compatible":true}'
   echo "$output" | jq -e '.capabilities["mcp-playwright"].version == "0.0.82"'
-  echo "$output" | jq -e '.capabilities["mcp-kanban"] == {"version":"0123456789abcdef0123456789abcdef01234567","config_compatible":true}'
-  echo "$output" | jq -e '.capabilities | keys == ["claude","codex","cursor","mcp-context7","mcp-kanban","mcp-playwright"]'
+  echo "$output" | jq -e '.capabilities | keys == ["claude","codex","cursor","mcp-context7","mcp-playwright"]'
   echo "$output" | jq -e '.partial == false'
 }
 
@@ -427,18 +426,6 @@ RECEIPTS
   [ "$status" -eq 0 ]
   echo "$output" | jq -e '.capabilities.claude == null and .capabilities.codex == null'
   echo "$output" | jq -e '.capabilities.cursor == null and .capabilities["mcp-context7"] == null'
-}
-
-@test "mcp-kanban needs a 40-hex revision and other components a semantic version" {
-  _receipts <<'RECEIPTS'
-{"schema":1,"components":{
- "claude":{"state":"current","successful_version":"0123456789abcdef0123456789abcdef01234567"},
- "mcp-kanban":{"state":"current","successful_version":"1.2.3"}}}
-RECEIPTS
-  run "$PROBE"
-  [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.capabilities.claude == null'
-  echo "$output" | jq -e '.capabilities | has("mcp-kanban") and .["mcp-kanban"] == null'
 }
 
 @test "missing or malformed receipts give capabilities null and exit 0" {

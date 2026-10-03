@@ -366,7 +366,7 @@ def installed(tool):
 FLEET_ROOTS = (".claude", ".codex", ".cursor")
 # Tools dvw's fleet probe must report as compatible for every container
 # (dvw catalog-service/app/probe.py CAPABILITY_NAMES).
-FLEET_CAPABILITIES = ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright", "mcp-kanban")
+FLEET_CAPABILITIES = ("claude", "codex", "cursor", "mcp-context7", "mcp-playwright")
 
 
 def self_container_id():

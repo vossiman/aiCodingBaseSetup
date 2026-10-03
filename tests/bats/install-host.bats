@@ -217,21 +217,17 @@ _source_host_lib() {
     "$HOME/.local/state/aicoding/update-results.json"
 }
 
-@test "persistent host install has both Kanban helpers and immutable MCP before managed config deploys" {
+@test "persistent host install has both Kanban helpers before managed config deploys" {
   export AICODING_PERSISTENT_ENROLLMENT=1
   run env _AICODINGSETUP_NVS_STRIPPED=1 bash -c '
     source "$1"
     aicoding_prepare_installed_config_tools() { :; }
-    aicoding_prepare_exact_mcps() {
-      printf "#!/bin/sh\nexit 0\n" > "$HOME/.local/bin/kanban-mcp"
-      chmod +x "$HOME/.local/bin/kanban-mcp"
-    }
+    aicoding_prepare_exact_mcps() { :; }
     install_claude_mcps() { :; }
     install_claude_plugins() { :; }
     install_managed_config() {
       [ -x "$HOME/.local/bin/kanban-post" ]
       [ -x "$HOME/.local/bin/kanban-work" ]
-      [ -x "$HOME/.local/bin/kanban-mcp" ]
       : > "$HOME/kanban-config-ready"
     }
     main
