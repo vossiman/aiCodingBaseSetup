@@ -56,6 +56,17 @@ state() { jq -r --arg c "$1" '.components[$c] | "\(.state) \(.reason)"' "$AICODI
   [ "${_SYNC_DEFERRED_PROVISION_COMPONENTS[codex]}" = 1 ]
 }
 
+@test "an absent harness leaves its file alone without deferring provisioning" {
+  aicoding_result_record config-pi blocked old pi_update_not_verified
+  MANAGED_RESULT[$first]=unchanged
+  MANAGED_RESULT[$HOME/.pi/agent/extensions/bw-deny-files.ts]=absent
+  _sync_record_config_results "$target"
+  [ "$(state config-pi)" = "current harness_not_installed" ]
+  [ "$(state config)" = "current applied" ]
+  [ "${#_SYNC_DEFERRED_PROVISION_COMPONENTS[@]}" -eq 0 ]
+  [ "$_SYNC_PASS_DEFERRED" -eq 0 ]
+}
+
 @test "a malformed file is reported without deferring provisioning" {
   MANAGED_RESULT[$first]=malformed
   _sync_record_config_results "$target"

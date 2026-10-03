@@ -81,11 +81,23 @@ retired_clone() {
 
 @test "rule 1: a gate veto leaves the file alone and records the reason" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  veto() { [[ "$1" != */.cursor/hooks.json ]] || { echo cursor_not_installed; return 1; }; }
+  veto() { [[ "$1" != */.cursor/hooks.json ]] || { echo cursor_update_not_verified; return 1; }; }
   MANAGED_CONFIG_GATE=veto managed_config_apply >/dev/null
   [ ! -e "$HOME/.cursor/hooks.json" ]
-  [ "${MANAGED_RESULT[$HOME/.cursor/hooks.json]}" = blocked:cursor_not_installed ]
+  [ "${MANAGED_RESULT[$HOME/.cursor/hooks.json]}" = blocked:cursor_update_not_verified ]
   [ "${MANAGED_RESULT[$HOME/.claude/CLAUDE.md]}" = updated ]
+}
+
+@test "rule 1: a tool that is not installed leaves its file alone as absent, not blocked" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  veto() { [[ "$1" != */.pi/* ]] || { echo pi_not_installed; return 1; }; }
+  MANAGED_CONFIG_GATE=veto run managed_config_apply
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"skipped (pi_not_installed): $HOME/.pi/agent/extensions/bw-deny-files.ts"* ]]
+  [[ "$output" != *"blocked ("* ]]
+  [ ! -e "$HOME/.pi/agent/extensions/bw-deny-files.ts" ]
+  MANAGED_CONFIG_GATE=veto managed_config_apply >/dev/null
+  [ "${MANAGED_RESULT[$HOME/.pi/agent/extensions/bw-deny-files.ts]}" = absent ]
 }
 
 @test "rule 2: settings.json enforces owned keys, seeds once, keeps personal content" {
@@ -344,6 +356,20 @@ TOML
   echo "1 someone" > "$HOME/.claude/.aicoding-release"
   run _managed_newer_release_owns_shared
   [ "$status" -eq 0 ]
+}
+
+@test "release order: a release without an ordinal does not yield to its own marker" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  git clone -q --depth 1 "file://$BLUEPRINT_ROOT" "$TMPDIR/shallow"
+  export AICODING_BLUEPRINT_CLONE="$TMPDIR/shallow"
+  mkdir -p "$HOME/.claude"
+  echo "796 $(git -C "$TMPDIR/shallow" rev-parse HEAD)" > "$HOME/.claude/.aicoding-release"
+  run _managed_newer_release_owns_shared
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$(git -C "$TMPDIR/shallow" rev-parse HEAD)" > "$TMPDIR/shallow/.aicoding-version"
+  rm -rf "$TMPDIR/shallow/.git"
+  run _managed_newer_release_owns_shared
+  [ "$status" -ne 0 ]
 }
 
 @test "release order: a local --blueprint run writes but never moves the marker" {

@@ -139,3 +139,26 @@ STUB
   [[ "$output" == *"no supported Linux agent or cursor-agent found"* ]]
   [[ "$output" == *"host profile does not install absent tools"* ]]
 }
+
+@test "an absent Pi is reported as not installed, not as a missing receipt" {
+  export AICODING_REQUIRE_UPDATE_RECEIPT=1
+  run aicoding_config_is_compatible "$HOME/.pi/agent/extensions/bw-deny-files.ts"
+  [ "$status" -ne 0 ]
+  [ "$output" = pi_not_installed ]
+}
+
+@test "enrollment does not defer on a tool that is not installed" {
+  . "$BLUEPRINT_ROOT/lib/provision-managed-files.sh"
+  warn() { printf 'WARN: %s\n' "$*"; }
+  info() { printf 'INFO: %s\n' "$*"; }
+  export AICODING_REQUIRE_UPDATE_RECEIPT=1
+  _AICODING_INITIAL_CONFIG_DEFERRED=0
+  _aicoding_initial_config_ready "$HOME/.pi/agent/extensions/bw-deny-files.ts" > "$TMP/out" || true
+  [ "$_AICODING_INITIAL_CONFIG_DEFERRED" = 0 ]
+  grep -q 'INFO: .*pi_not_installed' "$TMP/out"
+  local reason
+  if reason=$(_install_config_gate "$HOME/.pi/agent/extensions/bw-deny-files.ts" 2>/dev/null); then
+    false
+  fi
+  [ "$reason" = pi_not_installed ]
+}

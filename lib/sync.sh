@@ -572,10 +572,11 @@ _sync_config_gate() {
 # The worst outcome wins: failed > malformed > blocked > current.
 _sync_record_config_results() {
   local target=$1 d component result rank worst=1
-  local -A ranks=() reasons=() details=()
+  local -A ranks=() reasons=() details=() present=()
   for d in "${!MANAGED_RESULT[@]}"; do
     component=$(_aicoding_config_component "$d" 2>/dev/null || echo config)
     result=${MANAGED_RESULT[$d]}
+    [[ "$result" == absent ]] || present[$component]=1
     case "$result" in
       failed) rank=4 ;;
       malformed) rank=3 ;;
@@ -611,7 +612,12 @@ _sync_record_config_results() {
   for component in "${!ranks[@]}"; do
     [[ "$component" == config-* ]] || continue
     case "${ranks[$component]}" in
-      1) aicoding_result_record "$component" current "$target" reconciliation_verified "$target" ;;
+      1)
+        if [[ -n "${present[$component]:-}" ]]; then
+          aicoding_result_record "$component" current "$target" reconciliation_verified "$target"
+        else
+          aicoding_result_record "$component" current "$target" harness_not_installed "$target"
+        fi ;;
       2) aicoding_result_record "$component" blocked "$target" "${reasons[$component]}" "" "${details[$component]}" ;;
       3) aicoding_result_record "$component" blocked "$target" managed_config_malformed ;;
       4) aicoding_result_record "$component" failed "$target" managed_config_apply_failed ;;
