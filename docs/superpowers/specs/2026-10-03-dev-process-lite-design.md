@@ -34,7 +34,8 @@ must see no conflict and no double loading. Section "Precedence" settles that.
 - Existing repos opt in file by file. `aicoding-sync` never writes into a
   project repo (`README.md:137`: the templates are not deployed anywhere).
 - Codex, Cursor and OpenCode get the same policy through the paths they
-  already read (`docs/agent-parity.md`).
+  already read (`docs/agent-parity.md`). Runs start from Claude, Codex or
+  Cursor; OpenCode is not an entry harness (section 4).
 - No rule that already exists in the global CLAUDE.md, `review-by-harness`,
   `worktree-session` or the kanban MCP instructions is restated. The lite
   policy refines those; it does not copy them.
@@ -183,65 +184,122 @@ and the owner reads one closeout.
 ### 4. Routes
 
 Executable model and effort choices per role come from a routes table, not
-from prose. Schema is balance-extract's `.dev-process/routes.json` unchanged
-(`version: 1`, `routes.<entry_harness>.<role>` with `harness`, `model`,
-`effort`), so a project can later adopt the full process without moving the
-file. Lite roles: `overseer`, `implementer`, `reviewer`, `assessor`.
+from prose. Lite roles: `overseer`, `implementer`, `reviewer`, `assessor`.
+Entry harnesses: `claude`, `codex`, `cursor`. OpenCode is not an entry
+point: it reads the policy through `AGENTS.md` and can do single-ticket
+work, but a run that coordinates tasks starts from Claude, Codex or Cursor,
+because only those have a `review-by-harness` adapter and a verified model
+list.
 
-Lookup order: `<repo>/.dev-process/routes.json` when present, else
-`~/.claude/skills/dev-process-lite/routes.default.json`. Defaults, using the
-identifiers `review-by-harness` verified against the installed CLIs
-(`skills/review-by-harness/SKILL.md:33-42`):
+**Schema.** balance-extract's `.dev-process/routes.json` layout unchanged
+(`version: 1`, `routes.<entry>.<role>`), with one addition: a route names
+either an exact `model` or a `family`. `model` is an exact id and wins when
+both are present, so balance-extract's pinned routes keep working without
+edits. `family` is resolved at launch (owner decision 2026-10-03): a route
+should name a tier, not a version, because the CLIs ship new versions
+faster than a routes file is edited. `effort` is the harness effort level
+for Claude and Codex; for Cursor it is the suffix of the selector.
 
-| entry | role | harness | model | effort |
-|---|---|---|---|---|
-| claude | overseer | claude | `claude-opus-5` | high |
-| claude | implementer | claude | `claude-sonnet-5` | high |
-| claude | reviewer | codex | `gpt-5.6-sol` | high |
-| claude | assessor | claude | `claude-opus-5` | high |
-| codex | overseer | codex | `gpt-5.6-sol` | high |
-| codex | implementer | codex | `gpt-5.6-terra` | high |
-| codex | reviewer | claude | `claude-opus-5` | high |
-| codex | assessor | codex | `gpt-5.6-sol` | high |
+**Resolver.** `routes.sh [entry] [role]` beside the skill applies the lookup
+order (`<repo>/.dev-process/routes.json` when present, else the skill's
+`routes.default.json`; a project file missing the entry table uses the
+default file's table and says so), resolves the route, prints it as JSON and
+prints the exact id it chose. The overseer writes that id into the log's
+Plan section next to the family. Rules per harness, from the installed CLIs
+on 2026-10-03:
 
-The global rule also reaches Cursor and OpenCode sessions, so the table has
-an entry key for each of them. Neither harness runs the overseer or assessor
-role in the lite process: Cursor and OpenCode have no cross-session
-messaging and no `review-by-harness` adapter for OpenCode, so a session that
-enters from them delegates the coordinating roles to Claude. Their tables
-are therefore full copies of the `claude` table, except that the `cursor`
-entry's own review row uses the Cursor identifier `review-by-harness`
-already verifies (`cursor-grok-4.6-high-fast`, no effort field), so a Cursor
-session can still run a review from its own harness:
+- `claude`: families `fable`, `opus`, `sonnet`, `haiku`. The CLI accepts
+  the family name as a `--model` alias for its latest version (`claude
+  --help`), so the resolver passes the alias through. The exact id is
+  whatever the harness reports at session start; when it reports none, the
+  log records the alias and "exact id not observable", the same wording
+  balance-extract uses for unobservable models.
+- `codex`: families are the slug suffix (`sol`, `astra`, `luna`, `terra`).
+  The resolver reads `codex debug models` JSON, keeps slugs with
+  `visibility: list` that end in `-<family>`, drops any slug whose `upgrade`
+  field is set (a retiring model; `gpt-5.5` retires 2026-10-14 with upgrade
+  `gpt-6.1-sol`), and picks the highest version parsed from
+  `gpt-<version>-<family>`. Today `sol` resolves to `gpt-6.1-sol`, `astra`
+  to `gpt-6-astra`, `luna` to `gpt-6-luna`; the `gpt-5.6-*` slugs are
+  marked older and lose to `6.1`.
+- `cursor`: the resolver reads `cursor-agent --list-models`, which prints
+  versioned selectors with the effort in the name and no aliases except
+  `auto`. A family is the vendor-model token (`grok`, `claude-opus`,
+  `claude-fable`, `gpt`), the selector pattern is
+  `cursor-<family>-<version>-<effort>[-fast]` for Cursor-native models and
+  `<family>-<version>-<effort>` otherwise, and the resolver picks the
+  highest version that has the route's effort suffix. Today `grok` with
+  `xhigh` resolves to `cursor-grok-4.6-xhigh`; Cursor lists no `gpt-6`
+  selector at all, so a `gpt` family on Cursor resolves to a 5.6 selector
+  or blocks.
 
-| entry | role | harness | model | effort |
-|---|---|---|---|---|
-| cursor | overseer | claude | `claude-opus-5` | high |
-| cursor | implementer | claude | `claude-sonnet-5` | high |
-| cursor | reviewer | cursor | `cursor-grok-4.6-high-fast` | (none) |
-| cursor | assessor | claude | `claude-opus-5` | high |
-| opencode | overseer | claude | `claude-opus-5` | high |
-| opencode | implementer | claude | `claude-sonnet-5` | high |
-| opencode | reviewer | codex | `gpt-5.6-sol` | high |
-| opencode | assessor | claude | `claude-opus-5` | high |
+**Failure.** No match blocks the launch with the family, the harness and
+the list consulted. The resolver never substitutes another family or
+harness, the rule balance-extract's preflight already follows. An exact
+`model` pin is checked against the same list (Codex and Cursor) or against
+the `claude-<family>-<version>` shape (Claude); a pin that is not installed
+blocks too. An entry name other than the three above blocks with "start
+runs from Claude, Codex or Cursor".
 
-Entry detection: `CLAUDECODE` set means `claude`, `CODEX_THREAD_ID` means
-`codex` (the two markers `review-by-harness` already reads,
+**Entry detection.** `CLAUDECODE` set means `claude`, `CODEX_THREAD_ID`
+means `codex` (the markers `review-by-harness` already reads,
 `docs/agent-parity.md`, "Review from either CLI"); the Cursor estate skill
-and the OpenCode plugin name their own entry in the skill text. An unknown
-entry falls back to the `claude` table and says so in the log's Plan
-section. A project routes file may omit `cursor` and `opencode`; the lookup
-then uses the same fallback.
+names `cursor` in its text. An explicit argument wins.
 
-The reviewer rows equal the prose defaults in `configs/claude/CLAUDE.md:218`
-and the `review-by-harness` table; a guard test pins them together (see
-Testing). Fable and Astra stay off the default table: the global rule says
-they need an explicit user override, and a project routes file is exactly
-that override in writing (balance-extract pins Fable for assessment and
-Astra for the Codex overseer). The prose in the global CLAUDE.md and in
-`review-by-harness` stays as it is. `review-by-harness` must keep working in
-a repo with no routes file and in a session that never loaded the lite
-skill, so it keeps its own table and the routes file does not replace it.
+**Defaults** in `routes.default.json`:
+
+| entry | role | harness | family | effort | resolves today |
+|---|---|---|---|---|---|
+| claude | overseer | claude | `opus` | high | `claude-opus-5` |
+| claude | implementer | claude | `sonnet` | high | `claude-sonnet-5` |
+| claude | reviewer | codex | `sol` | high | `gpt-6.1-sol` |
+| claude | assessor | claude | `opus` | high | `claude-opus-5` |
+| codex | overseer | codex | `sol` | high | `gpt-6.1-sol` |
+| codex | implementer | codex | `sol` | high | `gpt-6.1-sol` |
+| codex | reviewer | claude | `opus` | high | `claude-opus-5` |
+| codex | assessor | codex | `sol` | high | `gpt-6.1-sol` |
+| cursor | overseer | cursor | `grok` | xhigh | `cursor-grok-4.6-xhigh` |
+| cursor | implementer | cursor | `grok` | high | `cursor-grok-4.6-high` |
+| cursor | reviewer | codex | `astra` | high | `gpt-6-astra` |
+| cursor | assessor | cursor | `grok` | xhigh | `cursor-grok-4.6-xhigh` |
+
+Notes on the rows:
+
+- Codex has no current-generation balanced tier, so the implementer runs on
+  `sol` as well; `luna` (`gpt-6-luna`) is the cheap option a project may
+  pin for bounded work.
+- Every reviewer is cross-vendor to the entry harness.
+- The Cursor reviewer row is the one place a frontier family sits in the
+  defaults. The global rule says Fable and Astra need an explicit user
+  override; the owner gave that override for exactly this row on
+  2026-10-03, with `claude` family `fable` as the documented alternative
+  (a comment next to the row in the JSON). The guard test allows a
+  frontier family in `cursor.reviewer` and nowhere else in the default
+  file. Project routes files are the owner's override in writing and are
+  not checked (balance-extract pins Fable and Astra).
+
+**Tier parity** across the three entry harnesses, as resolved today. A
+route names the tier; this table is the reference for what that means per
+vendor and is refreshed when the resolver's rules change:
+
+| tier | Claude | Codex | Cursor |
+|---|---|---|---|
+| frontier | `fable` (`claude-fable-5-1`) | `astra` (`gpt-6-astra`) | `claude-fable` (`claude-fable-5-thinking-high`); no Grok or GPT frontier listed |
+| workhorse | `opus` (`claude-opus-5`) | `sol` (`gpt-6.1-sol`) | `grok` (`cursor-grok-4.6-xhigh`) |
+| balanced | `sonnet` (`claude-sonnet-5`) | none current-gen; `luna` (`gpt-6-luna`) is the cheap tier | `grok` at `high-fast` (`cursor-grok-4.6-high-fast`) |
+| reviewer of this entry | Codex `sol` | Claude `opus` | Codex `astra` (alt: Claude `fable`) |
+
+**Relationship to existing prose.** The reviewer families match the
+defaults in `configs/claude/CLAUDE.md:216-220`, `configs/codex/AGENTS.md:120-123`
+and `skills/review-by-harness/SKILL.md:24-29` at the family level (Opus for
+Claude, Sol for Codex). Those texts and the identifier table in
+`skills/review-by-harness/SKILL.md:33-42` (verified 2026-09-09) name exact
+ids that are already stale: Codex now lists `gpt-6.1-sol` as the current
+Sol and marks `gpt-5.6-sol` older. Phase 2 updates them to name families
+with the current ids as examples, and the guard test compares families, not
+frozen ids (Testing, item 4). `review-by-harness` must keep working in a
+repo with no routes file and in a session that never loaded the lite skill,
+so it keeps its own table and the routes file does not replace it.
 
 ## The two skills
 
@@ -300,7 +358,7 @@ it, and Codex cannot message independent sessions (`configs/codex/AGENTS.md:143-
   the name through `~/.claude/sessions/*.json`, run `ListAgents`, and send
   the report with `SendMessage` only when that name is listed. Never claim a
   send that did not succeed (same wording as `worktree-session`).
-- Any other combination (Codex, Cursor or OpenCode assessor; or a Codex
+- Any other combination (Codex or Cursor assessor; or a Codex
   overseer id in Plan): report only. The report ends with one line saying
   the owner relays the verdict to the overseer, and names the overseer id.
 
@@ -542,20 +600,33 @@ like every other suite (`CLAUDE.md`, section Tests):
 2. Collision guard: `skills/assess` and `skills/dev-process` do not exist.
 3. `detect.sh`: prints `lite` in a fixture repo without the doc, `project
    <path>` with it, `lite` outside any repo, exit 0 in all three.
-4. Routes pin: `routes.default.json` parses, has `version: 1` and all four
-   entry tables (`claude`, `codex`, `cursor`, `opencode`), each with the
-   four roles and each role carrying `harness` and `model`; its
-   `claude.reviewer.model` is `gpt-5.6-sol`, `codex.reviewer.model` is
-   `claude-opus-5`, `cursor.reviewer.model` is `cursor-grok-4.6-high-fast`
-   with no `effort` key, and `opencode.reviewer` equals `claude.reviewer`;
-   the `cursor` and `opencode` overseer and assessor rows have
-   `harness: claude`; the three reviewer identifiers appear in
-   `skills/review-by-harness/SKILL.md`, and the first two in
-   `configs/claude/CLAUDE.md` and `configs/codex/AGENTS.md`. A lookup
-   helper test feeds a routes file that lacks `cursor` and `opencode` and
-   an unknown entry name, and expects the `claude` table both times with a
-   fallback note on stdout. Changing one without the others
-   goes red, the way the existing cross-file pins do.
+4. Routes and resolver: `routes.default.json` parses, has `version: 1`
+   and exactly the three entry tables `claude`, `codex`, `cursor`, each
+   with the four roles; each role has `harness` and exactly one of `model`
+   or `family`; every reviewer row has `harness` different from its entry;
+   no row names a frontier family (`fable`, `astra`) or a frontier exact
+   id except `cursor.reviewer`, which must. `routes.sh` is tested against
+   fixture model lists under `tests/fixtures/dev-process-lite/`: a `codex
+   debug models` JSON with `gpt-5.5` (upgrade set), `gpt-5.6-sol`,
+   `gpt-6.1-sol`, `gpt-6-astra` and `gpt-6-luna`, where `sol` resolves to
+   `gpt-6.1-sol`, `astra` to `gpt-6-astra`, and `terra` blocks; a
+   `cursor-agent --list-models` text with `cursor-grok-4.6-xhigh`,
+   `cursor-grok-4.6-high`, `cursor-grok-4.6-high-fast`,
+   `claude-fable-5-thinking-high` and `gpt-5.6-sol-high`, where `grok` at
+   `xhigh` resolves to `cursor-grok-4.6-xhigh`, `grok` at `high` with fast
+   to `-high-fast`, and `gpt` at `xhigh` blocks; a Claude route where the
+   alias passes through unchanged. An exact `model` pin present in the
+   fixture list is returned unchanged with `family` ignored; a pin absent
+   from the list blocks; an `opencode` or unknown entry blocks with the
+   "start runs from" message; a project routes file lacking the `cursor`
+   table falls back to the default file's table with a note on stdout.
+   Cross-file guard: the reviewer families in `routes.default.json`
+   (`claude.reviewer` is Codex `sol`, `codex.reviewer` is Claude `opus`)
+   must be the families the prose in `configs/claude/CLAUDE.md`,
+   `configs/codex/AGENTS.md` and `skills/review-by-harness/SKILL.md`
+   names; the test compares family words, never exact ids, so a CLI
+   version bump does not go red. Changing one without the others still
+   does.
 5. Parity: the "## Dev process" paragraph is byte-identical in the three
    managed files.
 6. Template hooks: `settings.json.tpl` is valid JSON; `north-star.sh` with
@@ -588,7 +659,11 @@ and one `assess-run` session that reads it.
    session that never invokes the skill sees nothing new.
 2. **Global rule and parity.** The "## Dev process" paragraph in the three
    managed files; one sentence in `review-by-harness` about the PR section;
-   `docs/agent-parity.md` gains a "Dev process" capability row. Test 5.
+   the stale identifier table in `skills/review-by-harness/SKILL.md:33-42`
+   and the exact ids in the three managed texts rewritten as families with
+   the ids current on that day as examples, re-verified against the
+   installed CLIs; `docs/agent-parity.md` gains a "Dev process" capability
+   row and the tier-parity table. Test 5 and the cross-file part of test 4.
    The balance-extract verification runs here, because this is the first
    phase a balance-extract session can observe.
 3. **Templates.** `AGENTS.md.tpl` section, `.dev-process/routes.json`,
