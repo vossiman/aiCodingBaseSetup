@@ -56,7 +56,7 @@ must see no conflict and no double loading. Section "Precedence" settles that.
 | Policy text (items 1, 2, 3) | `skills/dev-process-lite/policy.md` | synced to `~/.claude/skills/` (`lib/blueprint-deploy.sh:362-366`), mirrored to `~/.agents/skills` for Codex (`lib/sync.sh:217-224`), scanned by Cursor from `~/.claude/skills` (`lib/sync.sh:211`) | the global rule below; nothing to copy |
 | Overseer adapter | `skills/dev-process-lite/SKILL.md` | same | same |
 | Assessment adapter | `skills/assess-run/SKILL.md` | same | same |
-| Detection helper | `skills/dev-process-lite/detect.sh` | same | same |
+| Detection helper | `skills/dev-process-lite/detect.sh`, `routes.sh` | same | same |
 | Default routes (item 4) | `skills/dev-process-lite/routes.default.json` | same | optional copy to `<repo>/.dev-process/routes.json` |
 | Global rule (one paragraph) | `configs/claude/CLAUDE.md`, `configs/codex/AGENTS.md`, `configs/cursor/skills/aicoding-estate/SKILL.md` | managed config | n/a |
 | PR template (item 5) | `templates/project/dot-github/pull_request_template.md.tpl` | not deployed | new repos; existing repos copy it |
@@ -204,6 +204,35 @@ identifiers `review-by-harness` verified against the installed CLIs
 | codex | reviewer | claude | `claude-opus-5` | high |
 | codex | assessor | codex | `gpt-5.6-sol` | high |
 
+The global rule also reaches Cursor and OpenCode sessions, so the table has
+an entry key for each of them. Neither harness runs the overseer or assessor
+role in the lite process: Cursor and OpenCode have no cross-session
+messaging and no `review-by-harness` adapter for OpenCode, so a session that
+enters from them delegates the coordinating roles to Claude. Their tables
+are therefore full copies of the `claude` table, except that the `cursor`
+entry's own review row uses the Cursor identifier `review-by-harness`
+already verifies (`cursor-grok-4.6-high-fast`, no effort field), so a Cursor
+session can still run a review from its own harness:
+
+| entry | role | harness | model | effort |
+|---|---|---|---|---|
+| cursor | overseer | claude | `claude-opus-5` | high |
+| cursor | implementer | claude | `claude-sonnet-5` | high |
+| cursor | reviewer | cursor | `cursor-grok-4.6-high-fast` | (none) |
+| cursor | assessor | claude | `claude-opus-5` | high |
+| opencode | overseer | claude | `claude-opus-5` | high |
+| opencode | implementer | claude | `claude-sonnet-5` | high |
+| opencode | reviewer | codex | `gpt-5.6-sol` | high |
+| opencode | assessor | claude | `claude-opus-5` | high |
+
+Entry detection: `CLAUDECODE` set means `claude`, `CODEX_THREAD_ID` means
+`codex` (the two markers `review-by-harness` already reads,
+`docs/agent-parity.md`, "Review from either CLI"); the Cursor estate skill
+and the OpenCode plugin name their own entry in the skill text. An unknown
+entry falls back to the `claude` table and says so in the log's Plan
+section. A project routes file may omit `cursor` and `opencode`; the lookup
+then uses the same fallback.
+
 The reviewer rows equal the prose defaults in `configs/claude/CLAUDE.md:218`
 and the `review-by-harness` table; a guard test pins them together (see
 Testing). Fable and Astra stay off the default table: the global rule says
@@ -228,7 +257,9 @@ Body, in order:
 1. Run `detect.sh`. If it prints `project <path>`, say so in one line and
    stop; that repo's own skills apply. (Section "Precedence".)
 2. Read `policy.md` beside this file.
-3. Select the routes table (section 4 lookup order) and the entry harness.
+3. Run `routes.sh [entry]` beside this file: it applies the section 4
+   lookup order and entry detection, prints the selected table as JSON, and
+   prints a fallback note when it substituted the `claude` table.
 4. Keep the overseer log; add `.claude/dev-process-runs/` to
    `.git/info/exclude` if it is not ignored yet, the same way the global
    rule handles `.claude/worktrees/` (`configs/claude/CLAUDE.md:153-159`).
@@ -257,12 +288,24 @@ Deviations entry against the diff, checks Board against policy section 2
 and the owner-return list in section 3, answers the Open questions, and
 reports in under 300 words with a verdict: `sound` (names who merges),
 `fix first` (names the fix, goes back to the overseer as a task) or `stop`
-(names the contradiction, owner decides). It resolves the overseer session
-by id through `~/.claude/sessions/*.json`, runs `ListAgents`, and sends the
-report with `SendMessage` only when that name is listed; it never claims a
-send it did not make (same wording as `worktree-session`). It never spawns
-workers, edits code or moves the board. Step 1 is the same `detect.sh`
-check.
+(names the contradiction, owner decides).
+
+Hand-back is conditional, and the skill body says so. `ListAgents` and
+`SendMessage` exist only in Claude Code, and `~/.claude/sessions/*.json`
+lists only Claude sessions; a Codex overseer's `CODEX_THREAD_ID` is never in
+it, and Codex cannot message independent sessions (`configs/codex/AGENTS.md:143-145`,
+`docs/agent-parity.md`, "Independent session messages" row). So:
+
+- Claude assessor and the Plan section names a Claude session id: resolve
+  the name through `~/.claude/sessions/*.json`, run `ListAgents`, and send
+  the report with `SendMessage` only when that name is listed. Never claim a
+  send that did not succeed (same wording as `worktree-session`).
+- Any other combination (Codex, Cursor or OpenCode assessor; or a Codex
+  overseer id in Plan): report only. The report ends with one line saying
+  the owner relays the verdict to the overseer, and names the overseer id.
+
+It never spawns workers, edits code or moves the board. Step 1 is the same
+`detect.sh` check.
 
 The assessor route is `assessor` from the routes table. The owner starts the
 session with that model; the skill does not switch models.
@@ -493,17 +536,25 @@ New file `tests/bats/dev-process-lite.bats`, run through `tests/bats/run.sh`
 like every other suite (`CLAUDE.md`, section Tests):
 
 1. Deployment: after `managed_config_apply` into a scratch `HOME`,
-   `~/.claude/skills/dev-process-lite/{SKILL.md,policy.md,detect.sh,routes.default.json}`
+   `~/.claude/skills/dev-process-lite/{SKILL.md,policy.md,detect.sh,routes.sh,routes.default.json}`
    and `~/.claude/skills/assess-run/SKILL.md` exist byte-for-byte (pattern
    from `tests/bats/design-skill-source.bats:22-36`).
 2. Collision guard: `skills/assess` and `skills/dev-process` do not exist.
 3. `detect.sh`: prints `lite` in a fixture repo without the doc, `project
    <path>` with it, `lite` outside any repo, exit 0 in all three.
-4. Routes pin: `routes.default.json` parses, has `version: 1` and both entry
-   tables with the four roles; its `claude.reviewer.model` is `gpt-5.6-sol`
-   and `codex.reviewer.model` is `claude-opus-5`; the same two identifiers
-   appear in `configs/claude/CLAUDE.md`, `configs/codex/AGENTS.md` and
-   `skills/review-by-harness/SKILL.md`. Changing one without the others
+4. Routes pin: `routes.default.json` parses, has `version: 1` and all four
+   entry tables (`claude`, `codex`, `cursor`, `opencode`), each with the
+   four roles and each role carrying `harness` and `model`; its
+   `claude.reviewer.model` is `gpt-5.6-sol`, `codex.reviewer.model` is
+   `claude-opus-5`, `cursor.reviewer.model` is `cursor-grok-4.6-high-fast`
+   with no `effort` key, and `opencode.reviewer` equals `claude.reviewer`;
+   the `cursor` and `opencode` overseer and assessor rows have
+   `harness: claude`; the three reviewer identifiers appear in
+   `skills/review-by-harness/SKILL.md`, and the first two in
+   `configs/claude/CLAUDE.md` and `configs/codex/AGENTS.md`. A lookup
+   helper test feeds a routes file that lacks `cursor` and `opencode` and
+   an unknown entry name, and expects the `claude` table both times with a
+   fallback note on stdout. Changing one without the others
    goes red, the way the existing cross-file pins do.
 5. Parity: the "## Dev process" paragraph is byte-identical in the three
    managed files.
@@ -531,7 +582,7 @@ and one `assess-run` session that reads it.
 
 ## Phased implementation outline
 
-1. **Policy and skills.** `skills/dev-process-lite/` (SKILL.md, policy.md,
+1. **Policy and skills.** `skills/dev-process-lite/` (SKILL.md, policy.md, routes.sh,
    detect.sh, routes.default.json) and `skills/assess-run/SKILL.md`. Tests
    1 to 4, 8, 9. No change to any managed instruction file yet, so a
    session that never invokes the skill sees nothing new.
