@@ -134,7 +134,7 @@ Accepted tool limitations are recorded in
 
 ### Project templates
 
-`templates/project/` in this repo is the reference layout for a new project (`CLAUDE.md`, `AGENTS.md`, `TODO.md`, `docs/{specs,plans,notes}/{active,archive}/`, project `.claude/settings.json`). It is not deployed anywhere: agents copy it from a blueprint checkout or the active immutable release and substitute the `{{PROJECT_NAME}}`/`{{PURPOSE}}` placeholders, per the global CLAUDE.md. The former `/scaffold-project` command and its `~/.aicodingsetup/templates/` mirror were retired (the secrets deny hook blankets `~/.aicodingsetup`, so the command could never read its own templates); `remove_legacy_project_templates()` cleans the old mirror up.
+`templates/project/` in this repo is the reference layout for a new project (`CLAUDE.md`, `AGENTS.md`, `TODO.md`, `docs/{specs,plans,notes}/{active,archive}/`, `docs/SHIP_CHECK.md`, project `.claude/settings.json` with the North Star and ship-check hooks, `.dev-process/routes.json`, `.github/pull_request_template.md`, `.gitignore`). It is not deployed anywhere: agents copy it from a blueprint checkout or the active immutable release and substitute the `{{PROJECT_NAME}}`/`{{PURPOSE}}` placeholders, per the global CLAUDE.md. The former `/scaffold-project` command and its `~/.aicodingsetup/templates/` mirror were retired (the secrets deny hook blankets `~/.aicodingsetup`, so the command could never read its own templates); `remove_legacy_project_templates()` cleans the old mirror up.
 
 ### Container-side helpers
 
