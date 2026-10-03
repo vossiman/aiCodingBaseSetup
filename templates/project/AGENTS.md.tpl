@@ -41,3 +41,14 @@ created: YYYY-MM-DD
 might ever do. Keep it to ~10 lines per section. Completed items (`[x]`) with a
 trailing `(YYYY-MM-DD)` date token older than 14 days can be pruned (Claude Code:
 `/housekeep` does this for you).
+
+### Development process
+
+This repo has no `docs/DEV_PROCESS.md`, so the shared `dev-process-lite`
+skill applies whenever a session coordinates more than one task. Model routes
+for this repo are pinned in `.dev-process/routes.json`; edit that file to
+change them, and add `docs/DEV_PROCESS.md` only when the repo needs its own
+full process, which then replaces the lite one. `docs/REQUIREMENTS.md`, when
+present, is the North Star and is injected at session start, so keep it under
+about 150 lines. `docs/SHIP_CHECK.md`, when present, is read back to the agent
+after every `git commit`.
