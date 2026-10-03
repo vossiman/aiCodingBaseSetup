@@ -135,3 +135,17 @@ project_repo() {
   [ "$status" -eq 2 ]
   [[ "$stderr" == "blocked: "*"turbo"* ]]
 }
+
+@test "resolver: project file with the wrong shape blocks and names the file" {
+  project_repo "$TMPDIR/repo" '{"version":1,"routes":[]}'
+  cd "$TMPDIR/repo"
+  run --separate-stderr bash "$R" claude implementer
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  [[ "$stderr" == "blocked: "*".dev-process/routes.json"* ]]
+  project_repo "$TMPDIR/repo2" '{"version":1,"routes":{"claude":"x"}}'
+  cd "$TMPDIR/repo2"
+  run --separate-stderr bash "$R" claude implementer
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == "blocked: "*".dev-process/routes.json"* ]]
+}

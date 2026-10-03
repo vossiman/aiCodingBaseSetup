@@ -32,7 +32,8 @@ note=""
 root=$(git rev-parse --show-toplevel 2>/dev/null || true)
 if [ -n "$root" ] && [ -f "$root/.dev-process/routes.json" ]; then
   source_file="$root/.dev-process/routes.json"
-  jq -e . "$source_file" >/dev/null 2>&1 || block "$source_file is not valid JSON"
+  jq -e '(.routes | type == "object") and all(.routes[]; type == "object") and all(.routes[][]; type == "object")' \
+    "$source_file" >/dev/null 2>&1 || block "$source_file is not valid JSON with routes.<entry>.<role> objects"
 fi
 table=$(jq -c --arg e "$entry" '.routes[$e] // empty' "$source_file")
 if [ -z "$table" ]; then
