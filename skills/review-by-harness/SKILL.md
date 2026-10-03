@@ -18,36 +18,37 @@ The driver requires `git`, `gh`, `jq`, and `python3`, plus the selected CLI.
 
 ```bash
 ~/.claude/skills/review-by-harness/run.sh <pr-number> [repo-dir] \
-    --harness claude --model claude-opus-5 --effort high [--review-only]
+    --harness claude --model opus --effort high [--review-only]
 ```
 
 Choose the reviewer model explicitly for every run, whichever coding agent
-is orchestrating. Unless the user specifies otherwise, use **GPT-5.6 Sol**
-(`gpt-5.6-sol`) for Codex and **Opus 5** (`claude-opus-5`) for Claude.
-**Fable and Astra require an explicit user override**; do not upgrade based
-on task complexity or inherit either from the caller or machine default.
-Pass `--harness` and `--model` explicitly, plus `--effort` for Claude/Codex.
-Respect any explicit user selection, including a different harness. Take
-the identifier from the table below; do not query the CLI for it.
+is orchestrating. Unless the user specifies otherwise, use the Sol family for Codex
+and the Opus family for Claude at `high` effort. Resolve the exact id
+with `bash ~/.claude/skills/dev-process-lite/routes.sh <entry> reviewer`, or
+take it from the table below. **Fable and Astra require an explicit user
+override**; do not upgrade based on task complexity or inherit either from
+the caller or machine default. Pass `--harness` and `--model` explicitly,
+plus `--effort` for Claude/Codex. Respect any explicit user selection,
+including a different harness.
 
-### Model identifiers (verified 2026-09-09 against the installed CLIs)
+### Model identifiers (verified 2026-10-03 against the installed CLIs)
 
 | harness | `--model` | `--effort` | note |
 |---|---|---|---|
-| claude | `claude-opus-5` | `high` | **default** |
-| claude | `claude-sonnet-5` | `high` | cheaper second reader |
-| claude | `claude-fable-5-1` | `high` | user override only |
-| codex | `gpt-5.6-sol` | `high` | **default** |
-| codex | `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5` | `high` | alternatives |
+| claude | `opus` (alias, today `claude-opus-5-5`) | `high` | **default** |
+| claude | `sonnet` (alias, today `claude-sonnet-5-5`) | `high` | cheaper second reader |
+| claude | `fable` (alias, today `claude-fable-5-1`) | `high` | user override only |
+| codex | `gpt-6.1-sol` | `high` | **default** (Sol family) |
+| codex | `gpt-6-luna`, `gpt-6-sol`, `gpt-5.6-sol` | `high` | alternatives |
 | codex | `gpt-6-astra` | `high` | user override only |
-| cursor | `cursor-grok-4.6-high-fast` | (none) | **default**; effort is in the name |
-| cursor | `gpt-5.6-sol-high`, `claude-opus-5-thinking-high`, `gpt-5.3-codex-high` | (none) | alternatives |
+| cursor | `grok-4.7-high-fast` | (none) | **default**; effort is in the name |
+| cursor | `grok-4.7-high`, `gpt-5.6-sol-high`, `claude-opus-5-5-high` | (none) | alternatives |
 
 Effort levels: Claude and Codex accept `low`, `medium`, `high`, `xhigh`,
 `max` (Codex also `ultra` on Sol, Terra and Astra). Cursor takes no
 `--effort`; pick a selector with the level in its name (`-low`, `-medium`,
 `-high`, `-xhigh`, `-max`, optional `-fast`), or use bracket parameters such
-as `'claude-opus-5[effort=high,fast=false]'`.
+as `'claude-opus-5-5[effort=high,fast=false]'`.
 
 Refresh the table only when a run rejects an identifier:
 
@@ -60,9 +61,9 @@ cursor-agent --list-models
 Examples:
 
 ```bash
-run.sh 123 /path/to/repo --harness claude --model claude-opus-5 --effort high --review-only
-run.sh 123 /path/to/repo --harness codex --model gpt-5.6-sol --effort high --review-only
-run.sh 123 /path/to/repo --harness cursor --model cursor-grok-4.6-high-fast --review-only
+run.sh 123 /path/to/repo --harness claude --model opus --effort high --review-only
+run.sh 123 /path/to/repo --harness codex --model gpt-6.1-sol --effort high --review-only
+run.sh 123 /path/to/repo --harness cursor --model grok-4.7-high-fast --review-only
 ```
 
 CLI choices override `REVIEW_MODEL` / `REVIEW_EFFORT` in machine config.
@@ -75,14 +76,14 @@ for older scripts, but skill-driven runs should always make the choice explicit.
 - `--harness auto` (default) chooses Claude when called from Codex and Codex
   when called from Claude. Pass `--caller codex` or `--caller claude` when the
   runtime marker is unavailable. Explicit `--harness` always wins.
-- `--harness claude` — Claude Code's Opus 5 (`claude-opus-5`) at high effort.
+- `--harness claude`: the Opus family (`opus` alias) at high effort.
   Review has only Read/Glob/Grep tools and no MCP tools. Fix uses native
   sandboxing where available; the existing `REVIEW_SANDBOX='-s danger-full-access'` opt-in
   applies where user namespaces are unavailable. Cursor's `--force` is not
   a Claude opt-in. User and managed hooks remain active.
-- `--harness codex` — GPT-5.6 Sol at high reasoning, via `codex exec
+- `--harness codex`: the Sol family (`gpt-6.1-sol` today) at high reasoning, via `codex exec
   review`. Has a real built-in review mode.
-- `--harness cursor` — Grok 4.6 high, via `cursor-agent`. No built-in review
+- `--harness cursor`: Grok 4.7 high, via `cursor-agent`. No built-in review
   mode, so the diff is handed to it with `prompts/review.md`.
 - `--review-only` — findings only, nothing is edited. Start here on an
   unfamiliar repo.
@@ -113,6 +114,9 @@ having passed.
 
 Then report to the user: which findings are real, which are noise, and what
 the diff does. Do not commit on the harness's say-so.
+
+When the PR body has an "Independent review" section, fill it: harness,
+model, effort, the reviewed commit, and each finding with its disposition.
 
 ## How many rounds
 

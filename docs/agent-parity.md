@@ -20,6 +20,7 @@ UI, permission prompts, or third-party plugin inventories.
 | Archive reminder | SessionStart | Same script, managed SessionStart |
 | Phone notification | PermissionRequest hook | Turn-complete notify; tmux fallback for waiting |
 | Branch isolation | Shared `worktree-session` skill and `aicoding-worktree` | Same helper and location |
+| Dev process | `dev-process-lite` and `assess-run` skills; repo `docs/DEV_PROCESS.md` wins | Same skills via `~/.agents/skills`; same precedence |
 | Independent session messages | Native Claude peers | No equivalent cross-harness transport; AICODINGBASESETUP-29 |
 | Subagents | Native Claude tools | Native Codex multi-agent feature |
 
@@ -94,22 +95,22 @@ this change does not use private session sockets or wake unrelated sessions.
 ## Review from either CLI
 
 ```bash
-~/.claude/skills/review-by-harness/run.sh 123 /path/to/repo --harness claude --model claude-opus-5 --effort high --review-only
-~/.claude/skills/review-by-harness/run.sh 123 /path/to/repo --harness codex --model gpt-5.6-sol --effort high --review-only
+~/.claude/skills/review-by-harness/run.sh 123 /path/to/repo --harness claude --model opus --effort high --review-only
+~/.claude/skills/review-by-harness/run.sh 123 /path/to/repo --harness codex --model gpt-6.1-sol --effort high --review-only
 ```
 
 Explicit `--harness claude|codex|cursor` overrides caller-based selection.
 Without `--caller`, the driver recognizes `CLAUDECODE` / `CODEX_THREAD_ID`;
 unknown callers retain the historical Codex default. Skill-driven runs explicitly pass `--harness`, `--model`, and `--effort`
 (Claude/Codex), regardless of caller. Unless explicitly overridden by the user,
-use Opus 5 (`claude-opus-5`) or GPT-5.6 Sol (`gpt-5.6-sol`). Fable and Astra
+use the Opus family (`opus` alias) or the Sol family (`gpt-6.1-sol` today); resolve with `bash ~/.claude/skills/dev-process-lite/routes.sh <entry> reviewer`. Fable and Astra
 require explicit user overrides; complexity alone does not select them.
 CLI flags override machine `REVIEW_MODEL` and
 `REVIEW_EFFORT`; both passes receive the same choice, recorded in
 `.review-round/run.json` and the header. Cursor effort belongs in its model
 selector; `--effort` is rejected for Cursor. For older callers, environment
 settings override adapter defaults; a model override must be valid for
-the selected harness. Claude defaults to `claude-opus-5`, Codex to `gpt-5.6-sol`.
+the selected harness. Claude defaults to `opus`, Codex to `gpt-6.1-sol`, Cursor to `grok-4.7-high-fast`.
 
 Claude review exposes only Read/Glob/Grep, with MCP tools excluded and
 `dontAsk` permission mode. The driver verifies that review left the worktree
@@ -123,6 +124,22 @@ sandboxing when user namespaces work. When they do not, Claude honors the existi
 The adapters retain existing user/managed hooks. As with the original
 adapters, the worktree is a working location, not an OS security boundary.
 Always verify findings and inspect actual changes and test output.
+
+## Dev process and model tiers
+
+A session that coordinates more than one task follows the shared
+`dev-process-lite` skill unless the repo has `docs/DEV_PROCESS.md`, which
+wins. Routes name a model family per role; `routes.sh` resolves the newest
+installed model and blocks rather than substitute. Runs start from Claude,
+Codex or Cursor; OpenCode is not an entry harness. Tiers as resolved on
+2026-10-03:
+
+| tier | Claude | Codex | Cursor |
+|---|---|---|---|
+| frontier (override only) | `fable` (`claude-fable-5-1`) | `astra` (`gpt-6-astra`) | `claude-fable-5-1-*`; no Grok or GPT frontier |
+| workhorse | `opus` (`claude-opus-5-5`) | `sol` (`gpt-6.1-sol`) | `grok` (`grok-4.7-xhigh`) |
+| balanced (implementer) | `sonnet` (`claude-sonnet-5-5`) | `luna` (`gpt-6-luna`, unproven) | `grok` at `medium` (`grok-4.7-medium`) |
+| reviewer of this entry | Codex `sol` | Claude `opus` | Codex `astra` (alt: Claude `fable`) |
 
 ## Differences that remain
 

@@ -3,7 +3,7 @@
 # Contract: review <worktree> <base-ref> <outdir> | fix <worktree> <outdir>
 set -euo pipefail
 
-MODEL="${REVIEW_MODEL:-cursor-grok-4.6-high-fast}"
+MODEL="${REVIEW_MODEL:-grok-4.7-high-fast}"
 
 # --trust is required for ANY non-interactive run: without it cursor-agent
 # stops on "Workspace Trust Required" and writes no output at all. It only

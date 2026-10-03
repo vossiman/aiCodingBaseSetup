@@ -98,10 +98,10 @@ done
 [ -z "$MODEL_ARG" ] || REVIEW_MODEL="$MODEL_ARG"
 [ -z "$EFFORT_ARG" ] || REVIEW_EFFORT="$EFFORT_ARG"
 case "$HARNESS" in
-    claude) REVIEW_MODEL="${REVIEW_MODEL:-claude-opus-5}"; REVIEW_EFFORT="${REVIEW_EFFORT:-high}" ;;
-    codex) REVIEW_MODEL="${REVIEW_MODEL:-gpt-5.6-sol}"; REVIEW_EFFORT="${REVIEW_EFFORT:-high}" ;;
+    claude) REVIEW_MODEL="${REVIEW_MODEL:-opus}"; REVIEW_EFFORT="${REVIEW_EFFORT:-high}" ;;
+    codex) REVIEW_MODEL="${REVIEW_MODEL:-gpt-6.1-sol}"; REVIEW_EFFORT="${REVIEW_EFFORT:-high}" ;;
     cursor)
-        REVIEW_MODEL="${REVIEW_MODEL:-cursor-grok-4.6-high-fast}"
+        REVIEW_MODEL="${REVIEW_MODEL:-grok-4.7-high-fast}"
         if [ -n "$EFFORT_ARG" ]; then
             echo 'Cursor effort is part of its model selector; use --model with an effort preset or bracket parameters, not --effort.' >&2
             exit 2

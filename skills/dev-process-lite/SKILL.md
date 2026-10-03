@@ -26,7 +26,9 @@ The scripts and the policy sit beside this file, in
    policy section 4 and record the choice under Decisions.
 6. Run one integrated review with `review-by-harness`, passing the
    `reviewer` route as `--harness` and `--model`, plus `--effort` only when the reviewer harness is claude or codex. Fix verified
-   findings on the open branch (policy section 2).
+   findings on the open branch (policy section 2). Copy the review's
+   `.review-round/` into the run directory before removing its worktree, so
+   the assessment can check it.
 7. Before closeout, check the Board section against policy section 2, and
    stop for the owner only for the reasons in policy section 3.
 8. Tell the owner the run can be assessed with `assess-run` from a fresh
