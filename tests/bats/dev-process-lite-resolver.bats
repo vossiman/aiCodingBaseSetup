@@ -149,3 +149,93 @@ project_repo() {
   [ "$status" -eq 2 ]
   [[ "$stderr" == "blocked: "*".dev-process/routes.json"* ]]
 }
+
+@test "resolver: codex sol resolves to the newest listed, non-retiring slug" {
+  run --separate-stderr bash "$R" codex overseer
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .model <<<"$output")" = "gpt-6.1-sol" ]
+  [ "$(jq -r .resolved <<<"$output")" = "family" ]
+}
+
+@test "resolver: codex luna and astra resolve" {
+  run --separate-stderr bash "$R" codex implementer
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .model <<<"$output")" = "gpt-6-luna" ]
+  run --separate-stderr bash "$R" cursor reviewer
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .harness <<<"$output")" = "codex" ]
+  [ "$(jq -r .model <<<"$output")" = "gpt-6-astra" ]
+}
+
+@test "resolver: codex family with no listed model blocks and names the list" {
+  project_repo "$TMPDIR/repo" '{"version":1,"routes":{"codex":{"implementer":{"harness":"codex","family":"terra","effort":"high"}}}}'
+  cd "$TMPDIR/repo"
+  run --separate-stderr bash "$R" codex implementer
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  [[ "$stderr" == "blocked: "*"terra"*"codex debug models"* ]]
+}
+
+@test "resolver: codex pin present in the list is returned, absent pin blocks" {
+  project_repo "$TMPDIR/repo" '{"version":1,"routes":{"codex":{"overseer":{"harness":"codex","model":"gpt-5.6-sol","family":"sol","effort":"high"},"implementer":{"harness":"codex","model":"gpt-4-sol","effort":"high"}}}}'
+  cd "$TMPDIR/repo"
+  run --separate-stderr bash "$R" codex overseer
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .model <<<"$output")" = "gpt-5.6-sol" ]
+  [ "$(jq -r .resolved <<<"$output")" = "pinned" ]
+  run --separate-stderr bash "$R" codex implementer
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == "blocked: "*"gpt-4-sol"* ]]
+}
+
+@test "resolver: empty codex model list blocks instead of printing an empty model" {
+  : > "$TMPDIR/empty.json"
+  run --separate-stderr env DEV_PROCESS_LITE_CODEX_MODELS="$TMPDIR/empty.json" bash "$R" codex overseer
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  [[ "$stderr" == "blocked: "*"codex debug models"* ]]
+}
+
+@test "resolver: cursor grok xhigh picks unprefixed 4.7 over prefixed 4.6" {
+  run --separate-stderr bash "$R" cursor overseer
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .model <<<"$output")" = "grok-4.7-xhigh" ]
+  run --separate-stderr bash "$R" cursor implementer
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .model <<<"$output")" = "grok-4.7-medium" ]
+}
+
+@test "resolver: cursor fast flag selects the -fast selector, plain does not" {
+  project_repo "$TMPDIR/repo" '{"version":1,"routes":{"cursor":{"implementer":{"harness":"cursor","family":"grok","effort":"high","fast":true},"overseer":{"harness":"cursor","family":"grok","effort":"high"}}}}'
+  cd "$TMPDIR/repo"
+  run --separate-stderr bash "$R" cursor implementer
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .model <<<"$output")" = "cursor-grok-4.6-high-fast" ]
+  run --separate-stderr bash "$R" cursor overseer
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == "blocked: "*"grok"*"cursor-agent --list-models"* ]]
+}
+
+@test "resolver: cursor variant tokens and dashed versions resolve, missing effort blocks" {
+  project_repo "$TMPDIR/repo" '{"version":1,"routes":{"cursor":{"reviewer":{"harness":"cursor","family":"claude-fable","effort":"high"},"overseer":{"harness":"cursor","family":"claude-opus","effort":"high"},"implementer":{"harness":"cursor","family":"gpt","effort":"xhigh"}}}}'
+  cd "$TMPDIR/repo"
+  run --separate-stderr bash "$R" cursor reviewer
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .model <<<"$output")" = "claude-fable-5-thinking-high" ]
+  run --separate-stderr bash "$R" cursor overseer
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .model <<<"$output")" = "claude-opus-5-5-high" ]
+  run --separate-stderr bash "$R" cursor implementer
+  [ "$status" -eq 2 ]
+}
+
+@test "resolver: cursor pin present is returned, absent pin blocks" {
+  project_repo "$TMPDIR/repo" '{"version":1,"routes":{"cursor":{"overseer":{"harness":"cursor","model":"cursor-grok-4.6-xhigh","effort":"xhigh"},"implementer":{"harness":"cursor","model":"grok-9-low","effort":"low"}}}}'
+  cd "$TMPDIR/repo"
+  run --separate-stderr bash "$R" cursor overseer
+  [ "$status" -eq 0 ]
+  [ "$(jq -r .model <<<"$output")" = "cursor-grok-4.6-xhigh" ]
+  run --separate-stderr bash "$R" cursor implementer
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == "blocked: "*"grok-9-low"* ]]
+}

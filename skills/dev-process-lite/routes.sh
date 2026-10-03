@@ -84,9 +84,74 @@ resolve_claude() {
   fi
 }
 
+codex_models() {
+  if [ -n "${DEV_PROCESS_LITE_CODEX_MODELS:-}" ]; then
+    cat "$DEV_PROCESS_LITE_CODEX_MODELS" 2>/dev/null || true
+  else
+    codex debug models 2>/dev/null || true
+  fi
+}
+
+cursor_models() {
+  if [ -n "${DEV_PROCESS_LITE_CURSOR_MODELS:-}" ]; then
+    cat "$DEV_PROCESS_LITE_CURSOR_MODELS" 2>/dev/null || true
+  else
+    cursor-agent --list-models 2>/dev/null || true
+  fi
+}
+
+# Newest listed, non-retiring gpt-<version>-<family> slug.
+resolve_codex() {
+  local list
+  list=$(codex_models)
+  jq -e '.models | type == "array"' >/dev/null 2>&1 <<<"$list" \
+    || block "no codex model list (consulted: codex debug models)"
+  if [ -n "$model" ]; then
+    jq -e --arg m "$model" 'any(.models[]; .slug == $m)' >/dev/null <<<"$list" \
+      || block "codex model '$model' is not installed (consulted: codex debug models)"
+    resolved_model=$model; how=pinned
+    return
+  fi
+  resolved_model=$(jq -r --arg f "$family" '
+      .models[] | select(.visibility == "list" and .upgrade == null) | .slug
+      | select(test("^gpt-[0-9]+(\\.[0-9]+)*-" + $f + "$"))' <<<"$list" \
+    | sed -E 's/^gpt-([0-9.]+)-.*$/\1\t&/' | sort -t$'\t' -k1,1V | tail -n 1 | cut -f2)
+  [ -n "$resolved_model" ] \
+    || block "no codex model of family '$family' (consulted: codex debug models)"
+  how=family
+}
+
+# Newest [cursor-]<family>-<version>[-<variant>...]-<effort>[-fast] selector.
+resolve_cursor() {
+  local list fam_re suffix
+  list=$(cursor_models | awk 'NF >= 1 && $2 == "-" { print $1 }')
+  [ -n "$list" ] || block "no cursor model list (consulted: cursor-agent --list-models)"
+  if [ -n "$model" ]; then
+    grep -qxF -- "$model" <<<"$list" \
+      || block "cursor model '$model' is not installed (consulted: cursor-agent --list-models)"
+    resolved_model=$model; how=pinned
+    return
+  fi
+  fam_re=${family//./\\.}
+  if [ "$fast" = true ]; then suffix="-fast"; else suffix=""; fi
+  resolved_model=$(grep -E "^(cursor-)?${fam_re}-[0-9]+([.-][0-9]+)*(-[a-z]+)*-${effort}${suffix}\$" <<<"$list" \
+    | awk -v fam="$family" '{
+        s = $0; sub(/^cursor-/, "", s)
+        v = substr(s, length(fam) + 2)
+        match(v, /^[0-9]+([.-][0-9]+)*/)
+        ver = substr(v, 1, RLENGTH); gsub(/-/, ".", ver)
+        print ver "\t" $0
+      }' \
+    | sort -s -t$'\t' -k1,1V | tail -n 1 | cut -f2 || true)
+  [ -n "$resolved_model" ] \
+    || block "no cursor model of family '$family' at effort '$effort'$([ "$fast" = true ] && echo ' (fast)') (consulted: cursor-agent --list-models)"
+  how=family
+}
+
 case "$harness" in
   claude) resolve_claude ;;
-  codex|cursor) block "harness '$harness' resolution is not implemented yet" ;;
+  codex) resolve_codex ;;
+  cursor) resolve_cursor ;;
   *) block "harness '$harness' in $entry.$role is not one of claude, codex, cursor" ;;
 esac
 
