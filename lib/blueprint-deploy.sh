@@ -607,8 +607,9 @@ _managed_claim_shared() {
 
 # Bring every managed destination to its desired content. Sets
 # MANAGED_RESULT[dest] to unchanged, updated, pending (dry run), held (a
-# newer release owns the shared roots), malformed, failed or
-# "blocked:<reason>". MANAGED_CONFIG_GATE may name a function that
+# newer release owns the shared roots), malformed, failed,
+# "skipped:<tool>_not_installed" or "blocked:<reason>". MANAGED_CONFIG_GATE
+# may name a function that
 # vetoes a write (prints a reason, returns nonzero) when a destination's tool
 # is not ready for it. Returns nonzero when any write failed.
 managed_config_apply() {
@@ -644,8 +645,13 @@ managed_config_apply() {
       MANAGED_RESULT[$dest]=pending; changes=$((changes + 1))
       echo "      would update: $dest"
     elif [[ -n "${MANAGED_CONFIG_GATE:-}" ]] && ! reason=$("$MANAGED_CONFIG_GATE" "$dest"); then
-      MANAGED_RESULT[$dest]="blocked:${reason:-runtime_compatibility_unavailable}"
-      echo "      blocked (${reason:-runtime_compatibility_unavailable}): $dest"
+      if [[ "$reason" == *_not_installed ]]; then
+        MANAGED_RESULT[$dest]="skipped:$reason"
+        echo "      skipped (${reason%_not_installed} not installed): $dest"
+      else
+        MANAGED_RESULT[$dest]="blocked:${reason:-runtime_compatibility_unavailable}"
+        echo "      blocked (${reason:-runtime_compatibility_unavailable}): $dest"
+      fi
     elif _managed_write "$dest" "$kind" "$src" "$out"; then
       MANAGED_RESULT[$dest]=updated; changes=$((changes + 1))
       echo "      updated: $dest"

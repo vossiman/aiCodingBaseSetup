@@ -81,11 +81,21 @@ retired_clone() {
 
 @test "rule 1: a gate veto leaves the file alone and records the reason" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  veto() { [[ "$1" != */.cursor/hooks.json ]] || { echo cursor_not_installed; return 1; }; }
+  veto() { [[ "$1" != */.cursor/hooks.json ]] || { echo cursor_update_not_verified; return 1; }; }
   MANAGED_CONFIG_GATE=veto managed_config_apply >/dev/null
   [ ! -e "$HOME/.cursor/hooks.json" ]
-  [ "${MANAGED_RESULT[$HOME/.cursor/hooks.json]}" = blocked:cursor_not_installed ]
+  [ "${MANAGED_RESULT[$HOME/.cursor/hooks.json]}" = blocked:cursor_update_not_verified ]
   [ "${MANAGED_RESULT[$HOME/.claude/CLAUDE.md]}" = updated ]
+}
+
+@test "rule 1: a file of an absent tool is skipped, not blocked" {
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  veto() { [[ "$1" != */.cursor/hooks.json ]] || { echo cursor_not_installed; return 1; }; }
+  MANAGED_CONFIG_GATE=veto managed_config_apply > "$TMPDIR/apply.out"
+  [ ! -e "$HOME/.cursor/hooks.json" ]
+  [ "${MANAGED_RESULT[$HOME/.cursor/hooks.json]}" = skipped:cursor_not_installed ]
+  grep -q "skipped (cursor not installed): $HOME/.cursor/hooks.json" "$TMPDIR/apply.out"
+  if grep -q blocked "$TMPDIR/apply.out"; then false; fi
 }
 
 @test "rule 2: settings.json enforces owned keys, seeds once, keeps personal content" {

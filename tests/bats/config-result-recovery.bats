@@ -64,6 +64,25 @@ state() { jq -r --arg c "$1" '.components[$c] | "\(.state) \(.reason)"' "$AICODI
   [ "$_SYNC_PASS_DEFERRED" -eq 0 ]
 }
 
+@test "files of an absent tool neither block nor defer the pass" {
+  aicoding_result_record config-pi blocked old pi_update_not_verified
+  MANAGED_RESULT[$first]=unchanged
+  MANAGED_RESULT[$HOME/.pi/agent/extensions/bw-deny-files.ts]=skipped:pi_not_installed
+  _sync_record_config_results "$target"
+  [ "$(state config-pi)" = "current tool_not_installed" ]
+  [ "$(state config)" = "current applied" ]
+  [ "${#_SYNC_DEFERRED_PROVISION_COMPONENTS[@]}" -eq 0 ]
+  [ "$_SYNC_PASS_DEFERRED" -eq 0 ]
+}
+
+@test "a skipped file never hides a real block in the same component" {
+  MANAGED_RESULT[$first]=skipped:claude_not_installed
+  MANAGED_RESULT[$second]=blocked:claude_update_not_verified
+  _sync_record_config_results "$target"
+  [ "$(state config-claude)" = "blocked claude_update_not_verified" ]
+  [ "$(state config)" = "blocked partial_config_blocked" ]
+}
+
 @test "a component with no destination this pass keeps its receipt" {
   aicoding_result_record config-codex blocked old codex_not_installed
   MANAGED_RESULT[$first]=unchanged

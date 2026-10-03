@@ -130,6 +130,24 @@ STUB
   [ "$output" = cursor_update_not_verified ]
 }
 
+@test "an absent Pi is reported as not installed before any receipt is asked for" {
+  export AICODING_REQUIRE_UPDATE_RECEIPT=1
+  run aicoding_config_is_compatible "$HOME/.pi/agent/extensions/bw-deny-files.ts"
+  [ "$status" -ne 0 ]
+  [ "$output" = pi_not_installed ]
+}
+
+@test "the installer gate skips an absent tool without deferring the stamp" {
+  . "$BLUEPRINT_ROOT/lib/provision-managed-files.sh"
+  warn() { printf 'WARN: %s\n' "$*"; }
+  export AICODING_REQUIRE_UPDATE_RECEIPT=1
+  _AICODING_INITIAL_CONFIG_DEFERRED=0
+  reason=$(_install_config_gate "$HOME/.pi/agent/extensions/bw-deny-files.ts" 2>/dev/null) || true
+  [ "$reason" = pi_not_installed ]
+  _install_config_gate "$HOME/.pi/agent/extensions/bw-deny-files.ts" >/dev/null 2>&1 || true
+  [ "$_AICODING_INITIAL_CONFIG_DEFERRED" = 0 ]
+}
+
 @test "Cursor enrollment explains why an unavailable CLI leaves configuration unchanged" {
   . "$BLUEPRINT_ROOT/lib/provision-managed-files.sh"
   warn() { printf 'WARN: %s\n' "$*"; }

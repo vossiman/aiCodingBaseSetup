@@ -167,8 +167,8 @@ aicoding_config_is_compatible() {
         || { echo cursor_config_probe_failed; return 1; }
       ;;
     "$HOME/.pi/agent/extensions/"*)
-      _aicoding_update_receipt_allows pi || { echo pi_update_not_verified; return 1; }
       _aicoding_command_is_linux pi || { echo pi_not_installed; return 1; }
+      _aicoding_update_receipt_allows pi || { echo pi_update_not_verified; return 1; }
       timeout "${AICODING_PROBE_TIMEOUT:-15}" pi --version </dev/null >/dev/null 2>&1 \
         || { echo pi_config_probe_failed; return 1; }
       ;;

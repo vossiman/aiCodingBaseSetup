@@ -569,13 +569,18 @@ _sync_config_gate() {
 }
 
 # Record every config component from the outcome of all destinations it owns.
-# The worst outcome wins: failed > malformed > blocked > current.
+# The worst outcome wins: failed > malformed > blocked > current. Files of a
+# tool that is not installed are skipped and count for nothing.
 _sync_record_config_results() {
   local target=$1 d component result rank worst=1
-  local -A ranks=() reasons=() details=()
+  local -A ranks=() reasons=() details=() skipped=()
   for d in "${!MANAGED_RESULT[@]}"; do
     component=$(_aicoding_config_component "$d" 2>/dev/null || echo config)
     result=${MANAGED_RESULT[$d]}
+    if [[ "$result" == skipped:* ]]; then
+      skipped[$component]=1
+      continue
+    fi
     case "$result" in
       failed) rank=4 ;;
       malformed) rank=3 ;;
@@ -608,6 +613,10 @@ _sync_record_config_results() {
   done
   if (( worst == 2 || worst == 4 )); then _SYNC_PASS_DEFERRED=1; fi
   command -v aicoding_result_record >/dev/null 2>&1 && [ "$target" != unknown ] || return 0
+  for component in "${!skipped[@]}"; do
+    [[ "$component" == config-* && -z "${ranks[$component]:-}" ]] || continue
+    aicoding_result_record "$component" current "$target" tool_not_installed "$target" || true
+  done
   for component in "${!ranks[@]}"; do
     [[ "$component" == config-* ]] || continue
     case "${ranks[$component]}" in

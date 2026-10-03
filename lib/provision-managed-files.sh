@@ -41,10 +41,13 @@ _aicoding_initial_config_ready() {
     return 0
   fi
   [ -n "$reason" ] || reason=runtime_compatibility_unavailable
-  _AICODING_INITIAL_CONFIG_DEFERRED=1
+  _AICODING_INITIAL_CONFIG_REASON=$reason
   if [ "$reason" = cursor_not_installed ]; then
-    warn "preserving $dest: no supported Linux agent or cursor-agent found on PATH; host profile does not install absent tools ($reason)"
+    warn "skipping $dest: no supported Linux agent or cursor-agent found on PATH; host profile does not install absent tools ($reason)"
+  elif [[ "$reason" == *_not_installed ]]; then
+    warn "skipping $dest: ${reason%_not_installed} is not installed ($reason)"
   else
+    _AICODING_INITIAL_CONFIG_DEFERRED=1
     warn "preserving $dest because its runtime is not ready ($reason)"
   fi
   return 1
@@ -61,7 +64,10 @@ _aicoding_managed_source_version() {
 # per destination by _aicoding_initial_config_ready (shared-root lock and
 # tool readiness). Returns nonzero only when a write failed.
 _install_config_gate() {
-  _aicoding_initial_config_ready "$1" >&2
+  _AICODING_INITIAL_CONFIG_REASON=
+  _aicoding_initial_config_ready "$1" >&2 && return 0
+  printf '%s\n' "$_AICODING_INITIAL_CONFIG_REASON"
+  return 1
 }
 
 install_managed_config() {
