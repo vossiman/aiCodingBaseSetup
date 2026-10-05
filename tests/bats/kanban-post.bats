@@ -443,7 +443,7 @@ EOF
 @test "--done with evidence rejects every legacy mutation argument before any request" {
   export KANBAN_WORK_HANDLE="handle-hint"
   _start_api_server myrepo
-  local -a incompatible=(title body status priority swimlane due)
+  local -a incompatible=(title body status priority due)
   local name
   for name in "${incompatible[@]}"; do
     case "$name" in
@@ -451,7 +451,6 @@ EOF
       body) run "$KP" --done MYREPO-1 --evidence "tests pass" --body "ignored body" ;;
       status) run "$KP" --done MYREPO-1 --evidence "tests pass" --status todo ;;
       priority) run "$KP" --done MYREPO-1 --evidence "tests pass" --priority high ;;
-      swimlane) run "$KP" --done MYREPO-1 --evidence "tests pass" --swimlane required ;;
       due) run "$KP" --done MYREPO-1 --evidence "tests pass" --due none ;;
     esac
     [ "$status" -ne 0 ]
@@ -698,40 +697,47 @@ EOF
   grep -q '"due_date": null' "$TMPDIR/requests"
 }
 
-@test "swimlane can be set explicitly on create" {
+@test "--waiting-on is sent as given when creating a ticket" {
   _start_api_server myrepo
   _fake_checkout myrepo
-  run "$KP" "required ticket" --repo myrepo --swimlane required
+  run "$KP" "restore test" --repo myrepo --status waiting --waiting-on "owner: go or no-go"
   [ "$status" -eq 0 ]
-  grep -q '"swimlane": "required"' "$TMPDIR/requests"
+  grep -q 'POST /api/tickets .*"status": "waiting", "waiting_on": "owner: go or no-go"' "$TMPDIR/requests"
 }
 
-@test "swimlane-only patch sends no inferred status or priority" {
+@test "--patch sends --waiting-on and --wait-note as given and nothing inferred" {
   _start_api_server myrepo
-  run "$KP" --patch MYREPO-1 --swimlane waiting_for_feedback
+  run "$KP" --patch MYREPO-1 --status todo --wait-note "owner answered in chat"
   [ "$status" -eq 0 ]
-  grep -q 'PATCH /api/tickets/MYREPO-1 {"swimlane": "waiting_for_feedback"}' "$TMPDIR/requests"
+  grep -q 'PATCH /api/tickets/MYREPO-1 {"status": "todo", "wait_note": "owner answered in chat"}' "$TMPDIR/requests"
+  run "$KP" --patch MYREPO-1 --waiting-on "owner: which host"
+  [ "$status" -eq 0 ]
+  grep -q 'PATCH /api/tickets/MYREPO-1 {"waiting_on": "owner: which host"}' "$TMPDIR/requests"
 }
 
-@test "omitting swimlane leaves new tickets to the server default" {
+@test "the client leaves status keys to the board" {
   _start_api_server myrepo
-  _fake_checkout myrepo
-  run "$KP" "unclassified" --repo myrepo
+  run "$KP" --patch MYREPO-1 --status waiting
   [ "$status" -eq 0 ]
-  run grep -q 'swimlane' "$TMPDIR/requests"
-  [ "$status" -eq 1 ]
+  grep -q 'PATCH /api/tickets/MYREPO-1 {"status": "waiting"}' "$TMPDIR/requests"
 }
 
-@test "invalid swimlane is refused before making a request" {
+@test "--waiting-on and --wait-note are refused where they do not apply" {
   _start_api_server myrepo
-  run "$KP" --patch MYREPO-1 --swimlane guessed
+  run "$KP" --comment MYREPO-1 "answer" --waiting-on owner
   [ "$status" -ne 0 ]
-  [ ! -s "$TMPDIR/requests" ]
-}
-
-@test "swimlane cannot be silently ignored on a comment" {
-  _start_api_server myrepo
-  run "$KP" --comment MYREPO-1 "answer" --swimlane required
+  [[ "$output" == *"--waiting-on only applies to creating or patching a ticket"* ]]
+  run "$KP" --done MYREPO-1 --waiting-on owner
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--waiting-on only applies"* ]]
+  run "$KP" --list-tickets --waiting-on owner
+  [ "$status" -ne 0 ]
+  run "$KP" "new ticket" --repo myrepo --wait-note "answered"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--wait-note only applies to --patch"* ]]
+  run "$KP" --comment MYREPO-1 "answer" --wait-note "answered"
+  [ "$status" -ne 0 ]
+  run "$KP" --show MYREPO-1 --wait-note "answered"
   [ "$status" -ne 0 ]
   [ ! -s "$TMPDIR/requests" ]
 }

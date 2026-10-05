@@ -101,8 +101,8 @@ class KanbanPostJsonTests(unittest.TestCase):
     def test_read_operations_map_to_fixed_routes_and_encode_inputs(self):
         cases = [
             ("list_repos", {}, "GET", "/api/repos", None),
-            ("list_tickets", {"repo": "data Env", "status": "doing", "swimlane": "required", "done": "recent"},
-             "GET", "/api/tickets?repo=data+Env&status=doing&swimlane=required&done=recent", None),
+            ("list_tickets", {"repo": "data Env", "status": "waiting", "priority": "high", "done": "recent"},
+             "GET", "/api/tickets?repo=data+Env&status=waiting&priority=high&done=recent", None),
             ("get_ticket", {"ticket": "repo/key ?#"}, "GET", "/api/tickets/repo%2Fkey%20%3F%23", None),
             ("get_session", {"work_session_id": SESSION_ID}, "GET", f"/api/work/sessions/{SESSION_ID}", None),
         ]
@@ -120,6 +120,14 @@ class KanbanPostJsonTests(unittest.TestCase):
              "POST", "/api/tickets", {"title": "Follow-up", "repo": "myrepo", "body": "Details", "priority": "high"}),
             ("update_ticket", {"ticket": "KANBAN/2", "fields": {"title": "Renamed", "due_date": None, "position": 2}},
              "PATCH", "/api/tickets/KANBAN%2F2", {"title": "Renamed", "due_date": None, "position": 2}),
+            ("create_ticket", {"checkout": str(checkout), "title": "Restore test", "status": "waiting",
+                               "waiting_on": "owner: go or no-go"},
+             "POST", "/api/tickets", {"title": "Restore test", "repo": "myrepo", "status": "waiting",
+                                      "waiting_on": "owner: go or no-go"}),
+            ("update_ticket", {"ticket": "KANBAN-2", "fields": {"status": "todo", "wait_note": "owner answered in chat"}},
+             "PATCH", "/api/tickets/KANBAN-2", {"status": "todo", "wait_note": "owner answered in chat"}),
+            ("update_ticket", {"ticket": "KANBAN-2", "fields": {"waiting_on": "owner: which host"}},
+             "PATCH", "/api/tickets/KANBAN-2", {"waiting_on": "owner: which host"}),
             ("add_comment", {"ticket": "KANBAN-2", "body": "Parser verified."},
              "POST", "/api/tickets/KANBAN-2/comments", {"body": "Parser verified."}),
             ("link_tickets", {"ticket": "KANBAN-2", "target": "KANBAN-3", "kind": "relates"},
@@ -148,16 +156,24 @@ class KanbanPostJsonTests(unittest.TestCase):
              "POST", f"/api/work/sessions/{SESSION_ID}/end", {"handoff": "Stopped cleanly", "operation_id": OP_ID}),
             ("claim_ticket", {"work_session_id": SESSION_ID, "ticket": "KANBAN-2", "operation_id": OP_ID},
              "POST", "/api/work/tickets/KANBAN-2/claim", {"work_session_id": SESSION_ID, "operation_id": OP_ID}),
+            ("claim_ticket", {"work_session_id": SESSION_ID, "ticket": "KANBAN-2", "operation_id": OP_ID,
+                              "wait_note": "owner answered in chat"},
+             "POST", "/api/work/tickets/KANBAN-2/claim", {"work_session_id": SESSION_ID, "operation_id": OP_ID,
+                                                          "wait_note": "owner answered in chat"}),
             ("activity", {"work_session_id": SESSION_ID, "claim_id": CLAIM_ID, "observed_at": "2026-09-12T10:00:00Z", "sequence": 4, "operation_id": OP_ID},
              "POST", f"/api/work/claims/{CLAIM_ID}/activity", {"work_session_id": SESSION_ID, "observed_at": "2026-09-12T10:00:00Z", "sequence": 4, "operation_id": OP_ID}),
             ("checkpoint_work", {"work_session_id": SESSION_ID, "claim_id": CLAIM_ID, "checkpoint": "Parser implemented.", "operation_id": OP_ID},
              "POST", f"/api/work/claims/{CLAIM_ID}/checkpoint", {"work_session_id": SESSION_ID, "checkpoint": "Parser implemented.", "operation_id": OP_ID}),
-            ("release_ticket", {"work_session_id": SESSION_ID, "claim_id": CLAIM_ID, "handoff": "Tests remain.", "reason": "paused", "swimlane": "required", "operation_id": OP_ID},
-             "POST", f"/api/work/claims/{CLAIM_ID}/release", {"work_session_id": SESSION_ID, "handoff": "Tests remain.", "reason": "paused", "swimlane": "required", "operation_id": OP_ID}),
+            ("release_ticket", {"work_session_id": SESSION_ID, "claim_id": CLAIM_ID, "handoff": "Tests remain.", "reason": "paused", "operation_id": OP_ID},
+             "POST", f"/api/work/claims/{CLAIM_ID}/release", {"work_session_id": SESSION_ID, "handoff": "Tests remain.", "reason": "paused", "operation_id": OP_ID}),
+            ("release_ticket", {"work_session_id": SESSION_ID, "claim_id": CLAIM_ID, "handoff": "Need a decision.", "reason": "feedback", "feedback_target": "owner: which host", "operation_id": OP_ID},
+             "POST", f"/api/work/claims/{CLAIM_ID}/release", {"work_session_id": SESSION_ID, "handoff": "Need a decision.", "reason": "feedback", "feedback_target": "owner: which host", "operation_id": OP_ID}),
             ("complete_ticket", {"work_session_id": SESSION_ID, "claim_id": CLAIM_ID, "evidence": "24 tests passed", "references": [], "operation_id": OP_ID},
              "POST", f"/api/work/claims/{CLAIM_ID}/complete", {"work_session_id": SESSION_ID, "evidence": "24 tests passed", "references": [], "operation_id": OP_ID}),
             ("override_claim", {"claim_id": CLAIM_ID, "reason": "operator recovery", "status": "todo", "position": 1, "operation_id": OP_ID},
              "POST", f"/api/work/claims/{CLAIM_ID}/override", {"reason": "operator recovery", "status": "todo", "position": 1, "operation_id": OP_ID}),
+            ("override_claim", {"claim_id": CLAIM_ID, "reason": "needs owner", "status": "waiting", "priority": "high", "waiting_on": "owner: which host", "operation_id": OP_ID},
+             "POST", f"/api/work/claims/{CLAIM_ID}/override", {"reason": "needs owner", "status": "waiting", "priority": "high", "waiting_on": "owner: which host", "operation_id": OP_ID}),
         ]
         for operation, payload, method, path, expected_body in cases:
             with self.subTest(operation=operation):
@@ -259,6 +275,8 @@ class KanbanPostJsonTests(unittest.TestCase):
             ("list_repos", {"url": "https://example.invalid"}, "url"),
             ("claim_ticket", {"work_session_id": SESSION_ID, "ticket": "KANBAN-2", "operation_id": OP_ID, "handle": RUN_ID}, "handle"),
             ("update_ticket", {"ticket": "KANBAN-2", "fields": {"repo": "elsewhere"}}, "repo"),
+            ("create_ticket", {"checkout": str(ROOT), "title": "x", "wait_note": "answered"}, "wait_note"),
+            ("override_claim", {"claim_id": CLAIM_ID, "reason": "x", "wait_note": "answered", "operation_id": OP_ID}, "wait_note"),
         ]:
             with self.subTest(operation=operation, key=key):
                 result = self.run_json(operation, payload)
@@ -273,7 +291,11 @@ class KanbanPostJsonTests(unittest.TestCase):
             ("register_session", {"harness": "unknown", "native_session_id": "native", "run_generation": RUN_ID, "label": "worker", "repo": "kanban", "lifecycle_capable": True, "operation_id": OP_ID}),
             ("release_ticket", {"work_session_id": SESSION_ID, "claim_id": CLAIM_ID, "handoff": "done", "reason": "later", "operation_id": OP_ID}),
             ("create_ticket", {"checkout": str(ROOT), "title": "x", "priority": "urgent"}),
-            ("update_ticket", {"ticket": "K-1", "fields": {"status": "later"}}),
+            ("update_ticket", {"ticket": "K-1", "fields": {"status": ""}}),
+            ("update_ticket", {"ticket": "K-1", "fields": {"waiting_on": None}}),
+            ("update_ticket", {"ticket": "K-1", "fields": {"wait_note": "   "}}),
+            ("claim_ticket", {"work_session_id": SESSION_ID, "ticket": "KANBAN-2", "operation_id": OP_ID, "wait_note": 7}),
+            ("list_tickets", {"priority": "urgent"}),
             ("create_ticket", {"checkout": str(ROOT), "title": "x", "due_date": "12/09/2026"}),
             ("end_session", {"work_session_id": SESSION_ID, "handoff": "   ", "operation_id": OP_ID}),
         ]

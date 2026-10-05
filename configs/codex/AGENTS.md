@@ -97,9 +97,7 @@ completion, comments, links, and follow-up filing. Its server instructions are
 the canonical workflow. Native lifecycle hooks register the session and supply
 its work handle; they renew activity and release unfinished claims when a turn
 stops. `kanban-post` remains a
-credential-safe recovery CLI; it is not a status-transition bypass. Its enum
-values: status `backlog|todo|doing|done`, priority `low|normal|high` (default
-`normal`), swimlane `required|nice_to_have|waiting_for_feedback|needs_decision`.
+credential-safe recovery CLI; it is not a status-transition bypass.
 
 All four CLIs enforce the secret-file restrictions above at the tool layer:
 Claude Code and Codex run the
