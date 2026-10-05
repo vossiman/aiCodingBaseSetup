@@ -56,8 +56,8 @@ data.
   comment, a name or a link never gets its own ticket, branch or PR.
 - **File a ticket only when the run cannot do the work.** The accepted
   reasons are closed:
-  1. it needs an answer from the owner or a third party (a feedback ticket
-     in `waiting_for_feedback`, or a link to one);
+  1. it needs an answer from the owner or a third party (a ticket in
+     Waiting, or a link to one);
   2. it needs a paid action or another authorization the run does not hold;
   3. another live session owns the files;
   4. it is a separate piece of work larger than one worker task, which the

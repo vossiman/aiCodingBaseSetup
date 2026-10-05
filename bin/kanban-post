@@ -22,8 +22,9 @@ escaping.
      message, so no frame dump can carry the request object into a log.
 
 Usage:
-  kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--priority low|normal|high] [--swimlane KEY] [--due DATE]
-  kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--priority low|normal|high] [--swimlane KEY] [--due DATE|none]
+  kanban-post "title" --repo NAME [--body TEXT] [--status KEY] [--waiting-on TEXT] [--priority low|normal|high] [--due DATE]
+  kanban-post --patch TICKET ["new title"] [--body TEXT] [--status KEY] [--waiting-on TEXT] [--wait-note TEXT]
+              [--priority low|normal|high] [--due DATE|none]
   kanban-post --done TICKET
   kanban-post --done TICKET --evidence TEXT [--reference TEXT ...]
   kanban-post --comment TICKET "text" | --comment TICKET --body TEXT
@@ -58,9 +59,9 @@ SECRETS = pathlib.Path.home() / ".aicodingsetup" / ".secrets.env"
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 MAX_JSON_STDIN = 256 * 1024
 MAX_OPAQUE = 300
-STATUSES = {"backlog", "todo", "doing", "done"}
+# Status keys are deliberately not listed here: the board owns them and
+# names the valid ones in its 422 when a request uses an unknown key.
 PRIORITIES = {"low", "normal", "high"}
-SWIMLANES = {"required", "nice_to_have", "waiting_for_feedback", "needs_decision"}
 HARNESSES = {"claude", "codex", "cursor", "opencode"}
 JSON_OPERATIONS = {
     "list_repos", "list_tickets", "get_ticket", "create_ticket", "update_ticket",
@@ -307,13 +308,16 @@ def _segment(value, name: str) -> str:
 
 def _check_optional_enums(payload: dict) -> None:
     if payload.get("status") is not None:
-        _enum(payload["status"], "status", STATUSES)
+        _text(payload["status"], "status")
     if payload.get("priority") is not None:
         _enum(payload["priority"], "priority", PRIORITIES)
-    if payload.get("swimlane") is not None:
-        _enum(payload["swimlane"], "swimlane", SWIMLANES)
     if "due_date" in payload:
         _date(payload["due_date"])
+    # When these are allowed is the board's rule, not this client's; only
+    # their shape is checked here.
+    for name in ("waiting_on", "wait_note"):
+        if name in payload:
+            _text(payload[name], name, maximum=10_000)
 
 
 def _request(operation: str, method: str, path: str, body=None) -> tuple[int, object]:
@@ -331,17 +335,17 @@ def dispatch_json(operation: str, payload: dict) -> tuple[int, object]:
         return _request(operation, "GET", "/api/repos")
 
     if operation == "list_tickets":
-        _shape(operation, payload, optional=("repo", "status", "swimlane", "done"))
+        _shape(operation, payload, optional=("repo", "status", "priority", "done"))
         if payload.get("repo") is not None:
             _text(payload["repo"], "repo")
         if payload.get("status") is not None:
-            _enum(payload["status"], "status", STATUSES)
-        if payload.get("swimlane") is not None:
-            _enum(payload["swimlane"], "swimlane", SWIMLANES)
+            _text(payload["status"], "status")
+        if payload.get("priority") is not None:
+            _enum(payload["priority"], "priority", PRIORITIES)
         if payload.get("done") is not None:
             _enum(payload["done"], "done", {"all", "recent"})
         query = urllib.parse.urlencode([
-            (name, payload[name]) for name in ("repo", "status", "swimlane", "done")
+            (name, payload[name]) for name in ("repo", "status", "priority", "done")
             if payload.get(name) is not None
         ])
         return _request(operation, "GET", "/api/tickets" + (f"?{query}" if query else ""))
@@ -352,7 +356,7 @@ def dispatch_json(operation: str, payload: dict) -> tuple[int, object]:
 
     if operation == "create_ticket":
         _shape(operation, payload, required=("checkout", "title"),
-               optional=("body", "status", "priority", "swimlane", "due_date"))
+               optional=("body", "status", "priority", "waiting_on", "due_date"))
         checkout = _text(payload["checkout"], "checkout", maximum=4096)
         if not os.path.isabs(checkout):
             raise InputError(422, "checkout must be an absolute path")
@@ -361,7 +365,7 @@ def dispatch_json(operation: str, payload: dict) -> tuple[int, object]:
             raise InputError(422, "checkout is not a repository with a github.com origin")
         body = {"repo": repo, "title": _text(payload["title"], "title", maximum=10_000)}
         _check_optional_enums(payload)
-        for name in ("body", "status", "priority", "swimlane", "due_date"):
+        for name in ("body", "status", "priority", "waiting_on", "due_date"):
             if name in payload:
                 if name == "body":
                     _optional_text(payload[name], name, maximum=100_000, blank=True)
@@ -373,7 +377,8 @@ def dispatch_json(operation: str, payload: dict) -> tuple[int, object]:
         fields = payload["fields"]
         if not isinstance(fields, dict):
             raise InputError(422, "fields must be an object")
-        _shape(operation, fields, optional=("title", "body", "status", "priority", "swimlane", "due_date", "position"))
+        _shape(operation, fields, optional=("title", "body", "status", "priority", "due_date",
+                                            "position", "waiting_on", "wait_note"))
         _check_optional_enums(fields)
         if "title" in fields:
             _text(fields["title"], "title", maximum=10_000)
@@ -489,10 +494,13 @@ def dispatch_json(operation: str, payload: dict) -> tuple[int, object]:
         return _request(operation, "POST", f"/api/work/sessions/{urllib.parse.quote(session, safe='')}/end", body)
 
     if operation == "claim_ticket":
-        _shape(operation, payload, required=("work_session_id", "ticket", "operation_id"))
+        _shape(operation, payload, required=("work_session_id", "ticket", "operation_id"),
+               optional=("wait_note",))
         session = _text(payload["work_session_id"], "work_session_id")
         _operation_id(payload)
         body = {"work_session_id": session, "operation_id": payload["operation_id"]}
+        if "wait_note" in payload:
+            body["wait_note"] = _text(payload["wait_note"], "wait_note", maximum=10_000)
         return _request(operation, "POST", f"/api/work/tickets/{_segment(payload['ticket'], 'ticket')}/claim", body)
 
     if operation in {"activity", "checkpoint_work", "release_ticket", "complete_ticket"}:
@@ -504,7 +512,7 @@ def dispatch_json(operation: str, payload: dict) -> tuple[int, object]:
         }[operation]
         optional = {
             "activity": (), "checkpoint_work": (),
-            "release_ticket": ("feedback_target", "swimlane"),
+            "release_ticket": ("feedback_target",),
             "complete_ticket": ("references",),
         }[operation]
         _shape(operation, payload, required=required, optional=optional)
@@ -526,10 +534,6 @@ def dispatch_json(operation: str, payload: dict) -> tuple[int, object]:
                 raise InputError(422, "feedback_target is required when reason is 'feedback'")
             if reason != "feedback" and feedback is not None:
                 raise InputError(422, "feedback_target requires reason 'feedback'")
-            if payload.get("swimlane") is not None:
-                swimlane = _enum(payload["swimlane"], "swimlane", SWIMLANES)
-                if swimlane == "waiting_for_feedback":
-                    raise InputError(422, "swimlane must name the prior lane")
         else:
             _text(payload["evidence"], "evidence", maximum=10_000)
             references = payload.get("references", [])
@@ -543,7 +547,7 @@ def dispatch_json(operation: str, payload: dict) -> tuple[int, object]:
 
     # override_claim is the only remaining allowlisted operation.
     _shape(operation, payload, required=("claim_id", "reason", "operation_id"),
-           optional=("status", "swimlane", "position"))
+           optional=("status", "priority", "position", "waiting_on"))
     claim = _text(payload["claim_id"], "claim_id")
     _text(payload["reason"], "reason", maximum=10_000)
     _operation_id(payload)
@@ -750,12 +754,14 @@ def main() -> int:
     p.add_argument("title", nargs="?")
     p.add_argument("--repo", default=None)
     p.add_argument("--body", default=None)
-    p.add_argument("--status", default=None)
+    p.add_argument("--status", metavar="KEY", default=None,
+                   help="status key, e.g. waiting; the board names the valid keys if it refuses one")
     p.add_argument("--priority", default=None, choices=("low", "normal", "high"),
                    help="default normal")
-    p.add_argument("--swimlane", default=None,
-                   choices=("required", "nice_to_have", "waiting_for_feedback", "needs_decision"),
-                   help="explicit classification; omitted new tickets default to needs_decision")
+    p.add_argument("--waiting-on", metavar="TEXT", default=None,
+                   help="who a ticket in status waiting waits on, e.g. 'owner: the question'")
+    p.add_argument("--wait-note", metavar="TEXT", default=None,
+                   help="with --patch: who answered and where, when moving a ticket out of waiting")
     p.add_argument("--due", metavar="DATE", default=None,
                    help="due date, YYYY-MM-DD; with --patch, 'none' clears it")
     p.add_argument("--patch", metavar="TICKET", default=None,
@@ -796,8 +802,11 @@ def main() -> int:
     if (a.reference or a.work_handle) and a.evidence is None:
         p.error("--reference and --work-handle require --done --evidence")
 
-    if a.swimlane is not None and (a.comment or a.link or a.unlink or a.list_repos or a.list_tickets or a.selftest):
-        p.error("--swimlane only applies to creating or patching a ticket")
+    if a.waiting_on is not None and (a.done or a.comment or a.link or a.unlink or a.show
+                                     or a.list_repos or a.list_tickets or a.selftest):
+        p.error("--waiting-on only applies to creating or patching a ticket")
+    if a.wait_note is not None and not a.patch:
+        p.error("--wait-note only applies to --patch")
 
     kinds = {k: getattr(a, k) for k in ("depends_on", "blocks", "relates") if getattr(a, k)}
     if kinds and not a.link:
@@ -810,7 +819,7 @@ def main() -> int:
     if a.show:
         # Read-only by construction: any flag that would write is a refusal
         # rather than something silently dropped.
-        writes = ("title", "repo", "body", "status", "priority", "swimlane", "due",
+        writes = ("title", "repo", "body", "status", "priority", "waiting_on", "wait_note", "due",
                   "patch", "done", "comment", "link", "unlink", "list_repos", "list_tickets")
         if any(getattr(a, name) for name in writes) or kinds:
             p.error("--show only reads a ticket; give it the ticket and nothing else")
@@ -880,7 +889,7 @@ def main() -> int:
             if a.title is not None:
                 incompatible.append("positional title")
             incompatible.extend(
-                f"--{name}" for name in ("body", "status", "priority", "swimlane", "due")
+                f"--{name}" for name in ("body", "status", "priority", "due")
                 if getattr(a, name) is not None
             )
             if incompatible:
@@ -912,7 +921,7 @@ def main() -> int:
             return 0 if status < 400 else 1
         ticket_id = a.patch or a.done
         fields = {"status": "done"} if a.done else {}
-        for name in ("title", "body", "status", "priority", "swimlane"):
+        for name in ("title", "body", "status", "priority", "waiting_on", "wait_note"):
             if getattr(a, name) is not None:
                 fields[name] = getattr(a, name)
         if a.due is not None:
@@ -920,7 +929,8 @@ def main() -> int:
             # so the flag needs a spelling for "no due date".
             fields["due_date"] = None if a.due.lower() == "none" else a.due
         if not fields:
-            p.error("--patch needs at least one of a new title, --body, --status, --priority, --swimlane or --due")
+            p.error("--patch needs at least one of a new title, --body, --status, --waiting-on, "
+                    "--wait-note, --priority or --due")
         status, out = call("PATCH", f"/api/tickets/{ticket_id}", fields)
     else:
         if not a.title:
@@ -941,8 +951,8 @@ def main() -> int:
             ticket["body"] = a.body
         if a.status:
             ticket["status"] = a.status
-        if a.swimlane is not None:
-            ticket["swimlane"] = a.swimlane
+        if a.waiting_on is not None:
+            ticket["waiting_on"] = a.waiting_on
         if a.priority:
             ticket["priority"] = a.priority
         if a.due:
