@@ -74,8 +74,10 @@ to the wiki — a leak that outlives the session.
   labeled smoke-test error through Sentry-compatible ingestion. The user
   does not need to copy a DSN when authenticated API access is available.
 - Use **`bugsink-api`**, which reads the credential internally and redacts
-  credentials and DSNs from its output. Never expand the token in shell
-  commands or read the secret store yourself. Commands:
+  credentials and DSNs from its output, except `dsn`, which prints one
+  validated DSN in clear because a DSN is a public ingest key shipped in
+  client builds. Never expand the token in shell commands or read the
+  secret store yourself. Commands:
 
   ```bash
   bugsink-api projects
@@ -84,6 +86,8 @@ to the wiki — a leak that outlives the session.
   bugsink-api issues --project 1
   bugsink-api issue ISSUE_UUID_OR_FRIENDLY_ID
   bugsink-api smoke --project 1         # creates one uniquely grouped error
+  bugsink-api dsn 1                     # the DSN alone, for a client config
+  bugsink-api create-project --name NAME --team TEAM_UUID  # refuses a name that exists
   ```
 
   The helper refuses redirects and pins production requests to the estate

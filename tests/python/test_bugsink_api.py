@@ -9,6 +9,7 @@ import unittest
 HELPER = Path(__file__).resolve().parents[2] / 'bin/bugsink-api'
 TOKEN = 'FAKE-BUGSINK-AUTH-TOKEN'
 KEY = 'FAKE-INGESTION-KEY'
+TEAM = '8ae9a4f5-ccdc-4168-88e0-9c30f5f6c114'
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -35,7 +36,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if '/projects/1/' in self.path:
             value = project
         elif '/projects/' in self.path:
-            value = dict(results=[project], next=None)
+            value = dict(results=[project, *self.server.created], next=None)
         elif '/issues/abc/' in self.path:
             value = issue
         else:
@@ -49,6 +50,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        if self.path == '/api/canonical/0/projects/':
+            self.server.creates.append((self.headers.get('Authorization'), body))
+            if self.headers.get('Authorization') != 'Bearer ' + TOKEN:
+                self.send_error(401)
+                return
+            new_id = 2 + len(self.server.created)
+            self.server.created.append(dict(id=new_id, team=body['team'], name=body['name'],
+                                            dsn=f'http://{KEY}@127.0.0.1:{self.server.server_port}/{new_id}'))
+            self.send_response(201)
+            self.end_headers()
+            self.wfile.write(json.dumps({**body, 'id': '0b6f6c1e-0000-4000-8000-000000000000'}).encode())
+            return
         self.server.events.append((self.path, self.headers.get('X-Sentry-Auth'), self.headers.get('Authorization'), body))
         self.send_response(200)
         self.end_headers()
@@ -63,6 +76,8 @@ class Tests(unittest.TestCase):
         self.server.redirect = False
         self.server.bad_dsn = False
         self.server.bad_next = None
+        self.server.created = []
+        self.server.creates = []
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.env = {**os.environ, 'BUGSINK_TEST_URL': f'http://127.0.0.1:{self.server.server_port}', 'BUGSINK_TEST_TOKEN': TOKEN}
@@ -107,6 +122,41 @@ class Tests(unittest.TestCase):
         self.assertIsNone(first[2])
         self.assertNotEqual(first[3]['fingerprint'], second[3]['fingerprint'])
         self.assertEqual(first[3]['level'], 'error')
+
+    def test_create_project_posts_once_and_reports_id_without_dsn(self):
+        r = self.run_cli('create-project', '--name', 'new app', '--team', TEAM)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.server.creates, [('Bearer ' + TOKEN, {'name': 'new app', 'team': TEAM})])
+        out = json.loads(r.stdout)
+        self.assertEqual((out['id'], out['name']), (2, 'new app'))
+        self.assertNotIn(KEY, r.stdout + r.stderr)
+        self.assertNotIn(TOKEN, r.stdout + r.stderr)
+
+    def test_create_project_refuses_existing_name_so_retries_cannot_duplicate(self):
+        r = self.run_cli('create-project', '--name', 'Smoke project', '--team', TEAM)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('already exists', r.stderr)
+        self.assertEqual(self.server.creates, [])
+
+    def test_create_project_rejects_bad_team_and_name_before_any_request(self):
+        for args in (('--name', 'x', '--team', 'not-a-uuid'), ('--name', ' ', '--team', TEAM), ('--name', 'x' * 256, '--team', TEAM)):
+            r = self.run_cli('create-project', *args)
+            self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(self.server.requests, [])
+        self.assertEqual(self.server.creates, [])
+
+    def test_dsn_prints_only_the_validated_dsn(self):
+        r = self.run_cli('dsn', '1')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, f'http://{KEY}@127.0.0.1:{self.server.server_port}/1\n')
+        self.assertNotIn(TOKEN, r.stdout + r.stderr)
+
+    def test_dsn_refuses_foreign_dsn(self):
+        self.server.bad_dsn = True
+        r = self.run_cli('dsn', '1')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(r.stdout, '')
+        self.assertNotIn('private-key', r.stderr)
 
     def test_rejects_redirect(self):
         self.server.redirect = True
