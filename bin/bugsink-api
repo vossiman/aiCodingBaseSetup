@@ -139,12 +139,12 @@ class Client:
 
     def create_project(self, name, team):
         if any(p.get('name') == name for p in self.listing('projects')):
-            raise Refused(f'project {name!r} already exists; nothing created')
+            raise Refused('a project with that name already exists; nothing created')
         self.request(self.api + 'projects/', payload={'name': name, 'team': team})
         # The create response carries no usable integer id, so read it back.
         created = [p for p in self.listing('projects') if p.get('name') == name]
         if len(created) != 1:
-            raise Refused(f'project {name!r} was submitted but could not be read back; check `bugsink-api projects`')
+            raise Refused('project was submitted but could not be read back; check `bugsink-api projects`')
         return created[0]
 
     def smoke(self, project):
@@ -180,7 +180,9 @@ def main():
             args.team = str(uuid.UUID(args.team))
         except ValueError:
             parser.error('--team must be a UUID')
-        if not args.name.strip() or len(args.name) > 255:
+        # Bugsink trims names on create; trim first so the duplicate check and read-back match.
+        args.name = args.name.strip()
+        if not args.name or len(args.name) > 255:
             parser.error('--name must be 1 to 255 characters')
     try:
         client = Client()

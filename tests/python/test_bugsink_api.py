@@ -56,7 +56,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.send_error(401)
                 return
             new_id = 2 + len(self.server.created)
-            self.server.created.append(dict(id=new_id, team=body['team'], name=body['name'],
+            self.server.created.append(dict(id=new_id, team=body['team'], name=body['name'].strip(),
                                             dsn=f'http://{KEY}@127.0.0.1:{self.server.server_port}/{new_id}'))
             self.send_response(201)
             self.end_headers()
@@ -137,6 +137,17 @@ class Tests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('already exists', r.stderr)
         self.assertEqual(self.server.creates, [])
+
+    def test_create_project_trims_name_like_the_server(self):
+        r = self.run_cli('create-project', '--name', ' new app ', '--team', TEAM)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.server.creates[0][1]['name'], 'new app')
+
+    def test_refusal_does_not_echo_a_credential_bearing_name(self):
+        self.server.created.append(dict(id=9, team=TEAM, name='password=FAKE-PASSWORD', dsn='x'))
+        r = self.run_cli('create-project', '--name', 'password=FAKE-PASSWORD', '--team', TEAM)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn('FAKE-PASSWORD', r.stdout + r.stderr)
 
     def test_create_project_rejects_bad_team_and_name_before_any_request(self):
         for args in (('--name', 'x', '--team', 'not-a-uuid'), ('--name', ' ', '--team', TEAM), ('--name', 'x' * 256, '--team', TEAM)):
