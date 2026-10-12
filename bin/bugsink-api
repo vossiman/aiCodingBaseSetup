@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Credential-safe Bugsink reader and smoke-test sender.
+"""Credential-safe Bugsink reader, project creator and smoke-test sender.
 
 The owner authorizes this helper to hold BUGSINK_AUTH_TOKEN in-process,
 just like dokploy-api. Production requests are pinned to the estate host;
 loopback tests require a fake token and never read the shared store.
-Responses are scrubbed; redirects and foreign DSNs are refused.
+Responses are scrubbed; redirects and foreign DSNs are refused. The `dsn`
+command is the one deliberate exception: a DSN is a public ingest key that
+ships inside every client build, so it prints one validated DSN in clear.
 """
 import argparse
 from datetime import datetime, timezone
@@ -25,6 +27,10 @@ SECRET_ASSIGNMENT = re.compile(
     r'''(?ix)(["']?[\w-]*(?:password|passwd|token|secret|api.?key|dsn|authorization|credential)[\w-]*["']?\s*[:=]\s*)'''
     r'''(?:"[^"]*"|'[^']*'|[^\s,;]+)'''
 )
+
+
+class Refused(Exception):
+    """A refusal whose message holds no credential and is safe to print."""
 
 
 class NoRedirects(urllib.request.HTTPRedirectHandler):
@@ -63,11 +69,14 @@ class Client:
                     return value
         raise ValueError('BUGSINK_AUTH_TOKEN is not set; check with secrets-check')
 
-    def request(self, url, *, event=None, ingestion_key=None):
+    def request(self, url, *, event=None, ingestion_key=None, payload=None):
         headers = {'Accept': 'application/json'}
         data = None
         if event is None:
             headers['Authorization'] = 'Bearer ' + self.token
+            if payload is not None:
+                headers['Content-Type'] = 'application/json'
+                data = json.dumps(payload).encode()
         else:
             headers['Content-Type'] = 'application/json'
             headers['X-Sentry-Auth'] = 'Sentry sentry_version=7, sentry_client=bugsink-api/1, sentry_key=' + ingestion_key
@@ -119,13 +128,27 @@ class Client:
             value = re.sub(r'(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{120,}={0,2}', '<redacted>', value)
         return value
 
-    def smoke(self, project):
-        info = self.get('projects', project)
-        dsn = urlparse.urlsplit(info['dsn'])
+    def dsn(self, project):
+        raw = self.get('projects', project)['dsn']
+        dsn = urlparse.urlsplit(raw)
         target = urlparse.urlsplit(self.base)
         # API responses cannot redirect either credential to another destination.
         if (dsn.scheme, dsn.hostname, dsn.port) != (target.scheme, target.hostname, target.port) or dsn.password or dsn.query or dsn.fragment or not dsn.username or not re.fullmatch(r'[A-Za-z0-9_-]+', dsn.username) or dsn.path != '/' + str(project):
             raise ValueError('DSN origin, project or key is invalid')
+        return raw, dsn
+
+    def create_project(self, name, team):
+        if any(p.get('name') == name for p in self.listing('projects')):
+            raise Refused('a project with that name already exists; nothing created')
+        self.request(self.api + 'projects/', payload={'name': name, 'team': team})
+        # The create response carries no usable integer id, so read it back.
+        created = [p for p in self.listing('projects') if p.get('name') == name]
+        if len(created) != 1:
+            raise Refused('project was submitted but could not be read back; check `bugsink-api projects`')
+        return created[0]
+
+    def smoke(self, project):
+        _, dsn = self.dsn(project)
         event_id = uuid.uuid4().hex
         label = 'notify-hub smoke test ' + event_id[:12]
         event = {
@@ -147,7 +170,20 @@ def main():
     commands.add_parser('issues', help='list issues in one project, or every project').add_argument('--project', type=int)
     commands.add_parser('issue', help='read issue details by UUID or friendly ID').add_argument('id')
     commands.add_parser('smoke', help='submit one uniquely grouped test error').add_argument('--project', type=int, required=True)
+    commands.add_parser('dsn', help="print one project's DSN in clear (a public ingest key)").add_argument('id', type=int)
+    create = commands.add_parser('create-project', help='create a project; refuses a name that already exists')
+    create.add_argument('--name', required=True)
+    create.add_argument('--team', required=True, help='team UUID, as shown by `projects`')
     args = parser.parse_args()
+    if args.command == 'create-project':
+        try:
+            args.team = str(uuid.UUID(args.team))
+        except ValueError:
+            parser.error('--team must be a UUID')
+        # Bugsink trims names on create; trim first so the duplicate check and read-back match.
+        args.name = args.name.strip()
+        if not args.name or len(args.name) > 255:
+            parser.error('--name must be 1 to 255 characters')
     try:
         client = Client()
         if args.command == 'projects':
@@ -159,10 +195,17 @@ def main():
         elif args.command == 'issues':
             projects = [args.project] if args.project is not None else [p['id'] for p in client.listing('projects')]
             result = [i for project in projects for i in client.listing('issues', project=project, sort='digest_order', order='desc')]
+        elif args.command == 'dsn':
+            print(client.dsn(args.id)[0])
+            return 0
+        elif args.command == 'create-project':
+            result = client.create_project(args.name, args.team)
         else:
             result = client.smoke(args.project)
         print(json.dumps(client.scrub(result), indent=2))
         return 0
+    except Refused as exc:
+        print(f'bugsink-api: {exc}', file=sys.stderr)
     except urllib.error.HTTPError as exc:
         print(f'bugsink-api: HTTP {exc.code}; response body withheld', file=sys.stderr)
     except Exception as exc:
