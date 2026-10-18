@@ -361,6 +361,25 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(self.prompt("claude", turn="turn-2").lifecycle["handle"],
                          new["handle"])
 
+    def test_replayed_old_prompt_after_session_end_does_not_consume_the_revival(self):
+        old = self.start("claude")
+        self.prompt("claude", turn="turn-1")
+        self.adapter.adapt("claude", "SessionEnd", {
+            "session_id": "native-a", "hook_event_name": "SessionEnd",
+            "reason": "other", "cwd": "/tmp/repo",
+            "transcript_path": "/tmp/native-a.jsonl",
+        })
+        with self.assertRaises(BridgeError):
+            self.prompt("claude", turn="turn-1")
+        self.assertEqual(
+            [e.state for e in self.store.executions_for_native("claude", "native-a", None)],
+            ["ended"],
+        )
+        result = self.prompt("claude", turn="turn-2")
+        self.assertNotEqual(result.lifecycle["handle"], old["handle"])
+        self.assertIn(result.lifecycle["handle"],
+                      result.output["hookSpecificOutput"]["additionalContext"])
+
     def test_prompt_without_any_generation_still_fails_closed(self):
         with self.assertRaisesRegex(BridgeError, "no current Kanban work handle"):
             self.prompt("claude", session="never-started")

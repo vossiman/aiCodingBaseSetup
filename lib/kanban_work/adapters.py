@@ -427,18 +427,19 @@ class ClaudeCodexAdapter:
     def _prompt(self, harness: str, payload: dict) -> AdapterResult:
         session_id, agent_id = self._native(payload)
         prompt_id = self._prompt_identifier(harness, payload)
+        event_id = self._prompt_event_id(harness, session_id, agent_id, prompt_id)
         execution = self.store.current_execution(harness, session_id, agent_id)
         revived = None
         # Only Claude Code resumes a reaped process under the same native
-        # session and accepts additionalContext on UserPromptSubmit.
+        # session and accepts additionalContext on UserPromptSubmit. A prompt
+        # that already has a receipt is a replay of the ended generation, not
+        # a new turn, so it must not mint a generation it cannot hand over.
         if (harness == "claude" and agent_id is None and execution is not None
-                and execution.state == "ended"):
+                and execution.state == "ended"
+                and self.store.native_event(harness, event_id) is None):
             revived = self._revive(harness, payload, session_id, prompt_id)
         execution = self._current(harness, session_id, agent_id)
-        lifecycle = self._record(
-            harness, "activity", execution,
-            self._prompt_event_id(harness, session_id, agent_id, prompt_id),
-        )
+        lifecycle = self._record(harness, "activity", execution, event_id)
         # A new turn settles the previous turn's Stop; an unreachable board
         # leaves it for the claim gate, and the turn proceeds either way.
         self.ingress.settle_turn(execution.handle)
