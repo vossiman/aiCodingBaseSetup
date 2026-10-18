@@ -14,17 +14,47 @@ set -uo pipefail
 # inside bash silently does nothing because the names contain `%%`, which bash
 # rejects as an invalid identifier. See KNOWN_ISSUES.md.
 #
-# New templates never curl this hook. A legacy curl-pipe invocation cannot
-# safely re-fetch executable raw-main code, so it exits and waits for verified
-# enrollment instead of silently executing an unqualified source.
-if [[ "${_NVS_STRIPPED:-}" != 1 ]]; then
-  self="$0"
-  if [[ "$(basename -- "$self")" == bash || ! -r "$self" ]]; then
-    echo "WARN: legacy raw-main startup hook disabled; verified enrollment required" >&2
-    exit 0
+# New templates never curl this hook. A legacy curl-pipe invocation must not
+# run this downloaded body or fetch anything else: it hands off to the release
+# the updater already activated, or does nothing. The check runs before and
+# independently of _NVS_STRIPPED, so an inherited marker cannot skip it. It
+# mirrors _aicoding_runtime_release_target (lib/runtime.sh) without sourcing
+# anything from the candidate release. Bash reads a piped script one command
+# at a time, so this whole branch stays a single compound command.
+if [[ "$(basename -- "$0")" == bash || ! -r "$0" ]]; then
+  legacy_data="${AICODING_DATA_DIR:-$HOME/.local/share/aicoding}"
+  legacy_link="$legacy_data/current/aicoding"
+  legacy_target=""
+  legacy_hook=""
+  if [ -L "$legacy_link" ]; then
+    legacy_target=$(readlink -- "$legacy_link" </dev/null) || legacy_target=""
   fi
+  legacy_version="${legacy_target#../versions/aicoding/}"
+  if [ "$legacy_target" = "../versions/aicoding/$legacy_version" ] \
+      && [[ "$legacy_version" =~ ^[A-Za-z0-9._-]+$ ]] \
+      && [ "$legacy_version" != . ] && [ "$legacy_version" != .. ]; then
+    legacy_release="$legacy_data/versions/aicoding/$legacy_version"
+    legacy_candidate="$legacy_release/on-start.sh"
+    legacy_release_real=$(readlink -f -- "$legacy_release" </dev/null) || legacy_release_real=""
+    legacy_hook_real=$(readlink -f -- "$legacy_candidate" </dev/null) || legacy_hook_real=""
+    if [ -d "$legacy_release" ] && [ ! -L "$legacy_release" ] && [ -n "$legacy_release_real" ] \
+        && [ -f "$legacy_hook_real" ] && [ -r "$legacy_hook_real" ]; then
+      case "$legacy_hook_real" in
+        "$legacy_release_real"/*) legacy_hook="$legacy_hook_real" ;;
+      esac
+    fi
+  fi
+  if [ -n "$legacy_hook" ]; then
+    echo "INFO: legacy curl start hook; running verified runtime $legacy_version" >&2
+    exec env -u 'BASH_FUNC_nvs%%' -u 'BASH_FUNC_nvsudo%%' -u 'BASH_FUNC_nvm%%' \
+      _NVS_STRIPPED=1 bash "$legacy_hook" "$@" </dev/null
+  fi
+  echo "WARN: legacy curl start hook and no verified runtime enrolled; migrate postStartCommand to the template form" >&2
+  exit 0
+fi
+if [[ "${_NVS_STRIPPED:-}" != 1 ]]; then
   exec env -u 'BASH_FUNC_nvs%%' -u 'BASH_FUNC_nvsudo%%' -u 'BASH_FUNC_nvm%%' \
-    _NVS_STRIPPED=1 bash "$self" "$@"
+    _NVS_STRIPPED=1 bash "$0" "$@"
 fi
 
 # Surface ~/.local/bin where install.sh's ensure_* functions drop the CLIs
