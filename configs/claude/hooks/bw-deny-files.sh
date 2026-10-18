@@ -662,54 +662,44 @@ is_process_cmdline_listing() {
   # command of its own, so `ssh host 'ps aux'` and `bash -c '...'` count.
   printf '%s' "$1" | awk '
     function base(w) { sub(/^.*\//, "", w); return w }
-    function check_fmt(f,   n, k, parts) {
-      n = split(f, parts, /[ ,=:]+/)
-      for (k = 1; k <= n; k++)
-        if (parts[k] ~ /^(args|cmd|command|cmdline)$/) return 1
-      return 0
+    # procps ps is an ALLOWLIST: selectors, plus -o/--format whose columns
+    # all come from SAFE. Its output modes that print args or the
+    # environment (BSD words, -f/-F, -O, --context, AIX %a, e) are too many to
+    # enumerate, so anything unrecognised is denied. `ps auxc` (BSD c,
+    # name only) is denied too: failing closed is the cheap side.
+    function fmt_ok(f,   n, k, parts, fld) {
+      if (f ~ /%/) return 0
+      n = split(f, parts, /[ ,]+/)
+      for (k = 1; k <= n; k++) {
+        fld = parts[k]; sub(/[=:].*$/, "", fld)
+        if (fld == "") continue
+        if (!(fld in SAFE)) return 0
+      }
+      return 1
     }
-    # procps ps: a custom -o/o/--format decides the columns; otherwise -f,
-    # -F or any BSD option word selects a format with the full command line.
-    function ps_bad(s, n,   j, a, k, c, rest, cl, fmt_set, wide, bad) {
-      fmt_set = 0; wide = 0; bad = 0
+    function ps_bad(s, n,   j, a, k, c, cl, rest) {
       for (j = s; j <= n; j++) {
         a = W[j]
-        if (a ~ /^--/) {
-          if (a ~ /^--format=/) { fmt_set = 1; if (check_fmt(substr(a, 10))) bad = 1 }
-          else if (a == "--format") { j++; fmt_set = 1; if (check_fmt(W[j])) bad = 1 }
-          else if (a ~ /^--(sort|pid|ppid|user|group|sid|tty|cols|columns|rows|width|User|Group)$/) j++
-          continue
-        }
-        if (a ~ /^-[A-Za-z]/) {
-          cl = substr(a, 2)
-          for (k = 1; k <= length(cl); k++) {
-            c = substr(cl, k, 1)
-            if (c == "f" || c == "F") wide = 1
-            if (c == "o" || c == "O") {
-              rest = substr(cl, k + 1); if (rest == "") { j++; rest = W[j] }
-              if (c == "o") fmt_set = 1
-              if (check_fmt(rest)) bad = 1
-              break
-            }
-            if (c ~ /[CGgpqstUuk]/) { if (k == length(cl)) j++; break }
+        if (a ~ /^[0-9][0-9,]*$/) continue
+        if (a ~ /^--format=/) { if (!fmt_ok(substr(a, 10))) return 1; continue }
+        if (a == "--format") { j++; if (!fmt_ok(W[j])) return 1; continue }
+        if (a ~ /^--(pid|ppid|user|group|sid|tty|sort|cols|columns|rows|width|User|Group|quick-pid)=/) continue
+        if (a ~ /^--(pid|ppid|user|group|sid|tty|sort|cols|columns|rows|width|User|Group|quick-pid)$/) { j++; continue }
+        if (a ~ /^--(no-headers|no-heading|headers|deselect|cumulative)$/) continue
+        if (a !~ /^-[A-Za-z]/) return 1
+        cl = substr(a, 2)
+        for (k = 1; k <= length(cl); k++) {
+          c = substr(cl, k, 1)
+          if (c == "o") {
+            rest = substr(cl, k + 1); if (rest == "") { j++; rest = W[j] }
+            if (!fmt_ok(rest)) return 1
+            break
           }
-          continue
-        }
-        if (a ~ /^[aAcCeEfFgGhHjklLmMnNOopqrRsStTuUvVwWxXZ]+$/) {
-          for (k = 1; k <= length(a); k++) {
-            c = substr(a, k, 1)
-            if (c == "o" || c == "O") {
-              rest = substr(a, k + 1); if (rest == "") { j++; rest = W[j] }
-              if (c == "o") fmt_set = 1
-              if (check_fmt(rest)) bad = 1
-              break
-            }
-            if (c ~ /[pqtUk]/) { if (k == length(a)) j++; break }
-            wide = 1
-          }
+          if (c ~ /[CGgpqstUuk]/) { if (k == length(cl)) j++; break }
+          if (c !~ /[AaedNTLHwy]/) return 1
         }
       }
-      return bad || (wide && !fmt_set)
+      return 0
     }
     # pgrep -a/--list-full, pstree -a/--arguments, top -c. The letters in
     # `consume` take an operand, which is skipped rather than read as flags.
@@ -768,6 +758,8 @@ is_process_cmdline_listing() {
     }
     { buf = (NR > 1 ? buf "\n" : "") $0 }
     END {
+      split("pid ppid pgid pgrp sid sess tid lwp spid tty tt tname stat state s etime etimes time cputime start stime start_time lstart bsdstart comm ucomm ucmd user euser ruser uid euid ruid group egroup gid pcpu %cpu c cp pmem %mem rss rssize rsz vsz vsize sz nlwp thcount ni nice pri priority psr wchan f flags cls policy class", SL, " ")
+      for (k in SL) SAFE[SL[k]] = 1
       found = 0; qn = 1; Q[1] = buf
       for (qi = 1; qi <= qn && !found; qi++) scan(Q[qi])
       exit found ? 0 : 1

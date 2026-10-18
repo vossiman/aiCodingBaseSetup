@@ -410,7 +410,14 @@ MARK"
     'ps -opid,cmd' \
     'ps --format=pid,command' \
     'docker exec web ps aux' \
-    "bash -c 'pgrep -af compose'"
+    "bash -c 'pgrep -af compose'" \
+    'ps -p 123 -O pid' \
+    'ps -p 123 --context' \
+    'ps axopid,args' \
+    'ps -p 123 opid,args' \
+    'ps -p 123 -o "%p %a"' \
+    'ps -p 123 -o comm e' \
+    'ps auxc'
   do
     bash_hook "$c"
     denied || { echo "not denied: $c"; return 1; }
@@ -430,6 +437,9 @@ MARK"
     'ps -C java' \
     'ps -e' \
     'ps -u root -o pid,comm' \
+    'ps -eo pid,ppid,etime,comm=' \
+    'ps -p 123 -o pid= -o comm=' \
+    'ps --pid 1 --format pid,user,comm' \
     'docker --context prod ps -f status=running' \
     'docker -H ssh://host ps -f name=wiki-sync' \
     'podman ps -a' \
