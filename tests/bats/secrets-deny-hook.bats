@@ -403,7 +403,14 @@ MARK"
     'cat /proc/1234/cmdline' \
     "tr '\\0' ' ' < /proc/self/cmdline" \
     'pstree -a' \
-    'top -b -n1 -c'
+    'top -b -n1 -c' \
+    'ps -o "pid,args" -p 1' \
+    "ssh host 'ps -eo \"pid,args\"'" \
+    'ps -Oargs -p 1' \
+    'ps -opid,cmd' \
+    'ps --format=pid,command' \
+    'docker exec web ps aux' \
+    "bash -c 'pgrep -af compose'"
   do
     bash_hook "$c"
     denied || { echo "not denied: $c"; return 1; }
@@ -419,6 +426,14 @@ MARK"
     'ps -p 123' \
     'ps -o pid,etime,comm -p 1' \
     'ps -C nginx' \
+    'ps -C ssh' \
+    'ps -C java' \
+    'ps -e' \
+    'ps -u root -o pid,comm' \
+    'docker --context prod ps -f status=running' \
+    'docker -H ssh://host ps -f name=wiki-sync' \
+    'podman ps -a' \
+    'pgrep -d , -f compose' \
     'docker ps --filter name=wiki-sync --format "{{.Names}}"' \
     'docker compose ps -a' \
     'echo "never run ps aux or pgrep -af on a deploy host"' \

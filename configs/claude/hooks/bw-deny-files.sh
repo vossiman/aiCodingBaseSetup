@@ -657,39 +657,121 @@ block() {
 # known gaps, and least-privilege host access is the real boundary.
 is_process_cmdline_listing() {
   printf '%s' "$1" | grep -qE '/proc/[^[:space:]]*/cmdline' && return 0
-  # Quote characters and operators separate words and segments, so the
-  # command inside `ssh host 'pgrep -af x'` is read like a local one.
-  printf '%s\n' "$1" | tr "\"'\`();&|" '\n\n\n\n\n\n\n\n' | awk '
-    BEGIN { found = 0 }
-    {
-      n = split($0, w, /[[:space:]]+/)
-      prev = ""
-      for (i = 1; i <= n; i++) {
-        word = w[i]
-        if (word == "") continue
-        name = word; sub(/^.*\//, "", name)
-        if (name == "pgrep") {
-          for (j = i + 1; j <= n; j++)
-            if (w[j] ~ /^-[A-Za-z]*a[A-Za-z]*$/ || w[j] == "--list-full") found = 1
-        } else if (name == "pstree") {
-          for (j = i + 1; j <= n; j++)
-            if (w[j] ~ /^-[A-Za-z]*a[A-Za-z]*$/ || w[j] == "--arguments") found = 1
-        } else if (name == "top") {
-          for (j = i + 1; j <= n; j++)
-            if (w[j] ~ /^-[A-Za-z]*c[A-Za-z]*$/) found = 1
-        } else if (name == "ps" && prev !~ /^(docker|podman|nerdctl|crictl|kubectl|compose|docker-compose)$/) {
-          for (j = i + 1; j <= n; j++) {
-            a = w[j]
-            if (a ~ /^-[A-Za-z]*[fF][A-Za-z]*$/) found = 1
-            if (a ~ /^[aAcefhjlLmrsSTuvwxX]+$/) found = 1
-            if (a ~ /^(-[oO]|--format|-o[a-z,=]+|--format=.*)$/ || a ~ /^[a-z_]+(,[a-z_]+)*=?$/ || a ~ /^-[oO][a-z,=]+$/)
-              if (a ~ /(^|[-,=o])(args|cmd|command|cmdline)(,|=|$)/) found = 1
+  # Quote-aware: a quoted argument stays attached to its command (`ps -o
+  # "pid,args"`), and every quoted chunk is queued and scanned again as a
+  # command of its own, so `ssh host 'ps aux'` and `bash -c '...'` count.
+  printf '%s' "$1" | awk '
+    function base(w) { sub(/^.*\//, "", w); return w }
+    function check_fmt(f,   n, k, parts) {
+      n = split(f, parts, /[ ,=:]+/)
+      for (k = 1; k <= n; k++)
+        if (parts[k] ~ /^(args|cmd|command|cmdline)$/) return 1
+      return 0
+    }
+    # procps ps: a custom -o/o/--format decides the columns; otherwise -f,
+    # -F or any BSD option word selects a format with the full command line.
+    function ps_bad(s, n,   j, a, k, c, rest, cl, fmt_set, wide, bad) {
+      fmt_set = 0; wide = 0; bad = 0
+      for (j = s; j <= n; j++) {
+        a = W[j]
+        if (a ~ /^--/) {
+          if (a ~ /^--format=/) { fmt_set = 1; if (check_fmt(substr(a, 10))) bad = 1 }
+          else if (a == "--format") { j++; fmt_set = 1; if (check_fmt(W[j])) bad = 1 }
+          else if (a ~ /^--(sort|pid|ppid|user|group|sid|tty|cols|columns|rows|width|User|Group)$/) j++
+          continue
+        }
+        if (a ~ /^-[A-Za-z]/) {
+          cl = substr(a, 2)
+          for (k = 1; k <= length(cl); k++) {
+            c = substr(cl, k, 1)
+            if (c == "f" || c == "F") wide = 1
+            if (c == "o" || c == "O") {
+              rest = substr(cl, k + 1); if (rest == "") { j++; rest = W[j] }
+              if (c == "o") fmt_set = 1
+              if (check_fmt(rest)) bad = 1
+              break
+            }
+            if (c ~ /[CGgpqstUuk]/) { if (k == length(cl)) j++; break }
+          }
+          continue
+        }
+        if (a ~ /^[aAcCeEfFgGhHjklLmMnNOopqrRsStTuUvVwWxXZ]+$/) {
+          for (k = 1; k <= length(a); k++) {
+            c = substr(a, k, 1)
+            if (c == "o" || c == "O") {
+              rest = substr(a, k + 1); if (rest == "") { j++; rest = W[j] }
+              if (c == "o") fmt_set = 1
+              if (check_fmt(rest)) bad = 1
+              break
+            }
+            if (c ~ /[pqtUk]/) { if (k == length(a)) j++; break }
+            wide = 1
           }
         }
-        prev = name
+      }
+      return bad || (wide && !fmt_set)
+    }
+    # pgrep -a/--list-full, pstree -a/--arguments, top -c. The letters in
+    # `consume` take an operand, which is skipped rather than read as flags.
+    function flag_bad(s, n, letter, longopt, consume,   j, a, k, c, cl) {
+      for (j = s; j <= n; j++) {
+        a = W[j]
+        if (a == longopt) return 1
+        if (a ~ /^--/) continue
+        if (a !~ /^-[A-Za-z]/) continue
+        cl = substr(a, 2)
+        for (k = 1; k <= length(cl); k++) {
+          c = substr(cl, k, 1)
+          if (c == letter) return 1
+          if (index(consume, c)) { if (k == length(cl)) j++; break }
+        }
+      }
+      return 0
+    }
+    function analyze(n,   i, name, cont, inner) {
+      cont = 0; inner = 0
+      for (i = 1; i <= n; i++) {
+        name = base(W[i])
+        if (name ~ /^(docker|podman|nerdctl|crictl|kubectl|oc|docker-compose)$/) cont = 1
+        if (cont && (W[i] == "exec" || W[i] == "run")) inner = 1
+        if (name !~ /^(ps|pgrep|pstree|top)$/) continue
+        if (cont && !inner) continue
+        if (name == "ps" && ps_bad(i + 1, n)) found = 1
+        if (name == "pgrep" && flag_bad(i + 1, n, "a", "--list-full", "dgGPstuUFr")) found = 1
+        if (name == "pstree" && flag_bad(i + 1, n, "a", "--arguments", "H")) found = 1
+        if (name == "top" && flag_bad(i + 1, n, "c", "", "dnpuUoOwEe")) found = 1
       }
     }
-    END { exit found ? 0 : 1 }'
+    function endword() { if (inword) { W[++nw] = word }; word = ""; inword = 0 }
+    function endseg() { endword(); if (nw) analyze(nw); delete W; nw = 0 }
+    function push(chunk) { if (chunk ~ /[[:space:];&|]/ && qn < 64) Q[++qn] = chunk }
+    function scan(str,   i, c, q, qc, len) {
+      nw = 0; word = ""; inword = 0; q = ""; qc = ""; len = length(str)
+      for (i = 1; i <= len; i++) {
+        c = substr(str, i, 1)
+        if (q == "\047") {
+          if (c == "\047") { q = ""; push(qc) } else { word = word c; qc = qc c }
+          continue
+        }
+        if (q == "\"") {
+          if (c == "\\" && index("\"\\$`", substr(str, i + 1, 1))) { i++; c = substr(str, i, 1); word = word c; qc = qc c; continue }
+          if (c == "\"") { q = ""; push(qc) } else { word = word c; qc = qc c }
+          continue
+        }
+        if (c == "\047" || c == "\"") { q = c; qc = ""; inword = 1; continue }
+        if (c == "\\") { i++; word = word substr(str, i, 1); inword = 1; continue }
+        if (c ~ /[ \t]/) { endword(); continue }
+        if (c ~ /[;&|()`\n]/) { endseg(); continue }
+        word = word c; inword = 1
+      }
+      endseg()
+    }
+    { buf = (NR > 1 ? buf "\n" : "") $0 }
+    END {
+      found = 0; qn = 1; Q[1] = buf
+      for (qi = 1; qi <= qn && !found; qi++) scan(Q[qi])
+      exit found ? 0 : 1
+    }'
 }
 
 deny_secret_command() {
