@@ -85,6 +85,16 @@ t3_selected_version() {
   t3_valid_version "$v" && printf '%s\n' "$v"
 }
 
+# t3 0.1.0 moved its database to statev2.sqlite, imported once from
+# state.sqlite on first start (persistence/initializeV2Database.ts).
+t3_db_name() {
+  if t3_version_lt "$1" 0.1.0; then echo state.sqlite; else echo statev2.sqlite; fi
+}
+
+t3_db_path() {
+  printf '%s\n' "$T3CODE_HOME/userdata/$(t3_db_name "$(t3_selected_version)")"
+}
+
 t3_write_version() {
   t3_write_file "$T3_STATE/version.json" "$(jq -cn --arg m "$1" --arg v "$2" '{mode: $m, version: $v}')"
 }

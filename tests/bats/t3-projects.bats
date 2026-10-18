@@ -117,3 +117,16 @@ projects() { bash -c '. "$BLUEPRINT_ROOT/lib/t3.sh"; t3_env 2>/dev/null; t3_proj
   [ -d "$TMP/co/app/.git" ]
   [[ "$output" == *"$TMP/co/app"$'\t'"$TMP/remotes/app.git"* ]]
 }
+
+@test "projects: from 0.1.0 the catalogue is read from statev2.sqlite" {
+  remote_repo app
+  git clone -q "$TMP/remotes/app.git" "$TMP/co/app"
+  t3_import_v2
+  python3 -B -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute(sys.argv[2]); c.commit()' "$(t3_db2)" \
+    "INSERT INTO projection_projects VALUES ('p1', 'p1', '$TMP/co/app', '[]', 'x', 'x', NULL)"
+  mkdir -p "$(S)"
+  echo '{"mode":"latest","version":"0.1.0"}' > "$(S)/version.json"
+  run projects
+  [ "$status" -eq 0 ]
+  [ "$(cat "$(S)/projects.tsv")" = "$TMP/co/app"$'\t'"$TMP/remotes/app.git" ]
+}

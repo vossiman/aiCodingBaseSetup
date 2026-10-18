@@ -5,7 +5,7 @@ T3_SHELLS=" bash sh zsh dash fish "
 
 t3_idle_db() {
   local out
-  if out=$(python3 -B "$T3_LIB_DIR/t3_idle.py" "$T3CODE_HOME/userdata/state.sqlite" \
+  if out=$(python3 -B "$T3_LIB_DIR/t3_idle.py" "$(t3_db_path)" \
       "$T3_QUIET_SECONDS" "$(date +%s)" "$1" 2>/dev/null); then
     return 0
   fi

@@ -187,3 +187,8 @@ teardown() { t3_test_teardown; }
   for i in $(seq 1 25); do [ -e "$TMP/boot-called" ] && break; sleep 0.2; done
   [ "$(cat "$TMP/boot-called")" = --boot ]
 }
+
+@test "db: t3 before 0.1.0 uses state.sqlite, 0.1.0 and later statev2.sqlite" {
+  for v in 0.0.42 0.0.45 0.0.99; do [ "$(t3_lib t3_db_name "$v")" = state.sqlite ]; done
+  for v in 0.1.0 0.1.1-preview.20261017.3254 0.2.0 1.0.0; do [ "$(t3_lib t3_db_name "$v")" = statev2.sqlite ]; done
+}

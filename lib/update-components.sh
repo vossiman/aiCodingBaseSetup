@@ -1138,6 +1138,7 @@ aicoding_update_t3() {
   local line state reason version detail log="${AICODING_STATE_DIR:-$HOME/.local/state/aicoding}/t3-update.log"
   mkdir -p "$(dirname "$log")"
   line=$("${BASH_SOURCE[0]%/*}/../bin/t3-update" --scheduled </dev/null 2>>"$log" | tail -n 1)
+  printf '%s %s\n' "$(date -u +%FT%TZ)" "${line:-no result line}" >>"$log"
   read -r _ state reason version detail <<< "$line"
   [ "$version" = - ] && version=""
   [ "$detail" = - ] && detail=""

@@ -296,3 +296,30 @@ needs_attention_untouched() {
 @test "updater entry strips the owner token so its worker is never in a server's scope" {
   sed -n '/^unset /,/[^\\]$/p' "$BLUEPRINT_ROOT/bin/aicoding-auto-update" | grep -qw T3_AICODING_OWNER
 }
+
+@test "backup: holds statev2.sqlite when present; a corrupt one fails the switch" {
+  t3_fake_setup 0.0.42
+  t3_import_v2
+  "$B/t3-start"
+  run "$B/t3-update" 0.0.45
+  [ "$status" -eq 0 ]
+  b=$(ls -d "$(S)"/backups/0.0.42-*)
+  [ -f "$b/state.sqlite" ] && [ -f "$b/statev2.sqlite" ]
+  echo junk > "$(t3_db2)"
+  run "$B/t3-update" 0.0.50
+  [ "$status" -eq 1 ]
+  [ "$(jq -r .version "$(S)/version.json")" = 0.0.45 ]
+  [ "$(jq -r .reason "$(S)/last-result.json")" = backup_failed ]
+  running
+}
+
+@test "restore: drops a statev2.sqlite the backup lacks, so the next start imports again" {
+  t3_fake_setup 0.0.42
+  "$B/t3-start"
+  export T3_TEST_SERVE_FAIL=0.0.50 T3_TEST_SERVE_TOUCH=statev2.sqlite
+  run "$B/t3-update"
+  [ "$status" -eq 1 ]
+  [ ! -e "$(t3_db2)" ]
+  [ -f "$(t3_db)" ]
+  running
+}

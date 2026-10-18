@@ -41,7 +41,7 @@ u="${T3CODE_HOME:-$HOME/.t3}/userdata"
 case "$1" in
   --version) echo "t3 v@VERSION@" ;;
   serve)
-    [ "${T3_TEST_SERVE_FAIL:-}" = "@VERSION@" ] && exit 3
+    [ "${T3_TEST_SERVE_FAIL:-}" = "@VERSION@" ] && { [ -n "${T3_TEST_SERVE_TOUCH:-}" ] && mkdir -p "$u" && : > "$u/$T3_TEST_SERVE_TOUCH"; exit 3; }
     mkdir -p "$u"
     # argv[0] stays this script's path and "serve" stays in the command line,
     # as for the real binary, so /proc-based detection sees a t3 server.
@@ -165,11 +165,30 @@ t3_bin_as() {
 }
 
 t3_db() { printf '%s\n' "$T3_ENVS_ROOT/$DEVPOD_WORKSPACE_ID/userdata/state.sqlite"; }
+t3_db2() { printf '%s\n' "$T3_ENVS_ROOT/$DEVPOD_WORKSPACE_ID/userdata/statev2.sqlite"; }
+
+# What t3 0.1.0 does on first start: a consistent copy of state.sqlite.
+t3_import_v2() {
+  python3 -B -c 'import sqlite3,sys; s=sqlite3.connect(sys.argv[1]); d=sqlite3.connect(sys.argv[2]); s.backup(d); d.close()' \
+    "$(t3_db)" "$(t3_db2)"
+}
 
 t3_make_db() {
   mkdir -p "$(dirname "$(t3_db)")"
   python3 -B -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.executescript(open(sys.argv[2]).read()); c.commit()' \
     "$(t3_db)" "$BLUEPRINT_ROOT/tests/fixtures/t3/schema.sql"
+}
+
+# A statev2.sqlite as 0.1.0 leaves it: the imported legacy tables plus v2.
+t3_make_db2() {
+  mkdir -p "$(dirname "$(t3_db2)")"
+  python3 -B -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); [c.executescript(open(f).read()) for f in sys.argv[2:]]; c.commit()' \
+    "$(t3_db2)" "$BLUEPRINT_ROOT/tests/fixtures/t3/schema.sql" "$BLUEPRINT_ROOT/tests/fixtures/t3/schema-v2.sql"
+}
+
+t3_sql2() {
+  python3 -B -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.executescript(sys.argv[2]); c.commit()' \
+    "$(t3_db2)" "$1"
 }
 
 t3_sql() {

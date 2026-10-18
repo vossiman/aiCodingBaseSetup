@@ -217,3 +217,67 @@ old() { t3_iso '-2 hours'; }
   [[ "$output" == *process_gcc* ]]
   [[ "$output" == *session* ]]
 }
+
+v2() { mkdir -p "$T3_ENVS_ROOT/demo/aicoding"; echo '{"mode":"latest","version":"0.1.0"}' > "$T3_ENVS_ROOT/demo/aicoding/version.json"; t3_make_db2; }
+
+@test "db: from 0.1.0 the check reads statev2.sqlite's v2 tables, not the frozen legacy ones" {
+  v2
+  t3_sql "INSERT INTO projection_turns(thread_id,turn_id,state,requested_at,checkpoint_files_json) VALUES('t','x','running','$(old)','[]');"
+  t3_sql2 "INSERT INTO projection_turns(thread_id,turn_id,state,requested_at,checkpoint_files_json) VALUES('t','x','running','$(old)','[]');"
+  run db 12
+  [ "$status" -eq 0 ]
+  t3_sql2 "INSERT INTO orchestration_v2_projection_runs VALUES('r','t',1,'codex',NULL,'running','$(old)',NULL,'{}',NULL);"
+  run db 12
+  [ "$status" -eq 1 ]
+  [[ "$output" == *v2_runs_running* ]]
+}
+
+@test "db v2: every busy and unknown status blocks, every settled one does not" {
+  v2
+  ins() {
+    case $1 in
+      runs) echo "INSERT INTO orchestration_v2_projection_runs VALUES('r','t',1,'p',NULL,'$2','$(old)',NULL,'{}',NULL);" ;;
+      runtime_requests) echo "INSERT INTO orchestration_v2_projection_runtime_requests VALUES('q','t','n',NULL,'approval','$2','$(old)',NULL,'{}');" ;;
+      subagents) echo "INSERT INTO orchestration_v2_projection_subagents VALUES('s','t',NULL,'n','p',NULL,NULL,'o','$2',NULL,NULL,'$(old)','{}',NULL,NULL);" ;;
+      provider_turns) echo "INSERT INTO orchestration_v2_projection_provider_turns VALUES('pt','t','x','n',NULL,1,'$2','$(old)',NULL,'{}');" ;;
+      nodes) echo "INSERT INTO orchestration_v2_projection_nodes VALUES('n','t',NULL,NULL,'n','k','$2',NULL,NULL,NULL,NULL,'$(old)',NULL,'{}');" ;;
+      provider_sessions) echo "INSERT INTO orchestration_v2_projection_provider_sessions VALUES('ps','t','p','$2',NULL,'$(old)','{}',NULL,NULL);" ;;
+    esac
+  }
+  check() {
+    local t=$1 want=$2; shift 2
+    for st; do
+      t3_sql2 "DELETE FROM orchestration_v2_projection_$t; $(ins "$t" "$st")"
+      run db 1
+      [ "$status" -eq "$want" ] || { echo "$t $st -> $status $output"; return 1; }
+    done
+    t3_sql2 "DELETE FROM orchestration_v2_projection_$t;"
+  }
+  check runs 1 preparing queued starting running waiting mystery
+  check runs 0 completed interrupted failed cancelled rolled_back
+  check runtime_requests 1 pending waiting
+  check runtime_requests 0 resolved expired cancelled
+  check subagents 1 pending running waiting starting
+  check subagents 0 idle completed failed cancelled interrupted
+  check provider_turns 1 pending running mystery
+  check provider_turns 0 completed interrupted failed cancelled
+  check nodes 1 pending running waiting mystery
+  check nodes 0 idle completed interrupted failed cancelled rolled_back
+  check provider_sessions 1 connecting running mystery
+  check provider_sessions 0 ready error closed
+}
+
+@test "db v2: activity 59 minutes ago blocks; 61 minutes does not" {
+  v2
+  recent=$(t3_iso '-59 minutes')
+  t3_sql2 "INSERT INTO orchestration_v2_projection_messages VALUES('m','t',NULL,NULL,'user',0,'$(old)','$recent','{}');"
+  run db 12
+  [ "$status" -eq 1 ]
+  [[ "$output" == *recent_activity* ]]
+  t3_sql2 "UPDATE orchestration_v2_projection_messages SET updated_at='$(t3_iso '-61 minutes')';"
+  run db 12
+  [ "$status" -eq 0 ]
+  t3_sql2 "INSERT INTO orchestration_v2_events(event_id,command_id,thread_id,run_id,node_id,provider,raw_event_id,event_type,occurred_at,payload_json) VALUES('e',NULL,'t',NULL,NULL,NULL,NULL,'x','$recent','{}');"
+  run db 12
+  [ "$status" -eq 1 ]
+}

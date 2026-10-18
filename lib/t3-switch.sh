@@ -1,7 +1,7 @@
 # Version switching (spec: Switching versions). A journal (switch.json) exists
 # only while files may be inconsistent; every entry point finishes it first.
 
-T3_BACKUP_FILES="state.sqlite state.sqlite-wal state.sqlite-shm settings.json environment-id"
+T3_BACKUP_FILES="state.sqlite state.sqlite-wal state.sqlite-shm statev2.sqlite statev2.sqlite-wal statev2.sqlite-shm settings.json environment-id"
 
 t3_journal_file() { printf '%s\n' "$T3_STATE/switch.json"; }
 
@@ -26,16 +26,19 @@ t3_backup() {
     [ -e "$u/$f" ] && { cp -a "$u/$f" "$d/$f" || return 1; }
   done
   [ -d "$u/secrets" ] && { cp -a "$u/secrets" "$d/secrets" || return 1; }
-  [ -f "$d/state.sqlite" ] || return 0
   python3 -B - "$d" <<'PY'
 import os, shutil, sqlite3, sys, tempfile
 src = sys.argv[1]
-with tempfile.TemporaryDirectory() as t:
-    for n in ("state.sqlite", "state.sqlite-wal"):
-        if os.path.exists(os.path.join(src, n)):
-            shutil.copy2(os.path.join(src, n), t)
-    ok = sqlite3.connect(os.path.join(t, "state.sqlite")).execute("PRAGMA integrity_check").fetchone()[0]
-    sys.exit(0 if ok == "ok" else 1)
+for db in ("state.sqlite", "statev2.sqlite"):
+    if not os.path.exists(os.path.join(src, db)):
+        continue
+    with tempfile.TemporaryDirectory() as t:
+        for n in (db, db + "-wal"):
+            if os.path.exists(os.path.join(src, n)):
+                shutil.copy2(os.path.join(src, n), t)
+        ok = sqlite3.connect(os.path.join(t, db)).execute("PRAGMA integrity_check").fetchone()[0]
+        if ok != "ok":
+            sys.exit(1)
 PY
 }
 
@@ -59,7 +62,9 @@ t3_restore() {
     cp -a "$u" "$st" || return 1
     for f in $T3_BACKUP_FILES; do
       if [ -e "$b/$f" ]; then cp -a "$b/$f" "$st/$f" || return 1
-      else case "$f" in state.sqlite-wal|state.sqlite-shm) rm -f "$st/$f" ;; esac
+      # A statev2 database the backup lacks was imported after it; dropping
+      # it lets the next start import the restored state.sqlite again.
+      else case "$f" in state.sqlite-wal|state.sqlite-shm|statev2.sqlite*) rm -f "$st/$f" ;; esac
       fi
     done
     if [ -d "$b/secrets" ]; then rm -rf "$st/secrets" && cp -a "$b/secrets" "$st/secrets" || return 1; fi

@@ -135,5 +135,6 @@ pass() { "$B/t3-update" --scheduled 2>>"$TMP/pass.log"; }
   [ "$status" -eq 0 ]
   [ "$(jq -r '.components.t3.state' "$AICODING_RESULTS_FILE")" = updated ]
   [ "$(jq -r '.components.t3.reason' "$AICODING_RESULTS_FILE")" = t3_switched ]
+  grep -qE '^[0-9-]+T[0-9:]+Z result updated t3_switched 0\.0\.50' "$AICODING_STATE_DIR/t3-update.log"
   jq -e '.reasons.t3_switched' "$BLUEPRINT_ROOT/lib/status-reasons.json" >/dev/null
 }
