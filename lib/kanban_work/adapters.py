@@ -404,10 +404,37 @@ class ClaudeCodexAdapter:
         )
         return AdapterResult({}, lifecycle)
 
+    def _revive(self, harness: str, payload: dict, session_id: str,
+                prompt_id: str) -> dict | None:
+        """Mint a fresh generation when a prompt arrives for an ended one.
+
+        A harness that reaps an idle process fires SessionEnd, then resumes
+        the same native session on the next prompt. Claude Code cancels the
+        SessionStart hooks of such a resume, so the prompt is the first event
+        that can replace the ended generation and hand the agent a handle."""
+        checkout = payload.get("cwd")
+        if not isinstance(checkout, str) or not os.path.isabs(checkout):
+            return None
+        version = self.version_provider(harness)
+        return self.ingress.ingest_event(harness, "resume", {
+            "native_event_id": _event_id("prompt-revive", harness, session_id, prompt_id),
+            "native_session_id": session_id,
+            "subagent_id": None,
+            "checkout": checkout,
+            "lifecycle_capable": qualified_client_version(harness, version),
+        })
+
     def _prompt(self, harness: str, payload: dict) -> AdapterResult:
         session_id, agent_id = self._native(payload)
-        execution = self._current(harness, session_id, agent_id)
         prompt_id = self._prompt_identifier(harness, payload)
+        execution = self.store.current_execution(harness, session_id, agent_id)
+        revived = None
+        # Only Claude Code resumes a reaped process under the same native
+        # session and accepts additionalContext on UserPromptSubmit.
+        if (harness == "claude" and agent_id is None and execution is not None
+                and execution.state == "ended"):
+            revived = self._revive(harness, payload, session_id, prompt_id)
+        execution = self._current(harness, session_id, agent_id)
         lifecycle = self._record(
             harness, "activity", execution,
             self._prompt_event_id(harness, session_id, agent_id, prompt_id),
@@ -415,7 +442,14 @@ class ClaudeCodexAdapter:
         # A new turn settles the previous turn's Stop; an unreachable board
         # leaves it for the claim gate, and the turn proceeds either way.
         self.ingress.settle_turn(execution.handle)
-        return AdapterResult({}, lifecycle)
+        if revived is None:
+            return AdapterResult({}, lifecycle)
+        return AdapterResult({"hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": _context(
+                self.instructions_provider(harness), execution.handle
+            ) + "\nThe earlier handle ended with the resumed process; use this one.",
+        }}, lifecycle)
 
     @staticmethod
     def _is_claim(tool_name: str) -> bool:

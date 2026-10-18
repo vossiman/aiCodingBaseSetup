@@ -330,6 +330,52 @@ class AdapterTests(unittest.TestCase):
                 settle.assert_called_once_with(started["handle"])
                 self.assertEqual(self.store.unsettled_stops(started["handle"]), [])
 
+    def test_prompt_after_an_ended_generation_mints_a_fresh_one_and_hands_over(self):
+        # An idle reap closes the process (SessionEnd) and the harness resumes
+        # the same native session later without a SessionStart that reaches us.
+        old = self.start("claude")
+        self.prompt("claude", turn="turn-1")
+        self.adapter.adapt("claude", "SessionEnd", {
+            "session_id": "native-a", "hook_event_name": "SessionEnd",
+            "reason": "other", "cwd": "/tmp/repo",
+            "transcript_path": "/tmp/native-a.jsonl",
+        })
+        self.assertEqual(self.store.get_execution(old["handle"]).state, "ended")
+
+        self.clock.advance(minutes=30)
+        result = self.prompt("claude", turn="turn-2")
+
+        new = result.lifecycle
+        self.assertEqual(new["status"], "observed")
+        self.assertNotEqual(new["handle"], old["handle"])
+        output = result.output["hookSpecificOutput"]
+        self.assertEqual(output["hookEventName"], "UserPromptSubmit")
+        self.assertIn(f"Kanban work handle: {new['handle']}", output["additionalContext"])
+        self.assertNotIn(old["handle"], output["additionalContext"])
+        self.assertEqual(self.store.get_execution(new["handle"]).state, "active")
+        self.assertEqual([row.kind for row in self.queue.pending(new["handle"])],
+                         ["register", "activity"])
+        claim = self.pre("claude", "mcp__kanban__claim_ticket",
+                         {"handle": new["handle"]}, turn="turn-2")
+        self.assertEqual(claim.lifecycle["handle"], new["handle"])
+        self.assertEqual(self.prompt("claude", turn="turn-2").lifecycle["handle"],
+                         new["handle"])
+
+    def test_prompt_without_any_generation_still_fails_closed(self):
+        with self.assertRaisesRegex(BridgeError, "no current Kanban work handle"):
+            self.prompt("claude", session="never-started")
+
+    def test_codex_prompt_after_an_ended_generation_still_fails_closed(self):
+        self.start("codex")
+        self.prompt("codex", turn="turn-1")
+        self.adapter.adapt("codex", "SessionEnd", {
+            "session_id": "native-a", "hook_event_name": "SessionEnd",
+            "reason": "other", "cwd": "/tmp/repo",
+            "transcript_path": "/tmp/native-a.jsonl",
+        })
+        with self.assertRaisesRegex(BridgeError, "no current Kanban work handle"):
+            self.prompt("codex", turn="turn-2")
+
     def test_read_and_unrelated_tools_allow_without_prompt_correlation(self):
         self.start("codex")
         read = self.pre("codex", "mcp__kanban__list_tickets", {})
