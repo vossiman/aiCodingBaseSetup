@@ -649,6 +649,49 @@ block() {
   exit 0
 }
 
+# Commands that print OTHER processes' full command lines. Deploy tooling
+# passes secrets inline (Dokploy runs `echo "<base64 .env>" | base64 -d >
+# .env`), so `pgrep -af` on a deploy host printed a whole app env into a
+# transcript on 2026-10-18. Pids, names and runtimes stay allowed. This is a
+# denylist layer: `systemctl status` cgroup trees and `docker inspect` are
+# known gaps, and least-privilege host access is the real boundary.
+is_process_cmdline_listing() {
+  printf '%s' "$1" | grep -qE '/proc/[^[:space:]]*/cmdline' && return 0
+  # Quote characters and operators separate words and segments, so the
+  # command inside `ssh host 'pgrep -af x'` is read like a local one.
+  printf '%s\n' "$1" | tr "\"'\`();&|" '\n\n\n\n\n\n\n\n' | awk '
+    BEGIN { found = 0 }
+    {
+      n = split($0, w, /[[:space:]]+/)
+      prev = ""
+      for (i = 1; i <= n; i++) {
+        word = w[i]
+        if (word == "") continue
+        name = word; sub(/^.*\//, "", name)
+        if (name == "pgrep") {
+          for (j = i + 1; j <= n; j++)
+            if (w[j] ~ /^-[A-Za-z]*a[A-Za-z]*$/ || w[j] == "--list-full") found = 1
+        } else if (name == "pstree") {
+          for (j = i + 1; j <= n; j++)
+            if (w[j] ~ /^-[A-Za-z]*a[A-Za-z]*$/ || w[j] == "--arguments") found = 1
+        } else if (name == "top") {
+          for (j = i + 1; j <= n; j++)
+            if (w[j] ~ /^-[A-Za-z]*c[A-Za-z]*$/) found = 1
+        } else if (name == "ps" && prev !~ /^(docker|podman|nerdctl|crictl|kubectl|compose|docker-compose)$/) {
+          for (j = i + 1; j <= n; j++) {
+            a = w[j]
+            if (a ~ /^-[A-Za-z]*[fF][A-Za-z]*$/) found = 1
+            if (a ~ /^[aAcefhjlLmrsSTuvwxX]+$/) found = 1
+            if (a ~ /^(-[oO]|--format|-o[a-z,=]+|--format=.*)$/ || a ~ /^[a-z_]+(,[a-z_]+)*=?$/ || a ~ /^-[oO][a-z,=]+$/)
+              if (a ~ /(^|[-,=o])(args|cmd|command|cmdline)(,|=|$)/) found = 1
+          }
+        }
+        prev = name
+      }
+    }
+    END { exit found ? 0 : 1 }'
+}
+
 deny_secret_command() {
   block "$ORACLE_RULE" "$ORACLE_DETAIL Do not bypass; use secrets-check for credential status."
 }
@@ -1027,6 +1070,9 @@ case "$TOOL_NAME" in
     done
     if is_env_dump "$ORACLE_NAMES"; then
       block SG-ENV-DUMP "Bash: whole-environment or shell-variable dump detected. Do not bypass; use secrets-check for credential status."
+    fi
+    if is_process_cmdline_listing "$ORACLE_NAMES"; then
+      block SG-PROCESS-CMDLINE "Bash: lists other processes' full command lines, which can carry secrets passed inline by deploy tools. Do not bypass; use pgrep without -a, ps -o pid,etime,comm, docker ps, or the service's log."
     fi
 
     # Pass 1 — every token in the whole command, not just arguments to a

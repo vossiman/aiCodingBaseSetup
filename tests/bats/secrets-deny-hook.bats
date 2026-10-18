@@ -379,6 +379,57 @@ MARK"
   denied
 }
 
+# --- other processes' command lines ---------------------------------------
+# 2026-10-18: `ssh vossisrv 'pgrep -af "docker.*compose"'` during a Dokploy
+# deploy printed the deploy shell's command line, which carries the app's
+# whole .env as base64. Listing full command lines of other processes is
+# denied; listing pids, names and runtimes stays allowed.
+
+@test "process listings that print full command lines are denied" {
+  local c
+  for c in \
+    'pgrep -af "docker.*compose"' \
+    "ssh vossisrv 'pgrep -af \"docker.*compose\"'" \
+    'pgrep -a dokploy' \
+    'pgrep --list-full sshd' \
+    'ps aux' \
+    'ps -ef' \
+    'ps axww | head' \
+    'sudo ps -eo pid,args' \
+    'ps -o pid,cmd -p 1' \
+    'ps -p 1 -o command=' \
+    'ps e' \
+    "ssh host 'ps -ef | grep compose'" \
+    'cat /proc/1234/cmdline' \
+    "tr '\\0' ' ' < /proc/self/cmdline" \
+    'pstree -a' \
+    'top -b -n1 -c'
+  do
+    bash_hook "$c"
+    denied || { echo "not denied: $c"; return 1; }
+  done
+}
+
+@test "process listings without command lines stay allowed" {
+  local c
+  for c in \
+    'pgrep -f memory-lanes' \
+    'pgrep -l sshd' \
+    'ps' \
+    'ps -p 123' \
+    'ps -o pid,etime,comm -p 1' \
+    'ps -C nginx' \
+    'docker ps --filter name=wiki-sync --format "{{.Names}}"' \
+    'docker compose ps -a' \
+    'echo "never run ps aux or pgrep -af on a deploy host"' \
+    "$(printf 'git commit -F - <<%sEOF%s\nnever run ps aux or pgrep -af\nEOF' "'" "'")" \
+    "grep -n 'pgrep -af' notes.md"
+  do
+    bash_hook "$c"
+    allowed || { echo "not allowed: $c"; return 1; }
+  done
+}
+
 # --- whole-environment dumps ------------------------------------------------
 # `env | grep token` was already denied, but a BARE `env` prints every secret
 # at once and slipped through (found 2026-08-21). The line to draw is dump vs
