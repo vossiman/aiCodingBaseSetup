@@ -6,9 +6,10 @@ T3_CLONE_TIMEOUT="${T3_CLONE_TIMEOUT:-300}"
 
 # Never fails: a project that cannot come back is reported, not fatal.
 t3_projects_restore() {
-  local f="$T3_STATE/projects.tsv" p url list out="" db="$T3CODE_HOME/userdata/state.sqlite"
+  local f="$T3_STATE/projects.tsv" p url list out="" db
   local -a roots=()
   local -A remote=()
+  db=$(t3_db_path)
   [ -f "$db" ] || return 0
   # A failed read must not look like "no projects": that would wipe the record.
   list=$(python3 -B "$T3_LIB_DIR/t3_projects.py" "$db" 2>/dev/null) || return 0

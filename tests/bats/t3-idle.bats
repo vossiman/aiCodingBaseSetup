@@ -217,3 +217,17 @@ old() { t3_iso '-2 hours'; }
   [[ "$output" == *process_gcc* ]]
   [[ "$output" == *session* ]]
 }
+
+@test "db: from 0.1.0 the check reads statev2.sqlite, not the frozen state.sqlite" {
+  mkdir -p "$T3_ENVS_ROOT/demo/aicoding"
+  t3_import_v2
+  python3 -B -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute(sys.argv[2]); c.commit()' "$(t3_db2)" \
+    "INSERT INTO projection_turns(thread_id,turn_id,state,requested_at,checkpoint_files_json) VALUES('t','x','running','$(old)','[]')"
+  echo '{"mode":"latest","version":"0.0.45"}' > "$T3_ENVS_ROOT/demo/aicoding/version.json"
+  run db 1
+  [ "$status" -eq 0 ]
+  echo '{"mode":"latest","version":"0.1.0"}' > "$T3_ENVS_ROOT/demo/aicoding/version.json"
+  run db 1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *turn_running* ]]
+}
