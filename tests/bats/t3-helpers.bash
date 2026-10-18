@@ -179,6 +179,18 @@ t3_make_db() {
     "$(t3_db)" "$BLUEPRINT_ROOT/tests/fixtures/t3/schema.sql"
 }
 
+# A statev2.sqlite as 0.1.0 leaves it: the imported legacy tables plus v2.
+t3_make_db2() {
+  mkdir -p "$(dirname "$(t3_db2)")"
+  python3 -B -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); [c.executescript(open(f).read()) for f in sys.argv[2:]]; c.commit()' \
+    "$(t3_db2)" "$BLUEPRINT_ROOT/tests/fixtures/t3/schema.sql" "$BLUEPRINT_ROOT/tests/fixtures/t3/schema-v2.sql"
+}
+
+t3_sql2() {
+  python3 -B -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.executescript(sys.argv[2]); c.commit()' \
+    "$(t3_db2)" "$1"
+}
+
 t3_sql() {
   python3 -B -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.executescript(sys.argv[2]); c.commit()' \
     "$(t3_db)" "$1"

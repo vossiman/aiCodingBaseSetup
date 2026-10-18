@@ -8,6 +8,12 @@ exits 1. Any error, missing table or column, or unknown value means busy.
 Enums: packages/contracts/src/orchestration.ts:608 (session status),
 persistence/Services/ProjectionTurns.ts:27 (turn state),
 persistence/Layers/ProjectionPendingApprovals.ts:76 (pending predicate).
+A t3 0.1.0+ database (statev2.sqlite) is checked through its
+orchestration_v2_* tables instead: its projection_* tables are only the
+one-time import and never change. V2 enums: OrchestrationV2RunStatus,
+OrchestrationV2RuntimeRequest, OrchestrationV2Subagent,
+OrchestrationV2ProviderTurn, OrchestrationV2ExecutionNode and
+ProviderSessionStatus in packages/contracts.
 """
 import datetime as dt
 import sqlite3
@@ -29,6 +35,41 @@ TIMESTAMPS = [
     ("projection_pending_approvals", "resolved_at"),
     ("projection_thread_sessions", "updated_at"),
 ]
+V2 = "orchestration_v2_projection_"
+# table: (busy statuses, all known statuses). Unknown means busy.
+V2_STATUS = {
+    "runs": ({"preparing", "queued", "starting", "running", "waiting"},
+             {"preparing", "queued", "starting", "running", "waiting", "completed",
+              "interrupted", "failed", "cancelled", "rolled_back"}),
+    "runtime_requests": ({"pending"}, {"pending", "resolved", "expired", "cancelled"}),
+    "subagents": ({"pending", "running", "waiting"},
+                  {"idle", "pending", "running", "waiting", "completed", "failed",
+                   "cancelled", "interrupted"}),
+    "provider_turns": ({"pending", "running"},
+                       {"pending", "running", "completed", "interrupted", "failed", "cancelled"}),
+    "nodes": ({"pending", "running", "waiting"},
+              {"idle", "pending", "running", "waiting", "completed", "interrupted",
+               "failed", "cancelled", "rolled_back"}),
+    "provider_sessions": ({"connecting", "running"},
+                          {"connecting", "ready", "running", "error", "closed"}),
+}
+V2_TIMESTAMPS = [
+    ("orchestration_v2_events", "occurred_at"),
+    (V2 + "threads", "updated_at"),
+    (V2 + "messages", "created_at"),
+    (V2 + "messages", "updated_at"),
+    (V2 + "turn_items", "updated_at"),
+    (V2 + "runs", "requested_at"),
+    (V2 + "runs", "completed_at"),
+    (V2 + "runtime_requests", "created_at"),
+    (V2 + "runtime_requests", "resolved_at"),
+    (V2 + "provider_turns", "started_at"),
+    (V2 + "provider_turns", "completed_at"),
+    (V2 + "nodes", "started_at"),
+    (V2 + "nodes", "completed_at"),
+    (V2 + "subagents", "updated_at"),
+    (V2 + "provider_sessions", "updated_at"),
+]
 FUTURE_SLACK = dt.timedelta(minutes=5)
 
 
@@ -37,6 +78,22 @@ def parse(value):
     if t.tzinfo is None:
         raise ValueError("timestamp without a zone")
     return t
+
+
+def is_v2(con):
+    return con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (V2 + "runs",)
+    ).fetchone() is not None
+
+
+def check_now_v2(con):
+    for table, (busy, known) in V2_STATUS.items():
+        for (status,) in con.execute(f"SELECT DISTINCT status FROM {V2}{table}"):
+            if status not in known:
+                return f"v2_{table}_unknown"
+            if status in busy:
+                return f"v2_{table}_{status}"
+    return None
 
 
 def check_now(con):
@@ -60,9 +117,9 @@ def check_now(con):
     return None
 
 
-def check_quiet(con, quiet, now):
+def check_quiet(con, quiet, now, timestamps=TIMESTAMPS):
     newest = None
-    for table, col in TIMESTAMPS:
+    for table, col in timestamps:
         for (value,) in con.execute(f"SELECT {col} FROM {table} WHERE {col} IS NOT NULL"):
             try:
                 t = parse(value)
@@ -82,9 +139,10 @@ def main(argv):
     now = dt.datetime.fromtimestamp(now_s, dt.timezone.utc)
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
-        reason = check_now(con)
+        v2 = is_v2(con)
+        reason = check_now_v2(con) if v2 else check_now(con)
         if reason is None and "2" in checks:
-            reason = check_quiet(con, quiet, now)
+            reason = check_quiet(con, quiet, now, V2_TIMESTAMPS if v2 else TIMESTAMPS)
     except sqlite3.Error:
         reason = "db_error"
     if reason:
