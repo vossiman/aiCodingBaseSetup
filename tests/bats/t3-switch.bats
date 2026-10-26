@@ -95,6 +95,28 @@ running() { bash -c '. "$BLUEPRINT_ROOT/lib/t3.sh"; t3_env 2>/dev/null; t3_runni
   running
 }
 
+@test "update: from a platform-package release to a launcher release" {
+  t3_fake_setup 0.0.42
+  "$B/t3-start"
+  export T3_TEST_LATEST=0.1.2
+  run "$B/t3-update"
+  [ "$status" -eq 0 ]
+  [ "$(t3_owner version)" = 0.1.2 ]
+  [ -x "$T3CODE_HOME/runtime/versions/0.1.2/t3" ]
+  [ "$(grep -cF '0.1.2 serve' "$T3_STUB_LOG")" -eq 1 ]
+  running
+}
+
+@test "update: a launcher release that never starts rolls back to the platform-package release" {
+  t3_fake_setup 0.0.42
+  "$B/t3-start"
+  export T3_TEST_LATEST=0.1.2 T3_TEST_SERVE_FAIL=0.1.2
+  run "$B/t3-update"
+  [ "$status" -eq 1 ]
+  [ "$(t3_owner version)" = 0.0.42 ]
+  running
+}
+
 @test "rollback after a rebuild reinstalls the old version before starting it" {
   t3_fake_setup 0.0.42
   rm -rf "$T3_RUNTIME_ROOT"

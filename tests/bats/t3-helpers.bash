@@ -39,10 +39,10 @@ STUB
 #!/usr/bin/env bash
 printf 't3@VERSION@ %s\n' "$*" >> "$T3_STUB_LOG"
 h="${T3CODE_HOME:-$HOME/.t3}"; u="$h/userdata"
-# Like the real launcher: the first run fetches the executable into the T3
-# home, marker last. The copy placed there runs this same script.
+# A launcher release (0.1.1+) fetches the executable into the T3 home on its
+# first run, marker last; the copy placed there runs this same script.
 d="$h/runtime/versions/@VERSION@"
-if [ "$(cat "$d/.install-complete" 2>/dev/null)" != "@VERSION@" ]; then
+if [ "@LAYOUT@" = launcher ] && [ "$(cat "$d/.install-complete" 2>/dev/null)" != "@VERSION@" ]; then
   if [ "${T3_TEST_FETCH_FAIL:-}" = "@VERSION@" ]; then
     echo "t3: https://example.invalid/v@VERSION@/SHA256SUMS does not exist yet." >&2; exit 1
   fi
@@ -131,7 +131,16 @@ done
 [ "${T3_TEST_NPM_FAIL:-0}" = 1 ] && exit 1
 v=${T3_TEST_NPM_REPORTS:-${spec#t3@}}
 mkdir -p "$prefix/node_modules/.bin"
-sed "s/@VERSION@/$v/g" "$T3_FAKE_TEMPLATE" > "$prefix/node_modules/.bin/t3"
+# npm's history: up to 0.1.0 a platform package holds the executable, from
+# 0.1.1 the package is a launcher that fetches it.
+if [ "$(printf '%s\n0.1.1\n' "$v" | sort -V | head -n1)" = 0.1.1 ]; then
+  sed "s/@VERSION@/$v/g; s/@LAYOUT@/launcher/g" "$T3_FAKE_TEMPLATE" > "$prefix/node_modules/.bin/t3"
+else
+  case "$(uname -m)" in aarch64|arm64) a=arm64 ;; *) a=x64 ;; esac
+  d="$prefix/node_modules/@t3code/t3-linux-$a"; mkdir -p "$d"
+  sed "s/@VERSION@/$v/g; s/@LAYOUT@/platform/g" "$T3_FAKE_TEMPLATE" > "$d/t3"
+  cp "$d/t3" "$prefix/node_modules/.bin/t3"; chmod +x "$d/t3"
+fi
 chmod +x "$prefix/node_modules/.bin/t3"
 STUB
 
