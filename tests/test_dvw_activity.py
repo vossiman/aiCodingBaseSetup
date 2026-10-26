@@ -31,7 +31,7 @@ class ActivityTests(unittest.TestCase):
             (d / 'fd' / str(n)).symlink_to(f'socket:[{inode}]')
         return d
 
-    T3 = '/home/u/.local/share/t3-runtime/0.0.45/node_modules/@t3code/t3-linux-x64/t3'
+    T3 = '/home/u/.t3-envs/demo/runtime/versions/0.1.2/t3'
 
     def test_t3_serve_process_is_counted(self):
         self.process(1)

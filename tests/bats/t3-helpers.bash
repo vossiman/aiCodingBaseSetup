@@ -10,6 +10,7 @@ t3_test_setup() {
   mkdir -p "$HOME" "$TMP/stubs" "$TMP/bin" "$TMP/work"
   export DEVPOD_WORKSPACE_ID=demo
   export T3_ENVS_ROOT="$HOME/.t3-envs" T3_RUNTIME_ROOT="$HOME/.local/share/t3-runtime"
+  export T3CODE_HOME="$T3_ENVS_ROOT/$DEVPOD_WORKSPACE_ID"
   export T3_MIGRATE_DIR="$TMP/aicodingsetup/t3-migrate" T3_MIGRATE_PARENT="$TMP/aicodingsetup"
   export T3_STUB_LOG="$TMP/calls.log" T3_TEST_BIN="$TMP/bin" T3_DEFAULT_SERVE_DIR="$TMP/work"
   export T3_QUIET_SECONDS=3600 T3_IDLE_WINDOW=2 T3_READY_TIMEOUT=15 T3_READY_SETTLE=1
@@ -37,7 +38,17 @@ STUB
   cat > "$TMP/fake-t3" <<'FAKE'
 #!/usr/bin/env bash
 printf 't3@VERSION@ %s\n' "$*" >> "$T3_STUB_LOG"
-u="${T3CODE_HOME:-$HOME/.t3}/userdata"
+h="${T3CODE_HOME:-$HOME/.t3}"; u="$h/userdata"
+# A launcher release (0.1.1+) fetches the executable into the T3 home on its
+# first run, marker last; the copy placed there runs this same script.
+d="$h/runtime/versions/@VERSION@"
+if [ "@LAYOUT@" = launcher ] && [ "$(cat "$d/.install-complete" 2>/dev/null)" != "@VERSION@" ]; then
+  if [ "${T3_TEST_FETCH_FAIL:-}" = "@VERSION@" ]; then
+    echo "t3: https://example.invalid/v@VERSION@/SHA256SUMS does not exist yet." >&2; exit 1
+  fi
+  printf 'fetch @VERSION@\n' >> "$T3_STUB_LOG"
+  mkdir -p "$d" && cp "$0" "$d/t3" && chmod +x "$d/t3" && echo @VERSION@ > "$d/.install-complete"
+fi
 case "$1" in
   --version) echo "t3 v@VERSION@" ;;
   serve)
@@ -119,12 +130,18 @@ while [ $# -gt 0 ]; do
 done
 [ "${T3_TEST_NPM_FAIL:-0}" = 1 ] && exit 1
 v=${T3_TEST_NPM_REPORTS:-${spec#t3@}}
-case "$(uname -m)" in aarch64|arm64) a=arm64 ;; *) a=x64 ;; esac
-d="$prefix/node_modules/@t3code/t3-linux-$a"
-mkdir -p "$prefix/node_modules/.bin" "$d"
-sed "s/@VERSION@/$v/g" "$T3_FAKE_TEMPLATE" > "$d/t3"
-cp "$d/t3" "$prefix/node_modules/.bin/t3"
-chmod +x "$d/t3" "$prefix/node_modules/.bin/t3"
+mkdir -p "$prefix/node_modules/.bin"
+# npm's history: up to 0.1.0 a platform package holds the executable, from
+# 0.1.1 the package is a launcher that fetches it.
+if [ "$(printf '%s\n0.1.1\n' "$v" | sort -V | head -n1)" = 0.1.1 ]; then
+  sed "s/@VERSION@/$v/g; s/@LAYOUT@/launcher/g" "$T3_FAKE_TEMPLATE" > "$prefix/node_modules/.bin/t3"
+else
+  case "$(uname -m)" in aarch64|arm64) a=arm64 ;; *) a=x64 ;; esac
+  d="$prefix/node_modules/@t3code/t3-linux-$a"; mkdir -p "$d"
+  sed "s/@VERSION@/$v/g; s/@LAYOUT@/platform/g" "$T3_FAKE_TEMPLATE" > "$d/t3"
+  cp "$d/t3" "$prefix/node_modules/.bin/t3"; chmod +x "$d/t3"
+fi
+chmod +x "$prefix/node_modules/.bin/t3"
 STUB
 
   export T3_FAKE_TEMPLATE="$TMP/fake-t3" T3_FAKE_SERVER="$TMP/fake-server.py"

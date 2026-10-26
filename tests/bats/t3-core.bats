@@ -105,6 +105,43 @@ teardown() { t3_test_teardown; }
   [ "$status" -eq 0 ]
   run bash -c '. "$BLUEPRINT_ROOT/lib/t3.sh"; t3_exe 0.0.42'
   [[ "$output" == "$T3_RUNTIME_ROOT/0.0.42/node_modules/@t3code/t3-linux-"*"/t3" ]]
+  [ -x "$output" ]
+}
+
+@test "install: a launcher release fetches its executable into the T3 home" {
+  run t3_lib t3_install 0.1.2
+  [ "$status" -eq 0 ]
+  [ -x "$T3_RUNTIME_ROOT/0.1.2/node_modules/.bin/t3" ]
+  [ ! -e "$T3_RUNTIME_ROOT/0.1.2/node_modules/@t3code" ]
+  run bash -c '. "$BLUEPRINT_ROOT/lib/t3.sh"; t3_exe 0.1.2'
+  [ "$output" = "$T3CODE_HOME/runtime/versions/0.1.2/t3" ]
+  [ -x "$output" ]
+  [ "$(cat "$T3CODE_HOME/runtime/versions/0.1.2/.install-complete")" = 0.1.2 ]
+  run t3_lib t3_installed 0.1.2
+  [ "$status" -eq 0 ]
+}
+
+@test "install: a launcher that cannot fetch its executable is rejected" {
+  export T3_TEST_FETCH_FAIL=0.1.2
+  run t3_lib t3_install 0.1.2
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"does not exist yet"* ]]
+  [ ! -e "$T3_RUNTIME_ROOT/0.1.2" ]
+  [ -z "$(ls -A "$T3_RUNTIME_ROOT" 2>/dev/null)" ]
+  run t3_lib t3_installed 0.1.2
+  [ "$status" -eq 1 ]
+}
+
+@test "install: after a rebuild the launcher is reinstalled, the executable is not fetched again" {
+  t3_lib t3_install 0.1.2
+  rm -rf "$T3_RUNTIME_ROOT"
+  : > "$T3_STUB_LOG"
+  run t3_lib t3_install 0.1.2
+  [ "$status" -eq 0 ]
+  grep -q '^npm install' "$T3_STUB_LOG"
+  if grep -q '^fetch' "$T3_STUB_LOG"; then false; fi
+  run t3_lib t3_installed 0.1.2
+  [ "$status" -eq 0 ]
 }
 
 @test "install: a failed npm leaves no folder behind" {
