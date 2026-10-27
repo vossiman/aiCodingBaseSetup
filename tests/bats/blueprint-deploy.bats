@@ -167,6 +167,21 @@ TOML
   grep -q '^multi_agent_v2 = true' "$c"
 }
 
+@test "rule 2: merging a Codex config writes no bytecode into the blueprint" {
+  local clone="$TMPDIR/release"
+  mkdir -p "$clone"
+  (cd "$BLUEPRINT_ROOT" && git ls-files -z | tar --null -T - -cf -) | tar -x -C "$clone"
+  find "$clone" -name __pycache__ -prune -exec rm -rf {} +
+  unset PYTHONDONTWRITEBYTECODE PYTHONPYCACHEPREFIX
+  export AICODING_BLUEPRINT_CLONE="$clone"
+  source "$clone/lib/blueprint-deploy.sh"
+  mkdir -p "$HOME/.codex"
+  printf 'model = "personal-model"\n' > "$HOME/.codex/config.toml"
+  managed_config_apply >/dev/null
+  grep -qx 'model = "personal-model"' "$HOME/.codex/config.toml"
+  [ -z "$(find "$clone/lib" -name __pycache__)" ]
+}
+
 @test "rule 2: a fresh Codex config is the rendered template" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   managed_config_apply >/dev/null
