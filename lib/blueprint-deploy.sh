@@ -458,7 +458,8 @@ _managed_mixed() {
   if [[ ! -s "$dest" ]]; then
     cat "$rendered" > "$out"
   elif [[ "$dest" == *.toml ]]; then
-    python3 "$_AICODING_MANAGED_TOML" "$dest" "$rendered" "$src" "$rules" "$out" || rc=$?
+    # -B: bytecode written into an immutable release breaks its tree digest.
+    python3 -B "$_AICODING_MANAGED_TOML" "$dest" "$rendered" "$src" "$rules" "$out" || rc=$?
   elif ! jq -e 'type == "object"' "$dest" >/dev/null 2>&1; then
     rc=3
   else
