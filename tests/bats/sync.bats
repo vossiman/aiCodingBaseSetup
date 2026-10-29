@@ -492,7 +492,7 @@ EOF
 
 @test "sync --boot removes a stale kanban-post symlink into a release" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  local rel="$AICODING_DATA_DIR/versions/old/bin"
+  local rel="${AICODING_DATA_DIR:-$HOME/.local/share/aicoding}/versions/old/bin"
   mkdir -p "$rel"; : > "$rel/kanban-post"
   ln -sf "$rel/kanban-post" "$HOME/.local/bin/kanban-post"
   AICODING_UPDATE_TTL=0 aicoding_sync --boot
