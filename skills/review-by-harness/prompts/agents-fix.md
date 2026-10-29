@@ -5,7 +5,7 @@ the task requires; the driver hands your diff back for verification.
 
 - Do not commit, push, rebase or move HEAD. Leave every change unstaged in
   the working tree.
-- Do not file tickets or comments on any board (never run `kanban-post`),
+- Do not file tickets or comments on any board (never call the kanban MCP write tools),
   do not open GitHub issues, do not post PR comments, do not send messages.
   Anything you decide not to fix goes in your written report instead.
 - The estate rule in `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md` or a cursor

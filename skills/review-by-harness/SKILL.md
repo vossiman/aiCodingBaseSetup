@@ -264,7 +264,7 @@ replaced by a regular file for the run and put back from git afterwards, so
 nothing is written through the link. Restore also runs from an EXIT trap, so
 a failing adapter leaves no rules behind. First live run of this, on its own
 PR (#140): the board's ticket count was the same before and after. A harness can still ignore instructions; the handback is
-what catches that, and `kanban-post --list-tickets` after a run is the check
+what catches that, and the kanban MCP's `list_tickets` after a run is the check
 for the board.
 
 ## Layout

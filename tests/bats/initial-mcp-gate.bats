@@ -131,7 +131,7 @@ PY2
       "$BLUEPRINT_ROOT/configs/codex/AGENTS.md" \
       "$BLUEPRINT_ROOT/configs/cursor/skills/aicoding-estate/SKILL.md"; do
     grep -Fq 'the canonical workflow. Native lifecycle hooks register the session' "$guidance"
-    grep -Fq 'credential-safe recovery CLI; it is not a status-transition bypass.' "$guidance"
+    grep -Fq 'Agents use only the `kanban` MCP for board work, and people use the' "$guidance"
     if grep -Eq 'kanban-post --(patch|done|link)|POST[[:space:]]+/api/work|PATCH[[:space:]]+/api/tickets' "$guidance"; then
       false
     fi

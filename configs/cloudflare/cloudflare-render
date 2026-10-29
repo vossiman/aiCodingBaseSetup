@@ -2,7 +2,7 @@
 """cloudflare-render — Cloudflare Browser Rendering, without handing an
 agent the credential.
 
-Same shape as git-credential-aicoding and kanban-post: the value is read
+Same shape as git-credential-aicoding and kanban-work: the value is read
 from the estate's secrets store inside THIS process, used to build exactly
 one request, and never printed. That is what lets the skill document a
 command instead of a token.
