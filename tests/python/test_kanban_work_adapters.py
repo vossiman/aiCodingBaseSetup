@@ -17,7 +17,6 @@ from lib.kanban_work.adapters import (
 )
 from lib.kanban_work.events import EventIngestor
 from lib.kanban_work.queue import LifecycleQueue
-from lib.kanban_work.legacy import DENIAL
 from lib.kanban_work.schema import BridgeError
 from lib.kanban_work.store import Store
 
@@ -589,85 +588,17 @@ class AdapterTests(unittest.TestCase):
             self.store.active_child_executions("claude", "final-parent"), []
         )
 
-    def test_legacy_completion_appends_work_handle_without_any_claim(self):
-        started = self.start("claude")
-        handle = started["handle"]
+    def test_kanban_post_command_is_not_rewritten(self):
+        self.start("claude")
         self.prompt()
-        command = "kanban-post --done KANBAN-2 --evidence 'tests pass' --reference PR-17"
-        native_input = {
-            "command": command,
-            "description": "Complete the ticket",
-            "timeout": 120000,
-            "run_in_background": False,
-        }
-        result = self.pre("claude", "Bash", native_input, call="legacy-1")
-        output = result.output["hookSpecificOutput"]
-        self.assertEqual(output["permissionDecision"], "allow")
-        self.assertEqual(output["updatedInput"], {
-            **native_input,
-            "command": f"kanban-post --done KANBAN-2 --evidence 'tests pass' --reference PR-17 --work-handle {handle}",
-        })
-        self.assertTrue(self.store.tool_operation(handle, "legacy-1")["active"])
-
-        codex = self.start("codex")
-        self.prompt("codex")
-        result = self.pre("codex", "Bash", {
-            "command": "kanban-post --done KANBAN-2 --evidence ok",
-        }, call="legacy-codex")
-        output = result.output["hookSpecificOutput"]
-        self.assertEqual(output["permissionDecision"], "allow")
-        self.assertEqual(output["updatedInput"], {
-            "command": f"kanban-post --done KANBAN-2 --evidence ok --work-handle {codex['handle']}",
-        })
-
-    def test_completion_like_shell_rejects_unverified_harness_input_fields(self):
+        command = "kanban-post --done KANBAN-2 --evidence ok"
+        result = self.pre("claude", "Bash", {"command": command}, call="post-claude")
+        self.assertNotEqual(result.output.get("hookSpecificOutput", {}).get("permissionDecision"), "deny")
+        self.assertNotIn("updatedInput", result.output.get("hookSpecificOutput", {}))
         self.start("codex")
         self.prompt("codex")
-        command = "kanban-post --done KANBAN-2 --evidence ok"
-        invalid = [
-            {"command": command, "description": "not in Codex 0.154.0 PreToolUse"},
-            {"command": command, "unknown": True},
-        ]
-        for index, tool_input in enumerate(invalid):
-            with self.subTest(tool_input=tool_input):
-                result = self.pre("codex", "Bash", tool_input, call=f"schema-{index}")
-                self.assertEqual(
-                    result.output["hookSpecificOutput"]["permissionDecision"], "deny"
-                )
-                self.assertIn("Use the Kanban MCP complete_ticket tool",
-                              result.output["hookSpecificOutput"]["permissionDecisionReason"])
-
-    def test_claude_completion_rejects_null_timeout_in_replacement_input(self):
-        self.start("claude")
-        self.prompt("claude")
-        result = self.pre("claude", "Bash", {
-            "command": "kanban-post --done KANBAN-2 --evidence ok",
-            "timeout": None,
-        }, call="null-timeout")
-        self.assertEqual(result.output["hookSpecificOutput"]["permissionDecision"], "deny")
-        self.assertIn("Use the Kanban MCP complete_ticket tool",
-                      result.output["hookSpecificOutput"]["permissionDecisionReason"])
-
-    def test_unsafe_completion_variants_are_denied_and_ordinary_shell_allowed(self):
-        started = self.start("codex")
-        self.prompt("codex")
-        commands = [
-            "KANBAN_WORK_HANDLE=x kanban-post --done KANBAN-2 --evidence ok",
-            "kanban-post --done KANBAN-2 --evidence $HOME",
-            "kanban-post --done KANBAN-2 --evidence ok; echo bad",
-            "kanban-post --done KANBAN-2 --evidence ok --unknown flag",
-            "kanban-post --done KANBAN-2 --evidence ok --work-handle x",
-        ]
-        for index, command in enumerate(commands):
-            with self.subTest(command=command):
-                result = self.pre("codex", "Bash", {"command": command}, call=f"unsafe-{index}")
-                output = result.output["hookSpecificOutput"]
-                self.assertEqual(output["permissionDecision"], "deny")
-                self.assertEqual(output["permissionDecisionReason"], DENIAL)
-                self.assertIsNone(self.store.tool_operation(started["handle"], f"unsafe-{index}"))
-        ordinary = self.pre("codex", "Bash", {"command": "git status --short"}, call="ordinary")
-        self.assertEqual(ordinary.output, {})
-        self.assertTrue(self.store.tool_operation(started["handle"], "ordinary")["active"])
+        result = self.pre("codex", "Bash", {"command": command}, call="post-codex")
+        self.assertEqual(result.output, {})
 
     def test_codex_leaves_ordinary_legacy_commands_available(self):
         self.start("codex")
@@ -1012,28 +943,11 @@ class CursorAdapterTests(unittest.TestCase):
         self.assertNotEqual(self.store.get_execution(new_child["handle"]).state, "ended")
         self.assertNotEqual(self.store.get_execution(new["handle"]).state, "ended")
 
-    def test_cursor_legacy_completion_rewrites_only_native_shell_input(self):
-        handle = self.start().lifecycle["handle"]
+    def test_kanban_post_command_is_not_rewritten(self):
+        self.start()
         self.prompt()
-        command = "kanban-post --done KANBAN-2 --evidence 'tests pass'"
-        native = {"command": command, "working_directory": str(self.checkout)}
-        result = self.pre("Shell", native, call="legacy")
-        self.assertEqual(result.output["permission"], "allow")
-        self.assertEqual(result.output["updated_input"], {
-            **native,
-            "command": f"kanban-post --done KANBAN-2 --evidence 'tests pass' --work-handle {handle}",
-        })
-        for index, bad in enumerate((
-            "KANBAN_WORK_HANDLE=x kanban-post --done KANBAN-2 --evidence ok",
-            "kanban-post --done KANBAN-2 --evidence ok; echo bad",
-        )):
-            denied = self.pre("Shell", {"command": bad}, call=f"bad-{index}")
-            self.assertEqual(denied.output["permission"], "deny")
-            self.assertEqual(denied.output["agent_message"], DENIAL)
-        unknown_field = self.pre("Shell", {"command": command, "sandbox": True}, call="bad-field")
-        self.assertEqual(unknown_field.output["permission"], "deny")
-        ordinary = self.pre("Shell", {"command": "git status --short"}, call="ordinary")
-        self.assertEqual(ordinary.output, {"permission": "allow"})
+        result = self.pre("Shell", {"command": "kanban-post --done KANBAN-2 --evidence ok"}, call="post")
+        self.assertEqual(result.output, {"permission": "allow"})
 
     def test_cursor_leaves_ordinary_legacy_commands_available(self):
         self.start()
@@ -1301,29 +1215,11 @@ class OpenCodeAdapterTests(unittest.TestCase):
         settle.assert_called_once_with(handle)
         self.assertEqual(self.store.unsettled_stops(handle), [])
 
-    def test_legacy_completion_rewrites_only_safe_native_bash_command(self):
-        handle = self.created().lifecycle["handle"]
-        native = {"command": "kanban-post --done KANBAN-2 --evidence 'tests pass'"}
-        prepared = self.before("bash", native, call="legacy")
-        self.assertEqual(prepared.output["args"], {
-            "command": (
-                "kanban-post --done KANBAN-2 --evidence 'tests pass' "
-                f"--work-handle {handle}"
-            )
-        })
-        for index, command in enumerate((
-            "KANBAN_WORK_HANDLE=x kanban-post --done KANBAN-2 --evidence ok",
-            "kanban-post --done KANBAN-2 --evidence ok; echo bad",
-        )):
-            with self.assertRaisesRegex(BridgeError, "Kanban MCP complete_ticket"):
-                self.before("bash", {"command": command}, call=f"bad-{index}")
-        with self.assertRaisesRegex(BridgeError, "Kanban MCP complete_ticket"):
-            self.adapter.adapt("tool.execute.before", {
-                "tool": "bash", "args": native, "instanceID": self.INSTANCE,
-                "clientVersion": self.VERSION, "directory": str(self.checkout),
-            })
-        ordinary = self.before("bash", {"command": "git status --short"}, call="ordinary")
-        self.assertEqual(ordinary.output, {})
+    def test_kanban_post_command_is_not_rewritten(self):
+        self.created()
+        native = {"command": "kanban-post --done KANBAN-2 --evidence ok"}
+        result = self.before("bash", native, call="post")
+        self.assertNotIn("args", result.output)
 
     def test_opencode_leaves_ordinary_legacy_commands_available(self):
         self.created()

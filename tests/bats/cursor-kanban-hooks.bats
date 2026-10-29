@@ -92,20 +92,14 @@ PY
   [ "$output" = 0 ]
 }
 
-@test "Cursor shell preToolUse pins legacy completion to the session handle and rejects unsafe variants" {
+@test "Cursor shell preToolUse leaves a kanban-post command alone" {
   start_cursor_session conv-a gen-a
   local payload
   payload=$(cursor_payload preToolUse conv-a gen-a \
     "{\"tool_use_id\":\"legacy\",\"tool_name\":\"Shell\",\"tool_input\":{\"command\":\"kanban-post --done KANBAN-2 --evidence ok\",\"working_directory\":\"$HOME/checkout\"}}")
   run_cursor_hook preToolUse "$payload"
   [ "$status" -eq 0 ]
-  jq -e --arg h "$CURSOR_HANDLE" '.permission == "allow" and
-    (.updated_input.command == ("kanban-post --done KANBAN-2 --evidence ok --work-handle " + $h))' <<<"$output"
-
-  payload=$(cursor_payload preToolUse conv-a gen-a \
-    '{"tool_use_id":"compound","tool_name":"Shell","tool_input":{"command":"kanban-post --done KANBAN-2 --evidence ok; echo bad"}}')
-  run_cursor_hook preToolUse "$payload"
-  jq -e '.permission == "deny"' <<<"$output"
+  jq -e '.permission == "allow" and (has("updated_input")|not)' <<<"$output"
 
   payload=$(cursor_payload preToolUse conv-a gen-a \
     '{"tool_use_id":"ordinary","tool_name":"Shell","tool_input":{"command":"git status --short"}}')

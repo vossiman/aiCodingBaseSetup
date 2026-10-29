@@ -32,7 +32,7 @@ class Clock:
 
 
 class BoardTransport:
-    """kanban-post's contract, in process: board answers raise with their status."""
+    """The transport contract, in process: board answers raise with their status."""
 
     def __init__(self, board: Board):
         self.board = board

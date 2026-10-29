@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto"
 const MAX_OUTPUT = 256 * 1024
 const BRIDGE_TIMEOUT_MS = 5000
 const VERSION_TIMEOUT_MS = 2000
-const LEGACY_GUIDANCE = "Use the Kanban MCP complete_ticket tool"
 const LIFECYCLE_EVENTS = new Set([
   "session.created",
   "session.compacted",
@@ -104,15 +103,6 @@ function processVersion(command) {
   })
 }
 
-function looksLikeLegacyCompletion(args) {
-  if (typeof args?.command !== "string") return false
-  const command = args.command
-  const commandPrefix = /^\s*(?:kanban-post|(?:\.?\.?\/|\/).*kanban-post|[A-Za-z_][A-Za-z0-9_]*=.*\s+kanban-post)(?:\s|$)/
-  return commandPrefix.test(command) &&
-    /(?:^|\s)--done\b/.test(command) &&
-    /(?:^|\s)--evidence\b/.test(command)
-}
-
 export const KanbanWorkPlugin = async (input) => {
   const bridgeCommand = process.env.AICODING_KANBAN_WORK || "kanban-work"
   const versionCommand = process.env.AICODING_OPENCODE || "opencode"
@@ -163,24 +153,18 @@ export const KanbanWorkPlugin = async (input) => {
       }
     },
 
-    "tool.execute.before": async (toolInput, output) => {
+    "tool.execute.before": async (toolInput) => {
       const tool = toolInput?.tool
       const sessionID = toolInput?.sessionID
       const callID = toolInput?.callID
-      const args = output?.args
       if (typeof sessionID !== "string" || !sessionID || typeof callID !== "string" || !callID) {
-        if (tool === "bash" && looksLikeLegacyCompletion(args)) throw new Error(LEGACY_GUIDANCE)
         return
       }
-      const result = await hook("tool.execute.before", withParent(sessionID, {
+      await hook("tool.execute.before", withParent(sessionID, {
         tool,
         sessionID,
         callID,
-        args,
       }))
-      if (result?.args && args && typeof args === "object") {
-        Object.assign(args, result.args)
-      }
     },
 
     "tool.execute.after": async (toolInput) => {
