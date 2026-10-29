@@ -140,7 +140,6 @@ main() {
   install_agent_notify_symlink
   install_dvw_probe_symlink
   install_clip_shim_symlinks
-  install_kanban_post_symlink
   install_kanban_work_symlink
   install_t3_symlinks
   install_measure_remote_symlink

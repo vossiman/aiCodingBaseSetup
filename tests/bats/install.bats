@@ -110,7 +110,6 @@ blueprint_copy() {
     install_claude_plugins() { :; }
     install_codex_plugins() { :; }
     install_managed_config() {
-      [ -x "$HOME/.local/bin/kanban-post" ]
       [ -x "$HOME/.local/bin/kanban-work" ]
       : > "$HOME/kanban-config-ready"
     }

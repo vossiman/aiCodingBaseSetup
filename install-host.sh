@@ -189,7 +189,6 @@ main() {
   install_aicoding_install_symlink
   install_update_status_symlink
   install_aicoding_auto_update_symlink
-  install_kanban_post_symlink
   install_kanban_work_symlink
   install_redact_transcript_symlink
   install_redact_sessions_symlinks

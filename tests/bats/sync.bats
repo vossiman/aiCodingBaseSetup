@@ -481,15 +481,40 @@ EOF
     and .components.provision.successful_version == $sha' "$AICODING_RESULTS_FILE"
 }
 
-@test "sync --boot restores missing Kanban helper symlinks" {
+@test "sync --boot restores a missing kanban-work symlink" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  rm -f "$HOME/.local/bin/kanban-post" "$HOME/.local/bin/kanban-work"
+  rm -f "$HOME/.local/bin/kanban-work"
   AICODING_UPDATE_TTL=0 aicoding_sync --boot
-  for h in kanban-post kanban-work; do
-    [ -L "$HOME/.local/bin/$h" ]
-    [ -x "$HOME/.local/bin/$h" ]
-    readlink "$HOME/.local/bin/$h" | grep -q "bin/$h"
-  done
+  [ -L "$HOME/.local/bin/kanban-work" ]
+  [ -x "$HOME/.local/bin/kanban-work" ]
+  readlink "$HOME/.local/bin/kanban-work" | grep -q "bin/kanban-work"
+}
+
+@test "sync --boot removes a stale kanban-post symlink into a release" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  local rel="$AICODING_DATA_DIR/versions/old/bin"
+  mkdir -p "$rel"; : > "$rel/kanban-post"
+  ln -sf "$rel/kanban-post" "$HOME/.local/bin/kanban-post"
+  AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  [ ! -e "$HOME/.local/bin/kanban-post" ]
+  [ ! -L "$HOME/.local/bin/kanban-post" ]
+}
+
+@test "sync --boot keeps a regular kanban-post file" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  printf 'mine\n' > "$HOME/.local/bin/kanban-post"
+  AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  [ -f "$HOME/.local/bin/kanban-post" ]
+  [ ! -L "$HOME/.local/bin/kanban-post" ]
+  [ "$(cat "$HOME/.local/bin/kanban-post")" = mine ]
+}
+
+@test "sync --boot keeps a foreign kanban-post symlink" {
+  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
+  ln -sf /usr/local/bin/kanban-post "$HOME/.local/bin/kanban-post"
+  AICODING_UPDATE_TTL=0 aicoding_sync --boot
+  [ -L "$HOME/.local/bin/kanban-post" ]
+  [ "$(readlink "$HOME/.local/bin/kanban-post")" = /usr/local/bin/kanban-post ]
 }
 
 @test "sync --boot restores the managed Claude and Codex Kanban lifecycle wrappers" {
