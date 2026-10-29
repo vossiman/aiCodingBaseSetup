@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -15,7 +14,6 @@ from pathlib import Path
 from typing import Callable
 
 from .events import EventIngestor, network_allowed
-from .legacy import DENIAL, looks_like_legacy_complete, rewrite_legacy_complete
 from .schema import CLAIM_TOOL, BridgeError, qualified_client_version
 from .store import Execution, MAX_OPAQUE, Store
 from .transport import fetch_instructions
@@ -42,12 +40,8 @@ START_SOURCES = {
 FRESH_SOURCE_EVENTS = {
     "startup": "start", "resume": "resume", "clear": "clear", "fork": "start",
 }
-SHELL_TOOLS = frozenset({"Bash", "Shell"})
 MCP_PREFIX = "mcp__kanban__"
 VERSION_PATTERN = re.compile(r"\b\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?\b")
-CLAUDE_BASH_FIELDS = frozenset({"command", "description", "timeout", "run_in_background"})
-CODEX_BASH_FIELDS = frozenset({"command"})
-CURSOR_SHELL_FIELDS = frozenset({"command", "working_directory"})
 CURSOR_CLAIM_TOOL = f"MCP:{CLAIM_TOOL}"
 OPENCODE_CLAIM_TOOL = f"kanban_{CLAIM_TOOL}"
 UNSETTLED_STOP = "the board has not confirmed the previous turn's stop; retry the claim"
@@ -256,25 +250,6 @@ class ClaudeCodexAdapter:
             raise BridgeError(409, "captured PreToolUse child generation has ended")
         return execution
 
-    @staticmethod
-    def _validated_shell_input(harness: str, tool_input: dict) -> dict:
-        allowed = CLAUDE_BASH_FIELDS if harness == "claude" else CODEX_BASH_FIELDS
-        if set(tool_input) - allowed:
-            raise BridgeError(422, DENIAL)
-        if not isinstance(tool_input.get("command"), str):
-            raise BridgeError(422, DENIAL)
-        if harness == "claude":
-            if "description" in tool_input and not isinstance(tool_input["description"], str):
-                raise BridgeError(422, DENIAL)
-            if "timeout" in tool_input:
-                timeout = tool_input["timeout"]
-                if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
-                    raise BridgeError(422, DENIAL)
-            if ("run_in_background" in tool_input
-                    and not isinstance(tool_input["run_in_background"], bool)):
-                raise BridgeError(422, DENIAL)
-        return dict(tool_input)
-
     def _write_claude_hint(self, handle: str):
         path = os.environ.get("CLAUDE_ENV_FILE")
         if not path:
@@ -468,10 +443,6 @@ class ClaudeCodexAdapter:
             tool_name = _bounded(payload.get("tool_name"), "tool_name")
             tool_input = payload.get("tool_input")
             claim = self._is_claim(tool_name)
-            prepared_command = None
-            if (not claim and tool_name in SHELL_TOOLS and isinstance(tool_input, dict)
-                    and looks_like_legacy_complete(tool_input.get("command"))):
-                prepared_command = tool_input["command"]
             try:
                 session_id, agent_id = self._native(payload)
                 native_call_id = _bounded(payload.get("tool_use_id"), "tool_use_id")
@@ -480,18 +451,12 @@ class ClaudeCodexAdapter:
                 return AdapterResult(self._tool_allow(harness))
             if claim and not self.ingress.settle_turn(execution.handle):
                 raise BridgeError(503, UNSETTLED_STOP)
-            updated = None
-            if prepared_command is not None:
-                updated = {
-                    **self._validated_shell_input(harness, tool_input),
-                    "command": shlex.join(rewrite_legacy_complete(prepared_command, execution.handle)),
-                }
             lifecycle = self._record(
                 harness, "tool_start", execution,
                 _event_id("tool-start", harness, session_id, agent_id, native_call_id),
                 native_call_id=native_call_id,
             )
-            return AdapterResult(self._tool_allow(harness, updated), lifecycle)
+            return AdapterResult(self._tool_allow(harness), lifecycle)
         except BridgeError as error:
             return AdapterResult(self._deny(error.message))
 
@@ -638,17 +603,6 @@ class CursorAdapter(ClaudeCodexAdapter):
     @staticmethod
     def _is_claim(tool_name: str) -> bool:
         return tool_name == CURSOR_CLAIM_TOOL
-
-    @staticmethod
-    def _validated_shell_input(harness: str, tool_input: dict) -> dict:
-        if set(tool_input) - CURSOR_SHELL_FIELDS:
-            raise BridgeError(422, DENIAL)
-        if not isinstance(tool_input.get("command"), str):
-            raise BridgeError(422, DENIAL)
-        if ("working_directory" in tool_input
-                and not isinstance(tool_input["working_directory"], str)):
-            raise BridgeError(422, DENIAL)
-        return dict(tool_input)
 
     def _start_output(self, harness: str, lifecycle: dict) -> AdapterResult:
         handle = lifecycle["handle"]
@@ -1102,16 +1056,11 @@ class OpenCodeAdapter:
 
     def _tool_before(self, payload: dict) -> AdapterResult:
         tool_name = _bounded(payload.get("tool"), "tool")
-        args = payload.get("args")
-        command = args.get("command") if tool_name == "bash" and isinstance(args, dict) else None
-        prepared_command = command if looks_like_legacy_complete(command) else None
         session_id = payload.get("sessionID")
         call_id = payload.get("callID")
         if not isinstance(session_id, str) or not session_id.strip() or not isinstance(
             call_id, str
         ) or not call_id.strip():
-            if prepared_command is not None:
-                raise BridgeError(422, DENIAL)
             return AdapterResult({})
         session_id = _bounded(session_id, "sessionID")
         call_id = _bounded(call_id, "callID")
@@ -1119,17 +1068,12 @@ class OpenCodeAdapter:
         execution, _ = self._session_or_observe(payload, "tool.execute.before")
         if tool_name == OPENCODE_CLAIM_TOOL and not self.ingress.settle_turn(execution.handle):
             raise BridgeError(503, UNSETTLED_STOP)
-        output = {}
-        if prepared_command is not None:
-            output["args"] = {"command": shlex.join(
-                rewrite_legacy_complete(prepared_command, execution.handle)
-            )}
         lifecycle = self._record(
             "tool_start", execution,
             self._tool_start_id(instance_id, session_id, call_id, tool_name),
             native_call_id=call_id,
         )
-        return AdapterResult(output, lifecycle)
+        return AdapterResult({}, lifecycle)
 
     def _tool_after(self, payload: dict) -> AdapterResult:
         tool_name = _bounded(payload.get("tool"), "tool")

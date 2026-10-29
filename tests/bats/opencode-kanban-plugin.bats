@@ -63,23 +63,6 @@ EOF_PAYLOAD
       printf '%s\n' '{"ok":false,"error":{"code":503,"message":"the board has not confirmed the previous turn'"'"'s stop; retry the claim"}}'
       exit 1
     fi
-    if [ "$tool" = bash ]; then
-      command=$(jq -r '.args.command // empty' <<EOF_PAYLOAD
-$payload
-EOF_PAYLOAD
-)
-      case "$command" in
-        KANBAN_WORK_HANDLE=*|*';'*)
-          printf '%s\n' '{"ok":false,"error":{"code":422,"message":"Use the Kanban MCP complete_ticket tool"}}'
-          exit 1
-          ;;
-        kanban-post\ --done*)
-          jq -nc --arg command "$command --work-handle 11111111-1111-4111-8111-111111111111" \
-            '{args:{command:$command}}'
-          exit 0
-          ;;
-      esac
-    fi
     printf '{}\n'
     ;;
   *) printf '{}\n' ;;
@@ -243,49 +226,18 @@ JS
   [ ! -e "$BRIDGE_CALLS" ]
 }
 
-@test "OpenCode missing identity recognizes environment-prefixed evidence completion" {
+@test "OpenCode does not block or rewrite a kanban-post bash call" {
   run node --input-type=module <<'JS'
 import assert from "node:assert/strict"
 import { pathToFileURL } from "node:url"
 const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
 const hooks = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
-for (const command of [
-  "FOO=1 kanban-post --done KANBAN-2 --evidence ok",
-  "FOO='space here' kanban-post --done KANBAN-2 --evidence ok",
-  "/usr/bin/kanban-post --done KANBAN-2 --evidence ok",
-]) {
-  await assert.rejects(
-    hooks["tool.execute.before"]({ tool: "bash" }, { args: { command } }),
-    /Kanban MCP complete_ticket/,
-  )
+for (const [id, command] of [["a", "kanban-post --done KANBAN-2 --evidence ok"], ["b", "FOO=1 kanban-post --done KANBAN-2 --evidence ok"]]) {
+  const output = { args: { command } }
+  await hooks["tool.execute.before"]({ tool: "bash", sessionID: "ses-parent", callID: id }, output)
+  assert.deepEqual(output.args, { command })
 }
-JS
-  [ "$status" -eq 0 ]
-  [ ! -e "$BRIDGE_CALLS" ]
-}
-
-@test "OpenCode shell rewrite is exact while unsafe and unrelated commands are safe" {
-  run node --input-type=module <<'JS'
-import assert from "node:assert/strict"
-import { pathToFileURL } from "node:url"
-const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
-const hooks = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
-const input = { tool: "bash", sessionID: "ses-parent", callID: "legacy" }
-const output = { args: { command: "kanban-post --done KANBAN-2 --evidence ok", description: "keep" } }
-const original = output.args
-await hooks["tool.execute.before"](input, output)
-assert.strictEqual(output.args, original)
-assert.equal(output.args.command, "kanban-post --done KANBAN-2 --evidence ok --work-handle 11111111-1111-4111-8111-111111111111")
-assert.equal(output.args.description, "keep")
-await assert.rejects(hooks["tool.execute.before"](
-  { tool: "bash", sessionID: "ses-parent", callID: "unsafe" },
-  { args: { command: "kanban-post --done KANBAN-2 --evidence ok; echo bad" } },
-), /Kanban MCP complete_ticket/)
-const ordinary = { args: { command: "git status --short" } }
-await hooks["tool.execute.before"](
-  { tool: "bash", sessionID: "ses-parent", callID: "ordinary" }, ordinary,
-)
-assert.deepEqual(ordinary.args, { command: "git status --short" })
+await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "kanban-post --done KANBAN-2 --evidence ok" } })
 JS
   [ "$status" -eq 0 ]
 }
