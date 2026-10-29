@@ -675,12 +675,29 @@ install_claude_plugins() {
   if [ "$deferred" -eq 1 ] && [ -n "${AICODING_SYNC_MODE:-}" ]; then return 3; fi
 }
 
+# kanban-post is retired. Earlier installs symlinked it into a blueprint or
+# release bin/; remove only such a link so it cannot keep working after upgrade.
+_provision_remove_kanban_post() {
+  local link="$HOME/.local/bin/kanban-post" target data="${AICODING_DATA_DIR:-$HOME/.local/share/aicoding}" root
+  [ -L "$link" ] || return 0
+  target="$(readlink "$link" 2>/dev/null)" || return 0
+  case "$target" in */bin/kanban-post) ;; *) return 0 ;; esac
+  for root in "$data" "${SCRIPT_DIR:-}"; do
+    [ -n "$root" ] || continue
+    case "$target" in
+      "$root"/*) rm -f -- "$link" 2>/dev/null && info "kanban-post: removed the retired board client"; return 0 ;;
+    esac
+  done
+  return 0
+}
+
 # --- Retired CLI shims ---
 # aicoding-update and update-status were back-compat symlinks for one release;
 # sweep them off existing machines. (install.sh no longer creates them.)
 remove_deprecated_shims() {
   rm -f "$HOME/.local/bin/aicoding-update" "$HOME/.local/bin/update-status"
   _provision_remove_local_kanban_mcp
+  _provision_remove_kanban_post
 }
 
 # --- Codex marketplace plugins ---
