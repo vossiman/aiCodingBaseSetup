@@ -13,7 +13,9 @@ import http.client
 import json
 import os
 import re
+import socket
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -128,6 +130,72 @@ def _read_body(response, deadline: float) -> bytes:
         chunks.append(chunk)
 
 
+class _Watchdog:
+    """Shuts the request's socket down at the deadline, so connect, headers and body all honour it."""
+
+    def __init__(self, deadline: float):
+        self._lock = threading.Lock()
+        self._sock = None
+        self.fired = False
+        self._timer = threading.Timer(max(0.0, deadline - time.monotonic()), self._fire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def connection(self, cls):
+        def build(host, **kwargs):
+            conn = cls(host, **kwargs)
+            conn._create_connection = self._connect
+            return conn
+        return build
+
+    def _connect(self, *args, **kwargs):
+        sock = socket.create_connection(*args, **kwargs)
+        with self._lock:
+            # A duplicate survives the TLS wrap, which detaches the original socket object.
+            self._sock = sock.dup()
+            if self.fired:
+                self._shutdown()
+        return sock
+
+    def _fire(self):
+        with self._lock:
+            self.fired = True
+            self._shutdown()
+
+    def _shutdown(self):
+        if self._sock is not None:
+            try:
+                self._sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def close(self):
+        self._timer.cancel()
+        with self._lock:
+            if self._sock is not None:
+                self._sock.close()
+                self._sock = None
+
+
+class _WatchedHTTP(urllib.request.HTTPHandler):
+    def __init__(self, watch: _Watchdog):
+        super().__init__()
+        self.watch = watch
+
+    def http_open(self, req):
+        return self.do_open(self.watch.connection(http.client.HTTPConnection), req)
+
+
+class _WatchedHTTPS(urllib.request.HTTPSHandler):
+    def __init__(self, watch: _Watchdog):
+        super().__init__()
+        self.watch = watch
+
+    def https_open(self, req):
+        return self.do_open(self.watch.connection(http.client.HTTPSConnection), req,
+                            context=self._context)
+
+
 class HttpTransport:
     """Call one lifecycle operation; errors carry the board's status, or 5xx if it never answered."""
 
@@ -175,7 +243,8 @@ class HttpTransport:
             data=None if body is None else json.dumps(body, separators=(",", ":")).encode(),
             headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json"},
         )
-        opener = urllib.request.build_opener(_NoRedirects)
+        watch = _Watchdog(deadline)
+        opener = urllib.request.build_opener(_NoRedirects, _WatchedHTTP(watch), _WatchedHTTPS(watch))
         try:
             try:
                 with opener.open(request, timeout=_remaining(deadline)) as response:
@@ -191,6 +260,10 @@ class HttpTransport:
                 if error.code < 400:
                     raise BridgeError(502, "board returned HTTP error") from None
                 raise BridgeError(error.code, _error_message(value)) from None
+            finally:
+                watch.close()
+                if watch.fired:
+                    raise BridgeError(504, "kanban transport timed out") from None
         except BridgeError:
             raise
         except TimeoutError:

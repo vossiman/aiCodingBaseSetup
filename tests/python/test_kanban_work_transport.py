@@ -290,6 +290,33 @@ class ErrorTests(TransportCase):
         self.assertEqual(caught.exception.code, 504)
         self.assertLess(time.monotonic() - start, 1.5)
 
+    def test_slow_response_headers_hit_the_deadline(self):
+        listener = socket.socket()
+        self.addCleanup(listener.close)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(8)
+        head = (b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                b"X-Padding: " + b"x" * 64 + b"\r\nContent-Length: 2\r\n\r\n{}")
+
+        def trickle():
+            connection, _ = listener.accept()
+            with connection:
+                connection.recv(65536)
+                try:
+                    for byte in head[:50]:
+                        connection.sendall(bytes([byte]))
+                        time.sleep(0.1)
+                except OSError:
+                    pass
+
+        threading.Thread(target=trickle, daemon=True).start()
+        url = f"http://127.0.0.1:{listener.getsockname()[1]}"
+        start = time.monotonic()
+        with self.assertRaises(BridgeError) as caught:
+            self.transport(url)("mcp_instructions", {}, timeout=0.5)
+        self.assertEqual(caught.exception.code, 504)
+        self.assertLess(time.monotonic() - start, 1.5)
+
     def test_unreachable_board_is_502(self):
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
