@@ -78,7 +78,7 @@ add_project_agents() {
   [ "$status" -eq 0 ]
   local seen="$WT/.review-round/agents-seen-review.md"
   grep -q 'Review session rules' "$seen"
-  grep -q 'never run `kanban-post`' "$seen"
+  grep -q 'never call the kanban MCP write tools' "$seen"
   grep -q 'Do not write, edit, create or delete files' "$seen"
   [ ! -e "$WT/AGENTS.md" ]
   [[ "$output" == *"stub findings"* ]]
@@ -104,7 +104,7 @@ add_project_agents() {
   [ "$status" -eq 0 ]
   local seen="$WT/.review-round/agents-seen-fix.md"
   grep -q 'Fix session rules' "$seen"
-  grep -q 'never run `kanban-post`' "$seen"
+  grep -q 'never call the kanban MCP write tools' "$seen"
   grep -q 'run the tests' "$seen"
   [[ "$output" == *"src.txt"* ]]
   [[ "$output" != *"AGENTS.md"* ]]
@@ -113,10 +113,10 @@ add_project_agents() {
 
 @test "the shipped prompts tell every harness not to file tickets" {
   local d="$BLUEPRINT_ROOT/skills/review-by-harness/prompts"
-  grep -q 'kanban-post' "$d/review.md"
-  grep -q 'kanban-post' "$d/fix.md"
-  grep -q 'kanban-post' "$d/agents-review.md"
-  grep -q 'kanban-post' "$d/agents-fix.md"
+  grep -q "kanban MCP write tools" "$d/review.md"
+  grep -q "kanban MCP write tools" "$d/fix.md"
+  grep -q "kanban MCP write tools" "$d/agents-review.md"
+  grep -q "kanban MCP write tools" "$d/agents-fix.md"
 }
 
 @test "a tracked AGENTS.md symlink is replaced for the run and put back; its target is untouched" {

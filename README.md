@@ -81,10 +81,8 @@ Lifecycle mutations work for every supported client, whatever its version: the
 clients release several times a day, so a per-version allowlist could never
 keep up.
 
-`kanban-post --done TICKET --evidence TEXT` completes through the session's
-claim when it holds one. Without a claim it posts the evidence as a comment
-first, then sets the ticket to Done, so a session whose hooks did not register
-can still close work.
+Agents complete work through the kanban MCP's `complete_ticket`, which needs
+the session's claim. There is no command-line fallback.
 
 ### Claude Code Plugins (Marketplace)
 
@@ -267,7 +265,7 @@ transcript — the failure that actually happens — not a determined attacker.
 - Agent-readable markdown (skills, slash commands, subagents, `CLAUDE.md`,
   `AGENTS.md`) gets `{{HOME}}` expanded and **nothing else** — no key is ever
   substituted into a file an agent reads as prose. A skill that needs a
-  credential calls a broker (`cloudflare-render`, `kanban-post`,
+  credential calls a broker (`cloudflare-render`,
   `dokploy-api`, `kuma-admin`, `measure-remote`, `redact-transcript`,
   `redact-sessions`, `git-credential-aicoding`), which reads the value
   in-process and never prints it.

@@ -739,7 +739,7 @@ _seed_codex_config() {
 }
 
 @test "a placeholder credential name in a quoted argument is allowed" {
-  bash_hook 'kanban-post "t" --repo r --body "placeholder {{CLOUDFLARE_API_TOKEN}} is substituted at deploy time"'
+  bash_hook 'printf "t" --repo r --body "placeholder {{CLOUDFLARE_API_TOKEN}} is substituted at deploy time"'
   allowed
 }
 
@@ -750,18 +750,18 @@ _seed_codex_config() {
 
 @test "a protected filename mentioned in a quoted argument is allowed" {
   _seed_codex_config
-  bash_hook "kanban-post \"t\" --repo r --body \"the deployed $HOME/.codex/config.toml carries a bearer header\""
+  bash_hook "printf \"t\" --repo r --body \"the deployed $HOME/.codex/config.toml carries a bearer header\""
   allowed
 }
 
 @test "the secrets path mentioned in a quoted argument is allowed" {
-  bash_hook "kanban-post \"t\" --repo r --body \"the store is $HOME/.aicodingsetup/.secrets.env and containers mount it read-only\""
+  bash_hook "printf \"t\" --repo r --body \"the store is $HOME/.aicodingsetup/.secrets.env and containers mount it read-only\""
   allowed
 }
 
 @test "an unquoted protected path is still denied even without a reader" {
   _seed_codex_config
-  bash_hook "kanban-post t --repo r --body $HOME/.codex/config.toml"
+  bash_hook "printf t --repo r --body $HOME/.codex/config.toml"
   denied
 }
 
@@ -776,10 +776,10 @@ _seed_codex_config() {
 }
 
 @test "a reader anywhere in the command keeps the strict rule" {
-  # The mention is quoted and kanban-post is not a reader, but the second
+  # The mention is quoted and printf is not a reader, but the second
   # segment reads the file for real.
   _seed_codex_config
-  bash_hook "kanban-post \"t\" --repo r --body \"about $HOME/.codex/config.toml\" ; cat $HOME/.codex/config.toml"
+  bash_hook "printf \"t\" --repo r --body \"about $HOME/.codex/config.toml\" ; cat $HOME/.codex/config.toml"
   denied
 }
 
@@ -796,9 +796,9 @@ _seed_codex_config() {
 }
 
 @test "credential VALUE oracles are untouched by the prose carve-out" {
-  bash_hook 'kanban-post "t" --repo r --body "cites Bearer $DVW_CATALOG_TOKEN from catalog-http-lib.sh"'
+  bash_hook 'printf "t" --repo r --body "cites Bearer $DVW_CATALOG_TOKEN from catalog-http-lib.sh"'
   denied
-  bash_hook 'kanban-post "t" --repo r --body "$GH_TOKEN"'
+  bash_hook 'printf "t" --repo r --body "$GH_TOKEN"'
   denied
   bash_hook 'printenv GH_TOKEN'
   denied
@@ -811,7 +811,7 @@ _seed_codex_config() {
 }
 
 @test "a private key named in prose is allowed but reading it is not" {
-  bash_hook "kanban-post \"t\" --repo r --body \"rotate $HOME/.ssh/id_ed25519 next\""
+  bash_hook "printf \"t\" --repo r --body \"rotate $HOME/.ssh/id_ed25519 next\""
   allowed
   bash_hook "cat \"$HOME/.ssh/id_ed25519\""
   denied
@@ -836,7 +836,7 @@ _seed_codex_config() {
 @test "quoting an ALLOWLISTED head does not buy the exemption either" {
   # The rule is about the head word being unambiguous, not about which name it
   # is: refusing only quoted readers would need the reader list back.
-  bash_hook "\"kanban-post\" \"t\" --repo r --body \"about $HOME/.aicodingsetup/.secrets.env\""
+  bash_hook "\"printf\" \"t\" --repo r --body \"about $HOME/.aicodingsetup/.secrets.env\""
   denied
 }
 
@@ -909,7 +909,7 @@ _seed_codex_config() {
   denied
   bash_hook "printf '%s' \"x\" <(cat \"$s\")"
   denied
-  bash_hook "kanban-post t --repo r --body \"x\" >(cat \"$s\")"
+  bash_hook "printf t --repo r --body \"x\" >(cat \"$s\")"
   denied
 }
 
@@ -962,14 +962,14 @@ git diff --stat"
 }
 
 @test "a single-quoted token name handed to a non-reader is allowed" {
-  bash_hook "kanban-post 't' --repo r --body 'cites Bearer \$DVW_CATALOG_TOKEN from catalog-http-lib.sh'"
+  bash_hook "printf 't' --repo r --body 'cites Bearer \$DVW_CATALOG_TOKEN from catalog-http-lib.sh'"
   allowed
   bash_hook "echo 'the hook refuses \$GH_TOKEN and \${GH_TOKEN}'"
   allowed
 }
 
 @test "reader and oracle names quoted inside a non-reader argument are allowed" {
-  bash_hook 'kanban-post "t" --repo r --body "the hook blocks printenv GH_TOKEN, gh auth token, git credential fill and declare -p GH_TOKEN"'
+  bash_hook 'printf "t" --repo r --body "the hook blocks printenv GH_TOKEN, gh auth token, git credential fill and declare -p GH_TOKEN"'
   allowed
   bash_hook 'echo "env | grep -i token is refused"'
   allowed
@@ -1003,7 +1003,7 @@ X"
 @test "a double-quoted expansion next to a single-quoted mention is still denied" {
   bash_hook "echo '\$GH_TOKEN is' \"\$GH_TOKEN\""
   denied
-  bash_hook "kanban-post \"t\" --repo r --body \"\$(gh auth token)\""
+  bash_hook "printf \"t\" --repo r --body \"\$(gh auth token)\""
   denied
 }
 
@@ -1061,7 +1061,7 @@ X"
 }
 
 @test "a glued option inside quoted prose to a non-reader stays allowed" {
-  bash_hook "kanban-post 't' --repo r --body '--file=$HOME/.aicodingsetup/.secrets.env is what CAF-008 meant'"
+  bash_hook "printf 't' --repo r --body '--file=$HOME/.aicodingsetup/.secrets.env is what CAF-008 meant'"
   allowed
   bash_hook "echo 'the hook now catches grep -f\$HOME/.aicodingsetup/.secrets.env'"
   allowed

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Call the Dokploy panel API without any agent handling the API token.
 
-Same shape as kanban-post: the credential is read from the estate's secrets
+Same shape as kanban-work: the credential is read from the estate's secrets
 store inside this process and used to build one request. It never appears in
 argv, in a file, or in this program's output, which is what lets an agent
 use it under the secrets deny rules instead of expanding $DOKPLOY_API_TOKEN

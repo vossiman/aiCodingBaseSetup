@@ -275,7 +275,7 @@ print(mod['read_token']())
   # test-token) would also throw on connect and get swallowed silently,
   # passing this test for the wrong reason. Use a real loopback listener
   # that records the Authorization header it receives instead, the same
-  # pattern bin/kanban-post's --selftest uses to prove a credential never
+  # pattern bin/kanban-work's --selftest uses to prove a credential never
   # travels somewhere it shouldn't.
   seen="$TMPDIR/seen-auth"
   port=$(python3 - <<'PY'
@@ -313,7 +313,7 @@ PY
 }
 
 @test "a redirect is refused: the token never reaches the second host, silent exit 0" {
-  # Both sibling brokers (bin/kanban-post, configs/cloudflare/cloudflare-render)
+  # Both sibling brokers (bin/kanban-work, configs/cloudflare/cloudflare-render)
   # refuse 3xx because following one re-sends Authorization to whatever host
   # the response names, and this router's default is PLAINTEXT http. Unlike
   # them, memory-hint must degrade SILENTLY: it runs on the prompt path.

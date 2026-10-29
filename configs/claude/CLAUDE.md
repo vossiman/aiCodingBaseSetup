@@ -85,8 +85,8 @@ Use the installed `kanban` MCP for ticket reads, claims, checkpoints, release,
 completion, comments, links, and follow-up filing. Its server instructions are
 the canonical workflow. Native lifecycle hooks register the session and supply
 its work handle; they renew activity and release unfinished claims when a turn
-stops. `kanban-post` remains a
-credential-safe recovery CLI; it is not a status-transition bypass.
+stops. Agents use only the `kanban` MCP for board work, and people use the
+website.
 
 ## Parallel-session coordination
 

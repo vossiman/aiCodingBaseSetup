@@ -70,8 +70,8 @@ generation, queues session registration, activity, Stop release and session
 end, and records whether each Stop is settled. The pre-tool hook inspects only
 `claim_ticket`, and only to settle the previous turn's Stop first. It is
 operational coordination among processes running as one user, not an isolation
-boundary against that user. `kanban-post` is the credential-safe transport for
-the hooks and the recovery CLI.
+boundary against that user. `kanban-work` is the credential-safe transport for
+the hooks.
 
 Native API references: [Claude Code hooks](https://code.claude.com/docs/en/hooks-guide),
 [Codex hooks](https://developers.openai.com/codex/hooks),

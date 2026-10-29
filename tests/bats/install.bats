@@ -1114,7 +1114,7 @@ EOF
   [ -f "$HOME/.codex/AGENTS.md" ]
   grep -q 'memory_search' "$HOME/.codex/AGENTS.md"
   grep -q 'homelab-wiki' "$HOME/.codex/AGENTS.md"
-  grep -q 'kanban-post' "$HOME/.codex/AGENTS.md"
+  grep -q 'people use the' "$HOME/.codex/AGENTS.md"
 }
 
 @test "first-deploy: cursor global skill carries memory, kanban and secrets guidance" {
@@ -1133,7 +1133,7 @@ EOF
   head -1 "$skill" | grep -q '^---$'
   grep -q '^name: aicoding-estate$' "$skill"
   grep -q 'memory_search' "$skill"
-  grep -q 'kanban-post' "$skill"
+  grep -q 'people use the' "$skill"
   grep -q 'secrets-check' "$skill"
 }
 

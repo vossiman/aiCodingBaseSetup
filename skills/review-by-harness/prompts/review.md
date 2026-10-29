@@ -20,5 +20,5 @@ wrong. "No executable code changed" is not a review result: when the diff is
 prose, review what the prose claims.
 
 Your report is the only output. Do not file tickets or board comments (never
-run `kanban-post`), do not open issues or post PR comments, and do not write,
+call the kanban MCP write tools), do not open issues or post PR comments, and do not write,
 commit or push anything: the author fixes findings from what you write here.

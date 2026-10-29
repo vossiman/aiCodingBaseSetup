@@ -4,7 +4,7 @@ You are reviewing a pull request inside a throwaway worktree. Your written
 report is the whole deliverable; the author fixes findings from it.
 
 - Report findings in your response only. Do not file tickets or comments on
-  any board (never run `kanban-post`), do not open GitHub issues, do not post
+  any board (never call the kanban MCP write tools), do not open GitHub issues, do not post
   PR comments, do not send messages.
 - Do not write, edit, create or delete files. Do not commit, push, rebase or
   move HEAD. Read anything you need.
