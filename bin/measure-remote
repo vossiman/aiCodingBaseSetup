@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Drive memory-lanes measurement runs on vossisrv over a restricted SSH key.
 
-Same shape as kanban-post and git-credential-aicoding: the credential (here a
+Same shape as kanban-work and git-credential-aicoding: the credential (here a
 private key under ~/.aicodingsetup) is used inside this process and never
 appears in a command an agent writes, which is what lets an agent call this
 under the secrets deny rules. The key is command=-restricted server-side:

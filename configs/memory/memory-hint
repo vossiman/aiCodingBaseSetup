@@ -49,7 +49,7 @@ def read_token() -> str:
 
 
 def router_base() -> str:
-    """The router's address. Pinned, like kanban-post's.
+    """The router's address. Pinned, like kanban-work's.
 
     MEMORY_ROUTER_URL used to be honoured verbatim with no scheme or host
     check, so one environment variable sent the bearer token anywhere. It is
@@ -75,7 +75,7 @@ class NoRedirects(urllib.request.HTTPRedirectHandler):
     header to whatever host the response named, and the default router is
     PLAINTEXT http, so any hop can name one.
 
-    Deliberate difference from the sibling brokers (bin/kanban-post,
+    Deliberate difference from the sibling brokers (bin/kanban-work,
     configs/cloudflare/cloudflare-render), which die() loudly here: this runs
     on the agent prompt path and must print nothing and exit 0 on ANY
     failure. So it raises, and main()'s broad except swallows it silently.

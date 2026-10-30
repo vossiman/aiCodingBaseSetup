@@ -110,7 +110,6 @@ blueprint_copy() {
     install_claude_plugins() { :; }
     install_codex_plugins() { :; }
     install_managed_config() {
-      [ -x "$HOME/.local/bin/kanban-post" ]
       [ -x "$HOME/.local/bin/kanban-work" ]
       : > "$HOME/kanban-config-ready"
     }
@@ -1114,7 +1113,7 @@ EOF
   [ -f "$HOME/.codex/AGENTS.md" ]
   grep -q 'memory_search' "$HOME/.codex/AGENTS.md"
   grep -q 'homelab-wiki' "$HOME/.codex/AGENTS.md"
-  grep -q 'kanban-post' "$HOME/.codex/AGENTS.md"
+  grep -q 'people use the' "$HOME/.codex/AGENTS.md"
 }
 
 @test "first-deploy: cursor global skill carries memory, kanban and secrets guidance" {
@@ -1133,7 +1132,7 @@ EOF
   head -1 "$skill" | grep -q '^---$'
   grep -q '^name: aicoding-estate$' "$skill"
   grep -q 'memory_search' "$skill"
-  grep -q 'kanban-post' "$skill"
+  grep -q 'people use the' "$skill"
   grep -q 'secrets-check' "$skill"
 }
 
@@ -1609,13 +1608,13 @@ EOF
   done
 }
 
-@test "install.sh symlinks the kanban board client" {
+@test "install.sh symlinks the kanban work helper and no kanban-post" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  for h in kanban-post kanban-work; do
-    [ -L "$HOME/.local/bin/$h" ]
-    [ -x "$HOME/.local/bin/$h" ]
-    [ "$(readlink -f "$HOME/.local/bin/$h")" = "$BLUEPRINT_ROOT/bin/$h" ]
-  done
+  [ -L "$HOME/.local/bin/kanban-work" ]
+  [ -x "$HOME/.local/bin/kanban-work" ]
+  [ "$(readlink -f "$HOME/.local/bin/kanban-work")" = "$BLUEPRINT_ROOT/bin/kanban-work" ]
+  [ ! -e "$HOME/.local/bin/kanban-post" ]
+  [ ! -L "$HOME/.local/bin/kanban-post" ]
   for h in dokploy-api kuma-admin bugsink-api; do
     [ -L "$HOME/.local/bin/$h" ]
     [ -x "$HOME/.local/bin/$h" ]

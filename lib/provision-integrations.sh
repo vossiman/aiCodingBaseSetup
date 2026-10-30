@@ -140,24 +140,8 @@ install_clip_shim_symlinks() {
   ok "clip shims installed at ~/.local/bin/{xclip,wl-paste} -> $src"
 }
 
-# --- kanban board client ---
-# The homelab backlog (kanban.dataprospectors.at) authenticates agents with a
-# bearer token kept in the shared secrets store. An agent cannot use it
-# directly: the secrets deny hook refuses any command that expands
-# $KANBAN_TOKEN, and it cannot tell "send it in a header" from "print it".
-# kanban-post is the same answer git got — a helper that reads the store
-# itself, so the value never appears in a command an agent writes.
-install_kanban_post_symlink() {
-  header "kanban board client"
-  local src="$SCRIPT_DIR/bin/kanban-post"
-  [[ -f "$src" ]] || { warn "bin/kanban-post not found — skipping"; return; }
-  mkdir -p "$HOME/.local/bin"; chmod +x "$src"
-  ln -sf "$src" "$HOME/.local/bin/kanban-post"
-  ok "kanban-post installed at ~/.local/bin/kanban-post -> $src"
-}
-
 # Native lifecycle bridge shared by every supported agent client. It stores
-# only local identifiers and calls kanban-post for credential-bearing traffic.
+# only local identifiers and reads the board credential in process.
 install_kanban_work_symlink() {
   header "kanban native work bridge"
   local src="$SCRIPT_DIR/bin/kanban-work"
@@ -184,7 +168,7 @@ install_t3_symlinks() {
 }
 
 # --- Dokploy panel and Uptime Kuma clients ---
-# Same pattern as kanban-post: the panel's API token and Kuma's admin login
+# Same pattern as kanban-work: the panel's API token and Kuma's admin login
 # live in the shared secrets store, an agent may not expand them, so each
 # helper reads its own credential in-process and scrubs it from everything
 # it prints. kuma-admin is a uv script (python-socketio); uv is provisioned
@@ -257,7 +241,7 @@ install_redact_sessions_symlinks() {
 # --- memory-lanes measurement client ---
 # Starts, watches and cancels memory-lanes measurement runs on vossisrv over a
 # command=-restricted SSH key in ~/.aicodingsetup. The key path is denied to
-# agents by the secrets hook, so the helper holds it, the way kanban-post
+# agents by the secrets hook, so the helper holds it, the way kanban-work
 # holds its token. Without the key installed the helper refuses politely.
 install_measure_remote_symlink() {
   header "memory-lanes measurement client"

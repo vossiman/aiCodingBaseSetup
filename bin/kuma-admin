@@ -7,7 +7,7 @@
 
 Uptime Kuma has no REST API: an "API key" there only unlocks the Prometheus
 /metrics export. Everything the UI does goes over a socket.io session that
-authenticates with a username and password. This helper is the kanban-post
+authenticates with a username and password. This helper is the kanban-work
 pattern applied to that session: the credential is read from the estate's
 secrets store inside this process, used for one login, and never appears in
 argv, in a file, or in this program's output.

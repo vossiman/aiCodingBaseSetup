@@ -20,7 +20,7 @@ EVENTS = frozenset({
 
 
 def network_allowed() -> bool:
-    """Tests run offline unless they aim kanban-post at a loopback fake board."""
+    """Tests run offline unless they aim the transport at a loopback fake board."""
     return background_allowed() or bool(os.environ.get("KANBAN_URL"))
 
 

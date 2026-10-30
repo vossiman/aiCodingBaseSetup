@@ -136,7 +136,7 @@ CONTENT_COMMANDS=(
 # without that counting as a read.
 #
 # 2026-08-31: writing about a protected path is not reading it. Refusing
-# `kanban-post --body "...~/.codex/config.toml..."` blocked incident
+# `printf --body "...~/.codex/config.toml..."` blocked incident
 # write-ups and ticket bodies, which are exactly the texts that have to name
 # these files, and a hook that fires on a harmless mention trains an agent to
 # reword until something passes. See AICODINGBASESETUP-6.
@@ -166,7 +166,6 @@ CONTENT_COMMANDS=(
 # to replace — it missed `-T`/`--template`. A multi-verb tool cannot be
 # allowlisted by its name, and no false positive ever asked for it.
 NON_READER_COMMANDS=(
-  kanban-post
   echo
   printf
   true

@@ -181,15 +181,15 @@ _source_host_lib() {
   [ -s "$HOME/.local/state/aicoding/provision_commit" ]
 }
 
-@test "install-host.sh installs both Kanban helpers from the durable blueprint" {
+@test "install-host.sh installs the Kanban work helper and no kanban-post" {
   export AICODINGSETUP_SKIP_NETWORK=1
   bash -c "cd '$HOST_BLUEPRINT' && bash install-host.sh"
   local durable="${AICODING_HOST_BLUEPRINT_DIR:-$HOME/.local/share/aicoding/blueprint}"
-  for h in kanban-post kanban-work; do
-    [ -L "$HOME/.local/bin/$h" ]
-    [ -x "$HOME/.local/bin/$h" ]
-    [ "$(readlink -f "$HOME/.local/bin/$h")" = "$durable/bin/$h" ]
-  done
+  [ -L "$HOME/.local/bin/kanban-work" ]
+  [ -x "$HOME/.local/bin/kanban-work" ]
+  [ "$(readlink -f "$HOME/.local/bin/kanban-work")" = "$durable/bin/kanban-work" ]
+  [ ! -e "$HOME/.local/bin/kanban-post" ]
+  [ ! -L "$HOME/.local/bin/kanban-post" ]
 }
 
 @test "persistent host install reports expected preparation deferrals without failing enrollment or stamping provision" {
@@ -226,7 +226,6 @@ _source_host_lib() {
     install_claude_mcps() { :; }
     install_claude_plugins() { :; }
     install_managed_config() {
-      [ -x "$HOME/.local/bin/kanban-post" ]
       [ -x "$HOME/.local/bin/kanban-work" ]
       : > "$HOME/kanban-config-ready"
     }

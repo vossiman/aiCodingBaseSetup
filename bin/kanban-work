@@ -21,6 +21,7 @@ from lib.kanban_work.adapters import (  # noqa: E402
     adapt_opencode,
 )
 from lib.kanban_work.events import background_allowed, network_allowed  # noqa: E402
+from lib.kanban_work.selftest import run_selftest  # noqa: E402
 from lib.kanban_work.transport import fetch_instructions  # noqa: E402
 
 MAX_JSON_STDIN = 256 * 1024
@@ -64,6 +65,8 @@ def spawn_mode(*args):
 
 
 def main():
+    if sys.argv[1:] == ["selftest"]:
+        return run_selftest()
     try:
         if sys.argv[1:] == ["--json", "instructions"]:
             if read_payload():
@@ -116,7 +119,7 @@ def main():
         else:
             raise BridgeError(
                 422,
-                "usage: kanban-work --json instructions; "
+                "usage: kanban-work selftest; kanban-work --json instructions; "
                 "kanban-work hook --harness HARNESS --event EVENT; "
                 "kanban-work hook HARNESS EVENT; kanban-work drain [BUDGET_MS]; "
                 "kanban-work supervise HANDLE NATIVE_CALL_ID",

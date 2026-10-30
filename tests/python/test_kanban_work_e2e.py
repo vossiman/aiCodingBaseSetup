@@ -1,4 +1,4 @@
-"""The real kanban-work hooks and kanban-post against a loopback fake board."""
+"""The real kanban-work hooks against a loopback fake board."""
 
 import json
 import os
@@ -239,45 +239,6 @@ class CodexFlows(ClaudeFlows):
 
     harness = "codex"
     turn_field = "turn_id"
-
-
-class LegacyCompletion(ClaudeCodexBase):
-    def run_post(self, command_argv, env_handle=None):
-        env = self.env()
-        if env_handle:
-            env["KANBAN_WORK_HANDLE"] = env_handle
-        return subprocess.run(command_argv, capture_output=True, text=True, env=env, timeout=60)
-
-    def test_rewritten_completion_completes_through_the_sessions_claim(self):
-        handle, _ = self.start()
-        session = self.session(handle)
-        self.prompt("turn-1")
-        claim = self.board.claim(session["id"], "AICODINGBASESETUP-1")
-        out = self.pre("Bash", "turn-1", "call-1", tool_input={
-            "command": "kanban-post --done AICODINGBASESETUP-1 --evidence 'tests pass'"})
-        command = out["hookSpecificOutput"]["updatedInput"]["command"]
-        self.assertTrue(command.endswith(f"--work-handle {handle}"))
-        import shlex
-        result = self.run_post(shlex.split(command))
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIsNotNone(claim["released_at"])
-        self.assertEqual(self.board.tickets["AICODINGBASESETUP-1"]["status"], "done")
-
-    def test_completion_of_another_ticket_is_refused_while_claimed(self):
-        handle, _ = self.start()
-        self.board.claim(self.session(handle)["id"], "AICODINGBASESETUP-1")
-        result = self.run_post(["kanban-post", "--done", "AICODINGBASESETUP-2", "--evidence",
-                                "x", "--work-handle", handle])
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("not the session's current claim", result.stderr)
-
-    def test_completion_without_a_claim_records_evidence_then_marks_done(self):
-        handle, _ = self.start()
-        result = self.run_post(["kanban-post", "--done", "AICODINGBASESETUP-2", "--evidence",
-                                "shipped", "--work-handle", handle])
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.board.comments, [("AICODINGBASESETUP-2", "Completion evidence:\n\nshipped")])
-        self.assertEqual(self.board.tickets["AICODINGBASESETUP-2"]["status"], "done")
 
 
 class CursorFlows(HookHarness):

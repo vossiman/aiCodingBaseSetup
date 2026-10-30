@@ -9,7 +9,7 @@ from uuid import uuid5
 
 from .schema import BridgeError
 from .store import OPERATION_NAMESPACE, QueueRow, Store
-from .transport import DEFAULT_TIMEOUT, SubprocessTransport
+from .transport import DEFAULT_TIMEOUT, HttpTransport
 
 
 ACTIVITY_MAX_AGE = timedelta(seconds=60)
@@ -37,7 +37,7 @@ class LifecycleQueue:
                  transport: Callable[..., dict] | None = None, *,
                  now: Callable[[], datetime] | None = None):
         self.store = store or Store()
-        self.transport = transport or SubprocessTransport()
+        self.transport = transport or HttpTransport()
         self.now = now or (lambda: datetime.now(UTC))
 
     def pending(self, handle: str | None = None) -> list[QueueRow]:
