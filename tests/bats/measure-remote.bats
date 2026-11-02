@@ -98,3 +98,31 @@ EOF
   run "$MR" status
   [ "$status" -eq 7 ]
 }
+
+@test "replay forwards its arguments in order" {
+  run "$MR" replay c3-replay graphiti,cognee 45
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$TMPDIR/ssh.argv")" == *$'replay\nc3-replay\ngraphiti,cognee\n45'* ]]
+}
+
+@test "replay with a bad label, lane or timeout is refused" {
+  run "$MR" replay ../x graphiti
+  [ "$status" -eq 2 ]
+  run "$MR" replay c3 postgres
+  [ "$status" -eq 2 ]
+  run "$MR" replay c3 graphiti 8x
+  [ "$status" -eq 2 ]
+  [ ! -f "$TMPDIR/ssh.argv" ]
+}
+
+@test "probe takes optional lanes" {
+  run "$MR" probe
+  [ "$status" -eq 0 ]
+  run "$MR" probe graphiti
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$TMPDIR/ssh.argv")" == *$'probe\ngraphiti'* ]]
+  rm "$TMPDIR/ssh.argv"
+  run "$MR" probe postgres
+  [ "$status" -eq 2 ]
+  [ ! -f "$TMPDIR/ssh.argv" ]
+}
