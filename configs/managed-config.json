@@ -17,7 +17,7 @@
     },
     ".config/opencode/opencode.json": {
       "source": "configs/opencode/opencode.json",
-      "owned": ["$schema", "mcp.*", "permission"],
+      "owned": ["$schema", "mcp.*", "command.*", "permission"],
       "seeded": ["model", "provider", "provider.openai.models.*", "compaction", "agent"]
     },
     ".codex/config.toml": {

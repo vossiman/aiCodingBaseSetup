@@ -1746,6 +1746,11 @@ EOF
     grep -qF '{{BRAVE_API_KEY}}' "$dest"
   done
 
+  [ -f "$HOME/.claude/skills/wrapup/SKILL.md" ]
+  [ -f "$HOME/.claude/commands/wrapup.md" ]
+  run bash "$HOME/.claude/skills/wrapup/check.sh" --help
+  [ "$status" -eq 0 ]
+
   [ -d "$HOME/.claude/skills" ]
   [ -d "$HOME/.claude/commands" ]
   [ -d "$HOME/.claude/agents" ]

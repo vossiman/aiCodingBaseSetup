@@ -128,6 +128,7 @@ keeps chasing, so do not treat a block as proof nothing else works.
   the `opus` alias and `gpt-6.1-sol`). Fable and Astra require an explicit
   user override. Verify findings against code.
 - `housekeep` archives completed docs and prunes dated completed TODO entries.
+- `wrapup` runs the end-of-session check. Use it only when the owner invokes `$wrapup`.
 - To start a project, copy `templates/project/` from the aiCodingBaseSetup
   checkout (`/tmp/aicoding` in containers), substitute `{{PROJECT_NAME}}` and
   `{{PURPOSE}}`, strip `.tpl` suffixes, and turn every `dot-` prefix into `.`
