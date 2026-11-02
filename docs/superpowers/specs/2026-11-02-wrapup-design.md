@@ -1,7 +1,8 @@
 # `/wrapup`: end-of-session check for every harness
 
 Date: 2026-11-02
-Status: approved by owner, reviewed by Codex gpt-6-astra
+Status: approved by owner, reviewed by Codex gpt-6-astra. Amended 2026-11-02: see
+"Close verdict amendment".
 
 ## Why
 
@@ -26,6 +27,22 @@ questions.
 
 The owner also reports unfinished work and skipped cleanup from experience.
 
+## Close verdict amendment
+
+The first version asked whether the work was finished. The owner's real question
+is whether the session can be closed so work rolls into a new one. All three
+`NOT DONE` runs on 2026-11-02 were in memory-lanes sessions (2de1e14a twice,
+c29d467e once). Each had no claims and nothing unpushed, and the board held the
+remaining work. In both sessions the owner had to ask again, and the agent then
+said yes. In c29d467e one open item also asked the owner for proof they did not
+want.
+
+So the verdict now answers "does closing lose anything?". This replaces the
+first version's rule that anything waiting on the owner blocks the close.
+Unfinished work and owner decisions no longer block when they are on a ticket,
+but they must still be listed. The rest of this spec uses "open item" for what
+is now a blocker or a carry-over item.
+
 ## Goals
 
 - One word from the owner replaces the closing question.
@@ -47,7 +64,8 @@ The owner also reports unfinished work and skipped cleanup from experience.
 
 The design has failed, even if it runs, if any of these happen:
 
-- It says safe while a decision still waits on the owner.
+- It says safe while a decision exists only in the conversation, or leaves a
+  waiting decision off the list.
 - It says safe because a check could not run.
 - It touches another session's worktree, branch or claim.
 - It merges, force-pushes or deletes unmerged work on its own.
@@ -132,7 +150,7 @@ claims, and a Stop hook may already have released earlier ones
 (`lib/kanban_work/queue.py:115`), so it is not enough. Use the conversation,
 ticket ids in this session's branches and commits, and the repo's open tickets
 on the board. If the list may be incomplete, for example after context
-compaction, that is an open item and the verdict is `NOT DONE`.
+compaction, that is a blocker.
 
 For each ticket:
 
@@ -153,7 +171,7 @@ doc gets a ticket. Work that was found and finished in this session needs no
 retrospective ticket, in line with the MCP's filing rules.
 
 With no kanban MCP or no valid handle, skip the ticket writes, run the other
-steps as normal, and end in `NOT DONE`.
+steps as normal, and report a blocker.
 
 ### 4. Knowledge
 
@@ -196,29 +214,34 @@ item.
 
 ### 7. Verdict
 
-Re-run `check.sh`, then finish with exactly one of these as the first line:
+Re-run `check.sh`, then start with one of these:
 
 ```
 SAFE TO CLOSE
-NOT DONE: <N> open items
+Work finished.
 ```
 
-`SAFE TO CLOSE` needs all of the following:
+```
+SAFE TO CLOSE
+Work carries over: <N> items.
+```
 
-- every requested item is done with evidence, or handed to someone other than
-  the owner with its ticket in Waiting (listed under "waiting on others")
-- nothing waits on the owner, including a decision or a merge
-- every check ran
-- every session ticket is in the right state
-- no blocking unknown work remains
+```
+DO NOT CLOSE: <N> blockers
+```
 
-Anything else is `NOT DONE`, including a check that could not run. Open items
-are listed one per line, each with what it needs and who acts. Foreign and
-non-blocking unknown items are mentioned once under "left alone" and do not
-affect the verdict. A short list of what `/wrapup` fixed follows.
+The verdict is about closing the session, not finishing the work. A blocker is
+something lost or stuck if the session closes now, which this run could not fix:
+work or a decision held only in the conversation or in an unpushed change, a
+process in the session that is still needed, a held claim or wrong ticket state,
+a check that did not run, an incomplete ticket list, or blocking unknown work.
 
-The agent does not soften this into "yes, after your answers". Open decisions
-mean `NOT DONE`.
+Unfinished work with a ticket and a usable handoff carries over, and so does a
+decision or merge waiting on the owner once it is written on its ticket, and
+work running outside the session. Each carry-over item is listed with its ticket
+and who acts next, owner items first, followed by a line the owner can paste to
+start the next session. Foreign and non-blocking unknown items are mentioned once
+under "left alone". A short list of what `/wrapup` fixed follows.
 
 ## Testing
 
@@ -233,15 +256,15 @@ mean `NOT DONE`.
 - Manual runs in one Claude and one Codex session:
   - a gap `/wrapup` can repair (an unpushed commit on its own branch) gets
     fixed, and the run ends in `SAFE TO CLOSE`
-  - a gap it cannot repair (an open owner decision, a stale ticket whose
-    criteria are unmet, a dirty file of unknown owner in the checkout) ends in
-    `NOT DONE` with nothing changed
+  - unfinished work with a ticket and an owner decision on its ticket end in
+    `SAFE TO CLOSE` with both listed as carrying over
+  - a gap it cannot repair (a dirty file of unknown owner in the checkout) ends
+    in `DO NOT CLOSE` with nothing changed
 
 ## Calls made by the author, not the owner
 
-- An open PR waiting on the owner is `NOT DONE`. One handed to someone else,
-  with its ticket in Waiting, can be `SAFE TO CLOSE`.
-- An incomplete ticket list means `NOT DONE` rather than a guess.
+- An open PR with its ticket in Waiting carries over, whoever it waits on.
+- An incomplete ticket list means `DO NOT CLOSE` rather than a guess.
 - Unknown-owner work blocks only in the current checkout or on a branch the
   session used.
 - There is no durable per-session ticket record in this version.

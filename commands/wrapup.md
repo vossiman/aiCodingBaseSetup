@@ -1,5 +1,5 @@
 ---
-description: Check that this session's work, tickets, git state and cleanup are finished, then give a close verdict.
+description: Check that closing this session and rolling into a new one loses nothing, then give a close verdict.
 ---
 
 Read `~/.claude/skills/wrapup/SKILL.md` and follow it for this session. This
