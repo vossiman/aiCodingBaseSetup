@@ -129,6 +129,7 @@ Accepted tool limitations are recorded in
 [Known upstream issues](docs/known-upstream-issues.md).
 
 - **housekeep** — Shared skill (`/housekeep` in Claude, `$housekeep` in Codex). Sweeps `docs/*/active/` for docs with `status: done` frontmatter and moves them into the sibling `archive/`. Also prunes `[x]` items older than 14 days from `TODO.md`.
+- **wrapup** - Shared skill (`/wrapup` in Claude, `$wrapup` in Codex). End-of-session check: compares the work with the request, reconciles kanban tickets, gathers git facts with `check.sh`, fixes what is safe, and answers `SAFE TO CLOSE` or `NOT DONE: <N> open items`.
 
 ### Project templates
 

@@ -13,6 +13,7 @@ UI, permission prompts, or third-party plugin inventories.
 | Independent PR review | Defaults to Codex | Defaults to Claude |
 | Review/fix handback | Shared throwaway-worktree driver, no commits/pushes | Same driver |
 | Housekeeping | `/housekeep` delegates to shared skill | `$housekeep` |
+| End-of-session check | `/wrapup` delegates to shared skill | `$wrapup`, implicit use disabled by `agents/openai.yaml` |
 | New project layout | `templates/project/` | Same reference templates |
 | Memory retrieval | memory-router MCP + prompt hints | Same MCP + prompt hints |
 | Secret-deny hook | PreToolUse | Same script, managed PreToolUse |

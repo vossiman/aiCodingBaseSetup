@@ -75,6 +75,12 @@
     }
   },
   "agent": {},
+  "command": {
+    "wrapup": {
+      "description": "Check that this session's work, tickets, git state and cleanup are finished, then give a close verdict.",
+      "template": "Read `~/.claude/skills/wrapup/SKILL.md` and follow it for this session."
+    }
+  },
   "permission": {
     "*": "allow",
     "doom_loop": "ask",
