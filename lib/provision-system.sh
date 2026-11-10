@@ -639,8 +639,10 @@ ensure_playwright_browsers() {
   cli="$current/node_modules/@playwright/mcp/cli.js"
   [[ -x "$cli" ]] || { _aicoding_playwright_record blocked "$version" exact_mcp_cli_unavailable || true; warn "Exact Playwright MCP CLI is unavailable"; _provision_deferred; return $?; }
   info "Ensuring exact Playwright MCP Chromium is installed"
-  if ! PLAYWRIGHT_BROWSERS_PATH="$cache" timeout "${AICODING_VENDOR_TIMEOUT:-600}" \
-      "$cli" install-browser --no-remove chromium </dev/null >/dev/null 2>&1; then
+  local install_started=$SECONDS install_rc=0
+  _aicoding_playwright_install_run "$cli" "$cache" || install_rc=$?
+  _aicoding_playwright_install_summary "$install_rc" "$((SECONDS - install_started))"
+  if [ "$install_rc" -ne 0 ]; then
     _aicoding_playwright_record failed "$version" browser_install_failed || true
     warn "Playwright MCP browser install failed"
     _provision_soft_failure; return $?

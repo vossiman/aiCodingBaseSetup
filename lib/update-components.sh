@@ -526,8 +526,10 @@ _aicoding_playwright_missing_libs() {
 
 # Preserve the MCP attempt as well as the independently visible browser result.
 _aicoding_playwright_attempt_record() {
+  local detail=
+  [ "$4" != browser_install_failed ] || detail=${_AICODING_PLAYWRIGHT_DETAIL:-}
   _aicoding_playwright_record "$2" "$3" "$4" || true
-  aicoding_result_record "$@"
+  aicoding_result_record "$@" "" "$detail"
 }
 
 _aicoding_prepare_playwright_browser() {
@@ -537,17 +539,20 @@ _aicoding_prepare_playwright_browser() {
   local cache="$AICODING_DATA_DIR/browser-cache/mcp-playwright/$version"
   local cli="$release/node_modules/@playwright/mcp/cli.js"
   local core_cli="$release/node_modules/playwright-core/cli.js" bin missing="" rc=0 node_path
-  local runtime_home="$AICODING_STATE_DIR/playwright-stage/$version"
+  local runtime_home="$AICODING_STATE_DIR/playwright-stage/$version" install_started install_rc=0
   if ! rm -rf "$runtime_home"; then
     _aicoding_playwright_attempt_record "$component" failed "$version" browser_stage_cleanup_failed
     return 1
   fi
   mkdir -p "$cache" "$runtime_home" \
     || { _aicoding_playwright_attempt_record "$component" failed "$version" browser_stage_prepare_failed; return 1; }
+  install_started=$SECONDS
   HOME="$runtime_home" XDG_CONFIG_HOME="$runtime_home/.config" \
     XDG_DATA_HOME="$runtime_home/.local/share" XDG_CACHE_HOME="$runtime_home/.cache" \
-    PLAYWRIGHT_BROWSERS_PATH="$cache" aicoding_progress_run "playwright: preparing Chromium (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" \
-      "$cli" install-browser --no-remove chromium </dev/null \
+    aicoding_progress_run "playwright: preparing Chromium (timeout ${AICODING_BROWSER_TIMEOUT:-1800}s)" \
+      _aicoding_playwright_install_run "$cli" "$cache" || install_rc=$?
+  _aicoding_playwright_install_summary "$install_rc" "$((SECONDS - install_started))"
+  [ "$install_rc" -eq 0 ] \
     || { rm -rf "$runtime_home"; _aicoding_playwright_attempt_record "$component" failed "$version" browser_install_failed; return 1; }
   if ! rm -rf "$runtime_home"; then
     _aicoding_playwright_attempt_record "$component" failed "$version" browser_stage_cleanup_failed

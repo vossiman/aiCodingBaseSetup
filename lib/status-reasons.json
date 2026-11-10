@@ -43,7 +43,7 @@
     "browser_install_failed": {
       "kind": "action",
       "meaning": "Downloading the Playwright Chromium browser failed.",
-      "fix": "Check network access to the download source, then run `aicoding-auto-update --once`. Details are in `~/.local/state/aicoding/auto-update/worker.log`."
+      "fix": "Read the installer output in `~/.local/state/aicoding/playwright-install.log`, check network access to the download source, then run `aicoding-auto-update --once`."
     },
     "browser_marker_commit_failed": {
       "kind": "action",

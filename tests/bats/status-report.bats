@@ -362,6 +362,24 @@ STUB
   [[ "${output#*Unresolved recorded blockers}" == *"playwright-chromium: failed"* ]]
 }
 
+@test "a slow or restarted Chromium download is shown even after it succeeded" {
+  printf '%s\n' '{"components":{"playwright-chromium":{"state":"current","reason":"browser_ready","successful_version":"1.2.3.4","attempted_at":"2024-01-02T00:00:00Z","download":{"seconds":1100,"restarts":2,"at":"2024-01-01T00:00:01Z"}}}}' > "$AICODING_RESULTS_FILE"
+  run "$BIN"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Last browser download: 18 min 20 s, 2 restarted transfers; "*"; slow: the connection stalled or is slow"* ]]
+  [[ "$output" != *"Unresolved recorded blockers"*"playwright-chromium"* ]]
+
+  printf '%s\n' '{"components":{"playwright-chromium":{"state":"current","reason":"browser_ready","successful_version":"1.2.3.4","attempted_at":"2024-01-02T00:00:00Z","download":{"seconds":42,"restarts":0,"at":"2024-01-01T00:00:01Z"}}}}' > "$AICODING_RESULTS_FILE"
+  run "$BIN"
+  [[ "$output" == *"Last browser download: 42 s, 0 restarted transfers; "* ]]
+  [[ "$output" != *"slow:"* ]]
+
+  printf '%s\n' '{"components":{"playwright-chromium":{"state":"current","reason":"browser_ready","successful_version":"1.2.3.4","attempted_at":"2024-01-02T00:00:00Z","download":{"seconds":"x"}}}}' > "$AICODING_RESULTS_FILE"
+  run "$BIN"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Last browser download"* ]]
+}
+
 @test "cyclic selected release symlinks leave the report usable" {
   mkdir -p "$AICODING_DATA_DIR/current"
   ln -s claude "$AICODING_DATA_DIR/current/claude"

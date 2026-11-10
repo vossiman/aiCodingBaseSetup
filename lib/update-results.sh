@@ -81,6 +81,36 @@ aicoding_result_record() {
   return "$mv_rc"
 }
 
+# aicoding_result_download COMPONENT SECONDS RESTARTS: how long the component's
+# last payload download took and how often the transfer restarted. It is kept
+# across later records, so a slow download stays visible after it succeeds.
+# A component without a record is left alone.
+aicoding_result_download() {
+  local component=${1:-} seconds=${2:-} restarts=${3:-} dir lock tmp fd rc=0
+  [[ "$component" =~ ^[A-Za-z0-9._-]+$ ]] || return 2
+  [[ "$seconds" =~ ^[0-9]+$ && "$restarts" =~ ^[0-9]+$ ]] || return 2
+  [ -f "$AICODING_RESULTS_FILE" ] || return 0
+  dir=$(dirname "$AICODING_RESULTS_FILE")
+  lock="$dir/.update-results.lock"
+  exec {fd}>"$lock" || return 1
+  flock "$fd" || { exec {fd}>&-; return 1; }
+  if jq -e --arg c "$component" '.components | type == "object" and has($c)' \
+      "$AICODING_RESULTS_FILE" >/dev/null 2>&1; then
+    tmp=$(mktemp "$dir/.update-results.XXXXXX") || { exec {fd}>&-; return 1; }
+    if jq --arg c "$component" --arg t "$(_aicoding_result_now)" \
+        --argjson seconds "$seconds" --argjson restarts "$restarts" \
+        '.components[$c].download = {seconds:$seconds, restarts:$restarts, at:$t}' \
+        "$AICODING_RESULTS_FILE" >"$tmp"; then
+      chmod 0600 "$tmp" 2>/dev/null || true
+      mv -f "$tmp" "$AICODING_RESULTS_FILE" || { rc=$?; rm -f "$tmp"; }
+    else
+      rc=1; rm -f "$tmp"
+    fi
+  fi
+  exec {fd}>&-
+  return "$rc"
+}
+
 # aicoding_result_forget COMPONENT: drop a retired component's record. A
 # missing file or record is not an error.
 aicoding_result_forget() {

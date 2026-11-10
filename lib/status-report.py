@@ -20,6 +20,7 @@ DATA = Path(os.environ.get("AICODING_DATA_DIR", HOME / ".local/share/aicoding"))
 AUTO = STATE / "auto-update"
 NOW = time.time()
 LOCK_OBSERVATIONS = {}
+SLOW_DOWNLOAD_SECONDS = 300
 
 
 def read(path):
@@ -515,6 +516,17 @@ def result_text(record):
             f"{local_time(stamp)} ({freshness(stamp)}; recorded, not rechecked){target_text}{success_text}")
 
 
+def download_text(download):
+    if not isinstance(download, dict):
+        return ""
+    seconds, restarts = download.get("seconds"), download.get("restarts")
+    if not isinstance(seconds, int) or not isinstance(restarts, int) or seconds < 0 or restarts < 0:
+        return ""
+    took = f"{seconds // 60} min {seconds % 60} s" if seconds >= 60 else f"{seconds} s"
+    slow = "; slow: the connection stalled or is slow" if seconds >= SLOW_DOWNLOAD_SECONDS or restarts else ""
+    return f"{took}, {restarts} restarted transfers; {local_time(download.get('at'))}{slow}"
+
+
 def main():
     print("Automatic aicoding updates")
     scheduler()
@@ -546,6 +558,9 @@ def main():
     version = command([str(browser), "--version"]) if browser else ""
     print(f"  Playwright Chromium: {clean(version) if version else 'version unavailable' if browser else 'not detected in active managed browser cache'}")
     print(f"    Last browser update: {result_text(records.get('playwright-chromium'))}")
+    download = download_text((records.get("playwright-chromium") or {}).get("download"))
+    if download:
+        print(f"    Last browser download: {download}")
     fleet = fleet_proof_text()
     if fleet is not None:
         print("\nFleet proof (shared config on this host)")

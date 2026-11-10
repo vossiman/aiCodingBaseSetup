@@ -175,7 +175,12 @@ _provision_reconcile_exact_mcp() {
   [ -f "$AICODING_RESULTS_FILE" ] || { _provision_record_blocked "$component" exact_package_not_staged; return 3; }
   state=$(jq -r --arg c "$component" '.components[$c].state // empty' "$AICODING_RESULTS_FILE" 2>/dev/null)
   version=$(jq -r --arg c "$component" '.components[$c].successful_version // .components[$c].target_version // empty' "$AICODING_RESULTS_FILE" 2>/dev/null)
-  case "$state" in current|updated) ;; *) _provision_record_blocked "$component" exact_package_not_staged; return 3 ;; esac
+  case "$state" in
+    current|updated) ;;
+    # The package's own record says why staging failed; do not replace it.
+    failed|blocked|conflict) _AICODING_PREPARATION_DEFERRED=1; AICODING_COMPONENT_LAST_RESULT=$component; return 3 ;;
+    *) _provision_record_blocked "$component" exact_package_not_staged; return 3 ;;
+  esac
   local registration_rc=0
   AICODING_COMPONENT_ATTEMPT_DISPOSITION=
   AICODING_COMPONENT_LAST_RESULT=

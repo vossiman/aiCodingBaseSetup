@@ -12,10 +12,62 @@ _aicoding_playwright_version() {
   fi
 }
 
+_aicoding_playwright_install_log() {
+  printf '%s\n' "${AICODING_STATE_DIR:-$HOME/.local/state/aicoding}/playwright-install.log"
+}
+
+# _aicoding_playwright_install_run CLI CACHE: install the exact browser, keeping
+# the vendor output in a private log. Playwright restarts a whole file when its
+# connection is idle for 30 s, so a stalling route needs a longer idle limit and
+# more time than a package step.
+_aicoding_playwright_install_run() {
+  local cli=$1 cache=$2 log
+  log=$(_aicoding_playwright_install_log)
+  { mkdir -p "${log%/*}" && : >"$log" && chmod 0600 "$log"; } 2>/dev/null || log=/dev/null
+  PLAYWRIGHT_BROWSERS_PATH="$cache" \
+    PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT="${PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT:-120000}" \
+    timeout "${AICODING_BROWSER_TIMEOUT:-1800}" "$cli" install-browser --no-remove chromium </dev/null >"$log" 2>&1
+}
+
+# _aicoding_playwright_install_summary RC SECONDS: read the install log into
+# _AICODING_PLAYWRIGHT_DOWNLOAD_SECONDS/_RESTARTS (set only when something was
+# downloaded) and, for a failure, _AICODING_PLAYWRIGHT_DETAIL. The next browser
+# record consumes them.
+_aicoding_playwright_install_summary() {
+  local rc=$1 seconds=$2 log text="" started="" total=0 unique=0 restarts=0 error="" detail
+  _AICODING_PLAYWRIGHT_DOWNLOAD_SECONDS=
+  _AICODING_PLAYWRIGHT_DOWNLOAD_RESTARTS=
+  _AICODING_PLAYWRIGHT_DETAIL=
+  log=$(_aicoding_playwright_install_log)
+  [ ! -r "$log" ] || text=$(tr '\r' '\n' <"$log" 2>/dev/null | sed -e $'s/\033\\[[0-9;]*m//g' -e 's#://[^/@[:space:]]*@#://#g') || text=""
+  started=$(printf '%s\n' "$text" | sed -n 's/^\(Downloading .*\) from .*/\1/p') || started=""
+  if [ -n "$started" ]; then
+    total=$(printf '%s\n' "$started" | wc -l)
+    unique=$(printf '%s\n' "$started" | sort -u | wc -l)
+    restarts=$((total - unique))
+    _AICODING_PLAYWRIGHT_DOWNLOAD_SECONDS=$seconds
+    _AICODING_PLAYWRIGHT_DOWNLOAD_RESTARTS=$restarts
+  fi
+  if [ "$rc" -eq 0 ]; then
+    if [ -n "$started" ] && { [ "$seconds" -ge 300 ] || [ "$restarts" -gt 0 ]; }; then
+      printf 'WARN: playwright: Chromium download was slow (%ss, %s restarted transfers)\n' "$seconds" "$restarts" >&2
+    fi
+    return 0
+  fi
+  case "$rc" in
+    124|137) detail="timed out after ${seconds}s" ;;
+    *) detail="exit $rc after ${seconds}s" ;;
+  esac
+  [ -z "$started" ] || detail="$detail, $restarts restarted transfers"
+  error=$(printf '%s\n' "$text" | grep -E '^(Error|Failed)' | tail -n 1) || error=""
+  [ -z "$error" ] || detail="$detail; $error"
+  _AICODING_PLAYWRIGHT_DETAIL=$detail
+}
+
 # Optional fifth argument is version evidence from this same staging attempt,
 # carried across activation so committing a receipt does not run a second probe.
 _aicoding_playwright_record() {
-  local state=$1 target=${2:-} reason=$3 bin=${4:-} version=${5:-} last=${AICODING_COMPONENT_LAST_RESULT:-} rc=0
+  local state=$1 target=${2:-} reason=$3 bin=${4:-} version=${5:-} last=${AICODING_COMPONENT_LAST_RESULT:-} rc=0 detail=
   if ! declare -F aicoding_result_record >/dev/null 2>&1; then
     . "$(dirname "${BASH_SOURCE[0]}")/update-results.sh" || return 1
   fi
@@ -31,7 +83,15 @@ _aicoding_playwright_record() {
       fi
       ;;
   esac
-  aicoding_result_record playwright-chromium "$state" "$target" "$reason" "$version" || rc=$?
+  [ "$reason" != browser_install_failed ] || detail=${_AICODING_PLAYWRIGHT_DETAIL:-}
+  aicoding_result_record playwright-chromium "$state" "$target" "$reason" "$version" "$detail" || rc=$?
+  if [ -n "${_AICODING_PLAYWRIGHT_DOWNLOAD_SECONDS:-}" ]; then
+    aicoding_result_download playwright-chromium "$_AICODING_PLAYWRIGHT_DOWNLOAD_SECONDS" \
+      "${_AICODING_PLAYWRIGHT_DOWNLOAD_RESTARTS:-0}" || true
+  fi
+  _AICODING_PLAYWRIGHT_DOWNLOAD_SECONDS=
+  _AICODING_PLAYWRIGHT_DOWNLOAD_RESTARTS=
+  _AICODING_PLAYWRIGHT_DETAIL=
   # Existing callers use the package's last-result identity for dispositions.
   AICODING_COMPONENT_LAST_RESULT=$last
   return "$rc"
