@@ -558,7 +558,8 @@ def main():
     version = command([str(browser), "--version"]) if browser else ""
     print(f"  Playwright Chromium: {clean(version) if version else 'version unavailable' if browser else 'not detected in active managed browser cache'}")
     print(f"    Last browser update: {result_text(records.get('playwright-chromium'))}")
-    download = download_text((records.get("playwright-chromium") or {}).get("download"))
+    browser_record = records.get("playwright-chromium")
+    download = download_text(browser_record.get("download") if isinstance(browser_record, dict) else None)
     if download:
         print(f"    Last browser download: {download}")
     fleet = fleet_proof_text()

@@ -191,6 +191,10 @@ printf '|      |  50%% of 197.8 MiB\r\n'
 echo 'Error: Request to https://user:secret@storage.example/a.zip timed out after 120000ms'
 echo '    at TLSSocket.emit (node:events:530:35)'
 printf 'Downloading Chrome 1 (playwright chromium v1)\033[2m from https://mirror.example/a.zip\033[22m\n'
+echo 'Failed to install browsers'
+echo 'Error: Failed to download Chrome 1 (playwright chromium v1), caused by'
+echo 'Error: Download failure, code=1'
+echo '    at ChildProcess.<anonymous> (coreBundle.js:34171:39)'
 exit 1
 CLI
   run _aicoding_prepare_playwright_browser mcp-playwright "$target" "$release"
@@ -202,6 +206,36 @@ CLI
     and (.components["mcp-playwright"] | has("download") | not)' "$AICODING_RESULTS_FILE"
   if grep -q secret "$AICODING_RESULTS_FILE"; then false; fi
   [ "$(stat -c %a "$AICODING_STATE_DIR/playwright-install.log")" = 600 ]
+}
+
+@test "reconciling a cached browser keeps the log of the last failed download" {
+  _fixture_install_cli <<'CLI'
+#!/bin/sh
+echo 'Downloading Chrome 1 (playwright chromium v1) from https://cdn.example/a.zip'
+echo 'Error: Download failed: server closed connection. URL: https://cdn.example/a.zip'
+exit 1
+CLI
+  run _aicoding_prepare_playwright_browser mcp-playwright "$target" "$release"
+  [ "$status" -ne 0 ]
+  _fixture_install_cli <<'CLI'
+#!/bin/sh
+exit 0
+CLI
+  ensure_playwright_browsers
+  grep -q 'server closed connection' "$AICODING_STATE_DIR/playwright-install.log"
+  [ ! -e "$AICODING_STATE_DIR/playwright-install.log.new" ]
+}
+
+@test "a failure with only the generic wrapper still records that line" {
+  _fixture_install_cli <<'CLI'
+#!/bin/sh
+echo 'Failed to install browsers'
+echo 'Error: Download failure, code=1'
+exit 1
+CLI
+  run _aicoding_prepare_playwright_browser mcp-playwright "$target" "$release"
+  [ "$status" -ne 0 ]
+  jq -e '.components["playwright-chromium"].detail | test("; Error: Download failure, code=1$")' "$AICODING_RESULTS_FILE"
 }
 
 @test "a restarted Chromium download stays visible after it succeeds" {

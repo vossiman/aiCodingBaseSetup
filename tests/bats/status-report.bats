@@ -378,6 +378,11 @@ STUB
   run "$BIN"
   [ "$status" -eq 0 ]
   [[ "$output" != *"Last browser download"* ]]
+
+  printf '%s\n' '{"components":{"playwright-chromium":"bad record"}}' > "$AICODING_RESULTS_FILE"
+  run "$BIN"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Managed configuration, hooks and skills"* ]]
 }
 
 @test "cyclic selected release symlinks leave the report usable" {

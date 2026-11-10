@@ -17,12 +17,14 @@ _aicoding_playwright_install_log() {
 }
 
 # _aicoding_playwright_install_run CLI CACHE: install the exact browser, keeping
-# the vendor output in a private log. Playwright restarts a whole file when its
+# the vendor output in a private file that the summary keeps as the install log
+# only when this run downloaded or failed, so reconciling a cached browser does
+# not erase the last failure. Playwright restarts a whole file when its
 # connection is idle for 30 s, so a stalling route needs a longer idle limit and
 # more time than a package step.
 _aicoding_playwright_install_run() {
   local cli=$1 cache=$2 log
-  log=$(_aicoding_playwright_install_log)
+  log=$(_aicoding_playwright_install_log).new
   { mkdir -p "${log%/*}" && : >"$log" && chmod 0600 "$log"; } 2>/dev/null || log=/dev/null
   PLAYWRIGHT_BROWSERS_PATH="$cache" \
     PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT="${PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT:-120000}" \
@@ -34,13 +36,21 @@ _aicoding_playwright_install_run() {
 # downloaded) and, for a failure, _AICODING_PLAYWRIGHT_DETAIL. The next browser
 # record consumes them.
 _aicoding_playwright_install_summary() {
-  local rc=$1 seconds=$2 log text="" started="" total=0 unique=0 restarts=0 error="" detail
+  local rc=$1 seconds=$2 log new text="" started="" total=0 unique=0 restarts=0 errors="" error="" detail
   _AICODING_PLAYWRIGHT_DOWNLOAD_SECONDS=
   _AICODING_PLAYWRIGHT_DOWNLOAD_RESTARTS=
   _AICODING_PLAYWRIGHT_DETAIL=
   log=$(_aicoding_playwright_install_log)
-  [ ! -r "$log" ] || text=$(tr '\r' '\n' <"$log" 2>/dev/null | sed -e $'s/\033\\[[0-9;]*m//g' -e 's#://[^/@[:space:]]*@#://#g') || text=""
+  new=$log.new
+  [ ! -r "$new" ] || text=$(tr '\r' '\n' <"$new" 2>/dev/null | sed -e $'s/\033\\[[0-9;]*m//g' -e 's#://[^/@[:space:]]*@#://#g') || text=""
   started=$(printf '%s\n' "$text" | sed -n 's/^\(Downloading .*\) from .*/\1/p') || started=""
+  if [ -e "$new" ]; then
+    if [ "$rc" -ne 0 ] || [ -n "$started" ]; then
+      mv -f "$new" "$log" 2>/dev/null || true
+    else
+      rm -f "$new" 2>/dev/null || true
+    fi
+  fi
   if [ -n "$started" ]; then
     total=$(printf '%s\n' "$started" | wc -l)
     unique=$(printf '%s\n' "$started" | sort -u | wc -l)
@@ -59,7 +69,10 @@ _aicoding_playwright_install_summary() {
     *) detail="exit $rc after ${seconds}s" ;;
   esac
   [ -z "$started" ] || detail="$detail, $restarts restarted transfers"
-  error=$(printf '%s\n' "$text" | grep -E '^(Error|Failed)' | tail -n 1) || error=""
+  # The CLI ends with generic wrappers; the transfer error before them is the cause.
+  errors=$(printf '%s\n' "$text" | grep -E '^(Error|Failed)') || errors=""
+  error=$(printf '%s\n' "$errors" | grep -Ev '^(Failed to install browsers|Error: Failed to download |Error: Download failure, code=)' | tail -n 1) || error=""
+  [ -n "$error" ] || error=$(printf '%s\n' "$errors" | tail -n 1)
   [ -z "$error" ] || detail="$detail; $error"
   _AICODING_PLAYWRIGHT_DETAIL=$detail
 }
