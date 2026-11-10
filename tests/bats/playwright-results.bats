@@ -177,3 +177,123 @@ BROWSER
   ensure_playwright_browsers
   jq -e '.components["playwright-chromium"] | .state == "current" and .successful_version == "143.0.7499.4" and .reason == "browser_ready"' "$AICODING_RESULTS_FILE"
 }
+
+_fixture_install_cli() {
+  cat > "$release/node_modules/@playwright/mcp/cli.js"
+  chmod +x "$release/node_modules/@playwright/mcp/cli.js"
+}
+
+@test "failed Chromium download records why on the browser and the package" {
+  _fixture_install_cli <<'CLI'
+#!/bin/sh
+printf 'Downloading Chrome 1 (playwright chromium v1)\033[2m from https://cdn.example/a.zip\033[22m\n'
+printf '|      |  50%% of 197.8 MiB\r\n'
+echo 'Error: Request to https://user:secret@storage.example/a.zip timed out after 120000ms'
+echo '    at TLSSocket.emit (node:events:530:35)'
+printf 'Downloading Chrome 1 (playwright chromium v1)\033[2m from https://mirror.example/a.zip\033[22m\n'
+echo 'Failed to install browsers'
+echo 'Error: Failed to download Chrome 1 (playwright chromium v1), caused by'
+echo 'Error: Download failure, code=1'
+echo '    at ChildProcess.<anonymous> (coreBundle.js:34171:39)'
+exit 1
+CLI
+  run _aicoding_prepare_playwright_browser mcp-playwright "$target" "$release"
+  [ "$status" -ne 0 ]
+  jq -e '[.components["playwright-chromium"], .components["mcp-playwright"]] | all(
+    .state == "failed" and .reason == "browser_install_failed"
+    and (.detail | test("^exit 1 after [0-9]+s, 1 restarted transfers; Error: Request to https://storage.example/a.zip timed out after 120000ms$")))' "$AICODING_RESULTS_FILE"
+  jq -e '.components["playwright-chromium"].download.restarts == 1
+    and (.components["mcp-playwright"] | has("download") | not)' "$AICODING_RESULTS_FILE"
+  if grep -q secret "$AICODING_RESULTS_FILE"; then false; fi
+  [ "$(stat -c %a "$AICODING_STATE_DIR/playwright-install.log")" = 600 ]
+}
+
+@test "reconciling a cached browser keeps the log of the last failed download" {
+  _fixture_install_cli <<'CLI'
+#!/bin/sh
+echo 'Downloading Chrome 1 (playwright chromium v1) from https://cdn.example/a.zip'
+echo 'Error: Download failed: server closed connection. URL: https://cdn.example/a.zip'
+exit 1
+CLI
+  run _aicoding_prepare_playwright_browser mcp-playwright "$target" "$release"
+  [ "$status" -ne 0 ]
+  _fixture_install_cli <<'CLI'
+#!/bin/sh
+exit 0
+CLI
+  ensure_playwright_browsers
+  grep -q 'server closed connection' "$AICODING_STATE_DIR/playwright-install.log"
+  [ ! -e "$AICODING_STATE_DIR/playwright-install.log.new" ]
+}
+
+@test "a failure with only the generic wrapper still records that line" {
+  _fixture_install_cli <<'CLI'
+#!/bin/sh
+echo 'Failed to install browsers'
+echo 'Error: Download failure, code=1'
+exit 1
+CLI
+  run _aicoding_prepare_playwright_browser mcp-playwright "$target" "$release"
+  [ "$status" -ne 0 ]
+  jq -e '.components["playwright-chromium"].detail | test("; Error: Download failure, code=1$")' "$AICODING_RESULTS_FILE"
+}
+
+@test "a restarted Chromium download stays visible after it succeeds" {
+  _fixture_install_cli <<'CLI'
+#!/bin/sh
+echo 'Downloading Chrome 1 (playwright chromium v1) from https://cdn.example/a.zip'
+echo 'Downloading Chrome 1 (playwright chromium v1) from https://cdn.example/a.zip'
+echo 'Downloading Chrome Headless Shell 1 (playwright chromium-headless-shell v1) from https://cdn.example/b.zip'
+CLI
+  run _aicoding_finish_npm_entry_release mcp-playwright "$target" "$release" playwright-mcp bin/playwright-mcp
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Chromium download was slow"* ]]
+  jq -e '.components["playwright-chromium"] | .state == "updated" and .download.restarts == 1
+    and (.download.seconds | type == "number") and (.download.at | type == "string")' "$AICODING_RESULTS_FILE"
+  printf '#!/bin/sh\nexit 0\n' | _fixture_install_cli
+  ensure_playwright_browsers
+  jq -e '.components["playwright-chromium"] | .state == "current" and .download.restarts == 1' "$AICODING_RESULTS_FILE"
+}
+
+@test "a browser that was already cached records no download" {
+  _aicoding_finish_npm_entry_release mcp-playwright "$target" "$release" playwright-mcp bin/playwright-mcp
+  jq -e '.components["playwright-chromium"] | .state == "updated" and (has("download") | not)' "$AICODING_RESULTS_FILE"
+}
+
+@test "Chromium download gets its own time limit and a longer idle limit than Playwright's default" {
+  _fixture_install_cli <<'CLI'
+#!/bin/sh
+echo "$PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT" > "$TMP/idle-limit"
+sleep 2
+CLI
+  AICODING_VENDOR_TIMEOUT=1 AICODING_BROWSER_TIMEOUT=10 run _aicoding_prepare_playwright_browser mcp-playwright "$target" "$release"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$TMP/idle-limit")" = 120000 ]
+  AICODING_BROWSER_TIMEOUT=1 run _aicoding_prepare_playwright_browser mcp-playwright "$target" "$release"
+  [ "$status" -ne 0 ]
+  jq -e '.components["playwright-chromium"].detail | test("^timed out after [0-9]+s$")' "$AICODING_RESULTS_FILE"
+}
+
+@test "standalone Chromium install failure records why" {
+  ln -s "../versions/mcp-playwright/$target" "$AICODING_DATA_DIR/current/mcp-playwright"
+  _fixture_install_cli <<'CLI'
+#!/bin/sh
+echo 'Failed to install browsers'
+exit 3
+CLI
+  run ensure_playwright_browsers
+  [ "$status" -eq 0 ]
+  jq -e '.components["playwright-chromium"] | .reason == "browser_install_failed"
+    and (.detail | test("^exit 3 after [0-9]+s; Failed to install browsers$"))' "$AICODING_RESULTS_FILE"
+}
+
+@test "provisioning keeps a package's own blocker instead of reporting it as not staged" {
+  export SCRIPT_DIR="$BLUEPRINT_ROOT"
+  aicoding_result_record mcp-playwright failed "$target" browser_install_failed "" "timed out after 1800s"
+  _AICODING_PREPARATION_DEFERRED=
+  rc=0; _provision_reconcile_exact_mcp playwright mcp-playwright playwright-mcp --browser chromium || rc=$?
+  [ "$rc" -eq 3 ]
+  [ "$_AICODING_PREPARATION_DEFERRED" = 1 ]
+  jq -e '.components["mcp-playwright"] | .state == "failed" and .reason == "browser_install_failed"
+    and .detail == "timed out after 1800s"' "$AICODING_RESULTS_FILE"
+}
