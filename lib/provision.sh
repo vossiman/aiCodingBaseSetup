@@ -11,8 +11,6 @@ MANAGED_PLUGINS=(
   "frontend-design@claude-plugins-official"
   "playwright@claude-plugins-official"
   "code-simplifier@claude-plugins-official"
-  "skill-creator@claude-plugins-official"
-  "code-review@claude-plugins-official"
   "claude-code-setup@claude-plugins-official"
   "pyright-lsp@claude-plugins-official"
   "context7@claude-plugins-official"
@@ -23,8 +21,12 @@ MANAGED_PLUGINS=(
 # individually disable it — useless against our EU-only Logfire account, and
 # it nags "needs authentication" forever. The EU hosted MCP is registered at
 # user scope in install_claude_mcps instead.
+# skill-creator and code-review duplicate what Claude Code already ships:
+# skill-creator syncs from claude.ai, and /code-review is built in.
 RETIRED_PLUGINS=(
   "logfire@claude-plugins-official"
+  "skill-creator@claude-plugins-official"
+  "code-review@claude-plugins-official"
 )
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/update-progress.sh"

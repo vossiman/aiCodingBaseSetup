@@ -75,12 +75,6 @@
     }
   },
   "agent": {},
-  "command": {
-    "wrapup": {
-      "description": "Check that closing this session and rolling into a new one loses nothing, then give a close verdict.",
-      "template": "Read `~/.claude/skills/wrapup/SKILL.md` and follow it for this session."
-    }
-  },
   "permission": {
     "*": "allow",
     "doom_loop": "ask",

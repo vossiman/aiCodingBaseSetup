@@ -1187,15 +1187,6 @@ EOF
   jq -e '.model == "openai/gpt-6.1-sol"' "$BLUEPRINT_ROOT/configs/opencode/opencode.json"
 }
 
-@test "install.sh first-deploy: installs slash commands" {
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  local cmd_file cmd_name
-  for cmd_file in "$BLUEPRINT_ROOT/commands"/*.md; do
-    cmd_name=$(basename "$cmd_file")
-    [ -f "$HOME/.claude/commands/$cmd_name" ]
-  done
-}
-
 @test "install.sh first-deploy: installs check-archived-docs hook so settings.json reference is not dangling" {
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
   # The SessionStart hook wired in settings.json must actually exist on disk.
@@ -1230,18 +1221,6 @@ EOF
   # source of truth.
   grep -q "@AGENTS.md" "$src/CLAUDE.md.tpl"
   grep -q "{{PROJECT_NAME}}" "$src/AGENTS.md.tpl"
-}
-
-@test "install.sh: a second run restores a deleted slash command" {
-  bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  local one
-  one=$(basename "$(ls "$BLUEPRINT_ROOT/commands"/*.md | head -1)")
-  [ -f "$HOME/.claude/commands/$one" ]
-  rm -f "$HOME/.claude/commands/$one"
-
-  run bash "$BLUEPRINT_ROOT/install.sh" </dev/null
-  [ "$status" -eq 0 ]
-  [ -f "$HOME/.claude/commands/$one" ]
 }
 
 @test "install.sh first-deploy: deploys update-notify snippet and aicoding-status symlink" {
@@ -1716,14 +1695,13 @@ MEMORY_ROUTER_TOKEN=FPRINT-MR-2b9d41
 EOF
   chmod 600 "$HOME/.aicodingsetup/.secrets.env"
 
-  # One probe per agent-readable destination in the managed set: a skill, a
-  # slash command, the global CLAUDE.md, codex's AGENTS.md, and a subagent
+  # One probe per agent-readable destination in the managed set: a skill,
+  # the global CLAUDE.md, codex's AGENTS.md, and a subagent
   # definition. BRAVE_API_KEY is a live substitution placeholder, so a probe
   # that renders becomes FPRINT-BR-2b9d41 on disk.
   local probe='PROBE (test fixture, not real guidance): {{BRAVE_API_KEY}}'
   local src
   for src in skills/cloudflare-browser/SKILL.md \
-             commands/housekeep.md \
              configs/claude/CLAUDE.md \
              configs/codex/AGENTS.md \
              configs/claude/agents/llmwiki-distiller.md; do
@@ -1738,7 +1716,6 @@ EOF
   # the placeholder intact is the proof it never went through substitution.
   local dest
   for dest in "$HOME/.claude/skills/cloudflare-browser/SKILL.md" \
-              "$HOME/.claude/commands/housekeep.md" \
               "$HOME/.claude/CLAUDE.md" \
               "$HOME/.codex/AGENTS.md" \
               "$HOME/.claude/agents/llmwiki-distiller.md"; do
@@ -1747,15 +1724,14 @@ EOF
   done
 
   [ -f "$HOME/.claude/skills/wrapup/SKILL.md" ]
-  [ -f "$HOME/.claude/commands/wrapup.md" ]
+  [ ! -e "$HOME/.claude/commands/wrapup.md" ]
   run bash "$HOME/.claude/skills/wrapup/check.sh" --help
   [ "$status" -eq 0 ]
 
   [ -d "$HOME/.claude/skills" ]
-  [ -d "$HOME/.claude/commands" ]
   [ -d "$HOME/.claude/agents" ]
   run grep -rl 'FPRINT-' \
-    "$HOME/.claude/skills" "$HOME/.claude/commands" "$HOME/.claude/agents" \
+    "$HOME/.claude/skills" "$HOME/.claude/agents" \
     "$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md"
   # grep exits 1 when it finds nothing, which is the passing case.
   [ "$status" -eq 1 ]

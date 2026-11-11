@@ -78,16 +78,18 @@ The name is `wrapup` (owner decision).
 - `skills/wrapup/SKILL.md`: the full workflow, one copy for all harnesses.
 - `skills/wrapup/check.sh`: the fact-gathering script, run with
   `bash ~/.claude/skills/wrapup/check.sh`, the same way `routes.sh` is run.
-- `commands/wrapup.md`: thin wrapper, same pattern as `commands/housekeep.md`.
 - `docs/agent-parity.md` and the README get a row next to Housekeeping.
 
 Reach per harness:
 
-- Claude: `/wrapup` through `~/.claude/commands` (`lib/blueprint-deploy.sh:368`).
+- Claude: `/wrapup` straight from the skill, since Claude Code lists user
+  skills as slash commands. A `commands/wrapup.md` wrapper shipped at first and
+  was retired on 2026-11-11 because it showed `/wrapup` twice.
 - Codex: `$wrapup` through the `~/.agents/skills` link (`lib/sync.sh:218`).
 - OpenCode: loads the skill from `~/.claude/skills` or `~/.agents/skills`
-  (confirmed with `opencode debug skill`). `/wrapup` comes from the `command`
-  block in `configs/opencode/opencode.json`.
+  (confirmed with `opencode debug skill`). OpenCode also registers each skill
+  as a slash command unless a configured command has the same name, so the
+  former `command.wrapup` block was redundant and is retired.
 - Cursor: `lib/sync.sh:211` says it scans `~/.claude/skills`. Its CLI has no
   skill listing, so this is not yet confirmed.
 - Codex implicit use is disabled by `skills/wrapup/agents/openai.yaml`, and

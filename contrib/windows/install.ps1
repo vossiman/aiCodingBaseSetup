@@ -93,8 +93,6 @@ $plugins = @(
     "frontend-design@claude-plugins-official",
     "playwright@claude-plugins-official",
     "code-simplifier@claude-plugins-official",
-    "skill-creator@claude-plugins-official",
-    "code-review@claude-plugins-official",
     "claude-code-setup@claude-plugins-official",
     "pyright-lsp@claude-plugins-official"
 )

@@ -52,7 +52,11 @@ and a gentle session-start reminder.
 > `deploy_all_managed_files` **and** `classify_managed_files` (so reconcile
 > restores them); `install_templates()` mirrors the template tree **outside the
 > manifest** (intentional scaffold material — rsync `--delete`, not classify).
-> There is no standalone `install_commands` function any more. A later fix
+> There is no standalone `install_commands` function any more.
+> **Slash-command wrappers retired 2026-11-11:** Claude Code and OpenCode list
+> user skills as slash commands, so `commands/housekeep.md` and
+> `commands/wrapup.md` only produced duplicate menu entries. Both are removed,
+> listed in `retired_files`, and `commands/` no longer exists. A later fix
 > (`12bf21b`) preserves the hook's executable bit through substituted deploys.
 > `bw-deny-files.sh` is inventory-owned under `configs/claude/hooks/` (originally
 > vendored from bw-AICode, **forked 2026-08-21** to enforce a built-in secrets deny

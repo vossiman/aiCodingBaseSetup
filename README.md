@@ -90,8 +90,6 @@ the session's claim. There is no command-line fallback.
 - frontend-design
 - playwright
 - code-simplifier
-- skill-creator
-- code-review
 - claude-code-setup
 - pyright-lsp
 
@@ -644,7 +642,6 @@ aiCodingBaseSetup/
 │   ├── git/                       # git-credential-aicoding
 │   ├── opencode/                  # opencode.json
 │   └── tmux/                      # tmux.conf
-├── commands/                      # Slash commands → ~/.claude/commands
 ├── skills/                        # Shared skills → ~/.claude/skills
 ├── templates/project/             # Mirrored to ~/.aicodingsetup/templates/project
 ├── tests/bats/                    # bats-core suite (run via tests/bats/run.sh)

@@ -28,6 +28,8 @@
   },
   "retired_files": [
     {"dest": ".claude/commands/scaffold-project.md", "source": "commands/scaffold-project.md"},
+    {"dest": ".claude/commands/housekeep.md", "source": "commands/housekeep.md"},
+    {"dest": ".claude/commands/wrapup.md", "source": "commands/wrapup.md"},
     {"dest": ".claude/hooks/llmwiki-nudge.sh", "source": "configs/claude/hooks/llmwiki-nudge.sh"},
     {"dest": ".claude/skills/dataprospectors-design/assets/dp-logo.svg", "source": "skills/dataprospectors-design/assets/dp-logo.svg"},
     {"dest": ".claude/skills/dataprospectors-design/assets/dp-logo-dark.svg", "source": "skills/dataprospectors-design/assets/dp-logo-dark.svg"},
@@ -35,6 +37,9 @@
     {"dest": ".aicodingsetup/templates/paseo-config.json", "source": "configs/paseo/config.json"}
   ],
   "retired_keys": [
+    {"dest": ".claude/settings.json", "path": ["enabledPlugins", "skill-creator@claude-plugins-official"], "shipped": [true]},
+    {"dest": ".claude/settings.json", "path": ["enabledPlugins", "code-review@claude-plugins-official"], "shipped": [true]},
+    {"dest": ".config/opencode/opencode.json", "path": ["command", "wrapup"], "shipped": [{"description": "Check that closing this session and rolling into a new one loses nothing, then give a close verdict.", "template": "Read `~/.claude/skills/wrapup/SKILL.md` and follow it for this session."}, {"description": "Check that this session's work, tickets, git state and cleanup are finished, then give a close verdict.", "template": "Read `~/.claude/skills/wrapup/SKILL.md` and follow it for this session."}]},
     {"dest": ".cursor/mcp.json", "path": ["mcpServers", "kanban"], "shipped": [{"command": "kanban-mcp"}]},
     {"dest": ".config/opencode/opencode.json", "path": ["mcp", "kanban"], "shipped": [{"type": "local", "command": ["kanban-mcp"], "enabled": true}]},
     {"dest": ".codex/config.toml", "path": ["mcp_servers", "kanban"], "shipped": [{"command": "kanban-mcp"}, {"command": "kanban-mcp", "required": true, "startup_timeout_sec": 30}]}

@@ -399,7 +399,7 @@ TOML
   [ "$(cat "$HOME/.claude/.aicoding-release")" = "$((mine + 100)) newer" ]
 }
 
-@test "managed_inventory: covers owned, raw, mixed, block, skills and commands" {
+@test "managed_inventory: covers owned, raw, mixed, block and skills" {
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   run managed_inventory
   [[ "$output" == *"$HOME/.local/bin/aicoding-worktree|raw|bin/aicoding-worktree"* ]]
@@ -407,7 +407,7 @@ TOML
   [[ "$output" == *"$HOME/.claude/settings.json|mixed|configs/claude/settings.json"* ]]
   [[ "$output" == *"$HOME/.bashrc|block|"* ]]
   [[ "$output" == *"$HOME/.claude/skills/review-by-harness/SKILL.md|owned|skills/review-by-harness/SKILL.md"* ]]
-  [[ "$output" == *"$HOME/.claude/commands/"*"|owned|commands/"* ]]
+  if [[ "$output" == *"|owned|commands/"* ]]; then false; fi
   [[ "$output" == *"$HOME/.tmux.conf|owned|"* ]]
 }
 
