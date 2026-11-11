@@ -16,12 +16,19 @@ Managed by the aiCodingBaseSetup blueprint (`configs/claude/CLAUDE.md`);
   show outputs as receipts; say plainly when something is unverified.
 - The repo is the source of truth for code; the homelab-wiki is the source
   of truth for lessons. Auto-memory is disabled. ALL durable lessons
-  (gotchas, incidents, environment quirks) go to the homelab-wiki
-  (`~/homelab-wiki`; clone `https://github.com/vossiman/homelab-wiki` if
-  missing, then follow its `AGENTS.md`: pull first, edit the owning page by
-  grepping it and **rewriting the entry that already covers the topic**,
-  never appending a "correction to the entry above" bullet, then commit+push
-  to its `main` autonomously; that repo's governance allows it).
+  (gotchas, incidents, environment quirks) go to the homelab-wiki,
+  **filed with the memory-router's `memory_write_prepare` and
+  `memory_write_commit` tools**: prepare with the one-sentence lesson, a
+  `source` of `devbox/<harness> <repo> session` (no date, the writer adds
+  it) and a `page_hint`; read the targets it returns and **rewrite the entry
+  that already covers the topic** (never append a "correction to the entry
+  above" bullet); commit with a fresh `operation_id`, and on `unknown` or
+  `unavailable` retry with the SAME id, never with git. The tools enforce
+  the wiki's rules and push for you. Only when they are absent or answer
+  `not_authorized`, fall back to git: clone `~/homelab-wiki`
+  (`https://github.com/vossiman/homelab-wiki`) if missing, follow its
+  `AGENTS.md` (pull first, rewrite the owning entry), and commit+push to its
+  `main` autonomously; that repo's governance allows it.
   **Cross-project** facts (hosts, network, ports, backups, incidents, tool
   identities) go to their topic page; **project-scoped** lessons go to that
   project's page `wiki/<repo>.md` (create it if missing, register it in

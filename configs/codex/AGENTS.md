@@ -32,7 +32,14 @@ router is unavailable, fall back to grepping the local `~/homelab-wiki` clone
 proceed without retrieval rather than blocking.
 
 Durable lessons (gotchas, incidents, environment quirks) belong in the
-homelab-wiki — follow its `AGENTS.md` conventions — never in project repos.
+homelab-wiki, never in project repos. File them with the memory-router's
+`memory_write_prepare` and `memory_write_commit` tools: search first with
+`memory_search` (write nothing if the wiki already says it), prepare with the
+one-sentence lesson, a `source` of `devbox/codex <repo> session` (no date) and
+a `page_hint`, rewrite the entry that already covers the topic rather than
+appending a correction, and commit with a fresh `operation_id`; on `unknown`
+or `unavailable`, retry with the SAME id. Only when those tools are absent or
+answer `not_authorized`, edit the wiki with git and follow its `AGENTS.md`.
 
 ## Secrets — never read them
 
