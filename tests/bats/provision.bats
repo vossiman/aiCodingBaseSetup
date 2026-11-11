@@ -442,3 +442,31 @@ _seed_retired_kanban_install() {
   [ ! -e "$HOME/.local/bin/kanban-mcp" ]
   [ ! -e "$AICODING_DATA_DIR/versions/mcp-kanban" ]
 }
+
+_memory_router_http_calls() {
+  cat > "$TMP/stubs/claude" <<'STUB'
+#!/bin/sh
+case "$*" in
+  '--version') echo '2.1.50 (Claude Code)' ;;
+  *) exit 1 ;;
+esac
+STUB
+  chmod +x "$TMP/stubs/claude"
+  _provision_tool_ready() { return 0; }
+  _provision_reconcile_selected_exact_mcp() { return 0; }
+  ensure_http_mcp() { echo "$*" >> "$TMP/http-calls"; }
+  run install_claude_mcps
+}
+
+@test "memory-router MCP authenticates with MEMORY_WRITE_TOKEN when the host has one" {
+  export MEMORY_ROUTER_TOKEN=read-tok MEMORY_WRITE_TOKEN=write-tok
+  _memory_router_http_calls
+  grep -qx 'memory-router http://10.0.0.249:8091/mcp -H Authorization: Bearer write-tok' "$TMP/http-calls"
+}
+
+@test "memory-router MCP falls back to MEMORY_ROUTER_TOKEN without a write token" {
+  export MEMORY_ROUTER_TOKEN=read-tok
+  unset MEMORY_WRITE_TOKEN
+  _memory_router_http_calls
+  grep -qx 'memory-router http://10.0.0.249:8091/mcp -H Authorization: Bearer read-tok' "$TMP/http-calls"
+}

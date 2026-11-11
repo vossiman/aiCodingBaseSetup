@@ -553,10 +553,12 @@ install_claude_mcps() {
   # memory-router — the central memory-lanes retrieval router on vossisrv
   # (the memory_search tool). HTTP MCP with bearer auth; the token is a
   # shared secret from ~/.aicodingsetup/.secrets.env, so no token means no
-  # server.
-  if [[ -n "${MEMORY_ROUTER_TOKEN:-}" ]]; then
+  # server. MEMORY_WRITE_TOKEN, when set, also unlocks the memory_write tools
+  # and still authorizes search, so it wins.
+  local memory_router_bearer="${MEMORY_WRITE_TOKEN:-${MEMORY_ROUTER_TOKEN:-}}"
+  if [[ -n "$memory_router_bearer" ]]; then
     ensure_http_mcp memory-router http://10.0.0.249:8091/mcp \
-      -H "Authorization: Bearer ${MEMORY_ROUTER_TOKEN}" || rc=1
+      -H "Authorization: Bearer ${memory_router_bearer}" || rc=1
   else
     warn "memory-router MCP skipped (MEMORY_ROUTER_TOKEN not set)"
   fi

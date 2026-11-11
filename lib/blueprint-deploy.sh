@@ -223,7 +223,8 @@ _substitute_file_to() {
   local home_v="$HOME"
   local fc_v="${FIRECRAWL_API_KEY:-}"
   local br_v="${BRAVE_API_KEY:-}"
-  local mr_v="${MEMORY_ROUTER_TOKEN:-}"
+  # A write token (memory_write) also authorizes search, so it wins when set.
+  local mr_v="${MEMORY_WRITE_TOKEN:-${MEMORY_ROUTER_TOKEN:-}}"
   local kb_v="${KANBAN_TOKEN:-}"
   # Hosts have no container isolation boundary: they keep Codex prompting and
   # sandboxed (user decision 2026-08-31).
@@ -256,7 +257,7 @@ _substitute_file_to() {
 _strip_absent_secret_servers() {
   local src=$1 out=$2
   local -a servers=()
-  [[ -n "${MEMORY_ROUTER_TOKEN:-}" ]] || servers+=(memory-router)
+  [[ -n "${MEMORY_WRITE_TOKEN:-${MEMORY_ROUTER_TOKEN:-}}" ]] || servers+=(memory-router)
   [[ -n "${KANBAN_TOKEN:-}" ]] || servers+=(kanban)
   (( ${#servers[@]} )) || return 0
   local filter tmp names

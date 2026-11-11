@@ -175,7 +175,7 @@ fi
 distiller_settings=$(jq -c '{
   disableAllHooks: true,
   permissions: {
-    allow: ["Write", "Bash(git:*)", "Bash(mkdir:*)", "Bash(cd:*)", "Bash(wc:*)", "mcp__memory-router__memory_search", "mcp__memory-router__memory_feedback"],
+    allow: ["Write", "Bash(git:*)", "Bash(mkdir:*)", "Bash(cd:*)", "Bash(wc:*)", "mcp__memory-router__memory_search", "mcp__memory-router__memory_feedback", "mcp__memory-router__memory_write_prepare", "mcp__memory-router__memory_write_commit"],
     deny: .permissions.deny
   }
 }' "$HOME/.claude/settings.json" 2>/dev/null) || exit 1

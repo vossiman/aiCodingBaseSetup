@@ -725,3 +725,23 @@ TOML
   run aicoding_shared_locks_release
   [ "$status" -eq 0 ]
 }
+
+@test "_substitute_file_to: memory-router header prefers MEMORY_WRITE_TOKEN" {
+  export MEMORY_ROUTER_TOKEN=read-tok MEMORY_WRITE_TOKEN=write-tok
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$TMPDIR/clone/configs/cursor"
+  cp "$BLUEPRINT_ROOT/configs/cursor/mcp.json" "$TMPDIR/clone/configs/cursor/mcp.json"
+  _substitute_file_to "$TMPDIR/clone/configs/cursor/mcp.json" "$TMPDIR/out.json"
+  jq -e '.mcpServers["memory-router"].headers.Authorization == "Bearer write-tok"' "$TMPDIR/out.json"
+}
+
+@test "_substitute_file_to: a write token alone keeps the memory-router server" {
+  unset MEMORY_ROUTER_TOKEN
+  export MEMORY_WRITE_TOKEN=write-only
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$TMPDIR/clone/configs/codex"
+  cp "$BLUEPRINT_ROOT/configs/codex/config.toml" "$TMPDIR/clone/configs/codex/config.toml"
+  _substitute_file_to "$TMPDIR/clone/configs/codex/config.toml" "$TMPDIR/out.toml"
+  grep -q '^\[mcp_servers.memory-router\]' "$TMPDIR/out.toml"
+  grep -q 'Bearer write-only' "$TMPDIR/out.toml"
+}
