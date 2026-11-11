@@ -19,8 +19,8 @@ Managed by the aiCodingBaseSetup blueprint (`configs/claude/CLAUDE.md`);
   (gotchas, incidents, environment quirks) go to the homelab-wiki,
   **filed with the memory-router's `memory_write_prepare` and
   `memory_write_commit` tools**: prepare with the one-sentence lesson, a
-  `source` of `devbox/<harness> <repo> session` (no date, the writer adds
-  it) and a `page_hint`; read the targets it returns and **rewrite the entry
+  `source` of `<harness> <repo> session` (no date or client prefix, the writer adds
+  both) and a `page_hint`; read the targets it returns and **rewrite the entry
   that already covers the topic** (never append a "correction to the entry
   above" bullet); commit with a fresh `operation_id`, and on `unknown` or
   `unavailable` retry with the SAME id, never with git. The tools enforce
