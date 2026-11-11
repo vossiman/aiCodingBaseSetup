@@ -658,6 +658,7 @@ EOF
   git -C "$repo" config user.email test@example.invalid
   git -C "$repo" config user.name test
   # Ship then retire the source here: CI checks out a shallow clone.
+  mkdir -p "$repo/commands"
   printf 'shipped scaffold command\n' > "$repo/$source_path"
   git -C "$repo" add -A
   git -C "$repo" commit -q -m ship

@@ -364,10 +364,6 @@ managed_inventory() {
       printf '%s|raw|skills/%s\n' "$HOME/.claude/skills/$rel" "$rel"
     fi
   done < <(enumerate_skill_files "$AICODING_BLUEPRINT_CLONE/skills")
-  for rel in "$AICODING_BLUEPRINT_CLONE/commands"/*.md; do
-    [[ -f "$rel" ]] || continue
-    printf '%s|owned|commands/%s\n' "$HOME/.claude/commands/${rel##*/}" "${rel##*/}"
-  done
 }
 
 managed_marker_block_start() { printf '%s' '# >>> aicoding managed block — do not edit between markers >>>'; }
