@@ -37,8 +37,8 @@ trailer) and push for you, so you need no clone.
 1. Run step 4 below (`memory_search` with the one-sentence lesson). If an
    entry already states the lesson correctly, write nothing.
 2. `memory_write_prepare` with `lesson` (that sentence), `source`
-   `devbox/llmwiki-distiller <project> session <session-id>` (no date: the
-   writer adds it) and `page_hint` (the owning page from steps 3 and 4,
+   `llmwiki-distiller <project> session <session-id>` (no date or client prefix: the
+   writer adds both) and `page_hint` (the owning page from steps 3 and 4,
    e.g. `wiki/<project>.md`).
 3. Read the targets and instructions it returns. Prefer an `entry` target
    that covers the topic and rewrite it as one current statement (step 5's
