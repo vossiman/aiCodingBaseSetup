@@ -22,10 +22,11 @@ import uuid
 
 BASE = 'https://bugsink.dataprospectors.at'
 LOOPBACK = {'127.0.0.1', 'localhost', '::1'}
-SECRET_FIELD = re.compile(r'password|passwd|secret|token|credential|dsn|api.?key|private.?key|authorization', re.I)
+SECRET_FIELD = re.compile(r'password|passwd|secret|token|credential|dsn|api.?key|private.?key|authorization|cookie', re.I)
+# Backticks cover Bugsink's Markdown stack traces, which print locals as `name` = `value`.
 SECRET_ASSIGNMENT = re.compile(
-    r'''(?ix)(["']?[\w-]*(?:password|passwd|token|secret|api.?key|dsn|authorization|credential)[\w-]*["']?\s*[:=]\s*)'''
-    r'''(?:"[^"]*"|'[^']*'|[^\s,;]+)'''
+    r'''(?ix)(["'`]?[\w-]*(?:password|passwd|token|secret|api.?key|dsn|authorization|credential|cookie)[\w-]*["'`]?\s*[:=]\s*)'''
+    r'''(?:"[^"]*"|'[^']*'|`[^`]*`|[^\s,;]+)'''
 )
 
 
@@ -126,6 +127,9 @@ class Client:
         if isinstance(value, dict):
             return {self.scrub(k): '<redacted>' if SECRET_FIELD.search(k) else self.scrub(v) for k, v in value.items()}
         if isinstance(value, list):
+            # Events may carry headers and query parameters as [name, value] pairs.
+            if len(value) == 2 and isinstance(value[0], str) and SECRET_FIELD.search(value[0]):
+                return [self.scrub(value[0]), '<redacted>']
             return [self.scrub(v) for v in value]
         if isinstance(value, str):
             value = value.replace(self.token, '<redacted>')

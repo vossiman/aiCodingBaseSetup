@@ -109,10 +109,13 @@ to the wiki — a leak that outlives the session.
 - Bugsink holds the error evidence and the board holds the work. Read the
   `trace` before filing, so a ticket names a cause, not just an error type.
   The ticket body names the Bugsink friendly ID, and a `comment` on the issue
-  names the ticket key; neither copies the other. When the fix ships, resolve
-  with `--next-release` so a regression reopens the issue (this needs the
-  SDK to report a release; otherwise plain `resolve`). Resolve noise such as
-  smoke tests at once, with a comment saying why.
+  names the ticket key; neither copies the other. So that a regression
+  reopens the issue, resolve with `--next-release` while the release with
+  the fix has not yet reported to Bugsink, or with `--latest-release` once
+  it has and is the newest. Bugsink only applies `--next-release` when a
+  new release first appears. Without releases from the SDK, use plain
+  `resolve`. Resolve noise such as smoke tests at once, with a comment
+  saying why.
 
 ## Kanban work
 

@@ -34,14 +34,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                      calculated_value=f'password=hidden Authorization: Bearer {TOKEN} Request body: {{"password": "FAKE-PASSWORD"}} api-key=FAKE-KEY Basic RkFLRTpQQVNT',
                      title=f'Problem at http://{KEY}@127.0.0.1/1')
         if self.path.startswith('/api/canonical/0/events/ev1/stacktrace/'):
-            body = f'# SmokeError\n### app.dart:1 in `main`\npassword=hidden Bearer {TOKEN}\n'.encode()
+            body = f'# SmokeError\n### app.dart:1 in `main`\npassword=hidden Bearer {TOKEN}\n* `api_key` = `MD-SECRET`\n'.encode()
             self.send_response(200)
             self.send_header('Content-Type', 'text/markdown')
             self.end_headers()
             self.wfile.write(body)
             return
         if self.path.startswith('/api/canonical/0/events/ev1/'):
-            value = dict(id='ev1', issue='abc', data={'extra': {'api_key': 'FAKE-KEY', 'url': f'http://{KEY}@127.0.0.1/1'}})
+            value = dict(id='ev1', issue='abc', data={'extra': {'api_key': 'FAKE-KEY', 'url': f'http://{KEY}@127.0.0.1/1'},
+                                                      'request': {'headers': [['X-Api-Key', 'PAIR-SECRET'], ['Cookie', 'COOKIE-SECRET'], ['Accept', 'text/plain']]},
+                                                      'stacktrace_md': '* `token` = `MD-SECRET`'})
         elif self.path.startswith('/api/canonical/0/events/'):
             if 'issue=abc' not in self.path or 'order=desc' not in self.path:
                 self.send_error(400)
@@ -147,15 +149,16 @@ class Tests(unittest.TestCase):
     def test_event_payload_is_scrubbed(self):
         r = self.run_cli('event', 'ev1')
         self.assertEqual(r.returncode, 0, r.stderr)
-        for secret in (KEY, 'FAKE-KEY'):
+        for secret in (KEY, 'FAKE-KEY', 'PAIR-SECRET', 'COOKIE-SECRET', 'MD-SECRET'):
             self.assertNotIn(secret, r.stdout)
+        self.assertIn('text/plain', r.stdout)
 
     def test_trace_prints_newest_event_stacktrace_as_scrubbed_text(self):
         for args in (('trace', 'abc'), ('trace', 'abc', '--event', 'ev1')):
             r = self.run_cli(*args)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn('app.dart:1 in `main`', r.stdout)
-            for secret in (TOKEN, 'hidden'):
+            for secret in (TOKEN, 'hidden', 'MD-SECRET'):
                 self.assertNotIn(secret, r.stdout)
 
     def test_resolve_modes_and_reopen_post_to_their_endpoints(self):
