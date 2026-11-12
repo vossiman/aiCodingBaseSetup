@@ -542,10 +542,13 @@ is_quoted_prose_mention() {
 strip_heredoc_bodies() {
   printf '%s' "$1" | awk -v only_quoted="${2:-}" '
     {
-      if (in_body) { if ($0 == marker) { in_body = 0 }; next }
+      # A `<<-` terminator may be indented with tabs, as bash allows.
+      if (in_body) { t = $0; if (dash) sub(/^\t+/, "", t); if (t == marker) { in_body = 0 }; next }
       line = $0
-      if (match(line, /<<-?[[:space:]]*"?'"'"'?[A-Za-z_][A-Za-z0-9_]*"?'"'"'?/)) {
+      if (match(line, /(^|[^<])<<-?[[:space:]]*"?'"'"'?[A-Za-z_][A-Za-z0-9_]*"?'"'"'?/)) {
         marker = substr(line, RSTART, RLENGTH)
+        sub(/^[^<]/, "", marker)
+        dash = (marker ~ /^<<-/)
         gsub(/^<<-?[[:space:]]*/, "", marker)
         quoted = (marker ~ /["'"'"']/)
         gsub(/["'"'"']/, "", marker)
@@ -561,9 +564,15 @@ strip_heredoc_bodies() {
 unquoted_heredoc_bodies() {
   printf '%s' "$1" | awk '
     {
-      if (in_body) { if ($0 == marker) in_body = 0; else if (!quoted) print; next }
-      if (match($0, /<<-?[[:space:]]*"?'"'"'?[A-Za-z_][A-Za-z0-9_]*"?'"'"'?/)) {
+      if (in_body) {
+        t = $0; if (dash) sub(/^\t+/, "", t)
+        if (t == marker) in_body = 0; else if (!quoted) print
+        next
+      }
+      if (match($0, /(^|[^<])<<-?[[:space:]]*"?'"'"'?[A-Za-z_][A-Za-z0-9_]*"?'"'"'?/)) {
         marker = substr($0, RSTART, RLENGTH)
+        sub(/^[^<]/, "", marker)
+        dash = (marker ~ /^<<-/)
         gsub(/^<<-?[[:space:]]*/, "", marker)
         quoted = (marker ~ /["'"'"']/)
         gsub(/["'"'"']/, "", marker)
@@ -1017,12 +1026,16 @@ is_process_kill() {
           if (c == "\\" && index("\"\\$`", substr(str, i + 1, 1))) { i++; word = word substr(str, i, 1); continue }
           if (c == "\"") { q = ""; continue }
           # Command substitution inside double quotes still runs.
+          # Parentheses inside quotes do not end the substitution.
           if (c == "$" && substr(str, i + 1, 1) == "(") {
-            d = 1; sub_ = ""
-            for (i += 2; i <= len && d > 0; i++) {
+            d = 1; sub_ = ""; qq = ""
+            for (i += 2; i <= len; i++) {
               c = substr(str, i, 1)
-              if (c == "(") d++
-              else if (c == ")") { d--; if (d == 0) break }
+              if (c == "\\" && qq != "\047") { sub_ = sub_ c substr(str, i + 1, 1); i++; continue }
+              if (qq != "") { if (c == qq) qq = "" }
+              else if (c == "\047" || c == "\"") qq = c
+              else if (c == "(") d++
+              else if (c == ")" && --d == 0) break
               sub_ = sub_ c
             }
             push(sub_); word = word "$(" sub_ ")"

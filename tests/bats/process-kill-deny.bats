@@ -195,6 +195,17 @@ expect_allowed() {
   expect_allowed "$(printf "cat <<'DOC'\ncat <<EOF\n\$(kill 123)\nEOF\nDOC")"
 }
 
+@test "quoted parentheses and tab-indented terminators do not hide a kill" {
+  expect_denied \
+    "echo \"\$(printf ')'; kill 123)\"" \
+    "$(printf 'cat <<-EOF\n\ttext\n\tEOF\nkill 123')" \
+    "$(printf "cat <<-'EOF'\n\tx\n\tEOF\npkill y")" \
+    "$(printf "bash <<<'echo hi'\nkill 1")"
+  expect_allowed \
+    'echo "$(printf "(")"' \
+    "$(printf 'cat <<-EOF\n\tkill text\n\tEOF')"
+}
+
 @test "commands that only signal their own child or a named container stay allowed" {
   expect_allowed \
     'timeout 5 make test' \
@@ -271,6 +282,10 @@ expect_allowed() {
   # (timeout --kill-after, command -v kill, npx skills); the shims cover them.
   jq -e '[.permissions.deny[] | select(test("^Shell\\((timeout|sudo|command|npx|xargs|bash|sh):"))] | length == 0' "$cursor"
   jq -e '.permission.bash | (has("timeout * kill *") or has("eval *kill*") or has("*sh -*c *kill*")) | not' "$opencode"
+  # OpenCode's `*` also matches spaces, so `sudo -* kill *` denied
+  # `sudo -n grep kill f` and `*/kill *` denied prose naming /usr/bin/kill.
+  jq -e '[.permission.bash | keys[] | select(test("^(sudo|xargs) -\\* |^\\*/"))] | length == 0' "$opencode"
+  jq -e '.permission.bash | ."/bin/kill *" == "deny" and ."/usr/bin/kill *" == "deny"' "$opencode"
 }
 
 @test "Cursor runs the shared hook before every shell command, failing closed" {
