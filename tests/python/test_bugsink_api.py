@@ -33,7 +33,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         issue = dict(id='abc', project=1, calculated_type='SmokeError',
                      calculated_value=f'password=hidden Authorization: Bearer {TOKEN} Request body: {{"password": "FAKE-PASSWORD"}} api-key=FAKE-KEY Basic RkFLRTpQQVNT',
                      title=f'Problem at http://{KEY}@127.0.0.1/1')
-        if '/projects/1/' in self.path:
+        if self.path.startswith('/api/canonical/0/events/ev1/stacktrace/'):
+            body = f'# SmokeError\n### app.dart:1 in `main`\npassword=hidden Bearer {TOKEN}\n'.encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/markdown')
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path.startswith('/api/canonical/0/events/ev1/'):
+            value = dict(id='ev1', issue='abc', data={'extra': {'api_key': 'FAKE-KEY', 'url': f'http://{KEY}@127.0.0.1/1'}})
+        elif self.path.startswith('/api/canonical/0/events/'):
+            if 'issue=abc' not in self.path or 'order=desc' not in self.path:
+                self.send_error(400)
+                return
+            value = dict(results=[dict(id='ev1', issue='abc'), dict(id='ev0', issue='abc')],
+                         next=None if 'cursor=' in self.path else base + '/api/canonical/0/events/?issue=abc&order=desc&cursor=next')
+        elif '/projects/1/' in self.path:
             value = project
         elif '/projects/' in self.path:
             value = dict(results=[project, *self.server.created], next=None)
@@ -49,7 +64,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        raw = self.rfile.read(int(self.headers.get('Content-Length') or 0))
+        body = json.loads(raw) if raw else None
+        if self.path.startswith('/api/canonical/0/issues/') or self.path == '/api/canonical/0/issue-comments/':
+            self.server.writes.append((self.path, self.headers.get('Authorization'), body))
+            if self.headers.get('Authorization') != 'Bearer ' + TOKEN:
+                self.send_error(401)
+                return
+            value = {**body, 'id': 7} if body else dict(id='abc', is_resolved=not self.path.endswith('/reopen/'))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps(value).encode())
+            return
         if self.path == '/api/canonical/0/projects/':
             self.server.creates.append((self.headers.get('Authorization'), body))
             if self.headers.get('Authorization') != 'Bearer ' + TOKEN:
@@ -78,6 +104,7 @@ class Tests(unittest.TestCase):
         self.server.bad_next = None
         self.server.created = []
         self.server.creates = []
+        self.server.writes = []
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.env = {**os.environ, 'BUGSINK_TEST_URL': f'http://127.0.0.1:{self.server.server_port}', 'BUGSINK_TEST_TOKEN': TOKEN}
@@ -108,6 +135,51 @@ class Tests(unittest.TestCase):
         r = self.run_cli('issue', 'abc')
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)['id'], 'abc')
+
+    def test_events_resolve_issue_then_follow_pages_up_to_the_limit(self):
+        r = self.run_cli('events', 'abc', '--limit', '3')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(json.loads(r.stdout)), 3)
+        r = self.run_cli('events', 'abc', '--limit', '1')
+        self.assertEqual([e['id'] for e in json.loads(r.stdout)], ['ev1'])
+        self.assertFalse(any('cursor=' in path for path, _ in self.server.requests[-2:]))
+
+    def test_event_payload_is_scrubbed(self):
+        r = self.run_cli('event', 'ev1')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for secret in (KEY, 'FAKE-KEY'):
+            self.assertNotIn(secret, r.stdout)
+
+    def test_trace_prints_newest_event_stacktrace_as_scrubbed_text(self):
+        for args in (('trace', 'abc'), ('trace', 'abc', '--event', 'ev1')):
+            r = self.run_cli(*args)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('app.dart:1 in `main`', r.stdout)
+            for secret in (TOKEN, 'hidden'):
+                self.assertNotIn(secret, r.stdout)
+
+    def test_resolve_modes_and_reopen_post_to_their_endpoints(self):
+        for args in (('resolve', 'abc'), ('resolve', 'abc', '--next-release'), ('resolve', 'abc', '--latest-release'), ('reopen', 'abc')):
+            r = self.run_cli(*args)
+            self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([path for path, _, _ in self.server.writes], [
+            '/api/canonical/0/issues/abc/resolve/', '/api/canonical/0/issues/abc/resolve-next/',
+            '/api/canonical/0/issues/abc/resolve-latest/', '/api/canonical/0/issues/abc/reopen/'])
+        self.assertTrue(all(auth == 'Bearer ' + TOKEN for _, auth, _ in self.server.writes))
+        r = self.run_cli('resolve', 'abc', '--next-release', '--latest-release')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(len(self.server.writes), 4)
+
+    def test_comment_posts_issue_and_text(self):
+        r = self.run_cli('comment', 'abc', 'Tracked in PROJ-1')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.server.writes, [('/api/canonical/0/issue-comments/', 'Bearer ' + TOKEN, {'issue': 'abc', 'comment': 'Tracked in PROJ-1'})])
+        self.assertNotEqual(self.run_cli('comment', 'abc', ' ').returncode, 0)
+
+    def test_identifiers_cannot_escape_the_api_path(self):
+        for args in (('trace', 'abc', '--event', '../projects'), ('resolve', 'a/b'), ('event', '..')):
+            self.assertNotEqual(self.run_cli(*args).returncode, 0)
+        self.assertEqual(self.server.writes, [])
 
     def test_smoke_fetches_dsn_and_submits_unique_event_without_api_token(self):
         for _ in range(2):

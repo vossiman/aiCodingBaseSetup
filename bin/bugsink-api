@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Credential-safe Bugsink reader, project creator and smoke-test sender.
+"""Credential-safe Bugsink reader, triage tool, project creator and smoke-test sender.
 
 The owner authorizes this helper to hold BUGSINK_AUTH_TOKEN in-process,
 just like dokploy-api. Production requests are pinned to the estate host;
@@ -69,9 +69,9 @@ class Client:
                     return value
         raise ValueError('BUGSINK_AUTH_TOKEN is not set; check with secrets-check')
 
-    def request(self, url, *, event=None, ingestion_key=None, payload=None):
-        headers = {'Accept': 'application/json'}
-        data = None
+    def request(self, url, *, event=None, ingestion_key=None, payload=None, post=False, text=False):
+        headers = {'Accept': 'text/markdown' if text else 'application/json'}
+        data = b'' if post else None
         if event is None:
             headers['Authorization'] = 'Bearer ' + self.token
             if payload is not None:
@@ -86,14 +86,19 @@ class Client:
             body = response.read(5_000_001)
             if len(body) > 5_000_000:
                 raise ValueError('response too large')
+            if text:
+                return body.decode('utf-8', 'replace')
             return json.loads(body) if body else None
 
-    def get(self, resource, ident):
+    def url(self, resource, ident, action=''):
         if not re.fullmatch(r'[A-Za-z0-9_-]+', str(ident)):
             raise ValueError('invalid identifier')
-        return self.request(self.api + resource + '/' + str(ident) + '/')
+        return self.api + resource + '/' + str(ident) + '/' + (action + '/' if action else '')
 
-    def listing(self, resource, **params):
+    def get(self, resource, ident):
+        return self.request(self.url(resource, ident))
+
+    def listing(self, resource, limit=None, **params):
         url = self.api + resource + '/'
         if params:
             url += '?' + urlparse.urlencode(params)
@@ -109,6 +114,8 @@ class Client:
             if not isinstance(page, dict) or not isinstance(page.get('results'), list) or 'next' not in page:
                 raise ValueError('invalid paginated response')
             result.extend(page['results'])
+            if limit is not None and len(result) >= limit:
+                return result[:limit]
             next_url = page['next']
             if next_url is not None and not isinstance(next_url, str):
                 raise ValueError('invalid pagination URL')
@@ -147,6 +154,24 @@ class Client:
             raise Refused('project was submitted but could not be read back; check `bugsink-api projects`')
         return created[0]
 
+    def events(self, issue, limit):
+        issue_id = self.get('issues', issue)['id']
+        return self.listing('events', limit=limit, issue=issue_id, order='desc')
+
+    def trace(self, issue, event):
+        if event is None:
+            latest = self.events(issue, 1)
+            if not latest:
+                raise Refused('the issue has no stored events')
+            event = latest[0]['id']
+        return self.request(self.url('events', event, 'stacktrace'), text=True)
+
+    def set_state(self, issue, action):
+        return self.request(self.url('issues', issue, action), post=True)
+
+    def comment(self, issue, text):
+        return self.request(self.api + 'issue-comments/', payload={'issue': issue, 'comment': text})
+
     def smoke(self, project):
         _, dsn = self.dsn(project)
         event_id = uuid.uuid4().hex
@@ -169,12 +194,32 @@ def main():
     commands.add_parser('project', help='read a project').add_argument('id', type=int)
     commands.add_parser('issues', help='list issues in one project, or every project').add_argument('--project', type=int)
     commands.add_parser('issue', help='read issue details by UUID or friendly ID').add_argument('id')
+    events = commands.add_parser('events', help='list one issue\'s events, newest first (no payload)')
+    events.add_argument('issue', help='issue UUID or friendly ID')
+    events.add_argument('--limit', type=int, default=20)
+    commands.add_parser('event', help='read one event with its full payload').add_argument('id', help='event UUID from `events`')
+    trace = commands.add_parser('trace', help="print the stack trace of an issue's newest event, or of --event")
+    trace.add_argument('issue', help='issue UUID or friendly ID')
+    trace.add_argument('--event', help='event UUID from `events` instead of the newest')
+    resolve = commands.add_parser('resolve', help='mark an issue resolved; a regression reopens it')
+    resolve.add_argument('issue', help='issue UUID or friendly ID')
+    when = resolve.add_mutually_exclusive_group()
+    when.add_argument('--next-release', action='store_true', help='resolved by the next release the SDK reports')
+    when.add_argument('--latest-release', action='store_true', help='resolved in the latest release seen')
+    commands.add_parser('reopen', help='mark a resolved issue unresolved again').add_argument('issue')
+    note = commands.add_parser('comment', help='add a comment to an issue, e.g. the ticket that tracks it')
+    note.add_argument('issue', help='issue UUID or friendly ID')
+    note.add_argument('text')
     commands.add_parser('smoke', help='submit one uniquely grouped test error').add_argument('--project', type=int, required=True)
     commands.add_parser('dsn', help="print one project's DSN in clear (a public ingest key)").add_argument('id', type=int)
     create = commands.add_parser('create-project', help='create a project; refuses a name that already exists')
     create.add_argument('--name', required=True)
     create.add_argument('--team', required=True, help='team UUID, as shown by `projects`')
     args = parser.parse_args()
+    if args.command == 'events' and not 1 <= args.limit <= 1000:
+        parser.error('--limit must be 1 to 1000')
+    if args.command == 'comment' and not args.text.strip():
+        parser.error('comment text must not be empty')
     if args.command == 'create-project':
         try:
             args.team = str(uuid.UUID(args.team))
@@ -195,6 +240,20 @@ def main():
         elif args.command == 'issues':
             projects = [args.project] if args.project is not None else [p['id'] for p in client.listing('projects')]
             result = [i for project in projects for i in client.listing('issues', project=project, sort='digest_order', order='desc')]
+        elif args.command == 'events':
+            result = client.events(args.issue, args.limit)
+        elif args.command == 'event':
+            result = client.get('events', args.id)
+        elif args.command == 'trace':
+            print(client.scrub(client.trace(args.issue, args.event)))
+            return 0
+        elif args.command == 'resolve':
+            action = 'resolve-next' if args.next_release else 'resolve-latest' if args.latest_release else 'resolve'
+            result = client.set_state(args.issue, action)
+        elif args.command == 'reopen':
+            result = client.set_state(args.issue, 'reopen')
+        elif args.command == 'comment':
+            result = client.comment(args.issue, args.text)
         elif args.command == 'dsn':
             print(client.dsn(args.id)[0])
             return 0
