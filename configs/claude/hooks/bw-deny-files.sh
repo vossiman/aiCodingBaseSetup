@@ -733,15 +733,37 @@ block() {
 # transcript on 2026-10-18. Pids, names and runtimes stay allowed. This is a
 # denylist layer: `systemctl status` cgroup trees and `docker inspect` are
 # known gaps, and least-privilege host access is the real boundary.
+# Awk function shared by the two process guards below. A git alias whose
+# value starts with ! is a shell command, so its value is queued with push()
+# and scanned like any other command string. Only real alias definitions
+# count: the value of a global `-c alias.x=!cmd`, or an `alias.x` operand of
+# `git config`. A commit message or grep pattern that quotes one is text.
+GIT_ALIAS_AWK='
+    function git_alias_values(s, n,   j, sc, r) {
+      sc = ""
+      for (j = s; j <= n; j++) {
+        if (sc == "") {
+          if (W[j] == "-c" && j < n) {
+            j++
+            if (W[j] ~ /^alias\.[^=]*=!/) { r = W[j]; sub(/^[^=]*=!/, "", r); push(r) }
+            continue
+          }
+          if (W[j] ~ /^(-C|--git-dir|--work-tree|--namespace|--exec-path|--config-env)$/) { j++; continue }
+          if (W[j] ~ /^-/) continue
+          sc = W[j]; continue
+        }
+        if (sc == "config" && W[j] ~ /^!/ && W[j - 1] ~ /^alias\./) push(substr(W[j], 2))
+      }
+    }
+'
+
 is_process_cmdline_listing() {
   printf '%s' "$1" | grep -qE '/proc/[^[:space:]]*/cmdline' && return 0
   # Quote-aware: a quoted argument stays attached to its command (`ps -o
   # "pid,args"`), and every quoted chunk is queued and scanned again as a
   # command of its own, so `ssh host 'ps aux'` and `bash -c '...'` count.
-  printf '%s' "$1" | awk '
-    # A git alias value (`alias.x=!ps aux`, or `!ps aux` on its own) runs
-    # the rest as a shell command.
-    function base(w) { sub(/^alias\.[^=]*=/, "", w); sub(/^!/, "", w); sub(/^.*\//, "", w); return w }
+  printf '%s' "$1" | awk "$GIT_ALIAS_AWK"'
+    function base(w) { sub(/^.*\//, "", w); return w }
     # procps ps is an ALLOWLIST: selectors, plus -o/--format whose columns
     # all come from SAFE. Its output modes that print args or the
     # environment (BSD words, -f/-F, -O, --context, AIX %a, e) are too many to
@@ -807,6 +829,7 @@ is_process_cmdline_listing() {
         name = base(W[i])
         if (name ~ /^(docker|podman|nerdctl|crictl|kubectl|oc|docker-compose)$/) cont = 1
         if (cont && (W[i] == "exec" || W[i] == "run")) inner = 1
+        if (name == "git") git_alias_values(i + 1, n)
         if (name !~ /^(ps|pgrep|pstree|top)$/) continue
         if (cont && !inner) continue
         if (name == "ps" && ps_bad(i + 1, n)) found = 1
@@ -875,7 +898,7 @@ is_process_cmdline_listing() {
 # Known gap: interpreter code (`python -c 'os.kill(...)'`, `node -e`) is not
 # parsed, and nothing else in this hook parses it either.
 is_process_kill() {
-  printf '%s' "$1" | awk '
+  printf '%s' "$1" | awk "$GIT_ALIAS_AWK"'
     function base(w) { sub(/^.*\//, "", w); return w }
     function push(chunk) { if (chunk != "" && qn < 64) Q[++qn] = chunk }
     function join(s, n,   j, out) {
@@ -1034,15 +1057,7 @@ is_process_kill() {
             if (W[j] ~ /^-(exec|execdir|ok|okdir)$/) { analyze(j + 1, n); if (found) return }
           return
         }
-        # A git alias whose value starts with ! is a shell command:
-        # `git -c alias.x=!cmd x`, or `git config alias.x '!cmd'`.
-        if (name == "git") {
-          for (j = i + 1; j <= n; j++) {
-            if (W[j] ~ /^alias\.[^=]*=!/) { r = W[j]; sub(/^[^=]*=!/, "", r); push(r) }
-            else if (W[j] ~ /^!/ && W[j - 1] ~ /^alias\./) push(substr(W[j], 2))
-          }
-          return
-        }
+        if (name == "git") { git_alias_values(i + 1, n); return }
         return
       }
     }

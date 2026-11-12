@@ -228,6 +228,9 @@ expect_allowed() {
   expect_allowed \
     'git commit -m "fix the kill switch"' \
     'git commit -m "!kill was the bug"' \
+    'git commit -m "alias.x=!kill 1"' \
+    'git grep -F "alias.x=!kill 1"' \
+    'git log --grep="!pkill node"' \
     "git config alias.st status" \
     "git commit -m 'pkill was the bug'" \
     'git log --grep=kill' \

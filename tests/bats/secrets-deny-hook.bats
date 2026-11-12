@@ -1008,7 +1008,10 @@ git diff --stat"
     'gh issue edit 3 --body "ps -ef leaks args"' \
     'gh issue comment 3 --body "pstree -a too"' \
     'git commit -m "Deny ps aux and pgrep -af"' \
-    "git commit -m 'cites \$GH_TOKEN by name only'"
+    "git commit -m 'cites \$GH_TOKEN by name only'" \
+    'git log --grep="!ps aux"' \
+    'git grep -F "!ps aux"' \
+    'git grep -F "alias.x=!ps aux"'
   do
     bash_hook "$c"
     allowed || { echo "not allowed: $c"; return 1; }
