@@ -163,6 +163,10 @@ function createWork(directory) {
   return {
     parentOf: (sessionID) => parents.get(sessionID),
     knows: (sessionID) => seen.has(sessionID),
+    see: (sessionID) => {
+      if (typeof sessionID === "string" && sessionID) seen.add(sessionID)
+    },
+    unsee: (sessionID) => seen.delete(sessionID),
 
     lifecycle: async (type, eventID, properties) => {
       if (!LIFECYCLE_EVENTS.has(type)) return
@@ -200,23 +204,47 @@ function createWork(directory) {
 
 // Rebuilds the v1 properties the bridge validates from a v2 event. v2 drops
 // `info` from session.deleted, so the parent comes from session.created.
-function v1Properties(type, data, work, directory) {
-  const sessionID = data.sessionID
-  if (type === "session.created") {
-    const info = { id: sessionID, directory: data.location?.directory || directory }
-    if (typeof data.parentID === "string") info.parentID = data.parentID
-    return { sessionID, info }
-  }
+function v1Properties(type, data, work) {
   if (type === "session.deleted") {
-    const info = { id: sessionID }
-    const parentID = work.parentOf(sessionID)
+    const info = { id: data.sessionID }
+    const parentID = work.parentOf(data.sessionID)
     if (parentID) info.parentID = parentID
-    return { sessionID, info }
+    return { sessionID: data.sessionID, info }
   }
   return { ...data }
 }
 
-async function pumpEvents(ctx, work, directory, signal, state) {
+// v2 hooks can run before the streamed session.created reaches the plugin,
+// and a child sent without its parent would get a top-level handle. So each
+// session is registered once, from the event or from session.get, parent
+// first, and every hook waits for that.
+function sessionRegistry(ctx, work, directory) {
+  const sessions = new Map()
+  const ensure = (sessionID, known) => {
+    if (typeof sessionID !== "string" || !sessionID) return Promise.resolve()
+    work.see(sessionID)
+    let pending = sessions.get(sessionID)
+    if (!pending) {
+      pending = (async () => {
+        const info = known || await ctx.session.get({ sessionID })
+        const parentID = typeof info?.parentID === "string" ? info.parentID : undefined
+        if (parentID) await ensure(parentID)
+        const created = { id: sessionID, directory: info?.location?.directory || directory }
+        if (parentID) created.parentID = parentID
+        await work.lifecycle("session.created", known?.eventID, { sessionID, info: created })
+      })().catch((error) => {
+        console.error(`kanban-work: session.created: ${error?.message || error}`)
+      })
+      sessions.set(sessionID, pending)
+    }
+    return pending
+  }
+  return { ensure, forget: (sessionID) => sessions.delete(sessionID) }
+}
+
+// Events are pulled as soon as they arrive and handled in order on a chain,
+// so cleanup can drain everything already delivered, not just the current call.
+async function pumpEvents(ctx, work, registry, directory, signal, state) {
   const types = Object.keys(V2_EVENTS)
   for await (const event of ctx.event.subscribe({ types, signal })) {
     const type = V2_EVENTS[event?.type]
@@ -227,14 +255,20 @@ async function pumpEvents(ctx, work, directory, signal, state) {
     // has already seen is ours; anything else would start a stray session.
     const location = event.location?.directory || data.location?.directory
     if (location ? location !== directory : !work.knows(data.sessionID)) continue
-    const call = work.lifecycle(type, event.id, v1Properties(type, data, work, directory))
-    state.inflight = call.catch(() => {})
-    try {
-      await call
-    } catch (error) {
-      // One refused event must not end the subscription for the rest.
+    // The filter runs ahead of the chain, so it tracks sessions itself.
+    if (type === "session.deleted") work.unsee(data.sessionID)
+    else work.see(data.sessionID)
+    state.tail = state.tail.then(async () => {
+      if (type === "session.created") {
+        await registry.ensure(data.sessionID, { ...data, eventID: event.id })
+        return
+      }
+      await work.lifecycle(type, event.id, v1Properties(type, data, work))
+      if (type === "session.deleted") registry.forget(data.sessionID)
+    }).catch((error) => {
+      // One refused event must not stop the ones after it.
       console.error(`kanban-work: ${type}: ${error?.message || error}`)
-    }
+    })
   }
 }
 
@@ -263,26 +297,32 @@ export default {
   setup: async (ctx) => {
     const directory = ctx?.location?.directory
     const work = createWork(directory)
+    const registry = sessionRegistry(ctx, work, directory)
     const registrations = await Promise.all([
-      ctx.tool.hook("execute.before", (event) =>
-        work.toolBefore(event?.tool, event?.sessionID, event?.id)),
+      ctx.tool.hook("execute.before", async (event) => {
+        await registry.ensure(event?.sessionID)
+        await work.toolBefore(event?.tool, event?.sessionID, event?.id)
+      }),
       // A failed call also ends the bridge's tool operation; v1 fired no after for it.
-      ctx.tool.hook("execute.after", (event) =>
-        work.toolAfter(event?.tool, event?.sessionID, event?.id)),
+      ctx.tool.hook("execute.after", async (event) => {
+        await registry.ensure(event?.sessionID)
+        await work.toolAfter(event?.tool, event?.sessionID, event?.id)
+      }),
       ctx.session.hook("context", async (request) => {
+        await registry.ensure(request?.sessionID)
         const text = await work.systemText(request?.sessionID)
         if (text) request.system.push({ type: "text", text })
       }),
     ])
     const abort = new AbortController()
-    const state = { inflight: Promise.resolve() }
-    pumpEvents(ctx, work, directory, abort.signal, state).catch((error) => {
+    const state = { tail: Promise.resolve() }
+    pumpEvents(ctx, work, registry, directory, abort.signal, state).catch((error) => {
       if (!abort.signal.aborted) console.error(`kanban-work: event stream ended: ${error?.message || error}`)
     })
     return async () => {
       abort.abort()
       // `opencode run` shuts down right after the turn ends; let its stop land.
-      await state.inflight
+      await state.tail
       await Promise.all(registrations.map((registration) => registration.dispose()))
     }
   },

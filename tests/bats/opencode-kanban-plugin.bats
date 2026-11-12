@@ -305,7 +305,7 @@ JS
 write_v2_context() {
   cat > "$HOME/v2-context.mjs" <<'JS'
 import fs from "node:fs"
-export function v2Context(directory, events = []) {
+export function v2Context(directory, events = [], parentsOf = {}) {
   const hooks = {}
   const disposed = []
   let drained
@@ -317,7 +317,12 @@ export function v2Context(directory, events = []) {
   const ctx = {
     location: { directory },
     tool: { hook: register("tool") },
-    session: { hook: register("session") },
+    session: {
+      hook: register("session"),
+      get: async ({ sessionID }) => ({
+        id: sessionID, location: { directory }, parentID: parentsOf[sessionID],
+      }),
+    },
     event: {
       subscribe: async function* ({ types, signal }) {
         ctx.subscribedTypes = types
@@ -442,7 +447,7 @@ await cleanup()
 JS
   [ "$status" -eq 0 ]
   jq -s -e '
-    [.[] | select(.argv[0] == "hook") | [.argv[-1], .stdin.tool, .stdin.callID]] == [
+    [.[] | select(.argv[-1] | startswith("tool.")) | [.argv[-1], .stdin.tool, .stdin.callID]] == [
       ["tool.execute.before","shell","call-1"],
       ["tool.execute.after","shell","call-1"],
       ["tool.execute.before","kanban_claim_ticket","call-2"]
@@ -477,4 +482,64 @@ await cleanup()
 JS
   [ "$status" -eq 0 ]
   [ "$(jq -s '[.[] | select(.argv == ["--json","instructions"])] | length' "$BRIDGE_CALLS")" -eq 1 ]
+}
+
+@test "OpenCode v2 registers a child with its parent before its first hook" {
+  write_v2_context
+  run node --input-type=module <<'JS'
+import { pathToFileURL } from "node:url"
+const plugin = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
+const { v2Context } = await import(pathToFileURL(process.env.HOME + "/v2-context.mjs"))
+const { ctx, hooks } = v2Context(process.env.CHECKOUT, [], { "ses-child": "ses-parent" })
+const cleanup = await plugin.setup(ctx)
+await hooks["session.context"]({ sessionID: "ses-child", model: {}, system: [], messages: [], options: {} })
+await cleanup()
+JS
+  [ "$status" -eq 0 ]
+  jq -s -e --arg dir "$CHECKOUT" '
+    [.[] | select(.argv[0] == "hook") | [.argv[-1], .stdin.sessionID, .stdin.info.parentID, .stdin.parentSessionID]] == [
+      ["session.created","ses-parent",null,null],
+      ["session.created","ses-child","ses-parent",null],
+      ["system.transform","ses-child",null,"ses-parent"]
+    ]
+  ' "$BRIDGE_CALLS"
+}
+
+@test "OpenCode v2 cleanup drains events queued behind a slow bridge call" {
+  write_v2_context
+  cat > "$HOME/bin/fake-slow-created" <<'SH'
+#!/bin/sh
+payload=$(sed -n '1p')
+[ "${5:-}" = session.created ] && sleep 1
+jq -nc --arg event "${5:-}" --argjson stdin "$payload" '{argv:[$event],stdin:$stdin}' >> "$BRIDGE_CALLS"
+printf '{}\n'
+SH
+  chmod +x "$HOME/bin/fake-slow-created"
+  export AICODING_KANBAN_WORK="$HOME/bin/fake-slow-created"
+  run node --input-type=module <<'JS'
+import { pathToFileURL } from "node:url"
+const plugin = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
+const { v2Context } = await import(pathToFileURL(process.env.HOME + "/v2-context.mjs"))
+const dir = process.env.CHECKOUT
+const { ctx } = v2Context(dir)
+const events = [
+  { id: "evt_created", type: "session.created", location: { directory: dir },
+    data: { sessionID: "ses-parent", location: { directory: dir } } },
+  { id: "evt_succeeded", type: "session.execution.succeeded", data: { sessionID: "ses-parent" } },
+]
+// Like the real stream: both events are already delivered, and an abort
+// discards whatever the consumer has not pulled yet.
+ctx.event.subscribe = async function* ({ signal }) {
+  for (const event of events) {
+    if (signal.aborted) return
+    yield event
+  }
+  await new Promise((resolve) => signal.addEventListener("abort", resolve))
+}
+const cleanup = await plugin.setup(ctx)
+await new Promise((resolve) => setTimeout(resolve, 200))
+await cleanup()
+JS
+  [ "$status" -eq 0 ]
+  jq -s -e '[.[] | .argv[0]] == ["session.created","session.idle"]' "$BRIDGE_CALLS"
 }
