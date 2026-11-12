@@ -79,7 +79,7 @@ teardown() { rm -rf "$HOME"; }
   run node --input-type=module <<'JS'
 import fs from "node:fs"
 import { pathToFileURL } from "node:url"
-const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
+const { server: KanbanWorkPlugin } = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
 const hooks = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
 for (const line of fs.readFileSync(process.env.BLUEPRINT_ROOT + "/tests/fixtures/opencode/kanban-events.jsonl", "utf8").trim().split("\n")) {
   const item = JSON.parse(line)
@@ -107,7 +107,7 @@ JS
   run node --input-type=module <<'JS'
 import assert from "node:assert/strict"
 import { pathToFileURL } from "node:url"
-const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
+const { server: KanbanWorkPlugin } = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
 const hooks = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
 for (let i = 0; i < 2; i++) {
   const output = { system: ["base"] }
@@ -131,7 +131,7 @@ JS
   run node --input-type=module <<'JS'
 import assert from "node:assert/strict"
 import { pathToFileURL } from "node:url"
-const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
+const { server: KanbanWorkPlugin } = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
 const hooks = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
 const input = { tool: "kanban_claim_ticket", sessionID: "ses-parent", callID: "call-$(touch " + process.env.INJECTION_MARKER + ")" }
 const output = { args: { handle: "11111111-1111-4111-8111-111111111111", ticket: "KANBAN-2" } }
@@ -154,7 +154,7 @@ JS
 @test "OpenCode missing identity leaves every Kanban tool to the hosted server" {
   run node --input-type=module <<'JS'
 import { pathToFileURL } from "node:url"
-const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
+const { server: KanbanWorkPlugin } = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
 const hooks = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
 await hooks["tool.execute.before"]({ tool: "kanban_list_tickets" }, { args: {} })
 await hooks["tool.execute.before"](
@@ -171,7 +171,7 @@ JS
   run node --input-type=module <<'JS'
 import assert from "node:assert/strict"
 import { pathToFileURL } from "node:url"
-const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
+const { server: KanbanWorkPlugin } = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
 const hooks = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
 await assert.rejects(
   hooks["tool.execute.before"](
@@ -199,7 +199,7 @@ EOF
   run node --input-type=module <<'JS'
 import assert from "node:assert/strict"
 import { pathToFileURL } from "node:url"
-const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
+const { server: KanbanWorkPlugin } = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
 const hooks = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
 const output = { system: [] }
 await hooks["experimental.chat.system.transform"]({ sessionID: "ses-parent", model: {} }, output)
@@ -211,7 +211,7 @@ JS
 @test "OpenCode missing identity leaves ordinary legacy CLI commands available" {
   run node --input-type=module <<'JS'
 import { pathToFileURL } from "node:url"
-const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
+const { server: KanbanWorkPlugin } = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
 const hooks = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
 for (const command of [
   'kanban-post "follow-up" --repo aiCodingBaseSetup',
@@ -230,7 +230,7 @@ JS
   run node --input-type=module <<'JS'
 import assert from "node:assert/strict"
 import { pathToFileURL } from "node:url"
-const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
+const { server: KanbanWorkPlugin } = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
 const hooks = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
 for (const [id, command] of [["a", "kanban-post --done KANBAN-2 --evidence ok"], ["b", "FOO=1 kanban-post --done KANBAN-2 --evidence ok"]]) {
   const output = { args: { command } }
@@ -245,7 +245,7 @@ JS
 @test "OpenCode failed tools have no invented after and first-observed sessions stay explicit" {
   run node --input-type=module <<'JS'
 import { pathToFileURL } from "node:url"
-const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
+const { server: KanbanWorkPlugin } = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
 const hooks = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
 await hooks["tool.execute.before"](
   { tool: "read", sessionID: "ses-resumed", callID: "failed-call" },
@@ -270,7 +270,7 @@ JS
 @test "OpenCode plugin instances use distinct stable adapter contexts" {
   run node --input-type=module <<'JS'
 import { pathToFileURL } from "node:url"
-const { KanbanWorkPlugin } = await import(pathToFileURL(process.env.PLUGIN_PATH))
+const { server: KanbanWorkPlugin } = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
 const first = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
 const second = await KanbanWorkPlugin({ directory: process.env.CHECKOUT })
 for (const hooks of [first, second]) {
@@ -298,4 +298,248 @@ JS
     [.[] | select(.argv[0] == "hook") | .stdin.instanceID] |
     group_by(.) | all(.[]; length == 2)
   ' "$BRIDGE_CALLS"
+}
+
+# A stand-in for the OpenCode v2 plugin context (@opencode/plugin 2.2.7
+# promise/plugin.d.ts): tool and session hooks, and an event stream.
+write_v2_context() {
+  cat > "$HOME/v2-context.mjs" <<'JS'
+import fs from "node:fs"
+export function v2Context(directory, events = [], parentsOf = {}) {
+  const hooks = {}
+  const disposed = []
+  let drained
+  const done = new Promise((resolve) => { drained = resolve })
+  const register = (domain) => async (name, callback) => {
+    hooks[`${domain}.${name}`] = callback
+    return { dispose: async () => { disposed.push(`${domain}.${name}`) } }
+  }
+  const ctx = {
+    location: { directory },
+    tool: { hook: register("tool") },
+    session: {
+      hook: register("session"),
+      get: async ({ sessionID }) => ({
+        id: sessionID, location: { directory }, parentID: parentsOf[sessionID],
+      }),
+    },
+    event: {
+      subscribe: async function* ({ types, signal }) {
+        ctx.subscribedTypes = types
+        for (const event of events) yield event
+        drained()
+        await new Promise((resolve) => signal.addEventListener("abort", resolve))
+      },
+    },
+  }
+  return { ctx, hooks, disposed, done }
+}
+export function v2Events(file, directory) {
+  return fs.readFileSync(file, "utf8").trim().split("\n").map((line) =>
+    JSON.parse(line.replaceAll('"/checkout"', JSON.stringify(directory))))
+}
+JS
+}
+
+@test "OpenCode plugin is a single default export with v1 and v2 entry points" {
+  run node --input-type=module <<'JS'
+import assert from "node:assert/strict"
+import { pathToFileURL } from "node:url"
+const module = await import(pathToFileURL(process.env.PLUGIN_PATH))
+assert.deepEqual(Object.keys(module), ["default"])
+assert.equal(module.default.id, "aicoding-kanban-work")
+assert.equal(typeof module.default.server, "function")
+assert.equal(typeof module.default.setup, "function")
+JS
+  [ "$status" -eq 0 ]
+}
+
+@test "OpenCode v2 events reach the bridge in the v1 shape it validates" {
+  write_v2_context
+  run node --input-type=module <<'JS'
+import assert from "node:assert/strict"
+import { pathToFileURL } from "node:url"
+const plugin = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
+const { v2Context, v2Events } = await import(pathToFileURL(process.env.HOME + "/v2-context.mjs"))
+const events = v2Events(process.env.BLUEPRINT_ROOT + "/tests/fixtures/opencode/kanban-events-v2.jsonl", process.env.CHECKOUT)
+const { ctx, disposed, done } = v2Context(process.env.CHECKOUT, events)
+const cleanup = await plugin.setup(ctx)
+await done
+assert.deepEqual([...ctx.subscribedTypes].sort(), [
+  "session.compaction.ended", "session.created", "session.deleted",
+  "session.execution.failed", "session.execution.interrupted", "session.execution.succeeded",
+])
+await cleanup()
+assert.deepEqual(disposed.sort(), ["session.context", "tool.execute.after", "tool.execute.before"])
+JS
+  [ "$status" -eq 0 ]
+  jq -s -e '
+    [.[] | select(.argv[0] == "hook") | [.argv[-1], .stdin.eventID]] == [
+      ["session.created","evt_created_parent"],
+      ["session.created","evt_created_child"],
+      ["session.compacted","evt_compacted"],
+      ["session.idle","evt_succeeded"],
+      ["session.idle","evt_interrupted"],
+      ["session.deleted","evt_deleted_child"],
+      ["session.error","evt_failed"]
+    ]
+  ' "$BRIDGE_CALLS"
+  jq -s -e --arg dir "$CHECKOUT" '
+    any(.[]; .stdin.eventID == "evt_created_parent" and
+      .stdin.info == {id:"ses-parent",directory:$dir} and .stdin.directory == $dir) and
+    any(.[]; .stdin.eventID == "evt_created_child" and
+      .stdin.info == {id:"ses-child",directory:$dir,parentID:"ses-parent"}) and
+    any(.[]; .stdin.eventID == "evt_deleted_child" and .stdin.sessionID == "ses-child" and
+      .stdin.info == {id:"ses-child",parentID:"ses-parent"} and .stdin.parentSessionID == "ses-parent") and
+    any(.[]; .stdin.eventID == "evt_failed" and .stdin.sessionID == "ses-parent")
+  ' "$BRIDGE_CALLS"
+}
+
+@test "OpenCode v2 keeps streaming events after the bridge refuses one" {
+  write_v2_context
+  cat > "$HOME/bin/fake-refuse-created" <<'SH'
+#!/bin/sh
+payload=$(sed -n '1p')
+jq -nc --arg event "${5:-}" --argjson stdin "$payload" '{argv:[$event],stdin:$stdin}' >> "$BRIDGE_CALLS"
+if [ "${5:-}" = session.created ]; then
+  printf '%s\n' '{"ok":false,"error":{"code":409,"message":"refused"}}'
+  exit 1
+fi
+printf '{}\n'
+SH
+  chmod +x "$HOME/bin/fake-refuse-created"
+  export AICODING_KANBAN_WORK="$HOME/bin/fake-refuse-created"
+  run node --input-type=module <<'JS'
+import { pathToFileURL } from "node:url"
+const plugin = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
+const { v2Context, v2Events } = await import(pathToFileURL(process.env.HOME + "/v2-context.mjs"))
+const events = v2Events(process.env.BLUEPRINT_ROOT + "/tests/fixtures/opencode/kanban-events-v2.jsonl", process.env.CHECKOUT)
+const { ctx, done } = v2Context(process.env.CHECKOUT, events)
+const cleanup = await plugin.setup(ctx)
+await done
+await cleanup()
+JS
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"kanban-work: session.created: refused"* ]]
+  jq -s -e 'any(.[]; .argv[0] == "session.error")' "$BRIDGE_CALLS"
+}
+
+@test "OpenCode v2 tool hooks carry the call id and surface the claim gate's refusal" {
+  write_v2_context
+  export FAKE_UNSETTLED=1
+  printf '#!/bin/sh\nprintf "opencode v2.2.7\\n"\n' > "$HOME/bin/opencode"
+  run node --input-type=module <<'JS'
+import assert from "node:assert/strict"
+import { pathToFileURL } from "node:url"
+const plugin = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
+const { v2Context } = await import(pathToFileURL(process.env.HOME + "/v2-context.mjs"))
+const { ctx, hooks } = v2Context(process.env.CHECKOUT)
+const cleanup = await plugin.setup(ctx)
+const call = { tool: "shell", sessionID: "ses-parent", agent: "build", messageID: "msg-1", id: "call-1", input: { command: "ls" } }
+await hooks["tool.execute.before"](call)
+await hooks["tool.execute.after"]({ ...call, status: "error", error: { message: "boom" } })
+await hooks["tool.execute.before"]({ tool: "kanban_list_tickets", input: {} })
+await assert.rejects(
+  hooks["tool.execute.before"]({ ...call, tool: "kanban_claim_ticket", id: "call-2" }),
+  /has not confirmed the previous turn's stop/,
+)
+await cleanup()
+JS
+  [ "$status" -eq 0 ]
+  jq -s -e '
+    [.[] | select(.argv[-1] | startswith("tool.")) | [.argv[-1], .stdin.tool, .stdin.callID]] == [
+      ["tool.execute.before","shell","call-1"],
+      ["tool.execute.after","shell","call-1"],
+      ["tool.execute.before","kanban_claim_ticket","call-2"]
+    ]
+  ' "$BRIDGE_CALLS"
+  jq -s -e 'all(.[] | select(.argv[0] == "hook"); .stdin.clientVersion == "2.2.7")' "$BRIDGE_CALLS"
+}
+
+@test "OpenCode v2 context hook appends the handle as a system part" {
+  write_v2_context
+  run node --input-type=module <<'JS'
+import assert from "node:assert/strict"
+import { pathToFileURL } from "node:url"
+const plugin = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
+const { v2Context } = await import(pathToFileURL(process.env.HOME + "/v2-context.mjs"))
+const { ctx, hooks } = v2Context(process.env.CHECKOUT)
+const cleanup = await plugin.setup(ctx)
+for (let i = 0; i < 2; i++) {
+  const request = { sessionID: "ses-parent", model: {}, system: [{ type: "text", text: "base" }], messages: [], options: {} }
+  const original = request.system
+  await hooks["session.context"](request)
+  assert.strictEqual(request.system, original)
+  assert.deepEqual(request.system, [
+    { type: "text", text: "base" },
+    { type: "text", text: "Claim a ticket before implementation.\n\nKanban work handle: 11111111-1111-4111-8111-111111111111" },
+  ])
+}
+const absent = { model: {}, system: [], messages: [], options: {} }
+await hooks["session.context"](absent)
+assert.deepEqual(absent.system, [])
+await cleanup()
+JS
+  [ "$status" -eq 0 ]
+  [ "$(jq -s '[.[] | select(.argv == ["--json","instructions"])] | length' "$BRIDGE_CALLS")" -eq 1 ]
+}
+
+@test "OpenCode v2 registers a child with its parent before its first hook" {
+  write_v2_context
+  run node --input-type=module <<'JS'
+import { pathToFileURL } from "node:url"
+const plugin = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
+const { v2Context } = await import(pathToFileURL(process.env.HOME + "/v2-context.mjs"))
+const { ctx, hooks } = v2Context(process.env.CHECKOUT, [], { "ses-child": "ses-parent" })
+const cleanup = await plugin.setup(ctx)
+await hooks["session.context"]({ sessionID: "ses-child", model: {}, system: [], messages: [], options: {} })
+await cleanup()
+JS
+  [ "$status" -eq 0 ]
+  jq -s -e --arg dir "$CHECKOUT" '
+    [.[] | select(.argv[0] == "hook") | [.argv[-1], .stdin.sessionID, .stdin.info.parentID, .stdin.parentSessionID]] == [
+      ["session.created","ses-parent",null,null],
+      ["session.created","ses-child","ses-parent",null],
+      ["system.transform","ses-child",null,"ses-parent"]
+    ]
+  ' "$BRIDGE_CALLS"
+}
+
+@test "OpenCode v2 cleanup drains events queued behind a slow bridge call" {
+  write_v2_context
+  cat > "$HOME/bin/fake-slow-created" <<'SH'
+#!/bin/sh
+payload=$(sed -n '1p')
+[ "${5:-}" = session.created ] && sleep 1
+jq -nc --arg event "${5:-}" --argjson stdin "$payload" '{argv:[$event],stdin:$stdin}' >> "$BRIDGE_CALLS"
+printf '{}\n'
+SH
+  chmod +x "$HOME/bin/fake-slow-created"
+  export AICODING_KANBAN_WORK="$HOME/bin/fake-slow-created"
+  run node --input-type=module <<'JS'
+import { pathToFileURL } from "node:url"
+const plugin = (await import(pathToFileURL(process.env.PLUGIN_PATH))).default
+const { v2Context } = await import(pathToFileURL(process.env.HOME + "/v2-context.mjs"))
+const dir = process.env.CHECKOUT
+const { ctx } = v2Context(dir)
+const events = [
+  { id: "evt_created", type: "session.created", location: { directory: dir },
+    data: { sessionID: "ses-parent", location: { directory: dir } } },
+  { id: "evt_succeeded", type: "session.execution.succeeded", data: { sessionID: "ses-parent" } },
+]
+// Like the real stream: both events are already delivered, and an abort
+// discards whatever the consumer has not pulled yet.
+ctx.event.subscribe = async function* ({ signal }) {
+  for (const event of events) {
+    if (signal.aborted) return
+    yield event
+  }
+  await new Promise((resolve) => signal.addEventListener("abort", resolve))
+}
+const cleanup = await plugin.setup(ctx)
+await new Promise((resolve) => setTimeout(resolve, 200))
+await cleanup()
+JS
+  [ "$status" -eq 0 ]
+  jq -s -e '[.[] | .argv[0]] == ["session.created","session.idle"]' "$BRIDGE_CALLS"
 }
