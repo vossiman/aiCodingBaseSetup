@@ -417,7 +417,11 @@ MARK"
     'ps -p 123 opid,args' \
     'ps -p 123 -o "%p %a"' \
     'ps -p 123 -o comm e' \
-    'ps auxc'
+    'ps auxc' \
+    'ps aux 2>/dev/null' \
+    'ps -ef > procs.txt' \
+    'ps -p 1 >procs.txt e' \
+    'ps -p 1 > procs.txt e'
   do
     bash_hook "$c"
     denied || { echo "not denied: $c"; return 1; }
@@ -432,6 +436,12 @@ MARK"
     'ps' \
     'ps -p 123' \
     'ps -o pid,etime,comm -p 1' \
+    'ps -o pid,etime,comm -p 1 2>&1 | head -3' \
+    'ps -o pid,etime,comm -p 1 2>/dev/null' \
+    'ps -o pid,comm >procs.txt' \
+    'ps -o pid,comm > procs.txt' \
+    'ps -o pid,comm >> procs.txt' \
+    'ps -p 1 -o pid= </dev/null' \
     'ps -C nginx' \
     'ps -C ssh' \
     'ps -C java' \

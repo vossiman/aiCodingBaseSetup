@@ -739,6 +739,10 @@ is_process_cmdline_listing() {
       for (j = s; j <= n; j++) {
         a = W[j]
         if (a ~ /^[0-9][0-9,]*$/) continue
+        # A redirection belongs to the shell, not to ps; a bare
+        # operator (`> out`, or `2>` before the `&1` the scanner splits off)
+        # also owns the next word.
+        if (a ~ /^[0-9]*(>>?|<)/) { if (a ~ /^[0-9]*(>>?|<)$/) j++; continue }
         if (a ~ /^--format=/) { if (!fmt_ok(substr(a, 10))) return 1; continue }
         if (a == "--format") { j++; if (!fmt_ok(W[j])) return 1; continue }
         if (a ~ /^--(pid|ppid|user|group|sid|tty|sort|cols|columns|rows|width|User|Group|quick-pid)=/) continue
