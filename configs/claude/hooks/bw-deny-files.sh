@@ -197,6 +197,16 @@ PATTERN_INERT_COMMANDS=(
   rg
 )
 
+# Subcommands that only send their quoted arguments as text (titles, bodies,
+# commit messages), matched on the first words of a segment. gh and git as a
+# whole stay out: `gh codespace ssh`, `gh alias set --shell` and git aliases
+# run commands. A PR title that mentioned `ps` was refused on 2026-11-12.
+PATTERN_INERT_SUBCOMMANDS=(
+  "gh pr create" "gh pr edit" "gh pr comment" "gh pr review"
+  "gh issue create" "gh issue edit" "gh issue comment"
+  "git commit"
+)
+
 # Set per tool call. 1 only for a Bash command whose every segment is headed
 # by an allowlisted non-reader; every other path keeps the pre-2026-08-31
 # strict behaviour.
@@ -462,21 +472,26 @@ quoted_regions() {
 # payload (head bash is not inert) while `grep "app env|secret" page.md`
 # loses the pattern that only looked like a dump.
 blank_quoted_regions() {
-  local inert
+  local inert subs
   inert="$(printf ' %s ' "${PATTERN_INERT_COMMANDS[@]}")"
-  printf '%s' "$1" | awk -v mode="$2" -v inert="$inert" '
-    function head_inert(   w) {
+  subs="$(printf '%s|' "${PATTERN_INERT_SUBCOMMANDS[@]}")"
+  printf '%s' "$1" | awk -v mode="$2" -v inert="$inert" -v subs="$subs" '
+    BEGIN { nsub = split(subs, SUB, "|") }
+    function head_inert(   w, k) {
       w = head
       if (w == "") return 0
       if (w ~ /["\047\\\/=]/) return 0
-      return index(inert, " " w " ") > 0
+      if (index(inert, " " w " ") > 0) return 1
+      for (k = 1; k <= nsub; k++)
+        if (SUB[k] != "" && index(lead " ", " " SUB[k] " ") == 1) return 1
+      return 0
     }
     {
       if (NR > 1) printf "\n"
       line = $0
       # An open quote spans the newline; outside quotes a newline starts a
       # new segment.
-      if (q == "") { head = ""; head_done = 0 }
+      if (q == "") { head = ""; head_done = 0; lead = ""; cur = ""; nl = 0; lead_done = 0 }
       i = 1
       while (i <= length(line)) {
         c = substr(line, i, 1)
@@ -491,12 +506,17 @@ blank_quoted_regions() {
           i++; continue
         }
         if (c == "\"" || c == "\047") {
-          head_done = 1
+          head_done = 1; lead_done = 1
           q = c; buf = ""; printf "%s", c; i++; continue
         }
-        if (c ~ /[;|&()`]/) { head = ""; head_done = 0; printf "%s", c; i++; continue }
-        if (c ~ /[ \t]/) { if (head != "") head_done = 1; printf "%s", c; i++; continue }
+        if (c ~ /[;|&()`]/) { head = ""; head_done = 0; lead = ""; cur = ""; nl = 0; lead_done = 0; printf "%s", c; i++; continue }
+        if (c ~ /[ \t]/) {
+          if (head != "") head_done = 1
+          if (!lead_done && cur != "") { lead = lead " " cur; cur = ""; if (++nl >= 3) lead_done = 1 }
+          printf "%s", c; i++; continue
+        }
         if (!head_done) head = head c
+        if (!lead_done) cur = cur c
         printf "%s", c; i++
       }
     }
@@ -713,12 +733,36 @@ block() {
 # transcript on 2026-10-18. Pids, names and runtimes stay allowed. This is a
 # denylist layer: `systemctl status` cgroup trees and `docker inspect` are
 # known gaps, and least-privilege host access is the real boundary.
+# Awk function shared by the two process guards below. A git alias whose
+# value starts with ! is a shell command, so its value is queued with push()
+# and scanned like any other command string. Only real alias definitions
+# count: the value of a global `-c alias.x=!cmd`, or an `alias.x` operand of
+# `git config`. A commit message or grep pattern that quotes one is text.
+GIT_ALIAS_AWK='
+    function git_alias_values(s, n,   j, sc, r) {
+      sc = ""
+      for (j = s; j <= n; j++) {
+        if (sc == "") {
+          if (W[j] == "-c" && j < n) {
+            j++
+            if (W[j] ~ /^alias\.[^=]*=!/) { r = W[j]; sub(/^[^=]*=!/, "", r); push(r) }
+            continue
+          }
+          if (W[j] ~ /^(-C|--git-dir|--work-tree|--namespace|--exec-path|--config-env)$/) { j++; continue }
+          if (W[j] ~ /^-/) continue
+          sc = W[j]; continue
+        }
+        if (sc == "config" && W[j] ~ /^!/ && W[j - 1] ~ /^alias\./) push(substr(W[j], 2))
+      }
+    }
+'
+
 is_process_cmdline_listing() {
   printf '%s' "$1" | grep -qE '/proc/[^[:space:]]*/cmdline' && return 0
   # Quote-aware: a quoted argument stays attached to its command (`ps -o
   # "pid,args"`), and every quoted chunk is queued and scanned again as a
   # command of its own, so `ssh host 'ps aux'` and `bash -c '...'` count.
-  printf '%s' "$1" | awk '
+  printf '%s' "$1" | awk "$GIT_ALIAS_AWK"'
     function base(w) { sub(/^.*\//, "", w); return w }
     # procps ps is an ALLOWLIST: selectors, plus -o/--format whose columns
     # all come from SAFE. Its output modes that print args or the
@@ -785,6 +829,7 @@ is_process_cmdline_listing() {
         name = base(W[i])
         if (name ~ /^(docker|podman|nerdctl|crictl|kubectl|oc|docker-compose)$/) cont = 1
         if (cont && (W[i] == "exec" || W[i] == "run")) inner = 1
+        if (name == "git") git_alias_values(i + 1, n)
         if (name !~ /^(ps|pgrep|pstree|top)$/) continue
         if (cont && !inner) continue
         if (name == "ps" && ps_bad(i + 1, n)) found = 1
@@ -853,7 +898,7 @@ is_process_cmdline_listing() {
 # Known gap: interpreter code (`python -c 'os.kill(...)'`, `node -e`) is not
 # parsed, and nothing else in this hook parses it either.
 is_process_kill() {
-  printf '%s' "$1" | awk '
+  printf '%s' "$1" | awk "$GIT_ALIAS_AWK"'
     function base(w) { sub(/^.*\//, "", w); return w }
     function push(chunk) { if (chunk != "" && qn < 64) Q[++qn] = chunk }
     function join(s, n,   j, out) {
@@ -1012,6 +1057,7 @@ is_process_kill() {
             if (W[j] ~ /^-(exec|execdir|ok|okdir)$/) { analyze(j + 1, n); if (found) return }
           return
         }
+        if (name == "git") { git_alias_values(i + 1, n); return }
         return
       }
     }

@@ -136,7 +136,10 @@ expect_allowed() {
     'docker compose exec -T web pkill x' \
     'kubectl exec pod -- kill 1' \
     'adb shell kill 123' \
-    "adb -s emulator-5554 shell 'pkill app'"
+    "adb -s emulator-5554 shell 'pkill app'" \
+    "git -c alias.x='!kill 1' x" \
+    'git -c "alias.x=!pkill node" x' \
+    "git config alias.stop '!killall app'"
   # A heredoc fed to a shell runs its body.
   expect_denied "$(printf 'bash <<%sX%s\nkill 1\nX' "'" "'")"
   # An unquoted-marker heredoc expands command substitutions in its body.
@@ -224,6 +227,11 @@ expect_allowed() {
 @test "mentions of kill in prose, patterns and file names stay allowed" {
   expect_allowed \
     'git commit -m "fix the kill switch"' \
+    'git commit -m "!kill was the bug"' \
+    'git commit -m "alias.x=!kill 1"' \
+    'git grep -F "alias.x=!kill 1"' \
+    'git log --grep="!pkill node"' \
+    "git config alias.st status" \
     "git commit -m 'pkill was the bug'" \
     'git log --grep=kill' \
     'grep -rn kill .' \
