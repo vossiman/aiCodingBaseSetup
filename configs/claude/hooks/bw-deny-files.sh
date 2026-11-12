@@ -556,6 +556,21 @@ strip_heredoc_bodies() {
   '
 }
 
+# unquoted_heredoc_bodies — the body lines of heredocs whose marker is not
+# quoted. The shell runs command substitutions in those bodies.
+unquoted_heredoc_bodies() {
+  printf '%s' "$1" | awk '
+    {
+      if (in_body) { if ($0 == marker) in_body = 0; else print; next }
+      if (match($0, /<<-?[[:space:]]*"?'"'"'?[A-Za-z_][A-Za-z0-9_]*"?'"'"'?/)) {
+        marker = substr($0, RSTART, RLENGTH)
+        gsub(/^<<-?[[:space:]]*/, "", marker)
+        if (marker !~ /["'"'"']/) in_body = 1
+      }
+    }
+  '
+}
+
 # is_env_dump — true when a command prints the WHOLE environment.
 #
 # `env | grep -i token` was already denied, but a bare `env`, `printenv` or
@@ -838,7 +853,21 @@ is_process_kill() {
           }
           return
         }
-        if (name == "su" || name == "runuser" || name == "script" || name == "flock") {
+        if (name == "flock") {
+          for (j = i + 1; j <= n; j++) {
+            if (W[j] == "-w" || W[j] == "--wait" || W[j] == "--timeout" || W[j] == "-E" || W[j] == "--conflict-exit-code") { j++; continue }
+            if ((W[j] == "-c" || W[j] == "--command") && j < n) { push(W[j + 1]); return }
+            if (W[j] ~ /^--command=/) { push(substr(W[j], 11)); return }
+            if (W[j] == "--") { j++; break }
+            if (W[j] ~ /^-/) continue
+            break
+          }
+          j++
+          if ((W[j] == "-c" || W[j] == "--command") && j < n) { push(W[j + 1]); return }
+          if (W[j] ~ /^--command=/) { push(substr(W[j], 11)); return }
+          i = j; continue
+        }
+        if (name == "su" || name == "runuser" || name == "script") {
           for (j = i + 1; j <= n; j++) {
             if ((W[j] == "-c" || W[j] == "--command") && j < n) push(W[j + 1])
             else if (W[j] ~ /^--command=/) push(substr(W[j], 11))
@@ -848,7 +877,7 @@ is_process_kill() {
         }
         if (name == "eval") { push(join(i + 1, n)); return }
         if (name == "trap") { push(W[i + 1]); return }
-        if (name == "watch") { i = skipopts(i, n, " -n --interval -d "); push(join(i, n)); return }
+        if (name == "watch") { i = skipopts(i, n, " -n --interval "); push(join(i, n)); return }
         if (name == "command") {
           for (j = i + 1; j <= n && W[j] ~ /^-/; j++) if (W[j] ~ /[vV]/) return
           i = j; continue
@@ -989,7 +1018,7 @@ is_process_kill() {
       WRAP["exec"] = " -a "
       WRAP["time"] = " -f -o --format --output "
       WRAP["nice"] = " -n --adjustment "
-      WRAP["ionice"] = " -c -n -t --class --classdata "
+      WRAP["ionice"] = " -c -n --class --classdata "
       WRAP["stdbuf"] = " -i -o -e --input --output --error "
       split("nohup setsid builtin busybox npx bunx", a, " ")
       for (k in a) WRAP[a[k]] = ""
@@ -1392,7 +1421,7 @@ case "$TOOL_NAME" in
     if (( HEREDOC_SHELL_FED )); then
       KILL_CMD="$CMD"
     else
-      KILL_CMD="$HEREDOC_STRIPPED"$'\n'"$(printf '%s' "$ORACLE_CMD" | grep -oE '\$\([^()]*\)|`[^`]*`' || true)"
+      KILL_CMD="$HEREDOC_STRIPPED"$'\n'"$(unquoted_heredoc_bodies "$CMD" | sed -E 's/\\[$`]//g' | grep -oE '\$\([^()]*\)|`[^`]*`' || true)"
     fi
     if is_process_kill "$KILL_CMD"; then
       block SG-PROCESS-KILL "Bash: agents never send signals to processes (owner rule 2026-11-12, after a kill ended the owner's desktop session). Stop only what you started, by name: docker stop <name>, docker compose down, make down, or the harness's own task stop. Anything else: ask the owner."

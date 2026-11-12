@@ -151,6 +151,21 @@ expect_allowed() {
   [[ "$output" == *"ask the owner"* ]]
 }
 
+@test "wrapper options that take no value do not hide the command" {
+  expect_denied \
+    'watch -d kill 123' \
+    'ionice -t kill 123' \
+    'flock -n /tmp/x.lock kill 123' \
+    'flock -w 5 /tmp/x.lock pkill node' \
+    'flock /tmp/x.lock -c "kill 1"' \
+    'flock -c "kill 1" /tmp/x.lock'
+  expect_allowed \
+    'watch -d make test' \
+    'ionice -c 3 make' \
+    'flock /tmp/x.lock make test' \
+    'flock -n 9'
+}
+
 @test "commands that only signal their own child or a named container stay allowed" {
   expect_allowed \
     'timeout 5 make test' \
@@ -190,6 +205,13 @@ expect_allowed() {
     "$(printf 'git commit -F - <<%sEOF%s\nkill the bug\npkill was wrong\nEOF' "'" "'")" \
     "$(printf 'git commit -m "$(cat <<%sEOF%s\nkill the process tree\nEOF\n)"' "'" "'")" \
     "$(printf 'cat <<EOF > notes.md\nkill the bug\nEOF')"
+  # A single-quoted or escaped substitution is literal text.
+  expect_allowed \
+    "echo '\$(kill 123)'" \
+    "git commit -m 'document \$(kill 123)'" \
+    "$(printf 'cat <<EOF > notes.md\n\\$(kill 1)\nEOF')"
+  # A substitution in an unquoted-marker heredoc body does run.
+  expect_denied "$(printf 'cat <<EOF > notes.md\n$(kill 1)\nEOF')"
 }
 
 @test "read-only service and process queries stay allowed" {
