@@ -740,9 +740,8 @@ is_process_cmdline_listing() {
         a = W[j]
         if (a ~ /^[0-9][0-9,]*$/) continue
         # A redirection belongs to the shell, not to ps; a bare
-        # operator (`> out`, or `2>` before the `&1` the scanner splits off)
-        # also owns the next word.
-        if (a ~ /^[0-9]*(>>?|<)/) { if (a ~ /^[0-9]*(>>?|<)$/) j++; continue }
+        # operator such as `> out` also owns the next word.
+        if (a ~ /^([0-9]*|&)(>>?|<)/) { if (a ~ /^([0-9]*|&)(>>?|<)&?$/) j++; continue }
         if (a ~ /^--format=/) { if (!fmt_ok(substr(a, 10))) return 1; continue }
         if (a == "--format") { j++; if (!fmt_ok(W[j])) return 1; continue }
         if (a ~ /^--(pid|ppid|user|group|sid|tty|sort|cols|columns|rows|width|User|Group|quick-pid)=/) continue
@@ -813,6 +812,9 @@ is_process_cmdline_listing() {
         if (c == "\047" || c == "\"") { q = c; qc = ""; inword = 1; continue }
         if (c == "\\") { i++; word = word substr(str, i, 1); inword = 1; continue }
         if (c ~ /[ \t]/) { endword(); continue }
+        # The & of 2>&1, >&2 or &>file is part of a redirection, not a
+        # separator; splitting there would hide the words after it.
+        if (c == "&" && (substr(str, i - 1, 1) ~ /[<>]/ || substr(str, i + 1, 1) == ">")) { word = word c; inword = 1; continue }
         if (c ~ /[;&|()`\n]/) { endseg(); continue }
         word = word c; inword = 1
       }

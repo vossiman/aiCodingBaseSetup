@@ -421,7 +421,13 @@ MARK"
     'ps aux 2>/dev/null' \
     'ps -ef > procs.txt' \
     'ps -p 1 >procs.txt e' \
-    'ps -p 1 > procs.txt e'
+    'ps -p 1 > procs.txt e' \
+    'ps -e 2>&1 -f' \
+    'ps -e >&2 -f' \
+    'ps -e &>/dev/null -f' \
+    'ps -e 2>&1 | ps -f' \
+    'pgrep compose 2>&1 -a' \
+    'pstree 2>&1 -a'
   do
     bash_hook "$c"
     denied || { echo "not denied: $c"; return 1; }
@@ -442,6 +448,10 @@ MARK"
     'ps -o pid,comm > procs.txt' \
     'ps -o pid,comm >> procs.txt' \
     'ps -p 1 -o pid= </dev/null' \
+    'ps -o pid,comm >&2' \
+    'ps -o pid,comm &>/dev/null' \
+    'pgrep -x opencode 2>&1 | head' \
+    'ps -o pid,comm & wait' \
     'ps -C nginx' \
     'ps -C ssh' \
     'ps -C java' \
