@@ -200,7 +200,9 @@ old() { t3_iso '-2 hours'; }
   t3_fake_setup
   "$B/t3-start"
   srv=$(jq -r .pid "$T3_ENVS_ROOT/demo/userdata/server-runtime.json")
-  ( sleep 0.5; tok=$(t3_owner token); env T3_AICODING_OWNER="$tok" "$TMP/bin/make" 1.5 ) &
+  # Outlive the whole window: under suite load the checks before it can take
+  # longer than a short-lived process, which then exits before any sample.
+  ( sleep 0.5; tok=$(t3_owner token); env T3_AICODING_OWNER="$tok" "$TMP/bin/make" $((T3_IDLE_WINDOW + 3)) ) &
   run full
   wait
   [ "$status" -eq 1 ]
