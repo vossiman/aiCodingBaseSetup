@@ -995,6 +995,47 @@ git diff --stat"
   allowed
 }
 
+# AICODINGBASESETUP-110: a PR title that only mentioned `ps` was refused on
+# 2026-11-12 (PR #279). Text-only gh and git subcommands get the same carve-out.
+@test "quoted text of text-only gh and git subcommands is prose" {
+  local c
+  for c in \
+    'gh pr create --title "Let ps redirections through the guard" --body-file b.md' \
+    'gh pr edit 12 --title "ps aux is refused"' \
+    'gh pr comment 12 --body "never run pgrep -af on a deploy host"' \
+    'gh pr review 12 --comment -b "env | grep -i token is refused"' \
+    'gh issue create --title "t" --body "the hook blocks printenv GH_TOKEN"' \
+    'gh issue edit 3 --body "ps -ef leaks args"' \
+    'gh issue comment 3 --body "pstree -a too"' \
+    'git commit -m "Deny ps aux and pgrep -af"' \
+    "git commit -m 'cites \$GH_TOKEN by name only'"
+  do
+    bash_hook "$c"
+    allowed || { echo "not allowed: $c"; return 1; }
+  done
+}
+
+@test "the gh and git carve-out does not cover commands that run text" {
+  local c
+  for c in \
+    'gh codespace ssh -c x "ps aux"' \
+    'gh alias set --shell l "pgrep -af compose"' \
+    'gh pr create --title "$(ps aux)"' \
+    'gh pr create --title "`ps aux`"' \
+    'gh pr create --title "t" --body "$GH_TOKEN"' \
+    'gh pr create --title "t"; ps aux' \
+    'gh pr create --title "t" && bash -c "ps aux"' \
+    'git -c alias.x="!ps aux" x' \
+    "git config alias.p '!ps -ef'" \
+    'git commit -m "$(printenv GH_TOKEN)"' \
+    "ssh host 'ps aux'" \
+    "bash -c 'ps -ef'"
+  do
+    bash_hook "$c"
+    denied || { echo "not denied: $c"; return 1; }
+  done
+}
+
 @test "an unquoted-marker heredoc still expands, so it is still denied" {
   bash_hook "python3 - <<EOF
 print(\"\$GH_TOKEN\")

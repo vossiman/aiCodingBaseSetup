@@ -197,6 +197,16 @@ PATTERN_INERT_COMMANDS=(
   rg
 )
 
+# Subcommands that only send their quoted arguments as text (titles, bodies,
+# commit messages), matched on the first words of a segment. gh and git as a
+# whole stay out: `gh codespace ssh`, `gh alias set --shell` and git aliases
+# run commands. A PR title that mentioned `ps` was refused on 2026-11-12.
+PATTERN_INERT_SUBCOMMANDS=(
+  "gh pr create" "gh pr edit" "gh pr comment" "gh pr review"
+  "gh issue create" "gh issue edit" "gh issue comment"
+  "git commit"
+)
+
 # Set per tool call. 1 only for a Bash command whose every segment is headed
 # by an allowlisted non-reader; every other path keeps the pre-2026-08-31
 # strict behaviour.
@@ -462,21 +472,26 @@ quoted_regions() {
 # payload (head bash is not inert) while `grep "app env|secret" page.md`
 # loses the pattern that only looked like a dump.
 blank_quoted_regions() {
-  local inert
+  local inert subs
   inert="$(printf ' %s ' "${PATTERN_INERT_COMMANDS[@]}")"
-  printf '%s' "$1" | awk -v mode="$2" -v inert="$inert" '
-    function head_inert(   w) {
+  subs="$(printf '%s|' "${PATTERN_INERT_SUBCOMMANDS[@]}")"
+  printf '%s' "$1" | awk -v mode="$2" -v inert="$inert" -v subs="$subs" '
+    BEGIN { nsub = split(subs, SUB, "|") }
+    function head_inert(   w, k) {
       w = head
       if (w == "") return 0
       if (w ~ /["\047\\\/=]/) return 0
-      return index(inert, " " w " ") > 0
+      if (index(inert, " " w " ") > 0) return 1
+      for (k = 1; k <= nsub; k++)
+        if (SUB[k] != "" && index(lead " ", " " SUB[k] " ") == 1) return 1
+      return 0
     }
     {
       if (NR > 1) printf "\n"
       line = $0
       # An open quote spans the newline; outside quotes a newline starts a
       # new segment.
-      if (q == "") { head = ""; head_done = 0 }
+      if (q == "") { head = ""; head_done = 0; lead = ""; cur = ""; nl = 0; lead_done = 0 }
       i = 1
       while (i <= length(line)) {
         c = substr(line, i, 1)
@@ -491,12 +506,17 @@ blank_quoted_regions() {
           i++; continue
         }
         if (c == "\"" || c == "\047") {
-          head_done = 1
+          head_done = 1; lead_done = 1
           q = c; buf = ""; printf "%s", c; i++; continue
         }
-        if (c ~ /[;|&()`]/) { head = ""; head_done = 0; printf "%s", c; i++; continue }
-        if (c ~ /[ \t]/) { if (head != "") head_done = 1; printf "%s", c; i++; continue }
+        if (c ~ /[;|&()`]/) { head = ""; head_done = 0; lead = ""; cur = ""; nl = 0; lead_done = 0; printf "%s", c; i++; continue }
+        if (c ~ /[ \t]/) {
+          if (head != "") head_done = 1
+          if (!lead_done && cur != "") { lead = lead " " cur; cur = ""; if (++nl >= 3) lead_done = 1 }
+          printf "%s", c; i++; continue
+        }
         if (!head_done) head = head c
+        if (!lead_done) cur = cur c
         printf "%s", c; i++
       }
     }
@@ -719,7 +739,9 @@ is_process_cmdline_listing() {
   # "pid,args"`), and every quoted chunk is queued and scanned again as a
   # command of its own, so `ssh host 'ps aux'` and `bash -c '...'` count.
   printf '%s' "$1" | awk '
-    function base(w) { sub(/^.*\//, "", w); return w }
+    # A git alias value (`alias.x=!ps aux`, or `!ps aux` on its own) runs
+    # the rest as a shell command.
+    function base(w) { sub(/^alias\.[^=]*=/, "", w); sub(/^!/, "", w); sub(/^.*\//, "", w); return w }
     # procps ps is an ALLOWLIST: selectors, plus -o/--format whose columns
     # all come from SAFE. Its output modes that print args or the
     # environment (BSD words, -f/-F, -O, --context, AIX %a, e) are too many to
@@ -1010,6 +1032,15 @@ is_process_kill() {
         if (name == "find") {
           for (j = i + 1; j < n; j++)
             if (W[j] ~ /^-(exec|execdir|ok|okdir)$/) { analyze(j + 1, n); if (found) return }
+          return
+        }
+        # A git alias whose value starts with ! is a shell command:
+        # `git -c alias.x=!cmd x`, or `git config alias.x '!cmd'`.
+        if (name == "git") {
+          for (j = i + 1; j <= n; j++) {
+            if (W[j] ~ /^alias\.[^=]*=!/) { r = W[j]; sub(/^[^=]*=!/, "", r); push(r) }
+            else if (W[j] ~ /^!/ && W[j - 1] ~ /^alias\./) push(substr(W[j], 2))
+          }
           return
         }
         return
