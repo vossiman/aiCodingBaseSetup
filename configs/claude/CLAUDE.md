@@ -265,6 +265,12 @@ override; task complexity or machine defaults do not authorize an upgrade.
   bugsink-api issues                    # every project, all pages
   bugsink-api issues --project 1
   bugsink-api issue ISSUE_UUID_OR_FRIENDLY_ID
+  bugsink-api events ISSUE --limit 5    # newest first, without payloads
+  bugsink-api event EVENT_UUID          # one event with its full payload
+  bugsink-api trace ISSUE               # stack trace of the newest event (--event UUID for another)
+  bugsink-api comment ISSUE "Tracked in PROJ-12"
+  bugsink-api resolve ISSUE --next-release  # or --latest-release, or neither
+  bugsink-api reopen ISSUE
   bugsink-api smoke --project 1         # creates one uniquely grouped error
   bugsink-api dsn 1                     # the DSN alone, for a client config
   bugsink-api create-project --name NAME --team TEAM_UUID  # refuses a name that exists
@@ -273,3 +279,13 @@ override; task complexity or machine defaults do not authorize an upgrade.
   The helper refuses redirects and pins production requests to the estate
   instance. A smoke-test submission confirms ingestion acceptance, not
   Telegram delivery; let the user confirm receipt when that is their request.
+- Bugsink holds the error evidence and the board holds the work. Read the
+  `trace` before filing, so a ticket names a cause, not just an error type.
+  The ticket body names the Bugsink friendly ID, and a `comment` on the issue
+  names the ticket key; neither copies the other. So that a regression
+  reopens the issue, resolve with `--next-release` while the release with
+  the fix has not yet reported to Bugsink, or with `--latest-release` once
+  it has and is the newest. Bugsink only applies `--next-release` when a
+  new release first appears. Without releases from the SDK, use plain
+  `resolve`. Resolve noise such as smoke tests at once, with a comment
+  saying why.
