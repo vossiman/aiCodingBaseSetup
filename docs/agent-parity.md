@@ -60,7 +60,7 @@ points clients to that source.
 | Claude Code | SessionStart, PreToolUse, PostToolUse, PostToolUseFailure, Stop, SubagentStop, SessionEnd hooks | Native session and agent identity, tool activity, child-aware stop, final reconciliation | None: every supported client is trusted |
 | Codex | Managed SessionStart, PreToolUse, PostToolUse, Stop, SessionEnd hooks | Native thread and turn generation, successful tool activity, bounded failed-call reconciliation gate, final reconciliation | None: every supported client is trusted |
 | Cursor Agent | SessionStart, preToolUse, postToolUse, postToolUseFailure, stop, subagentStop, sessionEnd hooks | Native conversation and generation identity, tool activity, child-stop correlation, final reconciliation | None: every supported client is trusted |
-| OpenCode | Local plugin lifecycle and tool hooks | Native session and plugin-instance generation, tool activity, parent/child tracking, idle and deletion reconciliation | None: every supported client is trusted |
+| OpenCode | One local plugin for both majors: v1 event and tool hooks; v2 event stream, tool hooks and session context hook | Native session and plugin-instance generation, tool activity, parent/child tracking, turn-end and deletion reconciliation | None: every supported client is trusted |
 
 Every supported client can bind, claim and complete, whatever its version.
 The clients ship several releases a day, so a per-version allowlist could never
