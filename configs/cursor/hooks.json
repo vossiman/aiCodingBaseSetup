@@ -8,6 +8,9 @@
     "beforeSubmitPrompt": [
       { "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" cursor beforeSubmitPrompt" }
     ],
+    "beforeShellExecution": [
+      { "command": "bash \"{{HOME}}/.claude/hooks/cursor-shell-guard.sh\"", "failClosed": true }
+    ],
     "preToolUse": [
       { "command": "bash \"{{HOME}}/.claude/hooks/kanban-work-hook.sh\" cursor preToolUse", "failClosed": true }
     ],

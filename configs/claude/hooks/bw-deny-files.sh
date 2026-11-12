@@ -542,10 +542,13 @@ is_quoted_prose_mention() {
 strip_heredoc_bodies() {
   printf '%s' "$1" | awk -v only_quoted="${2:-}" '
     {
-      if (in_body) { if ($0 == marker) { in_body = 0 }; next }
+      # A `<<-` terminator may be indented with tabs, as bash allows.
+      if (in_body) { t = $0; if (dash) sub(/^\t+/, "", t); if (t == marker) { in_body = 0 }; next }
       line = $0
-      if (match(line, /<<-?[[:space:]]*"?'"'"'?[A-Za-z_][A-Za-z0-9_]*"?'"'"'?/)) {
+      if (match(line, /(^|[^<])<<-?[[:space:]]*"?'"'"'?[A-Za-z_][A-Za-z0-9_]*"?'"'"'?/)) {
         marker = substr(line, RSTART, RLENGTH)
+        sub(/^[^<]/, "", marker)
+        dash = (marker ~ /^<<-/)
         gsub(/^<<-?[[:space:]]*/, "", marker)
         quoted = (marker ~ /["'"'"']/)
         gsub(/["'"'"']/, "", marker)
@@ -554,6 +557,62 @@ strip_heredoc_bodies() {
       print line
     }
   '
+}
+
+# unquoted_heredoc_bodies — the body lines of heredocs whose marker is not
+# quoted. The shell runs command substitutions in those bodies.
+unquoted_heredoc_bodies() {
+  printf '%s' "$1" | awk '
+    {
+      if (in_body) {
+        t = $0; if (dash) sub(/^\t+/, "", t)
+        if (t == marker) in_body = 0; else if (!quoted) print
+        next
+      }
+      if (match($0, /(^|[^<])<<-?[[:space:]]*"?'"'"'?[A-Za-z_][A-Za-z0-9_]*"?'"'"'?/)) {
+        marker = substr($0, RSTART, RLENGTH)
+        sub(/^[^<]/, "", marker)
+        dash = (marker ~ /^<<-/)
+        gsub(/^<<-?[[:space:]]*/, "", marker)
+        quoted = (marker ~ /["'"'"']/)
+        gsub(/["'"'"']/, "", marker)
+        in_body = 1
+      }
+    }
+  '
+}
+
+# heredoc_substitutions: each $(...) and `...` in heredoc body text, one per
+# line. Parentheses are counted outside quotes, so `$(a; (kill 1))` is whole;
+# a backslash makes the next character literal, as the shell does there.
+heredoc_substitutions() {
+  awk '
+    { buf = (NR > 1 ? buf "\n" : "") $0 }
+    END {
+      len = length(buf)
+      for (i = 1; i <= len; i++) {
+        c = substr(buf, i, 1)
+        if (c == "\\") { i++; continue }
+        if (c == "`") {
+          s = ""
+          for (i++; i <= len && substr(buf, i, 1) != "`"; i++) s = s substr(buf, i, 1)
+          print s
+          continue
+        }
+        if (c != "$" || substr(buf, i + 1, 1) != "(") continue
+        d = 1; s = ""; q = ""
+        for (i += 2; i <= len; i++) {
+          c = substr(buf, i, 1)
+          if (c == "\\" && q != "\047") { s = s c substr(buf, i + 1, 1); i++; continue }
+          if (q != "") { if (c == q) q = "" }
+          else if (c == "\047" || c == "\"") q = c
+          else if (c == "(") d++
+          else if (c == ")" && --d == 0) break
+          s = s c
+        }
+        print s
+      }
+    }'
 }
 
 # is_env_dump — true when a command prints the WHOLE environment.
@@ -759,6 +818,278 @@ is_process_cmdline_listing() {
     END {
       split("pid ppid pgid pgrp sid sess tid lwp spid tty tt tname stat state s etime etimes time cputime start stime start_time lstart bsdstart comm ucomm ucmd user euser ruser uid euid ruid group egroup gid pcpu %cpu c cp pmem %mem rss rssize rsz vsz vsize sz nlwp thcount ni nice pri priority psr wchan f flags cls policy class", SL, " ")
       for (k in SL) SAFE[SL[k]] = 1
+      found = 0; qn = 1; Q[1] = buf
+      for (qi = 1; qi <= qn && !found; qi++) scan(Q[qi])
+      exit found ? 0 : 1
+    }'
+}
+
+# is_process_kill <command>: true when the command sends a signal to a
+# process, or asks a service manager to stop one.
+#
+# Owner rule 2026-11-12: agents never kill processes. That day a subagent ran
+# `kill` on a parent PID it had looked up, which was the systemd user manager,
+# and the owner's desktop session ended mid-work. Earlier incidents had the
+# same cause: `pkill -f` killed the calling shell, `pkill -P 1` killed a
+# devcontainer, and an unscoped `pkill` killed a sibling session's tests.
+# Checking the PID first was the safeguard each time, and it failed each time.
+#
+# Only a word in COMMAND POSITION counts: after the start, a separator
+# (`;` `&&` `||` `|` `&` newline), `(`, `$(`, a backtick, a shell keyword, or a
+# wrapper such as sudo, env, nohup, setsid, timeout, xargs, command, builtin
+# or exec. So `grep -rn kill .`, `git commit -m "fix the kill switch"` and
+# `cat kill_switch.dart` stay allowed. Strings that a shell runs are scanned
+# again as commands: `sh -c`, `eval`, `trap`, `watch`, `su -c`, `ssh host`,
+# `adb shell`, `env -S`, and `$(...)` inside double quotes. Commands that only
+# signal their own child (`timeout 5 make test`) or a named container
+# (`docker stop web`) are not kills in this sense and stay allowed.
+#
+# Known gap: interpreter code (`python -c 'os.kill(...)'`, `node -e`) is not
+# parsed, and nothing else in this hook parses it either.
+is_process_kill() {
+  printf '%s' "$1" | awk '
+    function base(w) { sub(/^.*\//, "", w); return w }
+    function push(chunk) { if (chunk != "" && qn < 64) Q[++qn] = chunk }
+    function join(s, n,   j, out) {
+      out = ""
+      for (j = s; j <= n; j++) out = out (j > s ? " " : "") W[j]
+      return out
+    }
+    # Step past a wrapper: its option words, and the value word after any
+    # option listed in vals (a space-separated list, padded with spaces).
+    # A bundle such as `-rn 1` takes its value from the next word when the
+    # value-taking letter comes last, or from the rest of the bundle.
+    function skipopts(i, n, vals,   w, k) {
+      i++
+      while (i <= n && W[i] ~ /^-./) {
+        w = W[i]
+        if (w == "--") return i + 1
+        if (index(vals, " " w " ")) { i += 2; continue }
+        if (w ~ /^-[^-]/)
+          for (k = 2; k <= length(w); k++)
+            if (index(vals, " -" substr(w, k, 1) " ")) { if (k == length(w)) i++; break }
+        i++
+      }
+      return i
+    }
+    function analyze(i, n,   w, name, j, k, c, cl, r) {
+      while (i <= n) {
+        w = W[i]; name = base(w)
+        if (R[i]) { i++; continue }
+        if (w ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/) { i++; continue }
+        if (name in KW) { i++; continue }
+        if (name in KILLER) { found = 1; return }
+        if (name == "fuser") {
+          for (j = i + 1; j <= n; j++)
+            if (W[j] == "--kill" || W[j] ~ /^-[A-Za-z]*k/) { found = 1; return }
+          return
+        }
+        if (name == "systemctl") {
+          now = 0; off = 0
+          for (j = i + 1; j <= n; j++) {
+            if (W[j] in SYSTEMCTL) { found = 1; return }
+            if (W[j] == "--now") now = 1
+            if (W[j] == "disable" || W[j] == "mask") off = 1
+          }
+          if (now && off) found = 1
+          return
+        }
+        if (name == "loginctl") {
+          for (j = i + 1; j <= n; j++) if (W[j] ~ /^(terminate|kill)-/) { found = 1; return }
+          return
+        }
+        if (name == "tmux") {
+          for (j = i + 1; j <= n; j++) if (W[j] ~ /^kill-(server|session|window|pane)$/) { found = 1; return }
+          return
+        }
+        if (name in SHELL) {
+          for (j = i + 1; j <= n; j++) if (R[j] == 2) push(W[j])
+          for (j = i + 1; j < n; j++) {
+            if (W[j] ~ /^[-+][oO]$/) { j++; continue }
+            if (W[j] !~ /^[-+]/) break
+            if (W[j] ~ /^-[A-Za-z]*c[A-Za-z]*$/) { push(W[j + 1]); break }
+          }
+          return
+        }
+        if (name == "flock") {
+          for (j = i + 1; j <= n; j++) {
+            if (W[j] == "-w" || W[j] == "--wait" || W[j] == "--timeout" || W[j] == "-E" || W[j] == "--conflict-exit-code") { j++; continue }
+            if ((W[j] == "-c" || W[j] == "--command") && j < n) { push(W[j + 1]); return }
+            if (W[j] ~ /^--command=/) { push(substr(W[j], 11)); return }
+            if (W[j] == "--") { j++; break }
+            if (W[j] ~ /^-/) continue
+            break
+          }
+          j++
+          if ((W[j] == "-c" || W[j] == "--command") && j < n) { push(W[j + 1]); return }
+          if (W[j] ~ /^--command=/) { push(substr(W[j], 11)); return }
+          i = j; continue
+        }
+        if (name == "su" || name == "runuser" || name == "script") {
+          for (j = i + 1; j <= n; j++) {
+            if ((W[j] == "-c" || W[j] == "--command") && j < n) push(W[j + 1])
+            else if (W[j] ~ /^--command=/) push(substr(W[j], 11))
+            else if (W[j] == "--" && name == "runuser") { analyze(j + 1, n); return }
+          }
+          return
+        }
+        if (name == "eval") { push(join(i + 1, n)); return }
+        if (name == "trap") { push(W[i + 1]); return }
+        if (name == "watch") { i = skipopts(i, n, " -n --interval "); push(join(i, n)); return }
+        if (name == "command") {
+          for (j = i + 1; j <= n && W[j] ~ /^-/; j++) if (W[j] ~ /[vV]/) return
+          i = j; continue
+        }
+        if (name in WRAP) { i = skipopts(i, n, WRAP[name]); continue }
+        if (name == "chrt" || name == "taskset") { i = skipopts(i, n, "") + 1; continue }
+        if (name == "env") {
+          for (j = i + 1; j <= n; j++) {
+            if (W[j] == "-u" || W[j] == "--unset" || W[j] == "-C" || W[j] == "--chdir") { j++; continue }
+            if (W[j] == "-S" || W[j] == "--split-string") { push(join(j + 1, n)); return }
+            if (W[j] ~ /^-S./) { push(substr(W[j], 3) " " join(j + 1, n)); return }
+            if (W[j] ~ /^--split-string=/) { push(substr(W[j], 16) " " join(j + 1, n)); return }
+            if (W[j] == "--") { j++; break }
+            if (W[j] ~ /^-/) continue
+            break
+          }
+          i = j; continue
+        }
+        if (name == "timeout") {
+          i = skipopts(i, n, " -s -k --signal --kill-after ") + 1
+          continue
+        }
+        if (name == "xargs") {
+          i = skipopts(i, n, " -I -n -L -P -s -d -E -a --max-args --max-lines --max-procs --max-chars --delimiter --arg-file --eof --replace --process-slot-var ")
+          continue
+        }
+        if (name == "ssh") {
+          for (j = i + 1; j <= n && W[j] ~ /^-/; j++) {
+            cl = substr(W[j], 2)
+            for (k = 1; k <= length(cl); k++) {
+              c = substr(cl, k, 1)
+              if (index("BbcDEeFIiJLlmOopQRSWw", c)) { if (k == length(cl)) j++; break }
+            }
+          }
+          if (j < n) push(join(j + 1, n))
+          return
+        }
+        if (name == "adb") {
+          for (j = i + 1; j <= n; j++) {
+            if (W[j] ~ /^-[stHPL]$/) { j++; continue }
+            if (W[j] ~ /^-/) continue
+            break
+          }
+          if (W[j] != "shell") return
+          for (j++; j <= n && W[j] ~ /^-/; j++) if (W[j] == "-e") j++
+          push(join(j, n))
+          return
+        }
+        if (name ~ /^(docker|podman|nerdctl|docker-compose)$/) {
+          for (j = i + 1; j <= n; j++) {
+            if (W[j] == "exec") break
+            if (W[j] == "compose" || W[j] == "container") continue
+            if (W[j] ~ /^-(H|c|f|p|l)$/ || W[j] ~ /^--(host|context|config|log-level|file|project-name|profile|env-file|project-directory)$/) { j++; continue }
+            if (W[j] ~ /^-/) continue
+            return
+          }
+          if (j > n) return
+          for (j++; j <= n && W[j] ~ /^-/; j++)
+            if (W[j] ~ /^(-e|--env|-u|--user|-w|--workdir|--env-file|--detach-keys|--index)$/) j++
+          i = j + 1; continue
+        }
+        if (name == "kubectl" || name == "oc") {
+          for (j = i + 1; j <= n; j++) if (W[j] == "--") { analyze(j + 1, n); return }
+          return
+        }
+        if (name == "find") {
+          for (j = i + 1; j < n; j++)
+            if (W[j] ~ /^-(exec|execdir|ok|okdir)$/) { analyze(j + 1, n); if (found) return }
+          return
+        }
+        return
+      }
+    }
+    function endword() {
+      if (inword) { W[++nw] = word; R[nw] = pendr; pendr = 0 }
+      word = ""; inword = 0
+    }
+    function endseg() { endword(); if (nw) analyze(1, nw); delete W; delete R; nw = 0; pendr = 0 }
+    function scan(str,   i, c, q, len, d, sub_) {
+      nw = 0; word = ""; inword = 0; q = ""; pendr = 0; len = length(str)
+      for (i = 1; i <= len; i++) {
+        c = substr(str, i, 1)
+        if (q == "\047") {
+          if (c == "\047") q = ""; else word = word c
+          continue
+        }
+        if (q == "\"") {
+          if (c == "\\" && index("\"\\$`", substr(str, i + 1, 1))) { i++; word = word substr(str, i, 1); continue }
+          if (c == "\"") { q = ""; continue }
+          # Command substitution inside double quotes still runs.
+          # Parentheses inside quotes do not end the substitution.
+          if (c == "$" && substr(str, i + 1, 1) == "(") {
+            d = 1; sub_ = ""; qq = ""
+            for (i += 2; i <= len; i++) {
+              c = substr(str, i, 1)
+              if (c == "\\" && qq != "\047") { sub_ = sub_ c substr(str, i + 1, 1); i++; continue }
+              if (qq != "") { if (c == qq) qq = "" }
+              else if (c == "\047" || c == "\"") qq = c
+              else if (c == "(") d++
+              else if (c == ")" && --d == 0) break
+              sub_ = sub_ c
+            }
+            push(sub_); word = word "$(" sub_ ")"
+            continue
+          }
+          if (c == "`") {
+            sub_ = ""
+            for (i++; i <= len && substr(str, i, 1) != "`"; i++) sub_ = sub_ substr(str, i, 1)
+            push(sub_); word = word "`" sub_ "`"
+            continue
+          }
+          word = word c
+          continue
+        }
+        if (c == "\047" || c == "\"") { q = c; inword = 1; continue }
+        if (c == "\\") { i++; if (substr(str, i, 1) != "\n") { word = word substr(str, i, 1); inword = 1 }; continue }
+        if (c == "#" && !inword) { while (i < len && substr(str, i + 1, 1) != "\n") i++; continue }
+        if (c ~ /[ \t]/) { endword(); continue }
+        if (c == "<" || c == ">") {
+          if (inword && word ~ /^[0-9]+$/) { word = ""; inword = 0 } else endword()
+          d = i
+          while (substr(str, i + 1, 1) ~ /[<>]/) i++
+          if (substr(str, i + 1, 1) == "&") { i++; while (substr(str, i + 1, 1) ~ /[0-9-]/) i++; continue }
+          # A here-string (`<<<`) is text the command reads as its input.
+          pendr = (substr(str, d, i - d + 1) == "<<<") ? 2 : 1
+          continue
+        }
+        if (c ~ /[;&|()`\n]/) { endseg(); continue }
+        word = word c; inword = 1
+      }
+      endseg()
+    }
+    { buf = (NR > 1 ? buf "\n" : "") $0 }
+    END {
+      split("kill pkill killall killall5 skill snice tkill tgkill xkill fkill kill-port reboot poweroff halt shutdown", a, " ")
+      for (k in a) KILLER[a[k]] = 1
+      split("if then else elif do while until ! { } coproc", a, " ")
+      for (k in a) KW[a[k]] = 1
+      # Wrappers that run their arguments as a command, each with the
+      # options that consume the next word.
+      WRAP["sudo"] = " -u -g -C -D -p -R -r -t -U --user --group --close-from --chdir --prompt --role --type --other-user "
+      WRAP["doas"] = " -u -C "
+      WRAP["pkexec"] = " --user "
+      WRAP["exec"] = " -a "
+      WRAP["time"] = " -f -o --format --output "
+      WRAP["nice"] = " -n --adjustment "
+      WRAP["ionice"] = " -c -n --class --classdata "
+      WRAP["stdbuf"] = " -i -o -e --input --output --error "
+      split("nohup setsid builtin busybox npx bunx", a, " ")
+      for (k in a) WRAP[a[k]] = ""
+      split("sh bash zsh dash ksh mksh ash fish", a, " ")
+      for (k in a) SHELL[a[k]] = 1
+      split("stop kill restart try-restart reload-or-restart try-reload-or-restart condrestart force-reload isolate exit reboot poweroff halt kexec soft-reboot emergency rescue default switch-root suspend hibernate hybrid-sleep suspend-then-hibernate sleep", a, " ")
+      for (k in a) SYSTEMCTL[a[k]] = 1
       found = 0; qn = 1; Q[1] = buf
       for (qi = 1; qi <= qn && !found; qi++) scan(Q[qi])
       exit found ? 0 : 1
@@ -1146,6 +1477,18 @@ case "$TOOL_NAME" in
     fi
     if is_process_cmdline_listing "$ORACLE_NAMES"; then
       block SG-PROCESS-CMDLINE "Bash: lists other processes' full command lines, which can carry secrets passed inline by deploy tools. Do not bypass; use pgrep without -a, ps -o pid,etime,comm, docker ps, or the service's log."
+    fi
+
+    # Process signals. Heredoc bodies are data (a commit message that says
+    # "kill") unless a shell runs them. The one part of an unquoted-marker
+    # body that does run is a command substitution, so those are appended.
+    if (( HEREDOC_SHELL_FED )); then
+      KILL_CMD="$CMD"
+    else
+      KILL_CMD="$HEREDOC_STRIPPED"$'\n'"$(unquoted_heredoc_bodies "$CMD" | heredoc_substitutions)"
+    fi
+    if is_process_kill "$KILL_CMD"; then
+      block SG-PROCESS-KILL "Bash: agents never send signals to processes (owner rule 2026-11-12, after a kill ended the owner's desktop session). Stop only what you started, by name: docker stop <name>, docker compose down, make down, or the harness's own task stop. Anything else: ask the owner."
     fi
 
     # Pass 1 — every token in the whole command, not just arguments to a

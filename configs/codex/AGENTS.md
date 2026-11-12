@@ -41,6 +41,16 @@ appending a correction, and commit with a fresh `operation_id`; on `unknown`
 or `unavailable`, retry with the SAME id. Only when those tools are absent or
 answer `not_authorized`, edit the wiki with git and follow its `AGENTS.md`.
 
+## Processes: never kill them
+
+- Never send a signal to a process or stop a service (`kill`, `pkill`,
+  `killall`, `fuser -k`, `systemctl stop|restart|kill`); stop only what you
+  started, by name (`docker stop <name>`, `docker compose down`, `make down`,
+  the harness's own task stop), and ask the owner for anything else.
+  On 2026-11-12 a `kill` on a looked-up parent PID hit the systemd user
+  manager and ended the owner's desktop session, so the deny hook blocks
+  these commands on every harness.
+
 ## Secrets — never read them
 
 `~/.aicodingsetup/.secrets.env` and any private key (`*.pem`, `*.key`,
@@ -130,7 +140,8 @@ All four CLIs enforce the secret-file restrictions above at the tool layer:
 Claude Code and Codex run the
 same PreToolUse deny hook (Codex's is installed as a *managed* hook in
 `/etc/codex/requirements.toml`, so it is trusted by policy and cannot be
-switched off), and Cursor/OpenCode use deny rules. Casual reads are blocked; this is a
+switched off). Cursor runs it before every shell command and OpenCode through
+a plugin, each backed by glob deny rules. Casual reads are blocked; this is a
 best-effort layer, not an airlock — determined bypasses (a redirected
 `env`, an interpreter fed by heredoc) are exactly what the hook hardening
 keeps chasing, so do not treat a block as proof nothing else works.

@@ -313,6 +313,7 @@ managed_inventory_overwrite() {
 $HOME/.claude/hooks/custom-statusline.js|owned|configs/claude/hooks/custom-statusline.js
 $HOME/.claude/hooks/bw-deny-files.sh|owned|configs/claude/hooks/bw-deny-files.sh
 $HOME/.claude/hooks/kanban-work-hook.sh|owned|configs/claude/hooks/kanban-work-hook.sh
+$HOME/.claude/hooks/cursor-shell-guard.sh|owned|configs/claude/hooks/cursor-shell-guard.sh
 $HOME/.pi/agent/extensions/bw-deny-files.ts|owned|configs/pi/extensions/bw-deny-files.ts
 $HOME/.claude/hooks/check-archived-docs.sh|owned|configs/claude/hooks/check-archived-docs.sh
 $HOME/.claude/hooks/llmwiki-distill.sh|owned|configs/claude/hooks/llmwiki-distill.sh
@@ -337,6 +338,7 @@ $HOME/.codex/AGENTS.md|owned|configs/codex/AGENTS.md
 $HOME/.cursor/skills/aicoding-estate/SKILL.md|owned|configs/cursor/skills/aicoding-estate/SKILL.md
 $HOME/.cursor/hooks.json|owned|configs/cursor/hooks.json
 $HOME/.config/opencode/plugins/kanban-work.js|owned|configs/opencode/plugins/kanban-work.js
+$HOME/.config/opencode/plugins/bw-deny-files.js|owned|configs/opencode/plugins/bw-deny-files.js
 EOF
   if [[ "$(aicoding_profile)" == host ]]; then
     echo "$HOME/.bashrc.d/aicoding-boot-sync.sh|owned|configs/bash/boot-sync.sh"
