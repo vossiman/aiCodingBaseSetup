@@ -124,7 +124,8 @@ All four CLIs enforce the secret-file restrictions above at the tool layer:
 Claude Code and Codex run the
 same PreToolUse deny hook (Codex's is installed as a *managed* hook in
 `/etc/codex/requirements.toml`, so it is trusted by policy and cannot be
-switched off), and Cursor/OpenCode use deny rules. Casual reads are blocked; this is a
+switched off). Cursor runs it before every shell command and OpenCode through
+a plugin, each backed by glob deny rules. Casual reads are blocked; this is a
 best-effort layer, not an airlock — determined bypasses (a redirected
 `env`, an interpreter fed by heredoc) are exactly what the hook hardening
 keeps chasing, so do not treat a block as proof nothing else works.

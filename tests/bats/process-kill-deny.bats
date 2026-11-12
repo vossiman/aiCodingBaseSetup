@@ -229,15 +229,106 @@ expect_allowed() {
     'kubectl exec pod -- ls'
 }
 
-# Cursor and OpenCode cannot run the hook, so they carry glob deny rules for
-# the direct and common wrapped forms.
+# Cursor and OpenCode run the hook through shims; their glob rules stay as a
+# backup for the direct forms only, because globs cannot parse wrappers.
 @test "fallback configs deny the direct signal commands" {
   local cursor="$BLUEPRINT_ROOT/configs/cursor/cli-config.json"
   local opencode="$BLUEPRINT_ROOT/configs/opencode/opencode.json"
-  jq -e '.permissions.deny | contains(["Shell(kill)", "Shell(pkill)", "Shell(killall)", "Shell(xargs:*kill*)", "Shell(fuser:*-*k*)", "Shell(systemctl:*stop*)", "Shell(loginctl:*terminate-*)"])' "$cursor"
-  jq -e '.permission.bash | ."kill *" == "deny" and ."pkill *" == "deny" and ."killall *" == "deny" and ."sudo kill *" == "deny" and ."xargs kill *" == "deny" and ."*systemctl *stop *" == "deny"' "$opencode"
+  jq -e '.permissions.deny | contains(["Shell(kill)", "Shell(pkill)", "Shell(killall)", "Shell(systemctl:*stop*)", "Shell(loginctl:*terminate-*)"])' "$cursor"
+  jq -e '.permission.bash | ."kill *" == "deny" and ."pkill *" == "deny" and ."killall *" == "deny" and ."sudo kill *" == "deny" and ."xargs kill *" == "deny" and ."systemctl *stop *" == "deny"' "$opencode"
   # The allow-all default must still come first: OpenCode's last match wins.
   jq -e '.permission.bash | keys_unsorted[0] == "*"' "$opencode"
+  # Globs matching "kill" anywhere in the arguments denied harmless commands
+  # (timeout --kill-after, command -v kill, npx skills); the shims cover them.
+  jq -e '[.permissions.deny[] | select(test("^Shell\\((timeout|sudo|command|npx|xargs|bash|sh):"))] | length == 0' "$cursor"
+  jq -e '.permission.bash | (has("timeout * kill *") or has("eval *kill*") or has("*sh -*c *kill*")) | not' "$opencode"
+}
+
+@test "Cursor runs the shared hook before every shell command, failing closed" {
+  jq -e '.hooks.beforeShellExecution | any(.command | contains("cursor-shell-guard.sh")) and all(.failClosed == true)' \
+    "$BLUEPRINT_ROOT/configs/cursor/hooks.json"
+  grep -qF '$HOME/.claude/hooks/cursor-shell-guard.sh|owned|configs/claude/hooks/cursor-shell-guard.sh' \
+    "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  [ -x "$BLUEPRINT_ROOT/configs/claude/hooks/cursor-shell-guard.sh" ]
+}
+
+cursor_guard() {
+  mkdir -p "$TMPDIR/hooks"
+  cp "$HOOK" "$BLUEPRINT_ROOT/configs/claude/hooks/cursor-shell-guard.sh" "$TMPDIR/hooks/"
+  printf '%s' "$1" > "$TMPDIR/cursor.json"
+  run bash -c "bash '$TMPDIR/hooks/cursor-shell-guard.sh' < '$TMPDIR/cursor.json'"
+}
+
+@test "Cursor shell guard translates the hook's decision" {
+  local c
+  for c in 'kill 1' 'ssh host kill 1' 'timeout 5 sudo pkill node'; do
+    cursor_guard "$(jq -nc --arg c "$c" '{command:$c,cwd:"/tmp",sandbox:false}')"
+    [ "$status" -eq 0 ] || { echo "status $status: $c"; return 1; }
+    jq -e '.permission == "deny" and (.agent_message | contains("SG-PROCESS-KILL")) and (.user_message | length > 0)' <<<"$output" \
+      || { echo "not denied: $c -> $output"; return 1; }
+  done
+  for c in 'timeout --kill-after=5 60 npm test' 'command -v kill' 'npx skills list' 'ls'; do
+    cursor_guard "$(jq -nc --arg c "$c" '{command:$c,cwd:"/tmp"}')"
+    { [ "$status" -eq 0 ] && jq -e '.permission == "allow"' <<<"$output"; } \
+      || { echo "not allowed: $c -> $output"; return 1; }
+  done
+  # Input that is not a Cursor shell event is not a command to judge.
+  cursor_guard 'not json'
+  [ "$status" -eq 0 ]
+  jq -e '.permission == "allow"' <<<"$output"
+}
+
+opencode_plugin() {
+  mkdir -p "$TMPDIR/plugin"
+  cp "$BLUEPRINT_ROOT/configs/opencode/plugins/bw-deny-files.js" "$TMPDIR/plugin/bw-deny-files.mjs"
+  PLUGIN="$TMPDIR/plugin/bw-deny-files.mjs" run node --input-type=module -e "$1"
+}
+
+# OpenCode v1 calls every named export as a plugin and reads default.server;
+# v2 accepts only a default export with id and setup. Both were checked
+# against the real CLIs (1.19.5 and 2.2.7) on 2026-11-12.
+@test "OpenCode plugin has one default export that loads on v1 and v2" {
+  opencode_plugin '
+    const mod = await import(process.env.PLUGIN)
+    const names = Object.keys(mod)
+    if (names.join() !== "default") throw new Error("exports: " + names)
+    const p = mod.default
+    if (typeof p.id !== "string" || typeof p.server !== "function" || typeof p.setup !== "function")
+      throw new Error("shape")
+    console.log("ok")'
+  [ "$status" -eq 0 ]
+  [ "$output" = ok ]
+}
+
+@test "OpenCode plugin blocks through the v1 and v2 hook APIs" {
+  mkdir -p "$HOME/.claude/hooks"
+  cp "$HOOK" "$HOME/.claude/hooks/bw-deny-files.sh"
+  opencode_plugin '
+    const p = (await import(process.env.PLUGIN)).default
+    const v1 = await p.server({ directory: "/tmp" })
+    let v2
+    await p.setup({ location: { directory: "/tmp" }, tool: { hook: async (name, cb) => { if (name === "execute.before") v2 = cb } } })
+    const blocked = async (f) => { try { await f(); return false } catch (e) { return e.message.includes("SG-PROCESS-KILL") } }
+    const out = {
+      v1Kill: await blocked(() => v1["tool.execute.before"]({ tool: "bash" }, { args: { command: "kill 1" } })),
+      v1Timeout: await blocked(() => v1["tool.execute.before"]({ tool: "bash" }, { args: { command: "timeout 5 grep kill f" } })),
+      v2Kill: await blocked(() => v2({ tool: "shell", input: { command: "docker exec web kill 1" } })),
+      v2Docs: await blocked(() => v2({ tool: "shell", input: { command: "rg \"systemctl --user stop\" docs" } })),
+      v2Read: await blocked(() => v2({ tool: "read", input: { path: "/etc/hostname" } })),
+    }
+    console.log(JSON.stringify(out))'
+  [ "$status" -eq 0 ]
+  jq -e '.v1Kill and .v2Kill and (.v1Timeout | not) and (.v2Docs | not) and (.v2Read | not)' <<<"$output"
+}
+
+@test "OpenCode plugin fails open when the hook cannot run" {
+  opencode_plugin '
+    const p = (await import(process.env.PLUGIN)).default
+    console.log(String(p.check("bash", { command: "kill 1" }, "/nonexistent/hook.sh")))'
+  [ "$status" -eq 0 ]
+  [ "$output" = undefined ]
+  grep -qF '$HOME/.config/opencode/plugins/bw-deny-files.js|owned|configs/opencode/plugins/bw-deny-files.js' \
+    "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
 }
 
 @test "global instructions state the rule for Claude and Codex" {
