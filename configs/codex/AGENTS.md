@@ -41,6 +41,16 @@ appending a correction, and commit with a fresh `operation_id`; on `unknown`
 or `unavailable`, retry with the SAME id. Only when those tools are absent or
 answer `not_authorized`, edit the wiki with git and follow its `AGENTS.md`.
 
+## Processes: never kill them
+
+- Never send a signal to a process or stop a service (`kill`, `pkill`,
+  `killall`, `fuser -k`, `systemctl stop|restart|kill`); stop only what you
+  started, by name (`docker stop <name>`, `docker compose down`, `make down`,
+  the harness's own task stop), and ask the owner for anything else.
+  On 2026-11-12 a `kill` on a looked-up parent PID hit the systemd user
+  manager and ended the owner's desktop session, so the deny hook blocks
+  these commands on every harness.
+
 ## Secrets — never read them
 
 `~/.aicodingsetup/.secrets.env` and any private key (`*.pem`, `*.key`,

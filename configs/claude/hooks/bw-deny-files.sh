@@ -765,6 +765,244 @@ is_process_cmdline_listing() {
     }'
 }
 
+# is_process_kill <command>: true when the command sends a signal to a
+# process, or asks a service manager to stop one.
+#
+# Owner rule 2026-11-12: agents never kill processes. That day a subagent ran
+# `kill` on a parent PID it had looked up, which was the systemd user manager,
+# and the owner's desktop session ended mid-work. Earlier incidents had the
+# same cause: `pkill -f` killed the calling shell, `pkill -P 1` killed a
+# devcontainer, and an unscoped `pkill` killed a sibling session's tests.
+# Checking the PID first was the safeguard each time, and it failed each time.
+#
+# Only a word in COMMAND POSITION counts: after the start, a separator
+# (`;` `&&` `||` `|` `&` newline), `(`, `$(`, a backtick, a shell keyword, or a
+# wrapper such as sudo, env, nohup, setsid, timeout, xargs, command, builtin
+# or exec. So `grep -rn kill .`, `git commit -m "fix the kill switch"` and
+# `cat kill_switch.dart` stay allowed. Strings that a shell runs are scanned
+# again as commands: `sh -c`, `eval`, `trap`, `watch`, `su -c`, `ssh host`,
+# `adb shell`, `env -S`, and `$(...)` inside double quotes. Commands that only
+# signal their own child (`timeout 5 make test`) or a named container
+# (`docker stop web`) are not kills in this sense and stay allowed.
+#
+# Known gap: interpreter code (`python -c 'os.kill(...)'`, `node -e`) is not
+# parsed, and nothing else in this hook parses it either.
+is_process_kill() {
+  printf '%s' "$1" | awk '
+    function base(w) { sub(/^.*\//, "", w); return w }
+    function push(chunk) { if (chunk != "" && qn < 64) Q[++qn] = chunk }
+    function join(s, n,   j, out) {
+      out = ""
+      for (j = s; j <= n; j++) out = out (j > s ? " " : "") W[j]
+      return out
+    }
+    # Step past a wrapper: its option words, and the value word after any
+    # option listed in vals (a space-separated list, padded with spaces).
+    function skipopts(i, n, vals) {
+      i++
+      while (i <= n && W[i] ~ /^-./) {
+        if (W[i] == "--") return i + 1
+        if (index(vals, " " W[i] " ")) i += 2; else i++
+      }
+      return i
+    }
+    function analyze(i, n,   w, name, j, k, c, cl, r) {
+      while (i <= n) {
+        w = W[i]; name = base(w)
+        if (R[i]) { i++; continue }
+        if (w ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/) { i++; continue }
+        if (name in KW) { i++; continue }
+        if (name in KILLER) { found = 1; return }
+        if (name == "fuser") {
+          for (j = i + 1; j <= n; j++)
+            if (W[j] == "--kill" || W[j] ~ /^-[A-Za-z]*k/) { found = 1; return }
+          return
+        }
+        if (name == "systemctl") {
+          for (j = i + 1; j <= n; j++) if (W[j] in SYSTEMCTL) { found = 1; return }
+          return
+        }
+        if (name == "loginctl") {
+          for (j = i + 1; j <= n; j++) if (W[j] ~ /^(terminate|kill)-/) { found = 1; return }
+          return
+        }
+        if (name == "tmux") {
+          for (j = i + 1; j <= n; j++) if (W[j] ~ /^kill-(server|session|window|pane)$/) { found = 1; return }
+          return
+        }
+        if (name in SHELL) {
+          for (j = i + 1; j < n; j++) {
+            if (W[j] ~ /^[-+][oO]$/) { j++; continue }
+            if (W[j] !~ /^[-+]/) break
+            if (W[j] ~ /^-[A-Za-z]*c[A-Za-z]*$/) { push(W[j + 1]); break }
+          }
+          return
+        }
+        if (name == "su" || name == "runuser" || name == "script" || name == "flock") {
+          for (j = i + 1; j <= n; j++) {
+            if ((W[j] == "-c" || W[j] == "--command") && j < n) push(W[j + 1])
+            else if (W[j] ~ /^--command=/) push(substr(W[j], 11))
+            else if (W[j] == "--" && name == "runuser") { analyze(j + 1, n); return }
+          }
+          return
+        }
+        if (name == "eval") { push(join(i + 1, n)); return }
+        if (name == "trap") { push(W[i + 1]); return }
+        if (name == "watch") { i = skipopts(i, n, " -n --interval -d "); push(join(i, n)); return }
+        if (name == "command") {
+          for (j = i + 1; j <= n && W[j] ~ /^-/; j++) if (W[j] ~ /[vV]/) return
+          i = j; continue
+        }
+        if (name in WRAP) { i = skipopts(i, n, WRAP[name]); continue }
+        if (name == "chrt" || name == "taskset") { i = skipopts(i, n, "") + 1; continue }
+        if (name == "env") {
+          for (j = i + 1; j <= n; j++) {
+            if (W[j] == "-u" || W[j] == "--unset" || W[j] == "-C" || W[j] == "--chdir") { j++; continue }
+            if (W[j] == "-S" || W[j] == "--split-string") { push(join(j + 1, n)); return }
+            if (W[j] ~ /^-S./) { push(substr(W[j], 3) " " join(j + 1, n)); return }
+            if (W[j] ~ /^--split-string=/) { push(substr(W[j], 16) " " join(j + 1, n)); return }
+            if (W[j] == "--") { j++; break }
+            if (W[j] ~ /^-/) continue
+            break
+          }
+          i = j; continue
+        }
+        if (name == "timeout") {
+          i = skipopts(i, n, " -s -k --signal --kill-after ") + 1
+          continue
+        }
+        if (name == "xargs") {
+          i = skipopts(i, n, " -I -n -L -P -s -d -E -a --max-args --max-lines --max-procs --max-chars --delimiter --arg-file --eof --replace --process-slot-var ")
+          continue
+        }
+        if (name == "ssh") {
+          for (j = i + 1; j <= n && W[j] ~ /^-/; j++) {
+            cl = substr(W[j], 2)
+            for (k = 1; k <= length(cl); k++) {
+              c = substr(cl, k, 1)
+              if (index("BbcDEeFIiJLlmOopQRSWw", c)) { if (k == length(cl)) j++; break }
+            }
+          }
+          if (j < n) push(join(j + 1, n))
+          return
+        }
+        if (name == "adb") {
+          for (j = i + 1; j <= n; j++) {
+            if (W[j] ~ /^-[stHPL]$/) { j++; continue }
+            if (W[j] ~ /^-/) continue
+            break
+          }
+          if (W[j] != "shell") return
+          for (j++; j <= n && W[j] ~ /^-/; j++) if (W[j] == "-e") j++
+          push(join(j, n))
+          return
+        }
+        if (name ~ /^(docker|podman|nerdctl|docker-compose)$/) {
+          for (j = i + 1; j <= n; j++) {
+            if (W[j] == "exec") break
+            if (W[j] == "compose" || W[j] == "container") continue
+            if (W[j] ~ /^-(H|c|f|p|l)$/ || W[j] ~ /^--(host|context|config|log-level|file|project-name|profile|env-file|project-directory)$/) { j++; continue }
+            if (W[j] ~ /^-/) continue
+            return
+          }
+          if (j > n) return
+          for (j++; j <= n && W[j] ~ /^-/; j++)
+            if (W[j] ~ /^(-e|--env|-u|--user|-w|--workdir|--env-file|--detach-keys|--index)$/) j++
+          i = j + 1; continue
+        }
+        if (name == "kubectl" || name == "oc") {
+          for (j = i + 1; j <= n; j++) if (W[j] == "--") { analyze(j + 1, n); return }
+          return
+        }
+        if (name == "find") {
+          for (j = i + 1; j < n; j++)
+            if (W[j] ~ /^-(exec|execdir|ok|okdir)$/) { analyze(j + 1, n); if (found) return }
+          return
+        }
+        return
+      }
+    }
+    function endword() {
+      if (inword) { W[++nw] = word; R[nw] = pendr; pendr = 0 }
+      word = ""; inword = 0
+    }
+    function endseg() { endword(); if (nw) analyze(1, nw); delete W; delete R; nw = 0; pendr = 0 }
+    function scan(str,   i, c, q, len, d, sub_) {
+      nw = 0; word = ""; inword = 0; q = ""; pendr = 0; len = length(str)
+      for (i = 1; i <= len; i++) {
+        c = substr(str, i, 1)
+        if (q == "\047") {
+          if (c == "\047") q = ""; else word = word c
+          continue
+        }
+        if (q == "\"") {
+          if (c == "\\" && index("\"\\$`", substr(str, i + 1, 1))) { i++; word = word substr(str, i, 1); continue }
+          if (c == "\"") { q = ""; continue }
+          # Command substitution inside double quotes still runs.
+          if (c == "$" && substr(str, i + 1, 1) == "(") {
+            d = 1; sub_ = ""
+            for (i += 2; i <= len && d > 0; i++) {
+              c = substr(str, i, 1)
+              if (c == "(") d++
+              else if (c == ")") { d--; if (d == 0) break }
+              sub_ = sub_ c
+            }
+            push(sub_); word = word "$(" sub_ ")"
+            continue
+          }
+          if (c == "`") {
+            sub_ = ""
+            for (i++; i <= len && substr(str, i, 1) != "`"; i++) sub_ = sub_ substr(str, i, 1)
+            push(sub_); word = word "`" sub_ "`"
+            continue
+          }
+          word = word c
+          continue
+        }
+        if (c == "\047" || c == "\"") { q = c; inword = 1; continue }
+        if (c == "\\") { i++; if (substr(str, i, 1) != "\n") { word = word substr(str, i, 1); inword = 1 }; continue }
+        if (c == "#" && !inword) { while (i < len && substr(str, i + 1, 1) != "\n") i++; continue }
+        if (c ~ /[ \t]/) { endword(); continue }
+        if (c == "<" || c == ">") {
+          if (inword && word ~ /^[0-9]+$/) { word = ""; inword = 0 } else endword()
+          while (substr(str, i + 1, 1) ~ /[<>]/) i++
+          if (substr(str, i + 1, 1) == "&") { i++; while (substr(str, i + 1, 1) ~ /[0-9-]/) i++; continue }
+          pendr = 1
+          continue
+        }
+        if (c ~ /[;&|()`\n]/) { endseg(); continue }
+        word = word c; inword = 1
+      }
+      endseg()
+    }
+    { buf = (NR > 1 ? buf "\n" : "") $0 }
+    END {
+      split("kill pkill killall killall5 skill snice tkill tgkill xkill fkill kill-port reboot poweroff halt shutdown", a, " ")
+      for (k in a) KILLER[a[k]] = 1
+      split("if then else elif do while until ! { } coproc", a, " ")
+      for (k in a) KW[a[k]] = 1
+      # Wrappers that run their arguments as a command, each with the
+      # options that consume the next word.
+      WRAP["sudo"] = " -u -g -C -D -p -R -r -t -U --user --group --close-from --chdir --prompt --role --type --other-user "
+      WRAP["doas"] = " -u -C "
+      WRAP["pkexec"] = " --user "
+      WRAP["exec"] = " -a "
+      WRAP["time"] = " -f -o --format --output "
+      WRAP["nice"] = " -n --adjustment "
+      WRAP["ionice"] = " -c -n -t --class --classdata "
+      WRAP["stdbuf"] = " -i -o -e --input --output --error "
+      split("nohup setsid builtin busybox npx bunx", a, " ")
+      for (k in a) WRAP[a[k]] = ""
+      split("sh bash zsh dash ksh mksh ash fish", a, " ")
+      for (k in a) SHELL[a[k]] = 1
+      split("stop kill restart try-restart reload-or-restart try-reload-or-restart condrestart force-reload isolate exit reboot poweroff halt kexec soft-reboot emergency rescue default switch-root suspend hibernate hybrid-sleep suspend-then-hibernate sleep", a, " ")
+      for (k in a) SYSTEMCTL[a[k]] = 1
+      found = 0; qn = 1; Q[1] = buf
+      for (qi = 1; qi <= qn && !found; qi++) scan(Q[qi])
+      exit found ? 0 : 1
+    }'
+}
+
 deny_secret_command() {
   block "$ORACLE_RULE" "$ORACLE_DETAIL Do not bypass; use secrets-check for credential status."
 }
@@ -1146,6 +1384,18 @@ case "$TOOL_NAME" in
     fi
     if is_process_cmdline_listing "$ORACLE_NAMES"; then
       block SG-PROCESS-CMDLINE "Bash: lists other processes' full command lines, which can carry secrets passed inline by deploy tools. Do not bypass; use pgrep without -a, ps -o pid,etime,comm, docker ps, or the service's log."
+    fi
+
+    # Process signals. Heredoc bodies are data (a commit message that says
+    # "kill") unless a shell runs them. The one part of an unquoted-marker
+    # body that does run is a command substitution, so those are appended.
+    if (( HEREDOC_SHELL_FED )); then
+      KILL_CMD="$CMD"
+    else
+      KILL_CMD="$HEREDOC_STRIPPED"$'\n'"$(printf '%s' "$ORACLE_CMD" | grep -oE '\$\([^()]*\)|`[^`]*`' || true)"
+    fi
+    if is_process_kill "$KILL_CMD"; then
+      block SG-PROCESS-KILL "Bash: agents never send signals to processes (owner rule 2026-11-12, after a kill ended the owner's desktop session). Stop only what you started, by name: docker stop <name>, docker compose down, make down, or the harness's own task stop. Anything else: ask the owner."
     fi
 
     # Pass 1 — every token in the whole command, not just arguments to a

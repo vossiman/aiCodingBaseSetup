@@ -195,6 +195,16 @@ it. If a tool has no repo-local override, explain that limitation instead of
 silently broadening the change to all repos. This rule governs agent edits;
 it does not redirect runtime state that a tool writes to its home directory.
 
+## Processes: never kill them
+
+- Never send a signal to a process or stop a service (`kill`, `pkill`,
+  `killall`, `fuser -k`, `systemctl stop|restart|kill`); stop only what you
+  started, by name (`docker stop <name>`, `docker compose down`, `make down`,
+  the harness's own task stop), and ask the owner for anything else.
+  On 2026-11-12 a `kill` on a looked-up parent PID hit the systemd user
+  manager and ended the owner's desktop session, so the deny hook blocks
+  these commands on every harness.
+
 ## Secrets: never read them
 
 `~/.aicodingsetup/.secrets.env` and any private key (`*.pem`, `*.key`,
