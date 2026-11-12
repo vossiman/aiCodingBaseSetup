@@ -13,30 +13,44 @@
 // entry points. A named export would break v2, which allows only the default.
 
 import { spawnSync } from "node:child_process"
+import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
 const HOOK = path.join(os.homedir(), ".claude", "hooks", "bw-deny-files.sh")
 
-// Shell calls (v1 "bash", v2 "shell") carry a command; any other call naming
-// a file maps to Read, the strictest branch the hook has for a path.
-function toHookInput(tool, args) {
+// Relative paths are resolved against the session directory, because the
+// hook's path patterns match full paths. `~` is left for the hook to expand.
+function resolveFrom(base, p) {
+  return p.startsWith("~") ? p : path.resolve(base, p)
+}
+
+// Shell calls (v1 "bash", v2 "shell") carry a command and may name a workdir.
+// Search tools keep the hook's Grep branch, which refuses a search rooted in a
+// sensitive directory. Any other call naming a file maps to Read.
+function toHookInput(tool, args, base) {
   const a = args && typeof args === "object" ? args : {}
   const name = String(tool).toLowerCase()
   if (name === "bash" || name === "shell") {
-    return typeof a.command === "string"
-      ? { tool_name: "Bash", tool_input: { command: a.command } }
-      : undefined
+    if (typeof a.command !== "string") return undefined
+    const cwd = typeof a.workdir === "string" ? resolveFrom(base, a.workdir) : base
+    return { tool_name: "Bash", tool_input: { command: a.command }, cwd }
   }
   const target = [a.filePath, a.file_path, a.path].find((v) => typeof v === "string")
-  return target ? { tool_name: "Read", tool_input: { file_path: target } } : undefined
+  if (name === "grep" || name === "glob") {
+    return target ? { tool_name: "Grep", tool_input: { path: resolveFrom(base, target) } } : undefined
+  }
+  return target ? { tool_name: "Read", tool_input: { file_path: resolveFrom(base, target) } } : undefined
 }
 
 // Returns the deny reason, or undefined to allow. Fails open on any hook
 // failure, matching the hook and the pi shim; the opencode.json globs remain.
-function checkToolCall(tool, args, hook = HOOK, cwd) {
-  const payload = toHookInput(tool, args)
+function checkToolCall(tool, args, hook = HOOK, dir) {
+  const base = dir || process.cwd()
+  const payload = toHookInput(tool, args, base)
   if (!payload) return undefined
+  // The hook resolves relative command tokens against its own directory.
+  const cwd = payload.cwd && fs.existsSync(payload.cwd) ? payload.cwd : base
   const result = spawnSync("bash", [hook], {
     input: JSON.stringify(payload),
     encoding: "utf8",

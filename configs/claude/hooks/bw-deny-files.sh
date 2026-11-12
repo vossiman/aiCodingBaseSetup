@@ -561,14 +561,49 @@ strip_heredoc_bodies() {
 unquoted_heredoc_bodies() {
   printf '%s' "$1" | awk '
     {
-      if (in_body) { if ($0 == marker) in_body = 0; else print; next }
+      if (in_body) { if ($0 == marker) in_body = 0; else if (!quoted) print; next }
       if (match($0, /<<-?[[:space:]]*"?'"'"'?[A-Za-z_][A-Za-z0-9_]*"?'"'"'?/)) {
         marker = substr($0, RSTART, RLENGTH)
         gsub(/^<<-?[[:space:]]*/, "", marker)
-        if (marker !~ /["'"'"']/) in_body = 1
+        quoted = (marker ~ /["'"'"']/)
+        gsub(/["'"'"']/, "", marker)
+        in_body = 1
       }
     }
   '
+}
+
+# heredoc_substitutions: each $(...) and `...` in heredoc body text, one per
+# line. Parentheses are counted outside quotes, so `$(a; (kill 1))` is whole;
+# a backslash makes the next character literal, as the shell does there.
+heredoc_substitutions() {
+  awk '
+    { buf = (NR > 1 ? buf "\n" : "") $0 }
+    END {
+      len = length(buf)
+      for (i = 1; i <= len; i++) {
+        c = substr(buf, i, 1)
+        if (c == "\\") { i++; continue }
+        if (c == "`") {
+          s = ""
+          for (i++; i <= len && substr(buf, i, 1) != "`"; i++) s = s substr(buf, i, 1)
+          print s
+          continue
+        }
+        if (c != "$" || substr(buf, i + 1, 1) != "(") continue
+        d = 1; s = ""; q = ""
+        for (i += 2; i <= len; i++) {
+          c = substr(buf, i, 1)
+          if (c == "\\" && q != "\047") { s = s c substr(buf, i + 1, 1); i++; continue }
+          if (q != "") { if (c == q) q = "" }
+          else if (c == "\047" || c == "\"") q = c
+          else if (c == "(") d++
+          else if (c == ")" && --d == 0) break
+          s = s c
+        }
+        print s
+      }
+    }'
 }
 
 # is_env_dump — true when a command prints the WHOLE environment.
@@ -813,11 +848,18 @@ is_process_kill() {
     }
     # Step past a wrapper: its option words, and the value word after any
     # option listed in vals (a space-separated list, padded with spaces).
-    function skipopts(i, n, vals) {
+    # A bundle such as `-rn 1` takes its value from the next word when the
+    # value-taking letter comes last, or from the rest of the bundle.
+    function skipopts(i, n, vals,   w, k) {
       i++
       while (i <= n && W[i] ~ /^-./) {
-        if (W[i] == "--") return i + 1
-        if (index(vals, " " W[i] " ")) i += 2; else i++
+        w = W[i]
+        if (w == "--") return i + 1
+        if (index(vals, " " w " ")) { i += 2; continue }
+        if (w ~ /^-[^-]/)
+          for (k = 2; k <= length(w); k++)
+            if (index(vals, " -" substr(w, k, 1) " ")) { if (k == length(w)) i++; break }
+        i++
       }
       return i
     }
@@ -834,7 +876,13 @@ is_process_kill() {
           return
         }
         if (name == "systemctl") {
-          for (j = i + 1; j <= n; j++) if (W[j] in SYSTEMCTL) { found = 1; return }
+          now = 0; off = 0
+          for (j = i + 1; j <= n; j++) {
+            if (W[j] in SYSTEMCTL) { found = 1; return }
+            if (W[j] == "--now") now = 1
+            if (W[j] == "disable" || W[j] == "mask") off = 1
+          }
+          if (now && off) found = 1
           return
         }
         if (name == "loginctl") {
@@ -846,6 +894,7 @@ is_process_kill() {
           return
         }
         if (name in SHELL) {
+          for (j = i + 1; j <= n; j++) if (R[j] == 2) push(W[j])
           for (j = i + 1; j < n; j++) {
             if (W[j] ~ /^[-+][oO]$/) { j++; continue }
             if (W[j] !~ /^[-+]/) break
@@ -994,9 +1043,11 @@ is_process_kill() {
         if (c ~ /[ \t]/) { endword(); continue }
         if (c == "<" || c == ">") {
           if (inword && word ~ /^[0-9]+$/) { word = ""; inword = 0 } else endword()
+          d = i
           while (substr(str, i + 1, 1) ~ /[<>]/) i++
           if (substr(str, i + 1, 1) == "&") { i++; while (substr(str, i + 1, 1) ~ /[0-9-]/) i++; continue }
-          pendr = 1
+          # A here-string (`<<<`) is text the command reads as its input.
+          pendr = (substr(str, d, i - d + 1) == "<<<") ? 2 : 1
           continue
         }
         if (c ~ /[;&|()`\n]/) { endseg(); continue }
@@ -1421,7 +1472,7 @@ case "$TOOL_NAME" in
     if (( HEREDOC_SHELL_FED )); then
       KILL_CMD="$CMD"
     else
-      KILL_CMD="$HEREDOC_STRIPPED"$'\n'"$(unquoted_heredoc_bodies "$CMD" | sed -E 's/\\[$`]//g' | grep -oE '\$\([^()]*\)|`[^`]*`' || true)"
+      KILL_CMD="$HEREDOC_STRIPPED"$'\n'"$(unquoted_heredoc_bodies "$CMD" | heredoc_substitutions)"
     fi
     if is_process_kill "$KILL_CMD"; then
       block SG-PROCESS-KILL "Bash: agents never send signals to processes (owner rule 2026-11-12, after a kill ended the owner's desktop session). Stop only what you started, by name: docker stop <name>, docker compose down, make down, or the harness's own task stop. Anything else: ask the owner."

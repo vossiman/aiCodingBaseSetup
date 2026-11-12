@@ -166,6 +166,35 @@ expect_allowed() {
     'flock -n 9'
 }
 
+@test "bundled options, here-strings and disable --now do not hide a kill" {
+  expect_denied \
+    "printf '123\n' | xargs -rn 1 kill" \
+    'xargs -n1 kill' \
+    'sudo -nu root kill 123' \
+    'timeout -sKILL 5 kill 1' \
+    "bash <<<'kill 123'" \
+    'sh <<< "kill 1"' \
+    'systemctl --user disable --now foo.service' \
+    'systemctl mask --now foo'
+  expect_allowed \
+    'xargs -rn 1 echo' \
+    'sudo -nu root ls' \
+    'timeout -k5 10 make' \
+    "cat <<<'kill 123'" \
+    'grep -c x <<< "kill"' \
+    'systemctl --user disable foo' \
+    'systemctl enable --now foo'
+}
+
+@test "heredoc substitutions are found whole, and quoted bodies stay data" {
+  expect_denied \
+    "$(printf 'cat <<EOF\n$(echo x; (kill 123))\nEOF')" \
+    "$(printf 'cat <<EOF\n$(echo \")\"; kill 1)\nEOF')" \
+    "$(printf 'cat <<EOF\n`kill 1`\nEOF')"
+  # The inner heredoc is text inside a quoted outer one.
+  expect_allowed "$(printf "cat <<'DOC'\ncat <<EOF\n\$(kill 123)\nEOF\nDOC")"
+}
+
 @test "commands that only signal their own child or a named container stay allowed" {
   expect_allowed \
     'timeout 5 make test' \
@@ -319,6 +348,25 @@ opencode_plugin() {
     console.log(JSON.stringify(out))'
   [ "$status" -eq 0 ]
   jq -e '.v1Kill and .v2Kill and (.v1Timeout | not) and (.v2Docs | not) and (.v2Read | not)' <<<"$output"
+}
+
+@test "OpenCode plugin checks paths where the tool really acts" {
+  mkdir -p "$HOME/.claude/hooks" "$HOME/.config/gh" "$HOME/project"
+  cp "$HOOK" "$HOME/.claude/hooks/bw-deny-files.sh"
+  printf 'x\n' > "$HOME/.config/gh/hosts.yml"
+  opencode_plugin '
+    const p = (await import(process.env.PLUGIN)).default
+    const H = process.env.HOME, hook = H + "/.claude/hooks/bw-deny-files.sh"
+    const denied = (tool, args, dir) => p.check(tool, args, hook, dir) !== undefined
+    console.log(JSON.stringify({
+      workdir: denied("shell", { command: "cat hosts.yml", workdir: H + "/.config/gh" }, "/tmp"),
+      grepDir: denied("grep", { pattern: "token", path: H + "/.config/gh" }, "/tmp"),
+      relWrite: denied("write", { path: ".config/gh/hosts.yml", content: "x" }, H),
+      grepProject: denied("grep", { pattern: "token", path: "project" }, H),
+      plainShell: denied("bash", { command: "cat notes.txt", workdir: "/tmp" }, H),
+    }))'
+  [ "$status" -eq 0 ]
+  jq -e '.workdir and .grepDir and .relWrite and (.grepProject | not) and (.plainShell | not)' <<<"$output"
 }
 
 @test "OpenCode plugin fails open when the hook cannot run" {
