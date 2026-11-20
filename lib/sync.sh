@@ -894,6 +894,7 @@ _sync_provision() {
     install_measure_remote_symlink || rc=1
     install_dokploy_api_symlink || rc=1
     install_bugsink_api_symlink || rc=1
+    install_leaniptv_diag_symlink || rc=1
     install_aicoding_root_install_symlink || rc=1
     install_kuma_admin_symlink || rc=1
     install_redact_transcript_symlink || rc=1
@@ -927,7 +928,7 @@ _sync_provision() {
   # that are absent from this blueprint are excluded.
   local name source dest
   for name in dvw-probe agent-notify aicoding-status kanban-work measure-remote \
-              dokploy-api bugsink-api aicoding-root-install kuma-admin redact-transcript redact-sessions codex-turn-done \
+              dokploy-api bugsink-api leaniptv-diag aicoding-root-install kuma-admin redact-transcript redact-sessions codex-turn-done \
               t3-setup t3-adopt t3-start t3-stop t3-update t3-auto t3-status t3-migrate t3-projects; do
     source="$(dirname "$blueprint_lib")/bin/$name"
     dest="$HOME/.local/bin/$name"
