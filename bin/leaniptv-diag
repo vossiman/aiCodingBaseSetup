@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""Credential-safe reader for lean-iptv "Send anonymised logs" uploads, by code.
+
+The owner authorizes this helper to hold LEANIPTV_DIAG_TOKEN_PROD and
+LEANIPTV_DIAG_TOKEN_STAGING in-process, like bugsink-api. Requests are pinned
+to the two backend hosts, redirects are refused and no token is ever printed.
+Loopback tests require fake tokens and never read the shared store.
+Route: lean-iptv docs/design/operations.md section 2.3.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import urllib.error
+import urllib.parse as urlparse
+import urllib.request
+
+HOSTS = {
+    'prod': 'https://iptv-sync.dataprospectors.at',
+    'staging': 'https://iptv-sync-staging.dataprospectors.at',
+}
+LOOPBACK = {'127.0.0.1', 'localhost', '::1'}
+CODE = re.compile(r'[A-Za-z0-9]{4}')
+
+
+class NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError('redirect refused')
+
+
+def store_tokens():
+    # Only this helper handles the values; they are never printed or written.
+    wanted = {'LEANIPTV_DIAG_TOKEN_PROD': 'prod', 'LEANIPTV_DIAG_TOKEN_STAGING': 'staging'}
+    found = {}
+    path = Path.home() / '.aicodingsetup' / '.secrets.env'
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return found
+    for line in lines:
+        line = line.strip()
+        if line.startswith('export '):
+            line = line[7:].lstrip()
+        key, sep, value = line.partition('=')
+        value = value.strip().strip('"').strip("'")
+        if sep and key.strip() in wanted and value:
+            found[wanted[key.strip()]] = value
+    return found
+
+
+def targets():
+    """(env, base URL, token or None) for prod and staging."""
+    override = os.environ.get('LEANIPTV_DIAG_TEST_URL')
+    if override:
+        parts = urlparse.urlsplit(override)
+        if parts.scheme not in ('http', 'https') or parts.hostname not in LOOPBACK or parts.username or parts.password or parts.path or parts.query or parts.fragment:
+            raise ValueError('test URL must be a loopback origin')
+        return [(env, override.rstrip('/'), os.environ.get('LEANIPTV_DIAG_TEST_TOKEN_' + env.upper()) or None) for env in HOSTS]
+    tokens = store_tokens()
+    return [(env, base, tokens.get(env)) for env, base in HOSTS.items()]
+
+
+def fetch(opener, base, token, code):
+    """('hit', body) | ('no upload', None) | ('token refused (401)', None)."""
+    request = urllib.request.Request(f'{base}/v1/diagnostics/{code}',
+                                     headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/json'})
+    try:
+        with opener.open(request, timeout=20) as response:
+            body = response.read(5_000_001)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return 'no upload', None
+        if e.code == 401:
+            return 'token refused (401)', None
+        return f'error: HTTP {e.code}', None
+    if len(body) > 5_000_000:
+        raise ValueError('response too large')
+    return 'hit', json.loads(body)
+
+
+def show(env, body):
+    payload = body.get('payload') or {}
+    print(f"== {env}: received {body.get('received_at')}")
+    header = {k: v for k, v in payload.items() if k != 'events'}
+    print(json.dumps(header, indent=1, ensure_ascii=False))
+    for event in payload.get('events') or []:
+        print(json.dumps(event, ensure_ascii=False))
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description='Read a lean-iptv diagnostics upload by its code, from prod and staging.')
+    p.add_argument('code')
+    p.add_argument('--json', action='store_true', help='one JSON object keyed by environment')
+    args = p.parse_args(argv)
+    code = args.code.strip().upper()
+    if not CODE.fullmatch(code):
+        print('refused: a code is 4 letters or digits', file=sys.stderr)
+        return 2
+    try:
+        envs = targets()
+    except ValueError as e:
+        print(f'refused: {e}', file=sys.stderr)
+        return 2
+    opener = urllib.request.build_opener(NoRedirects)
+    results, hit, failed = {}, False, False
+    for env, base, token in envs:
+        if not token:
+            status, body = 'not configured', None
+        else:
+            try:
+                status, body = fetch(opener, base, token, code)
+            except (ValueError, urllib.error.URLError, OSError) as e:
+                reason = str(getattr(e, 'reason', e))
+                for t in (tok for _, _, tok in envs if tok):
+                    reason = reason.replace(t, '<redacted>')
+                status, body = f'error: {reason}', None
+        hit |= status == 'hit'
+        failed |= status.startswith('error')
+        results[env] = body if status == 'hit' else {'status': status}
+        if not args.json:
+            if status == 'hit':
+                show(env, body)
+            else:
+                print(f'== {env}: {status}')
+    if args.json:
+        print(json.dumps(results, indent=1, ensure_ascii=False))
+    return 0 if hit else 2 if failed else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

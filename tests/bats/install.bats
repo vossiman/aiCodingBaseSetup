@@ -1594,7 +1594,7 @@ EOF
   [ "$(readlink -f "$HOME/.local/bin/kanban-work")" = "$BLUEPRINT_ROOT/bin/kanban-work" ]
   [ ! -e "$HOME/.local/bin/kanban-post" ]
   [ ! -L "$HOME/.local/bin/kanban-post" ]
-  for h in dokploy-api kuma-admin bugsink-api; do
+  for h in dokploy-api kuma-admin bugsink-api leaniptv-diag; do
     [ -L "$HOME/.local/bin/$h" ]
     [ -x "$HOME/.local/bin/$h" ]
     readlink "$HOME/.local/bin/$h" | grep -q "bin/$h"
