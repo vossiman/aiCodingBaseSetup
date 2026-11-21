@@ -145,6 +145,7 @@ main() {
   install_measure_remote_symlink
   install_dokploy_api_symlink
   install_bugsink_api_symlink
+  install_leaniptv_diag_symlink
   install_kuma_admin_symlink
   install_redact_transcript_symlink
   install_redact_sessions_symlinks
