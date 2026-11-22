@@ -116,12 +116,21 @@ _start_bridge() {
   # This test exercises the daemon start deliberately — lift the suite-wide
   # no-daemons guard for it (cleanup in teardown).
   unset AICODINGSETUP_SKIP_NETWORK
+  export CLIP_X11_CONTAINER_MARKERS="$TMPDIR"
   run -0 "$BLUEPRINT_ROOT/bin/clip-x11-bridge" --ensure
   pid1=$(cat "$HOME/.dvw/x11-bridge.pid")
   run -0 "$BLUEPRINT_ROOT/bin/clip-x11-bridge" --ensure
   [[ "$(cat "$HOME/.dvw/x11-bridge.pid")" == "$pid1" ]]
   run -0 "$BLUEPRINT_ROOT/bin/clip-x11-bridge" --stop
   if kill -0 "$pid1" 2>/dev/null; then false; fi
+  [[ ! -f "$HOME/.dvw/x11-bridge.pid" ]]
+}
+
+@test "x11-bridge: --ensure no-ops outside a container" {
+  export DISPLAY="$DISPLAY_NUM"
+  unset AICODINGSETUP_SKIP_NETWORK
+  export CLIP_X11_CONTAINER_MARKERS="$TMPDIR/absent"
+  run -0 "$BLUEPRINT_ROOT/bin/clip-x11-bridge" --ensure
   [[ ! -f "$HOME/.dvw/x11-bridge.pid" ]]
 }
 
