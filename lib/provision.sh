@@ -434,7 +434,18 @@ ensure_stdio_env_mcp() {
   local fp fp_file="$AICODING_MCP_STATE/$name.sha256" stored=""
   fp="$(printf '%s\n' "$var=$value" "$command" | sha256sum | awk '{print $1}')"
   [[ -f "$fp_file" ]] && stored="$(cat "$fp_file" 2>/dev/null)" || true
-  if _provision_run claude mcp get "$name" >/dev/null 2>&1; then
+  # Unscoped `mcp get` also finds local/project entries; only a user-scope
+  # entry running our command is ours to replace.
+  local details scope cmd
+  details="$(_provision_run claude mcp get "$name" 2>/dev/null)" || details=""
+  scope="$(printf '%s\n' "$details" | sed -n 's/^[[:space:]]*Scope:[[:space:]]*//p' | head -n1)"
+  cmd="$(printf '%s\n' "$details" | sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' | head -n1)"
+  if [[ "$scope" == "User config"* ]]; then
+    case "$cmd" in
+      "$command"|"$HOME/.local/bin/$command") ;;
+      *) warn "$name MCP: a user registration ($cmd) holds the name; left unchanged"
+         return 0 ;;
+    esac
     if [[ "$stored" == "$fp" ]]; then
       ok "$name MCP already configured"
       return 0
@@ -446,7 +457,7 @@ ensure_stdio_env_mcp() {
     fi
   fi
   if _provision_run claude mcp add "$name" -s user -e "$var=$value" -- "$command" >/dev/null 2>&1 \
-      && _provision_run claude mcp get "$name" >/dev/null 2>&1; then
+      && _provision_run claude mcp get "$name" 2>/dev/null | grep -q '^[[:space:]]*Scope:[[:space:]]*User config'; then
     mkdir -p "$AICODING_MCP_STATE" 2>/dev/null || true
     printf '%s\n' "$fp" > "$fp_file" 2>/dev/null || true
     ok "$name MCP configured"
