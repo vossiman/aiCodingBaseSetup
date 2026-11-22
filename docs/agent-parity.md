@@ -137,7 +137,7 @@ Codex or Cursor; OpenCode is not an entry harness. Tiers as resolved on
 
 | tier | Claude | Codex | Cursor |
 |---|---|---|---|
-| frontier (override only) | `fable` (`claude-fable-5-2`) | `astra` (`gpt-6.2-astra`) | `claude-fable-5-*`; no Grok or GPT frontier |
+| frontier (override only) | `fable` (`claude-fable-5-2`) | `astra` (`gpt-6.2-astra`) | `claude-fable-5-2-*`; no Grok or GPT frontier |
 | workhorse | `opus` (`claude-opus-5-5`) | `sol` (`gpt-6.2-sol`) | `grok` (`grok-4.7-xhigh`) |
 | balanced (implementer) | `sonnet` (`claude-sonnet-5-5`) | `luna` (`gpt-6-luna`, unproven) | `grok` at `medium` (`grok-4.7-medium`) |
 | reviewer of this entry | Codex `sol` | Claude `opus` | Codex `astra` (alt: Claude `fable`) |

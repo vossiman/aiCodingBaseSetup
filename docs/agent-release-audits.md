@@ -146,6 +146,31 @@ checkpoint, measured against how `configs/` actually uses each tool.
 Settings adopted outside an audit window. Listed here so a future audit
 recognises them as deliberate rather than drift.
 
+### Codex and OpenCode default model `gpt-6.2-sol` (2026-11-22, codex-cli 0.171.0, opencode 2.3.2)
+
+Replaces `gpt-6.1-sol` in `configs/codex/config.toml`,
+`configs/opencode/opencode.json` and the review-by-harness Codex default.
+
+Codex: `codex debug models` gives 6.2-sol the same 500,000 default and
+872,000 max context as 6.1-sol, so the seeded budget is unchanged.
+
+OpenCode: these machines use the ChatGPT login, which OpenCode runs as
+`chatgpt-token-sharing` with a hard-coded model allowlist. **v2 needs 2.3.1
+or newer** (anomalyco/opencode#64508 added GPT 6.2 Sol and Astra to it; 2.3.2
+fixes 6.2 re-billing the system prompt as uncached input on every step). On
+2.2.7, `opencode run -m openai/gpt-6.2-sol` fails with `Model unavailable`;
+on 2.3.2 it answers. The running background service keeps the old binary
+until it is restarted, so after an upgrade a plain `opencode run` can still
+say `Model unavailable` while `opencode run --standalone` works. v1 (npm
+`opencode-ai@1.19.6`, the devbox route) resolves the id but was not verified
+end to end: its separate stored login was expired. models.dev gives 6.2-sol
+the same 1,050,000 / 922,000 / 128,000 limits as 6.1-sol, so the `limit`
+block carries over.
+
+Both `model` keys are seed-only (`configs/managed-config.json`), so only new
+installs get the new default; machines that already have a `model` keep it
+until it is changed by hand.
+
 ### OpenCode default model `openai/gpt-6.1-sol` (2026-09-29, opencode 1.18.33)
 
 Replaces `anthropic/claude-opus-5`, kept in the 1.18.18 audit on cost. That
@@ -154,8 +179,9 @@ devboxes have none (`opencode models` lists only `opencode/*`,
 `moonshotai/*` and `openai/*`). Every `opencode run` without `-m` failed
 with `ProviderModelNotFoundError`, shown as "Unexpected server error".
 `openai/gpt-6.1-sol` is the owner's choice (the newest Sol OpenCode lists)
-and works with the OpenAI login these machines already have. The merge deploy puts the blueprint's
-`model` over the user's, so this is the value every devbox ends up with.
+and works with the OpenAI login these machines already have. At the time the merge deploy put the
+blueprint's `model` over the user's; `model` is seed-only now (see the
+2026-11-22 entry).
 Pick another model per session with `-m` or `/models` in the TUI.
 (AICODINGBASESETUP-85)
 
