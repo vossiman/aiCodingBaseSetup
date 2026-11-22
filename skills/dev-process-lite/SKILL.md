@@ -24,19 +24,22 @@ The scripts and the policy sit beside this file, in
    skill), its role and route, the files it owns, the acceptance criteria
    and what to hand back. Choose `implementer` or `complex-implementer` by
    policy section 4 and record the choice under Decisions.
-6. Run one integrated review with `review-by-harness`, passing the
+6. Run one review per PR (one PR per run unless the plan ships independent
+   PRs, policy section 4) with `review-by-harness`, passing the
    `reviewer` route as `--harness` and `--model`, plus `--effort` only when the reviewer harness is claude or codex. Fix verified
    findings on the open branch (policy section 2). Once the fixes are
    committed there, run
-   `bash ~/.claude/skills/review-by-harness/cleanup.sh <N> --archive .claude/dev-process-runs/<session>/reviews --discard`.
-   It archives `.review-round/` for the assessment and removes the review
+   `bash ~/.claude/skills/review-by-harness/cleanup.sh <N> --harness <reviewer harness> --archive .claude/dev-process-runs/<session>/reviews --discard`.
+   It archives the review for the assessment and removes only that review's
    worktree, branch and ref. Do this before a second round too, which would
-   otherwise overwrite the first round's report.
+   otherwise overwrite the first round's report. Log each PR's number, base,
+   head and review under Plan.
 7. Before closeout, check the Board section against policy section 2, and
    stop for the owner only for the reasons in policy section 3. Remove the
-   run's worker worktrees whose branches merged, and run
-   `bash ~/.claude/skills/review-by-harness/cleanup.sh --prune` for reviews of
-   merged or closed PRs.
+   run's worker worktrees whose branches merged, and run the step 6 cleanup
+   for any of the run's reviews still left. Never run `cleanup.sh --prune`
+   at closeout: it is repo-wide maintenance and would also take reviews
+   other runs have not archived yet.
 8. Tell the owner the run can be assessed with `assess-run` from a fresh
    session, and name the session id.
 

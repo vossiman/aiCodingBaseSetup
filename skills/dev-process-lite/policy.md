@@ -26,8 +26,9 @@ blocked or abandoned; review done; PR opened), never per tool call. Hard
 cap: 120 lines. Five sections, in this order:
 
 - **Plan**: plan or spec path and revision, tickets, base revision, the
-  overseer's session id and its current name (the `name` of the
-  `~/.claude/sessions/*.json` entry whose `sessionId` matches), and the
+  overseer's session id and, for a Claude overseer, its current name (the
+  `name` of the `~/.claude/sessions/*.json` entry whose `sessionId`
+  matches), each PR with its base, head and review, and the
   exact model id each route resolved to.
 - **Decisions**: each decision the plan did not settle, with a one-sentence
   reason and the commit, record or file that shows it. The implementer role

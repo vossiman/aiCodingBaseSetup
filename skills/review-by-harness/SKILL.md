@@ -146,15 +146,24 @@ are incorporated, that is, verified fixes are committed on the PR branch:
 ~/.claude/skills/review-by-harness/cleanup.sh --prune [repo-dir] [--archive DIR]
 ```
 
-- `--archive DIR` copies `.review-round/` to `DIR/review-pr<N>-<harness>`
-  first, with the fix pass's `handback.diff` and the `reviewed-head`. A
-  second archive of the same review gets a `-2` suffix.
+- `--archive DIR` first writes `DIR/review-pr<N>-<harness>/`: the driver's
+  `.review-round/` as `review-round/`, the `reviewed-head`, and any fix
+  changes as `handback.diff` (binary-safe, against the reviewed commit, so
+  commits count) plus `handback-untracked.tar` for new files. A second
+  archive of the same review gets a `-2` suffix. Nothing is written inside
+  the worktree, and a `.review-round` the PR itself tracks is never copied.
+  If any archive step fails, the worktree is kept and cleanup exits 1.
+- Pass `--harness` to touch one reviewer's worktree only.
 - A fix pass's diff exists only in the review worktree. While the PR is
   open, cleanup keeps such a worktree and exits 1; apply the diff to the PR
   branch, then pass `--discard`. A merged or closed PR needs no flag.
-- `--prune` cleans every review whose PR is merged or closed, including
-  refs whose worktree is already gone. It never touches an open PR's
-  review, since another session may be using it.
+- `--prune` is maintenance, not a run's closeout step. It cleans every
+  review whose PR is merged or closed, including refs whose worktree is
+  already gone, and never an open PR's. It lists stray `review-pr*` branches
+  without a worktree instead of deleting them.
+- Cleanup asks GitHub about the repo behind `origin`, so `GH_REPO` or a
+  `gh repo set-default` pointing elsewhere cannot mark the wrong PR merged.
+  It finds reviews made from any checkout of the repo.
 
 A second round re-creates the worktree and deletes the first round's
 `.review-round/`, so archive round 1 before starting round 2. `run.sh`

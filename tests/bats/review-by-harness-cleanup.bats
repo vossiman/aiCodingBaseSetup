@@ -68,7 +68,7 @@ gone() {  # gone <pr>: no worktree, branch or ref is left for the PR
   run "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/runs/reviews"
   [ "$status" -eq 0 ]
   gone 1
-  [ "$(cat "$TMPDIR/runs/reviews/review-pr1-stub/review.md")" = "stub findings" ]
+  [ "$(cat "$TMPDIR/runs/reviews/review-pr1-stub/review-round/review.md")" = "stub findings" ]
   [ -s "$TMPDIR/runs/reviews/review-pr1-stub/reviewed-head" ]
   [ -z "$(git -C "$REPO" worktree list --porcelain | grep review-pr1 || true)" ]
 }
@@ -78,8 +78,8 @@ gone() {  # gone <pr>: no worktree, branch or ref is left for the PR
   "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/a"
   review 1
   "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/a"
-  [ -f "$TMPDIR/a/review-pr1-stub/review.md" ]
-  [ -f "$TMPDIR/a/review-pr1-stub-2/review.md" ]
+  [ -f "$TMPDIR/a/review-pr1-stub/review-round/review.md" ]
+  [ -f "$TMPDIR/a/review-pr1-stub-2/review-round/review.md" ]
 }
 
 @test "an un-incorporated fix diff on an open PR is kept until --discard" {
@@ -169,4 +169,75 @@ gone() {  # gone <pr>: no worktree, branch or ref is left for the PR
   grep -q "edited by stub" "$REPO/.claude/worktrees/review-pr1-stub/src.txt"
   "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/a" --discard
   review 1
+}
+
+@test "a failed archive keeps the worktree and exits non-zero" {
+  review 1
+  mkdir -p "$TMPDIR/ro"; chmod 500 "$TMPDIR/ro"
+  run "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/ro"
+  chmod 700 "$TMPDIR/ro"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"archiving failed; worktree kept"* ]]
+  [ -d "$REPO/.claude/worktrees/review-pr1-stub" ]
+}
+
+@test "a PR-tracked .review-round symlink is never written through" {
+  ( cd "$TMPDIR/seed"
+    ln -s "$TMPDIR/victim" .review-round; git add .review-round; git commit -qm link
+    git push -q -f origin HEAD:refs/pull/1/head )
+  mkdir "$TMPDIR/victim"; echo keep > "$TMPDIR/victim/reviewed-head"
+  run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+  [ "$status" -eq 1 ]
+  run "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/a"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$TMPDIR/victim/reviewed-head")" = keep ]
+  [ ! -e "$TMPDIR/a/review-pr1-stub/review-round" ]
+}
+
+@test "a fix the harness committed is kept like an uncommitted one" {
+  sed -i 's|echo "stub fix report"|git -C "$2" -c user.name=t -c user.email=t@t commit -qam fix; echo "stub fix report"|' "$SKILL/harnesses/stub.sh"
+  review_fix 1
+  git -C "$REPO/.claude/worktrees/review-pr1-stub" diff --quiet HEAD
+  run "$SKILL/cleanup.sh" 1 "$REPO"
+  [ "$status" -eq 1 ]
+  run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+  [ "$status" -eq 1 ]
+  "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/a" --discard
+  grep -q "edited by stub" "$TMPDIR/a/review-pr1-stub/handback.diff"
+}
+
+@test "an interrupted fix pass still protects its edits from the next round" {
+  sed -i 's|echo "stub fix report" > "$3/fix.md"|exit 1|' "$SKILL/harnesses/stub.sh"
+  REVIEW_CONFIG="$TMPDIR/cfg.env" run "$SKILL/run.sh" 1 "$REPO" --harness stub
+  [ "$status" -eq 1 ]
+  run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"holds an earlier fix pass's changes"* ]]
+}
+
+@test "new files a fix created are archived with their contents" {
+  sed -i 's|echo "stub fix report"|echo fresh > "$2/new.txt"; echo "stub fix report"|' "$SKILL/harnesses/stub.sh"
+  review_fix 1
+  "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/a" --discard
+  [ "$(tar -xOf "$TMPDIR/a/review-pr1-stub/handback-untracked.tar" new.txt)" = fresh ]
+}
+
+@test "a lookalike branch with no review worktree is never deleted" {
+  git -C "$REPO" branch review-pr1-mine origin/main
+  review 1
+  "$SKILL/cleanup.sh" 1 "$REPO"
+  gone 1
+  git -C "$REPO" show-ref --verify --quiet refs/heads/review-pr1-mine
+  echo MERGED > "$TMPDIR/state-1"
+  run "$SKILL/cleanup.sh" --prune "$REPO"
+  git -C "$REPO" show-ref --verify --quiet refs/heads/review-pr1-mine
+  [[ "$output" == *"review-pr1-mine: branch without a review worktree"* ]]
+}
+
+@test "cleanup run from a linked checkout finds the review made from the main one" {
+  review 1
+  git -C "$REPO" worktree add -q "$REPO/.claude/worktrees/feat" -b feat-local origin/main
+  run "$SKILL/cleanup.sh" 1 "$REPO/.claude/worktrees/feat"
+  [ "$status" -eq 0 ]
+  gone 1
 }

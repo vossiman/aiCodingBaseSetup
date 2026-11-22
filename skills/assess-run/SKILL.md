@@ -14,12 +14,14 @@ Read, in this order, and nothing else unless a spot-check needs it:
 
 1. `.claude/dev-process-runs/<session>/overseer.md`.
 2. The archived `review-by-harness` reports under
-   `.claude/dev-process-runs/<session>/reviews/` (one directory per round),
+   `.claude/dev-process-runs/<session>/reviews/` (one directory per PR,
+   harness and round; the report is in its `review-round/`),
    or under `.claude/worktrees/review-pr<N>-<harness>/.review-round/` when
    the run never archived them. No report in either place is a Deviations
    check: the log must say why.
-3. `git diff --stat <base>...<head>` for the integrated branch, and the PR
-   body if a PR is open.
+3. `git diff --stat <base>...<head>` and the PR body for each PR the Plan
+   lists. A run that shipped independent PRs needs this, and a review, for
+   every one of them.
 
 Then check, against `~/.claude/skills/dev-process-lite/policy.md`:
 

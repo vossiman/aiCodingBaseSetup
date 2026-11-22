@@ -175,13 +175,18 @@ if command -v flock >/dev/null; then
     flock -n 9 || { echo "!!! another review of PR #$PR with $HARNESS is running; not touching $WT" >&2; exit 1; }
 fi
 
-# A fix pass's diff lives only in this worktree, and the reset below would
-# drop it with the previous round's report.
-if [ -f "$OUT/fix.md" ] && { ! git -C "$WT" diff --quiet HEAD 2>/dev/null ||
-       [ -n "$(git -C "$WT" ls-files --others --exclude-standard 2>/dev/null)" ]; }; then
-    echo "!!! $WT holds an earlier fix pass's changes. Incorporate them, then run" >&2
-    echo "!!! $SKILL_DIR/cleanup.sh $PR --harness $HARNESS --archive DIR --discard" >&2
-    exit 1
+# A fix pass's changes (edits, new files or commits) live only in this
+# worktree, and the reset below would drop them with the previous report.
+# fix-started is written before the fix adapter runs, so an interrupted pass
+# counts too; reviewed-head is the PR commit the run started from.
+if [ -d "$OUT" ] && [ ! -L "$OUT" ] && [ -f "$OUT/fix-started" ]; then
+    _prev=$(cat "$OUT/reviewed-head" 2>/dev/null || echo HEAD)
+    if ! git -C "$WT" diff --quiet "$_prev" 2>/dev/null ||
+       [ -n "$(git -C "$WT" ls-files --others --exclude-standard 2>/dev/null)" ]; then
+        echo "!!! $WT holds an earlier fix pass's changes. Incorporate them, then run" >&2
+        echo "!!! $SKILL_DIR/cleanup.sh $PR --harness $HARNESS --archive DIR --discard" >&2
+        exit 1
+    fi
 fi
 
 # Always re-fetch and reset: a PR head moves, and reviewing a stale commit
@@ -203,6 +208,7 @@ if ! mkdir -m 700 "$OUT"; then
     echo "!!! refusing pre-existing review scratch path: $OUT" >&2
     exit 1
 fi
+git -C "$WT" rev-parse HEAD > "$OUT/reviewed-head"
 jq -n --arg harness "$HARNESS" --arg model "${REVIEW_MODEL:-adapter-default}" \
     --arg effort "${REVIEW_EFFORT:-model-defined}" \
     '{harness:$harness, model:$model, effort:$effort}' > "$OUT/run.json"
@@ -364,6 +370,7 @@ fi
 [ "$RESTORE_UNSAFE" -eq 0 ] || { echo '!!! unsafe instruction changes; refusing fix pass'; exit 1; }
 echo "### phase B: fix"
 install_agents fix
+: > "$OUT/fix-started"
 "$ADAPTER" fix "$WT" "$OUT" || {
     echo "!!! fix failed"; tail -20 "$OUT/fix.err" 2>/dev/null
     echo "### (if this is a bubblewrap/uid-map error, see SKILL.md:"
