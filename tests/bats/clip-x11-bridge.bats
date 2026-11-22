@@ -116,7 +116,7 @@ _start_bridge() {
   # This test exercises the daemon start deliberately — lift the suite-wide
   # no-daemons guard for it (cleanup in teardown).
   unset AICODINGSETUP_SKIP_NETWORK
-  export CLIP_X11_CONTAINER_MARKERS="$TMPDIR"
+  export CLIP_X11_CONTAINER_MARKER="$TMPDIR"
   run -0 "$BLUEPRINT_ROOT/bin/clip-x11-bridge" --ensure
   pid1=$(cat "$HOME/.dvw/x11-bridge.pid")
   run -0 "$BLUEPRINT_ROOT/bin/clip-x11-bridge" --ensure
@@ -129,9 +129,10 @@ _start_bridge() {
 @test "x11-bridge: --ensure no-ops outside a container" {
   export DISPLAY="$DISPLAY_NUM"
   unset AICODINGSETUP_SKIP_NETWORK
-  export CLIP_X11_CONTAINER_MARKERS="$TMPDIR/absent"
+  export CLIP_X11_CONTAINER_MARKER="$TMPDIR/absent"
   run -0 "$BLUEPRINT_ROOT/bin/clip-x11-bridge" --ensure
-  [[ ! -f "$HOME/.dvw/x11-bridge.pid" ]]
+  # cmd_ensure creates ~/.dvw before any start attempt, so its absence proves a no-op.
+  [[ ! -e "$HOME/.dvw" ]]
 }
 
 @test "x11-bridge: --ensure no-ops under AICODINGSETUP_SKIP_NETWORK" {

@@ -25,13 +25,13 @@ _live_pid() {
   return 0
 }
 
-# CLIP_X11_CONTAINER_MARKERS lets tests decide container-ness on any host.
+# CLIP_X11_CONTAINER_MARKER (one literal path) lets tests decide container-ness on any host.
 _in_container() {
-  local m
-  for m in ${CLIP_X11_CONTAINER_MARKERS:-/var/devpod /.dockerenv}; do
-    [[ -e "$m" ]] && return 0
-  done
-  return 1
+  if [[ -n "${CLIP_X11_CONTAINER_MARKER:-}" ]]; then
+    [[ -e "$CLIP_X11_CONTAINER_MARKER" ]]
+  else
+    [[ -d /var/devpod || -f /.dockerenv ]]
+  fi
 }
 
 _display_socket() {
