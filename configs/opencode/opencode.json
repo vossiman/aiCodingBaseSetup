@@ -1,5 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
   "model": "openai/gpt-6.2-sol",
   "provider": {
     "openai": {

@@ -349,7 +349,8 @@ aicoding-sync --blueprint /path/to/aiCodingBaseSetup --dry-run  # test a local c
 including the unattended `--boot` pass, applies managed config the same way
 and never prompts (`--yes` is accepted for old callers). The rules are listed
 under [Managed config](#managed-config) below. For Codex, `model`,
-`model_reasoning_effort`, `[projects.*]` and `[tui]` stay personal; the
+`model_reasoning_effort`, `[projects.*]` and `[tui]` stay personal (a `model`
+still equal to an earlier blueprint default follows the new one); the
 blueprint enforces `notify`, the approval and sandbox posture, its
 `[mcp_servers.*]` entries and its `[features]` keys.
 
@@ -447,7 +448,7 @@ state directory. Different CLIs have different update paths:
 | CLI | Update path | Scheduled? |
 |-----|-------------|---------------------|
 | Claude Code | exact requested version through the official installer in isolated staging, then validated immutable activation | ✅ |
-| opencode | exact npm version in an isolated prefix, validated before immutable activation | ✅ |
+| opencode | newest v2 GitHub release (`anomalyco/opencode`, plain `v2.x.y`, no drafts or prereleases), archive checked against the release `SHA256SUMS`, safely extracted and version-probed before immutable activation. The managed launcher always sets `OPENCODE_DISABLE_AUTOUPDATE=1`, sends a bare `opencode update`/`upgrade` to `aicoding-auto-update --once`, passes `--help` through and refuses a version or other flags; the blueprint also owns `"autoupdate": false` as a fallback for launches that bypass it. The devbox image seeds v2 from the same checksum-verified archive | ✅ |
 | Cursor Agent | exact Linux x64/arm64 archive selected from the official installer, safely extracted and version-probed before immutable activation | ✅ |
 | OpenAI Codex | exact npm version plus matching `codex-code-mode-host`, validated before immutable activation | ✅ |
 
@@ -478,7 +479,14 @@ resolve.
    keys in [`configs/managed-config.json`](configs/managed-config.json). Owned
    keys take the blueprint value on every pass; `.*` owns each blueprint entry
    under a key and `[]` adds missing array items, so personal entries stay.
-   Seeded keys are written only when missing. Everything else is personal. A
+   Seeded keys are written only when missing. A seeded key listed in
+   `reseeded_keys` also moves to the current seed while it still holds a
+   value the blueprint shipped before (for example the Codex and OpenCode
+   default `model`). Sync compares values only, so an old default you set on
+   purpose moves too; any value outside the shipped list stays. An entry with
+   `requires` waits until that tool reports at least `min_version`, so a new
+   default never replaces a working one the installed tool cannot run.
+   Everything else is personal. A
    blueprint MCP entry whose secret is missing is removed. A file that is not
    valid JSON or TOML is reported and never overwritten. `~/.bashrc` gets one
    marker block that sources `~/.bashrc.d/*.sh`; the rest of the file is yours.

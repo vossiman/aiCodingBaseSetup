@@ -17,7 +17,7 @@
     },
     ".config/opencode/opencode.json": {
       "source": "configs/opencode/opencode.json",
-      "owned": ["$schema", "mcp.*", "command.*", "permission"],
+      "owned": ["$schema", "autoupdate", "mcp.*", "command.*", "permission"],
       "seeded": ["model", "provider", "provider.openai.models.*", "compaction", "agent"]
     },
     ".codex/config.toml": {
@@ -35,6 +35,10 @@
     {"dest": ".claude/skills/dataprospectors-design/assets/dp-logo-dark.svg", "source": "skills/dataprospectors-design/assets/dp-logo-dark.svg"},
     {"dest": ".claude/skills/logfire/SKILL.md", "source": "skills/logfire/SKILL.md"},
     {"dest": ".aicodingsetup/templates/paseo-config.json", "source": "configs/paseo/config.json"}
+  ],
+  "reseeded_keys": [
+    {"dest": ".codex/config.toml", "path": ["model"], "shipped": ["gpt-5.5", "gpt-5.6-sol", "gpt-6.1-sol"], "requires": {"tool": "codex", "min_version": "0.171.0"}},
+    {"dest": ".config/opencode/opencode.json", "path": ["model"], "shipped": ["openai/gpt-6.1-sol"], "requires": {"tool": "opencode", "min_version": "2.3.1"}}
   ],
   "retired_keys": [
     {"dest": ".claude/settings.json", "path": ["enabledPlugins", "skill-creator@claude-plugins-official"], "shipped": [true]},
