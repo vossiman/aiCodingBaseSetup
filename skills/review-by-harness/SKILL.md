@@ -134,6 +134,31 @@ reviewed ten times on 2026-09-29 changed its design only in rounds 1 and 2;
 rounds 3 to 10 found details that the plan and its tests settle anyway, and
 each fix invited the next round.
 
+## Cleaning up
+
+A run leaves three things: the worktree, its `review-pr<N>-<harness>`
+branch, and `refs/review-by-harness/pr<N>`. Remove them once the findings
+are incorporated, that is, verified fixes are committed on the PR branch:
+
+```bash
+~/.claude/skills/review-by-harness/cleanup.sh <pr-number> [repo-dir] \
+    [--harness NAME] [--archive DIR] [--discard]
+~/.claude/skills/review-by-harness/cleanup.sh --prune [repo-dir] [--archive DIR]
+```
+
+- `--archive DIR` copies `.review-round/` to `DIR/review-pr<N>-<harness>`
+  first, with the fix pass's `handback.diff` and the `reviewed-head`. A
+  second archive of the same review gets a `-2` suffix.
+- A fix pass's diff exists only in the review worktree. While the PR is
+  open, cleanup keeps such a worktree and exits 1; apply the diff to the PR
+  branch, then pass `--discard`. A merged or closed PR needs no flag.
+- `--prune` cleans every review whose PR is merged or closed, including
+  refs whose worktree is already gone. It never touches an open PR's
+  review, since another session may be using it.
+
+A second round re-creates the worktree and deletes the first round's
+`.review-round/`, so archive round 1 before starting round 2.
+
 ## This skill runs on more than one kind of machine
 
 It decides per machine, at the start of every run, and tells you which mode it
@@ -271,6 +296,7 @@ for the board.
 
 ```
 run.sh              deterministic driver: worktree, base ref, output, handback
+cleanup.sh          removes a review's worktree, branch and ref once incorporated
 harnesses/claude.sh adapter: claude -p, read tools for review, edit/shell for fix
 harnesses/codex.sh  adapter: codex exec review / codex exec
 harnesses/cursor.sh adapter: cursor-agent --mode ask / cursor-agent
