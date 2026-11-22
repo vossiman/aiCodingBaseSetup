@@ -146,6 +146,27 @@ checkpoint, measured against how `configs/` actually uses each tool.
 Settings adopted outside an audit window. Listed here so a future audit
 recognises them as deliberate rather than drift.
 
+### OpenCode v2 from GitHub releases instead of npm v1 (2026-11-22, opencode 2.3.2)
+
+Owner decision. The updater used to install npm `opencode-ai`, which only
+carries v1 (`latest` is 1.19.6). v2 is not on npm; it ships as GitHub release
+archives of `anomalyco/opencode` (and a Homebrew tap). `lib/update-opencode.sh`
+now picks the highest plain `v2.x.y` tag that is not a draft or prerelease
+(the repo's "Latest" flag can point at a v1 release, so it is not used),
+downloads the matching `opencode-linux-{x64,arm64}[-baseline][-musl].tar.gz`
+plus `SHA256SUMS`, refuses a checksum mismatch or any archive that is not one
+regular `opencode` file, probes `opencode --version`, and activates it like
+Cursor. `ensure_opencode` on a fresh machine calls the same adapter instead of
+the `opencode.ai/install` script, which installs v1 into `~/.opencode/bin`.
+
+v2 reads `update` (`disable|notify|auto`) and falls back to the deprecated
+`autoupdate`, where `false` means disable. The blueprint owns
+`"autoupdate": false`: v1 accepts that key too, while an `update` key could
+fail a v1 config probe during the switch. Machines that still run v1 move to
+v2 on their next updater pass. A Homebrew `opencode-v2` ahead of
+`~/.local/bin` on PATH keeps shadowing the managed copy; uninstall it to use
+the managed one.
+
 ### Codex and OpenCode default model `gpt-6.2-sol` (2026-11-22, codex-cli 0.171.0, opencode 2.3.2)
 
 Replaces `gpt-6.1-sol` in `configs/codex/config.toml`,

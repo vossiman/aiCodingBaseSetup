@@ -30,14 +30,19 @@
       "meaning": "`apt-get` is not available on this system.",
       "fix": "Install the listed system tools with your package manager."
     },
+    "archive_checksum_mismatch": {
+      "kind": "action",
+      "meaning": "The downloaded OpenCode archive does not match the release's SHA256SUMS, so it was discarded.",
+      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, the release asset may be broken upstream; read `~/.local/state/aicoding/auto-update/worker.log`."
+    },
     "archive_download_failed": {
       "kind": "action",
-      "meaning": "Downloading the Cursor archive failed.",
+      "meaning": "Downloading the Cursor or OpenCode archive failed.",
       "fix": "Check network access to the download source, then run `aicoding-auto-update --once`. Details are in `~/.local/state/aicoding/auto-update/worker.log`."
     },
     "archive_invalid": {
       "kind": "action",
-      "meaning": "The downloaded Cursor archive could not be extracted.",
+      "meaning": "The downloaded Cursor or OpenCode archive could not be extracted, or held unexpected files.",
       "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
     },
     "browser_install_failed": {

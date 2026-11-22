@@ -250,17 +250,16 @@ ensure_locales() {
 
 ensure_opencode() {
   command -v opencode &>/dev/null && return 0
-  command -v curl &>/dev/null || { warn "curl not available — skipping opencode install"; return 0; }
-  info "Installing opencode"
-  curl -fsSL https://opencode.ai/install | bash 2>&1 | tail -5 || warn "opencode install failed"
-  # The installer drops the binary in ~/.opencode/bin and only adds that to
-  # PATH via .bashrc. Symlink into ~/.local/bin so non-interactive shells
-  # (postStartCommand, etc.) see it without sourcing rc files.
-  if [[ -x "$HOME/.opencode/bin/opencode" ]]; then
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/opencode"
-    export PATH="$HOME/.local/bin:$PATH"
+  [[ "${AICODINGSETUP_SKIP_NETWORK:-0}" == 1 ]] && return 0
+  # OpenCode v2 ships only as GitHub release archives; the updater adapter
+  # (lib/update-opencode.sh) installs and later refreshes it.
+  if ! declare -F _provision_ensure_update_components >/dev/null || ! _provision_ensure_update_components; then
+    warn "aicoding updater unavailable; skipping opencode install"
+    return 0
   fi
+  info "Installing OpenCode v2"
+  aicoding_update_component opencode || warn "opencode install failed; see aicoding-status"
+  export PATH="$HOME/.local/bin:$PATH"
 }
 
 ensure_codex() {

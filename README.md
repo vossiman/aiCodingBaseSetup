@@ -447,7 +447,7 @@ state directory. Different CLIs have different update paths:
 | CLI | Update path | Scheduled? |
 |-----|-------------|---------------------|
 | Claude Code | exact requested version through the official installer in isolated staging, then validated immutable activation | ✅ |
-| opencode | exact npm version in an isolated prefix, validated before immutable activation | ✅ |
+| opencode | newest v2 GitHub release (`anomalyco/opencode`, plain `v2.x.y`, no drafts or prereleases), archive checked against the release `SHA256SUMS`, safely extracted and version-probed before immutable activation; the blueprint owns `"autoupdate": false` so OpenCode never updates itself | ✅ |
 | Cursor Agent | exact Linux x64/arm64 archive selected from the official installer, safely extracted and version-probed before immutable activation | ✅ |
 | OpenAI Codex | exact npm version plus matching `codex-code-mode-host`, validated before immutable activation | ✅ |
 

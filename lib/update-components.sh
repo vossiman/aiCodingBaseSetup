@@ -1204,7 +1204,10 @@ aicoding_update_component() {
 _aicoding_update_component_impl() {
   case "$1" in
     codex) aicoding_update_npm_component codex codex @openai/codex ;;
-    opencode) aicoding_update_npm_component opencode opencode opencode-ai ;;
+    opencode)
+      . "${BASH_SOURCE[0]%/*}/update-opencode.sh"
+      aicoding_update_opencode
+      ;;
     pi) aicoding_update_npm_component pi pi @earendil-works/pi-coding-agent ;;
     claude) aicoding_update_claude ;;
     cursor)
