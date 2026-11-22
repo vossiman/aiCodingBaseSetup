@@ -253,3 +253,14 @@ seed_verified_claude_config_dependencies() {
   echo "$output"
   [ "$status" -eq 1 ]
 }
+
+@test "every key a bin/ helper reads from the secrets store is in .secrets.env.example" {
+  # An interactive install rewrites the store with only the example's keys,
+  # so a key missing there is deleted on the next install-host.sh run.
+  for key in GH_TOKEN KANBAN_TOKEN MEMORY_ROUTER_TOKEN BUGSINK_AUTH_TOKEN \
+      DOKPLOY_API_TOKEN KUMA_ADMIN_USER KUMA_ADMIN_PASSWORD \
+      LEANIPTV_DIAG_TOKEN_PROD LEANIPTV_DIAG_TOKEN_STAGING; do
+    grep -q "^${key}=" "$BLUEPRINT_ROOT/.secrets.env.example" || {
+      echo "missing from .secrets.env.example: $key"; false; }
+  done
+}
