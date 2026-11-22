@@ -146,26 +146,30 @@ checkpoint, measured against how `configs/` actually uses each tool.
 Settings adopted outside an audit window. Listed here so a future audit
 recognises them as deliberate rather than drift.
 
-### Codex default model `gpt-6.2-sol`; OpenCode stays on `gpt-6.1-sol` (2026-11-22, codex-cli 0.171.0, opencode 2.2.7)
+### Codex and OpenCode default model `gpt-6.2-sol` (2026-11-22, codex-cli 0.171.0, opencode 2.3.2)
 
-Codex: `configs/codex/config.toml` and the review-by-harness default move
-from `gpt-6.1-sol` to `gpt-6.2-sol`. `codex debug models` gives it the same
-500,000 default and 872,000 max context as 6.1-sol, so the seeded budget is
-unchanged.
+Replaces `gpt-6.1-sol` in `configs/codex/config.toml`,
+`configs/opencode/opencode.json` and the review-by-harness Codex default.
 
-OpenCode: stays on `openai/gpt-6.1-sol`. These machines use the ChatGPT
-login, which OpenCode runs as `chatgpt-token-sharing`, and OpenCode 2.2.7
-hard-codes the models allowed over it. That set ends at `gpt-6.1-sol` and
-`gpt-6.1-terra`; the binary has no `gpt-6.2` string at all. Live check
-over the ChatGPT login: `opencode run -m openai/gpt-6.1-sol` answers,
-`-m openai/gpt-6.2-sol` fails with `Model unavailable`. A config entry
-for 6.2-sol would recreate it with default capabilities only (no PDF
-input). Move OpenCode once a release lists 6.2 there; a non-zero count from
-`strings "$(readlink -f "$(command -v opencode)")" | grep -c '"gpt-6\.2-sol"'`
-is the first sign.
+Codex: `codex debug models` gives 6.2-sol the same 500,000 default and
+872,000 max context as 6.1-sol, so the seeded budget is unchanged.
 
-Both `model` keys are seed-only (`configs/managed-config.json`), so machines
-that already have a `model` keep it until it is changed by hand.
+OpenCode: these machines use the ChatGPT login, which OpenCode runs as
+`chatgpt-token-sharing` with a hard-coded model allowlist. **v2 needs 2.3.1
+or newer** (anomalyco/opencode#64508 added GPT 6.2 Sol and Astra to it; 2.3.2
+fixes 6.2 re-billing the system prompt as uncached input on every step). On
+2.2.7, `opencode run -m openai/gpt-6.2-sol` fails with `Model unavailable`;
+on 2.3.2 it answers. The running background service keeps the old binary
+until it is restarted, so after an upgrade a plain `opencode run` can still
+say `Model unavailable` while `opencode run --standalone` works. v1 (npm
+`opencode-ai@1.19.6`, the devbox route) resolves the id but was not verified
+end to end: its separate stored login was expired. models.dev gives 6.2-sol
+the same 1,050,000 / 922,000 / 128,000 limits as 6.1-sol, so the `limit`
+block carries over.
+
+Both `model` keys are seed-only (`configs/managed-config.json`), so only new
+installs get the new default; machines that already have a `model` keep it
+until it is changed by hand.
 
 ### OpenCode default model `openai/gpt-6.1-sol` (2026-09-29, opencode 1.18.33)
 
