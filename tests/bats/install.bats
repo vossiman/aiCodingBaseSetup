@@ -879,6 +879,142 @@ EOF
   echo "$output" | grep -q "memory-router MCP: registration did not verify"
 }
 
+_seed_brave_fingerprint() {
+  mkdir -p "$HOME/.local/state/aicoding/mcp-fingerprints"
+  printf '%s\n' "BRAVE_API_KEY=$1" brave-search-mcp-server | sha256sum | awk '{print $1}' \
+    > "$HOME/.local/state/aicoding/mcp-fingerprints/brave-search.sha256"
+}
+
+# $1: exit code of `mcp remove`; $2: Scope line; $3: Command line.
+_brave_registered_stub() {
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+case "\$*" in
+  "mcp remove"*) exit ${1:-0} ;;
+  "mcp get brave-search")
+    printf 'brave-search:\n  Scope: %s\n  Type: stdio\n  Command: %s\n' \
+      '${2:-User config (available in all your projects)}' '${3:-brave-search-mcp-server}'
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+}
+
+@test "ensure_stdio_env_mcp: leaves a user registration with another command alone" {
+  _brave_registered_stub 0 "User config (available in all your projects)" "/opt/my-brave"
+  export BRAVE_API_KEY=new-key
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "brave-search MCP: a user registration (/opt/my-brave) holds the name; left unchanged"
+  if grep -q "mcp remove -s user brave-search" "$TMPDIR/claude-calls"; then false; fi
+  if grep -q "mcp add brave-search" "$TMPDIR/claude-calls"; then false; fi
+}
+
+@test "ensure_stdio_env_mcp: leaves a user registration with extra env vars alone" {
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+case "\$*" in
+  "mcp get brave-search")
+    printf 'brave-search:\n  Scope: User config (available in all your projects)\n  Command: brave-search-mcp-server\n  Environment:\n    BRAVE_API_KEY=old\n    BRAVE_API_URL=http://self\n'
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+  export BRAVE_API_KEY=new-key
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "brave-search MCP: the user registration sets extra variables (BRAVE_API_KEY BRAVE_API_URL); left unchanged"
+  if echo "$output" | grep -q "http://self"; then false; fi
+  if grep -q "mcp remove -s user brave-search" "$TMPDIR/claude-calls"; then false; fi
+}
+
+@test "ensure_stdio_env_mcp: rotates a stock entry that lists only its key" {
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+case "\$*" in
+  "mcp get brave-search")
+    printf 'brave-search:\n  Scope: User config (available in all your projects)\n  Command: brave-search-mcp-server\n  Environment:\n    BRAVE_API_KEY=old\n'
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+  export BRAVE_API_KEY=new-key
+  _seed_brave_fingerprint old
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  grep -q "mcp remove -s user brave-search" "$TMPDIR/claude-calls"
+  grep "mcp add brave-search" "$TMPDIR/claude-calls" | grep -q "BRAVE_API_KEY=new-key"
+}
+
+@test "ensure_stdio_env_mcp: a local-scope entry does not block the user registration" {
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+case "\$*" in
+  "mcp get brave-search")
+    printf 'brave-search:\n  Scope: Local config (private to you in this project)\n  Command: brave-search-mcp-server\n'
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+  export BRAVE_API_KEY=new-key
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  if grep -q "mcp remove -s user brave-search" "$TMPDIR/claude-calls"; then false; fi
+  grep "mcp add brave-search" "$TMPDIR/claude-calls" | grep -q "BRAVE_API_KEY=new-key"
+  echo "$output" | grep -q "brave-search MCP configured"
+}
+
+@test "ensure_stdio_env_mcp: leaves brave-search alone when the key is unchanged" {
+  _brave_registered_stub
+  export BRAVE_API_KEY=same-key
+  _seed_brave_fingerprint same-key
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  if grep -q "mcp remove -s user brave-search" "$TMPDIR/claude-calls"; then false; fi
+  if grep -q "mcp add brave-search" "$TMPDIR/claude-calls"; then false; fi
+  echo "$output" | grep -q "brave-search MCP already configured"
+}
+
+@test "ensure_stdio_env_mcp: re-registers brave-search when the key rotated" {
+  _brave_registered_stub
+  export BRAVE_API_KEY=new-key
+  _seed_brave_fingerprint old-key
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  grep -q "mcp remove -s user brave-search" "$TMPDIR/claude-calls"
+  grep "mcp add brave-search" "$TMPDIR/claude-calls" | grep -q "BRAVE_API_KEY=new-key"
+  echo "$output" | grep -q "brave-search MCP configured"
+  [ "$(cat "$HOME/.local/state/aicoding/mcp-fingerprints/brave-search.sha256")" = \
+    "$(printf '%s\n' BRAVE_API_KEY=new-key brave-search-mcp-server | sha256sum | awk '{print $1}')" ]
+}
+
+@test "ensure_stdio_env_mcp: failed removal keeps the old fingerprint and warns" {
+  _brave_registered_stub 1
+  export BRAVE_API_KEY=new-key
+  _seed_brave_fingerprint old-key
+  local before
+  before=$(cat "$HOME/.local/state/aicoding/mcp-fingerprints/brave-search.sha256")
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  echo "$output" | grep -q "brave-search MCP: failed to remove stale registration"
+  if grep -q "mcp add brave-search" "$TMPDIR/claude-calls"; then false; fi
+  [ "$(cat "$HOME/.local/state/aicoding/mcp-fingerprints/brave-search.sha256")" = "$before" ]
+}
+
 @test "install_claude_mcps: heals logfire URL drift by remove + re-add" {
   cat > "$TMPDIR/stubs/claude" <<EOF
 #!/bin/sh
