@@ -7,7 +7,7 @@
 # or model_reasoning_effort remains user-owned, including local Astra choices.
 # Missing values may receive blueprint defaults.
 
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 
 # Subscription context budget, seeded only when missing so personal budgets
 # stay. Actual capacity depends on the active catalog.

@@ -12,7 +12,7 @@ setup() {
 teardown() { rm -rf "$TMPDIR"; }
 
 @test "fable 5.1 in payload: injects the guidance" {
-  run bash -c "printf '%s' '{\"model\":\"claude-fable-5-1\"}' | bash '$HOOK'"
+  run bash -c "printf '%s' '{\"model\":\"claude-fable-5-2\"}' | bash '$HOOK'"
   [ "$status" -eq 0 ]
   [[ "$output" == *"targeted edit"* ]]
 }
@@ -37,7 +37,7 @@ teardown() { rm -rf "$TMPDIR"; }
 }
 
 @test "guidance does not repeat what the harness already injects" {
-  run bash -c "printf '%s' '{\"model\":\"claude-fable-5-1\"}' | bash '$HOOK'"
+  run bash -c "printf '%s' '{\"model\":\"claude-fable-5-2\"}' | bash '$HOOK'"
   [[ "$output" != *"operating autonomously"* ]]
   [[ "$output" != *"privately list"* ]]
   [[ "$output" != *"short recap"* ]]
@@ -45,7 +45,7 @@ teardown() { rm -rf "$TMPDIR"; }
 
 @test "no model field: falls back to the last model in the transcript" {
   t="$TMPDIR/t.jsonl"
-  printf '{"model":"claude-sonnet-5"}\n{"model":"claude-fable-5-1"}\n' > "$t"
+  printf '{"model":"claude-sonnet-5"}\n{"model":"claude-fable-5-2"}\n' > "$t"
   run bash -c "printf '%s' '{\"transcript_path\":\"$t\"}' | bash '$HOOK'"
   [ "$status" -eq 0 ]
   [[ "$output" == *"targeted edit"* ]]
@@ -53,7 +53,7 @@ teardown() { rm -rf "$TMPDIR"; }
 
 @test "transcript whose last model is not fable: silent" {
   t="$TMPDIR/t.jsonl"
-  printf '{"model":"claude-fable-5-1"}\n{"model":"claude-opus-5"}\n' > "$t"
+  printf '{"model":"claude-fable-5-2"}\n{"model":"claude-opus-5"}\n' > "$t"
   run bash -c "printf '%s' '{\"transcript_path\":\"$t\"}' | bash '$HOOK'"
   [ "$status" -eq 0 ]; [ -z "$output" ]
 }

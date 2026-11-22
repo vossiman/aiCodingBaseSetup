@@ -153,7 +153,7 @@ project_repo() {
 @test "resolver: codex sol resolves to the newest listed, non-retiring slug" {
   run --separate-stderr bash "$R" codex overseer
   [ "$status" -eq 0 ]
-  [ "$(jq -r .model <<<"$output")" = "gpt-6.1-sol" ]
+  [ "$(jq -r .model <<<"$output")" = "gpt-6.2-sol" ]
   [ "$(jq -r .resolved <<<"$output")" = "family" ]
 }
 
@@ -164,7 +164,7 @@ project_repo() {
   run --separate-stderr bash "$R" cursor reviewer
   [ "$status" -eq 0 ]
   [ "$(jq -r .harness <<<"$output")" = "codex" ]
-  [ "$(jq -r .model <<<"$output")" = "gpt-6-astra" ]
+  [ "$(jq -r .model <<<"$output")" = "gpt-6.2-astra" ]
 }
 
 @test "resolver: codex family with no listed model blocks and names the list" {

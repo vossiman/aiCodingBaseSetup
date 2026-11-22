@@ -1,4 +1,4 @@
-# Fable 5.1 guidance hook
+# Fable 5 guidance hook
 
 `configs/claude/hooks/fable-guidance.sh` is a `UserPromptSubmit` hook that
 injects a short response-shape block only when the session model is Fable 5
@@ -8,10 +8,20 @@ detection, same silent exit 0 on every failure, same four wiring points
 (`configs/claude/settings.json`, the `blueprint-deploy.sh` inventory,
 `MANAGED_HOOKS`, and `tests/bats/fable-guidance-hook.bats`).
 
-Source: Anthropic's prompting guide for this model,
-https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-1
+Source: Anthropic's prompting guides for this model,
+https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-2
+(current) and its 5.1 predecessor (`prompting-claude-fable-5-1`), which the
+four lines below were first condensed from.
 
-## What Claude Code already injects for Fable 5.1
+Re-checked against the Fable 5.2 guide on 2026-11-22: none of the four lines
+is contradicted. The 5.2 guide keeps "one idea per sentence" and drops the
+5.1 sections on targeted edits and test scope without reversing them. It
+adds an ownership framing ("You are the owner and long-term maintainer")
+that it reports made the model make "changes nobody had asked for, many of
+them new tests and documentation", which is the behaviour the last line
+holds back, so the hook text is unchanged.
+
+## What Claude Code already injects (observed on Fable 5.1)
 
 Observed in a live Fable 5.1 session's system prompt and tool-result
 trailers on 2026-09-02, so the hook does not repeat them:

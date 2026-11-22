@@ -75,7 +75,7 @@ with. From an agent shell `--yes` is mandatory: without a TTY,
 
 ## Layer 2 — model-conditional hook (SHIPPED)
 
-Fable 5.1 has its own twin of this hook, `fable-guidance.sh`, documented
+Fable 5 has its own twin of this hook, `fable-guidance.sh`, documented
 in `fable-guidance.md`.
 
 Layer 1 proved insufficient after real use, so this shipped as designed
