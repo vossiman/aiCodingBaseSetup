@@ -420,6 +420,42 @@ ensure_http_mcp() {
   fi
 }
 
+# ensure_stdio_env_mcp <name> <env var> <command>: register a stdio MCP whose
+# key `claude mcp add -e` copies into ~/.claude.json. The add refuses an
+# existing name, so a rotated key would stay stale forever; compare a sha256
+# of the key (same store as ensure_http_mcp) and re-register when it changes.
+ensure_stdio_env_mcp() {
+  local name="$1" var="$2" command="$3"
+  local value="${!var:-}"
+  if [[ -z "$value" ]]; then
+    warn "Skipping $name MCP — no API key"
+    return 0
+  fi
+  local fp fp_file="$AICODING_MCP_STATE/$name.sha256" stored=""
+  fp="$(printf '%s\n' "$var=$value" "$command" | sha256sum | awk '{print $1}')"
+  [[ -f "$fp_file" ]] && stored="$(cat "$fp_file" 2>/dev/null)" || true
+  if _provision_run claude mcp get "$name" >/dev/null 2>&1; then
+    if [[ "$stored" == "$fp" ]]; then
+      ok "$name MCP already configured"
+      return 0
+    fi
+    info "$name MCP key changed, re-registering"
+    if ! _provision_run claude mcp remove -s user "$name" >/dev/null 2>&1; then
+      warn "$name MCP: failed to remove stale registration"
+      return 1
+    fi
+  fi
+  if _provision_run claude mcp add "$name" -s user -e "$var=$value" -- "$command" >/dev/null 2>&1 \
+      && _provision_run claude mcp get "$name" >/dev/null 2>&1; then
+    mkdir -p "$AICODING_MCP_STATE" 2>/dev/null || true
+    printf '%s\n' "$fp" > "$fp_file" 2>/dev/null || true
+    ok "$name MCP configured"
+  else
+    warn "$name MCP may need manual setup"
+    return 1
+  fi
+}
+
 # Remove the user-scope stdio registration this blueprint used to create for
 # the local kanban-mcp launcher, so the hosted HTTP entry can take the name.
 # Any other stdio command under that name is user configuration: leave it and
@@ -505,33 +541,8 @@ install_claude_mcps() {
 
   local rc=0 deferred=0 registration_rc
 
-  # firecrawl
-  if [[ -n "${FIRECRAWL_API_KEY:-}" ]]; then
-    if _provision_run claude mcp add firecrawl -s user -e "FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}" -- firecrawl-mcp 2>/dev/null; then
-      ok "firecrawl MCP configured"
-    elif _provision_run claude mcp get firecrawl &>/dev/null; then
-      ok "firecrawl MCP already configured"
-    else
-      warn "firecrawl MCP may need manual setup"
-      rc=1
-    fi
-  else
-    warn "Skipping firecrawl MCP — no API key"
-  fi
-
-  # brave-search
-  if [[ -n "${BRAVE_API_KEY:-}" ]]; then
-    if _provision_run claude mcp add brave-search -s user -e "BRAVE_API_KEY=${BRAVE_API_KEY}" -- brave-search-mcp-server 2>/dev/null; then
-      ok "brave-search MCP configured"
-    elif _provision_run claude mcp get brave-search &>/dev/null; then
-      ok "brave-search MCP already configured"
-    else
-      warn "brave-search MCP may need manual setup"
-      rc=1
-    fi
-  else
-    warn "Skipping brave-search MCP — no API key"
-  fi
+  ensure_stdio_env_mcp firecrawl FIRECRAWL_API_KEY firecrawl-mcp || rc=1
+  ensure_stdio_env_mcp brave-search BRAVE_API_KEY brave-search-mcp-server || rc=1
 
   local registration_force=0
   [ -n "${AICODING_SYNC_MODE:-}" ] || registration_force=1
