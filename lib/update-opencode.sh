@@ -2,16 +2,31 @@
 # publishes v1 and other tools there, and its "latest" flag can point at v1,
 # so the target is the highest plain v2.x.y tag that is neither a draft nor a
 # prerelease. Every archive is checked against the release's SHA256SUMS.
+# The binary lives at node_modules/.bin/opencode, the path the npm v1 releases
+# used. lib/runtime.sh only publishes a changed launcher whose executable also
+# exists in the old release, so keeping the path lets an active v1 release
+# hand over to v2.
+AICODING_OPENCODE_BIN=node_modules/.bin/opencode
 AICODING_OPENCODE_RELEASES_API=${AICODING_OPENCODE_RELEASES_API:-https://api.github.com/repos/anomalyco/opencode/releases?per_page=100}
 AICODING_OPENCODE_DOWNLOAD_BASE=${AICODING_OPENCODE_DOWNLOAD_BASE:-https://github.com/anomalyco/opencode/releases/download}
 
+# Follows the Link header for at most AICODING_OPENCODE_MAX_PAGES pages, and
+# only to further api.github.com pages.
 _aicoding_opencode_target() (
   set -o pipefail
-  timeout "$AICODING_VENDOR_TIMEOUT" curl -fsSL --proto '=https' --proto-redir '=https' \
-    --max-time "$AICODING_VENDOR_TIMEOUT" "$AICODING_OPENCODE_RELEASES_API" </dev/null 2>/dev/null \
-    | jq -r '.[] | select((.draft | not) and (.prerelease | not)) | .tag_name
-             | select(test("^v2\\.[0-9]+\\.[0-9]+$")) | ltrimstr("v")' 2>/dev/null \
-    | sort -V | tail -n 1 | grep -E '^2\.[0-9]+\.[0-9]+$'
+  local url=$AICODING_OPENCODE_RELEASES_API page=0 tags="" headers body next
+  headers=$(mktemp) && body=$(mktemp) || exit 1
+  trap 'rm -f "$headers" "$body"' EXIT
+  while [ -n "$url" ] && [ "$page" -lt "${AICODING_OPENCODE_MAX_PAGES:-5}" ]; do
+    page=$((page + 1))
+    timeout "$AICODING_VENDOR_TIMEOUT" curl -fsSL --proto '=https' --proto-redir '=https' \
+      --max-time "$AICODING_VENDOR_TIMEOUT" -D "$headers" -o "$body" "$url" </dev/null 2>/dev/null || exit 1
+    tags+=$(jq -r '.[] | select((.draft | not) and (.prerelease | not)) | .tag_name' "$body" 2>/dev/null)$'\n' || exit 1
+    next=$(tr -d '\r' < "$headers" | grep -i '^link:' | sed 's/^[Ll][Ii][Nn][Kk]:[[:space:]]*//' | tr ',' '\n' \
+      | sed -n 's/^[[:space:]]*<\(https:\/\/api\.github\.com\/[^>]*\)>;[[:space:]]*rel="next".*/\1/p' | head -n 1)
+    url=$next
+  done
+  printf '%s' "$tags" | grep -E '^v2\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -V | tail -n 1 | grep -E '^2\.[0-9]+\.[0-9]+$'
 )
 
 # glibc builds by default; musl hosts get the musl build, and x64 CPUs
@@ -30,16 +45,27 @@ _aicoding_opencode_asset() {
   printf 'opencode-linux-%s%s%s.tar.gz\n' "$arch" "$baseline" "$libc"
 }
 
+# A failed download keeps curl's last error lines in the diagnostics log that
+# archive_download_failed points to.
 _aicoding_opencode_download() {
-  aicoding_progress_run "opencode: downloading $2 (timeout ${AICODING_VENDOR_TIMEOUT}s)" \
-    _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" \
-    curl -fsSL --proto '=https' --proto-redir '=https' --max-time "$AICODING_VENDOR_TIMEOUT" \
-    -o "$3" "$AICODING_OPENCODE_DOWNLOAD_BASE/v$1/$2" </dev/null
+  local log="$AICODING_STATE_DIR/diagnostics/opencode-download.log" err
+  mkdir -p "${log%/*}" || return 1
+  err=$(mktemp) || return 1
+  if aicoding_progress_run "opencode: downloading $2 (timeout ${AICODING_VENDOR_TIMEOUT}s)" \
+      _aicoding_progress_capture "$err" timeout "$AICODING_VENDOR_TIMEOUT" \
+      curl -fsSL --proto '=https' --proto-redir '=https' --max-time "$AICODING_VENDOR_TIMEOUT" \
+      -o "$3" "$AICODING_OPENCODE_DOWNLOAD_BASE/v$1/$2" </dev/null; then
+    rm -f "$err"; return 0
+  fi
+  { printf '%s opencode v%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2"; tail -c 2000 "$err"; } > "$log"
+  rm -f "$err"
+  return 1
 }
 
 _aicoding_opencode_checksum_ok() {
   local sums=$1 asset=$2 archive=$3 expected actual
-  expected=$(awk -v a="$asset" '$2 == a && $1 ~ /^[0-9a-f]{64}$/ { print $1; n++ } END { if (n != 1) exit 1 }' "$sums") \
+  # No regex intervals: older mawk does not support {64}.
+  expected=$(awk -v a="$asset" '$2 == a && length($1) == 64 && $1 !~ /[^0-9a-f]/ { print $1; n++ } END { if (n != 1) exit 1 }' "$sums") \
     || return 1
   actual=$(sha256sum "$archive" | cut -d' ' -f1) || return 1
   [ "$actual" = "$expected" ]
@@ -47,6 +73,7 @@ _aicoding_opencode_checksum_ok() {
 
 # The release archive holds one regular file, `opencode`, at its root.
 # Anything else (links, directories, other names) is refused unextracted.
+# It is written to DEST/node_modules/.bin/opencode.
 _aicoding_opencode_extract() {
   timeout "$AICODING_VENDOR_TIMEOUT" python3 - "$1" "$2" <<'PY'
 import pathlib,shutil,sys,tarfile
@@ -58,7 +85,8 @@ try:
         member=members[0]
         if pathlib.PurePosixPath(member.name).parts not in (('opencode',),('.','opencode')): raise ValueError('name')
         if member.size>2*1024**3: raise ValueError('size')
-        target=pathlib.Path(dest)/'opencode'
+        target=pathlib.Path(dest)/'node_modules'/'.bin'/'opencode'
+        target.parent.mkdir(parents=True, exist_ok=True)
         with tar.extractfile(member) as source, target.open('xb') as output:
             shutil.copyfileobj(source,output)
         target.chmod(0o755)
@@ -69,12 +97,13 @@ PY
 
 _aicoding_opencode_probe() {
   local release=$1 probe_home=$2 actual
-  [ -f "$release/opencode" ] && [ ! -L "$release/opencode" ] && [ -x "$release/opencode" ] || return 1
+  local bin="$release/$AICODING_OPENCODE_BIN"
+  [ -f "$bin" ] && [ ! -L "$bin" ] && [ -x "$bin" ] || return 1
   mkdir -p "$probe_home" || return 1
   actual=$(HOME="$probe_home" XDG_CONFIG_HOME="$probe_home/.config" \
     XDG_DATA_HOME="$probe_home/.local/share" XDG_CACHE_HOME="$probe_home/.cache" \
     XDG_STATE_HOME="$probe_home/.local/state" \
-    _aicoding_version_from_command "$release/opencode") || return 1
+    _aicoding_version_from_command "$bin") || return 1
   [ "$actual" = "$3" ]
 }
 
@@ -118,7 +147,7 @@ aicoding_update_opencode() {
     fi
   fi
   rm -rf "$work" || return 1
-  _aicoding_activate_vendor_release opencode "$target" opencode opencode \
+  _aicoding_activate_vendor_release opencode "$target" opencode "$AICODING_OPENCODE_BIN" \
     || { aicoding_result_record opencode failed "$target" activation_failed; return 1; }
   aicoding_result_record opencode "$state" "$target" verified "$target"
 }

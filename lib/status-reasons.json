@@ -38,7 +38,7 @@
     "archive_download_failed": {
       "kind": "action",
       "meaning": "Downloading the Cursor or OpenCode archive failed.",
-      "fix": "Check network access to the download source, then run `aicoding-auto-update --once`. Details are in `~/.local/state/aicoding/auto-update/worker.log`."
+      "fix": "Check network access to the download source, then run `aicoding-auto-update --once`. Details are in `~/.local/state/aicoding/auto-update/worker.log`; for OpenCode, curl's last error is in `~/.local/state/aicoding/diagnostics/opencode-download.log`."
     },
     "archive_invalid": {
       "kind": "action",

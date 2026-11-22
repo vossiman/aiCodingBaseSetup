@@ -251,8 +251,8 @@ ensure_locales() {
 ensure_opencode() {
   command -v opencode &>/dev/null && return 0
   [[ "${AICODINGSETUP_SKIP_NETWORK:-0}" == 1 ]] && return 0
-  # OpenCode v2 ships only as GitHub release archives; the updater adapter
-  # (lib/update-opencode.sh) installs and later refreshes it.
+  # The blueprint installs OpenCode v2 from its GitHub release archives; the
+  # updater adapter (lib/update-opencode.sh) installs and later refreshes it.
   if ! declare -F _provision_ensure_update_components >/dev/null || ! _provision_ensure_update_components; then
     warn "aicoding updater unavailable; skipping opencode install"
     return 0
