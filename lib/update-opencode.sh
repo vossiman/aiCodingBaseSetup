@@ -71,16 +71,23 @@ _aicoding_opencode_checksum_ok() {
   [ "$actual" = "$expected" ]
 }
 
-# The release archive holds one regular file, `opencode`, at its root.
-# Anything else (links, directories, other names) is refused unextracted.
-# It is written to DEST/node_modules/.bin/opencode.
+# The release archive holds one regular file, `opencode`, at its root. The
+# only other entry tolerated is a root directory marker (`.` or `./`) that
+# really is a directory, as some tar builds emit; every other entry (links,
+# directories, other names, a second copy) is refused unextracted. The file
+# is written to DEST/node_modules/.bin/opencode.
 _aicoding_opencode_extract() {
   timeout "$AICODING_VENDOR_TIMEOUT" python3 - "$1" "$2" <<'PY'
 import pathlib,shutil,sys,tarfile
 archive,dest=sys.argv[1:]
 try:
     with tarfile.open(archive, 'r:gz') as tar:
-        members=[m for m in tar.getmembers() if m.name not in ('.', './')]
+        members=[]
+        for m in tar.getmembers():
+            if m.name in ('.', './'):
+                if not m.isdir(): raise ValueError('root marker')
+                continue
+            members.append(m)
         if len(members)!=1 or not members[0].isfile(): raise ValueError('layout')
         member=members[0]
         if pathlib.PurePosixPath(member.name).parts not in (('opencode',),('.','opencode')): raise ValueError('name')

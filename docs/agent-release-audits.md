@@ -169,22 +169,38 @@ the `opencode.ai/install` script, which installs v1 into `~/.opencode/bin`.
 v2 reads `update` (`disable|notify|auto`) and falls back to the deprecated
 `autoupdate`, where `false` means disable; a personal `"update": "auto"`
 would win. Its updater checks `OPENCODE_DISABLE_AUTOUPDATE` before either
-(verified in the 2.3.2 binary), so the managed launcher exports it and sends
-`update`/`upgrade` to `aicoding-auto-update`, as the Claude launcher does.
+(verified in the 2.3.2 binary), so the managed launcher always exports
+`OPENCODE_DISABLE_AUTOUPDATE=1`. A bare `opencode update`/`upgrade` runs
+`aicoding-auto-update --once`, `--help`/`-h` passes through (it only prints
+usage), and a version or any other flag is refused unchanged. The Claude
+launcher is unchanged.
 The blueprint also owns `"autoupdate": false` as a fallback: v1 accepts that
 key too, while an `update` key could fail a v1 config probe during the
 switch. The config probe runs `opencode debug config --standalone` on v2
 (the plain command starts or reuses the shared background server) with
-throwaway state, cache and data dirs, plain on v1, and not at all offline.
+throwaway state, cache and data dirs, `OPENCODE_DB` and
+`OPENCODE_PTY_SOCKET_DIR` pointed into its scratch dir and
+`OPENCODE_TEST_HOME` dropped, so an inherited live database is never
+opened; plain on v1, and not at all offline.
 
 The SQLite transcript redaction (`lib/redact-sqlite.py`) recognises the v2
 store (`session_part` + `session_v2`) as well as v1 (`message` + `part`), and
-scrubs both in a migrated database. v2 text columns: `session_part.data`,
-`session_v2` title/summary_diffs/metadata/revert, `session_inbox.payload`,
-`job` title/output/error, `automation` action/last_output,
-`instruction_entry.value`, `instruction_state` values and
-`instruction_blob.value`, plus the shared `session_message` and `event`.
-`blob` (binary, content-addressed) is not rewritten. Machines that still run v1 move to
+scrubs both in a migrated database. Every TEXT column of the fresh 2.3.2
+schema was audited; the user-content ones are scrubbed: `session_part.data`,
+`session_v2` title/summary_diffs/metadata/revert/permission/idle_outcome,
+`session_inbox.payload`, `job` title/output/error/recovery, `automation`
+name/action/last_outcome/last_output/state, `kv.value`,
+`permission.resource`, `project.commands`, `instruction_entry.value`,
+`instruction_state` values and `instruction_blob.value`, plus the shared
+`session_message` and `event`. Ids, paths, enums and OpenCode's own
+credentials are left alone, and `blob` (binary, content-addressed) is not
+rewritten.
+
+The devbox image no longer runs `opencode.ai/install`: it seeds v2 from the
+release archive with the same `SHA256SUMS` check, and the smoke test asserts
+a v2 seed and no `~/.opencode/bin`. On containers built from older images,
+the managed `env.sh` moves `~/.opencode/bin` (put first in `~/.bashrc` by the
+v1 installer) to the end of PATH, so the managed launcher wins. Machines that still run v1 move to
 v2 on their next updater pass. A Homebrew `opencode-v2` ahead of
 `~/.local/bin` on PATH keeps shadowing the managed copy; uninstall it to use
 the managed one.

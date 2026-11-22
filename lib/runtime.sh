@@ -156,37 +156,53 @@ _aicoding_runtime_write_wrapper() {
   {
     printf '%s\n' '#!/usr/bin/env bash' '# Managed by aicoding immutable runtime.'
     printf 'current=%s\nrelative=%s\n' "$quoted_current" "$quoted_relative"
-    local self_updating=""
     if [ "$relative" = bin/claude ] && [ "${current##*/}" = claude ]; then
-      self_updating=claude
-    elif [ "$relative" = node_modules/.bin/opencode ] && [ "${current##*/}" = opencode ]; then
-      self_updating=opencode
-    fi
-    if [ -n "$self_updating" ]; then
-      # aicoding owns these updates; the CLI's own updater would rewrite an
-      # immutable release. Scoped to the launcher, not the shared config.
+      # aicoding owns Claude updates; the built-in updater only fills an
+      # unused tree. Scoped here, not in the shared settings.json.
       printf '%s\n' \
         'case "${1:-}" in' \
         '  update|upgrade)' \
         '    updater="$HOME/.local/bin/aicoding-auto-update"' \
         '    [ -x "$updater" ] || updater=$(command -v aicoding-auto-update 2>/dev/null) || updater=' \
         '    if [ -z "$updater" ]; then' \
-        "      echo '$self_updating: updates are managed by aicoding, but aicoding-auto-update is not installed' >&2" \
+        "      echo 'claude: updates are managed by aicoding, but aicoding-auto-update is not installed' >&2" \
         '      exit 1' \
         '    fi' \
-        "    echo '$self_updating: updates are managed by aicoding; running aicoding-auto-update --once' >&2" \
+        "    echo 'claude: updates are managed by aicoding; running aicoding-auto-update --once' >&2" \
         '    exec "$updater" --once' \
         '    ;;' \
-        'esac'
-    fi
-    if [ "$self_updating" = claude ]; then
-      printf '%s\n' \
+        'esac' \
         'export DISABLE_AUTOUPDATER="${DISABLE_AUTOUPDATER:-1}"' \
         'export FORCE_AUTOUPDATE_PLUGINS="${FORCE_AUTOUPDATE_PLUGINS:-1}"'
-    elif [ "$self_updating" = opencode ]; then
-      # Checked before the config's update policy, so it also beats a
-      # personal "update": "auto".
-      printf '%s\n' 'export OPENCODE_DISABLE_AUTOUPDATE="${OPENCODE_DISABLE_AUTOUPDATE:-1}"'
+    fi
+    if [ "$relative" = node_modules/.bin/opencode ] && [ "${current##*/}" = opencode ]; then
+      # aicoding owns OpenCode updates: its own updater would rewrite an
+      # immutable release. A bare `update`/`upgrade` runs aicoding's updater,
+      # `--help`/`-h` only prints usage and passes through, and a version or
+      # any other flag is refused without changing anything.
+      printf '%s\n' \
+        'case "${1:-}" in' \
+        '  update|upgrade)' \
+        '    case "$#:${2:-}" in' \
+        '      1:)' \
+        '        updater="$HOME/.local/bin/aicoding-auto-update"' \
+        '        [ -x "$updater" ] || updater=$(command -v aicoding-auto-update 2>/dev/null) || updater=' \
+        '        if [ -z "$updater" ]; then' \
+        "          echo 'opencode: updates are managed by aicoding, but aicoding-auto-update is not installed' >&2" \
+        '          exit 1' \
+        '        fi' \
+        "        echo 'opencode: updates are managed by aicoding; running aicoding-auto-update --once' >&2" \
+        '        exec "$updater" --once' \
+        '        ;;' \
+        '      2:--help|2:-h) ;;' \
+        '      *)' \
+        "        echo \"opencode: updates are managed by aicoding, so 'opencode \$1' takes no version or flags; run 'opencode \$1' alone or 'aicoding-auto-update --once'\" >&2" \
+        '        exit 2' \
+        '        ;;' \
+        '    esac' \
+        '    ;;' \
+        'esac' \
+        'export OPENCODE_DISABLE_AUTOUPDATE=1'
     fi
     printf '%s\n' \
       'release=$(readlink -f -- "$current") || exit 1' \

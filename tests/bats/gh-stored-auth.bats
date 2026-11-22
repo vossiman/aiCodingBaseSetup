@@ -189,3 +189,13 @@ STUB
   grep -q 'already authenticated' "$AICODING_BOOT_SYNC_LOG"
   if grep -q -- 'auth login' "$TMPD/gh.log"; then false; fi
 }
+
+@test "env.sh moves a v1 ~/.opencode/bin behind ~/.local/bin and leaves other PATH order alone" {
+  run env -i HOME=/h PATH="/h/.opencode/bin:/usr/bin:/h/.local/bin:/h/.opencode/bin:/bin" \
+    bash -c ". '$BLUEPRINT_ROOT/configs/bash/env.sh'; printf %s \"\$PATH\""
+  [ "$status" -eq 0 ]
+  [ "$output" = "/usr/bin:/h/.local/bin:/bin:/h/.opencode/bin" ]
+  run env -i HOME=/h PATH="/usr/bin:/h/.local/bin:/bin" \
+    bash -c ". '$BLUEPRINT_ROOT/configs/bash/env.sh'; printf %s \"\$PATH\""
+  [ "$output" = "/usr/bin:/h/.local/bin:/bin" ]
+}

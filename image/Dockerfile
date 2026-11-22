@@ -119,10 +119,24 @@ WORKDIR /home/codespace
 
 RUN curl -fsSL https://claude.ai/install.sh | bash \
  && [ -x ~/.local/bin/claude ]
-RUN curl -fsSL https://opencode.ai/install | bash \
- && mkdir -p ~/.local/bin \
- && ln -sf "$HOME/.opencode/bin/opencode" ~/.local/bin/opencode \
- && [ -x "$(readlink -f ~/.local/bin/opencode)" ]
+# OpenCode v2 from its GitHub release archive, checked against the release's
+# SHA256SUMS, as lib/update-opencode.sh does at runtime (which then takes the
+# seed over). Not opencode.ai/install: that installs v1 into ~/.opencode/bin
+# and prepends it to PATH in .bashrc, shadowing the managed launcher.
+RUN set -eu; \
+    case "$(uname -m)" in x86_64) oc_arch=x64 ;; aarch64) oc_arch=arm64 ;; *) exit 1 ;; esac; \
+    oc_tag=$(curl -fsSL "https://api.github.com/repos/anomalyco/opencode/releases?per_page=100" \
+      | jq -r '.[] | select((.draft | not) and (.prerelease | not)) | .tag_name' \
+      | grep -E '^v2\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1); \
+    [ -n "$oc_tag" ]; \
+    oc_asset="opencode-linux-$oc_arch.tar.gz"; oc_tmp=$(mktemp -d); \
+    curl -fsSL -o "$oc_tmp/$oc_asset" "https://github.com/anomalyco/opencode/releases/download/$oc_tag/$oc_asset"; \
+    curl -fsSL -o "$oc_tmp/SHA256SUMS" "https://github.com/anomalyco/opencode/releases/download/$oc_tag/SHA256SUMS"; \
+    (cd "$oc_tmp" && grep -E "^[0-9a-f]+  $oc_asset\$" SHA256SUMS | sha256sum -c -); \
+    [ "$(tar -tzf "$oc_tmp/$oc_asset")" = opencode ]; \
+    tar -xzf "$oc_tmp/$oc_asset" -C "$oc_tmp" opencode; \
+    mkdir -p ~/.local/bin; install -m 0755 "$oc_tmp/opencode" ~/.local/bin/opencode; rm -rf "$oc_tmp"; \
+    ~/.local/bin/opencode --version | grep -qx "opencode $oc_tag"
 # Flattening the codex symlink costs the release layout, so the Code Mode
 # sidecar `codex-code-mode-host` must be copied ALONGSIDE it: codex resolves
 # the sidecar as a sibling of its own path, and upstream never links it on

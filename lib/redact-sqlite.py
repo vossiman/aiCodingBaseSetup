@@ -48,19 +48,30 @@ OPENCODE_V1 = [
     ("session_context_epoch", "baseline", "session_id"),
     ("session_context_epoch", "snapshot", "session_id"),
 ]
-# Schema of the OpenCode 2.3.2 store, fresh and migrated from v1.
+# Schema of the OpenCode 2.3.2 store, fresh and migrated from v1. Every TEXT
+# column that can carry prompts, output, commands or user-written text is
+# listed; ids, paths, enums and OpenCode's own credentials are not.
 OPENCODE_V2 = [
     ("session_part", "data", "session_id"),
     ("session_v2", "title", "id"),
     ("session_v2", "summary_diffs", "id"),
     ("session_v2", "metadata", "id"),
     ("session_v2", "revert", "id"),
+    ("session_v2", "permission", "id"),
+    ("session_v2", "idle_outcome", "id"),
     ("session_inbox", "payload", "session_id"),
     ("job", "title", "session_id"),
     ("job", "output", "session_id"),
     ("job", "error", "session_id"),
+    ("job", "recovery", "session_id"),
+    ("automation", "name", "session_id"),
     ("automation", "action", "session_id"),
+    ("automation", "last_outcome", "session_id"),
     ("automation", "last_output", "session_id"),
+    ("automation", "state", "session_id"),
+    ("kv", "value", None),
+    ("permission", "resource", None),
+    ("project", "commands", None),
     ("instruction_entry", "value", "session_id"),
     ("instruction_state", "initial_values", "session_id"),
     ("instruction_state", "current_values", "session_id"),

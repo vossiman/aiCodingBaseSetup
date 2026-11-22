@@ -181,11 +181,96 @@ build_release() {
   jq -e '.components.opencode.state == "updated"' "$AICODING_RESULTS_FILE"
 }
 
-@test "the OpenCode launcher routes update and upgrade to aicoding" {
+@test "the OpenCode launcher: bare update/upgrade runs aicoding, help passes through, anything else is refused" {
   aicoding_update_component opencode
-  printf '#!/bin/sh\necho "aicoding-auto-update $*"\n' > "$HOME/.local/bin/aicoding-auto-update"
+  printf '#!/bin/sh\necho "UPDATER $*" > "$TMP/updater.ran"\n' > "$HOME/.local/bin/aicoding-auto-update"
   chmod +x "$HOME/.local/bin/aicoding-auto-update"
-  run "$HOME/.local/bin/opencode" upgrade
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"aicoding-auto-update --once"* ]]
+  printf '#!/bin/sh\necho "REAL $* disable=$OPENCODE_DISABLE_AUTOUPDATE"\n' \
+    > "$AICODING_DATA_DIR/versions/opencode/2.3.2/node_modules/.bin/opencode"
+  for sub in update upgrade; do
+    rm -f "$TMP/updater.ran"
+    run "$HOME/.local/bin/opencode" "$sub"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$TMP/updater.ran")" = "UPDATER --once" ]
+    for help in --help -h; do
+      rm -f "$TMP/updater.ran"
+      run "$HOME/.local/bin/opencode" "$sub" "$help"
+      [ "$status" -eq 0 ]
+      [ "$output" = "REAL $sub $help disable=1" ]
+      [ ! -e "$TMP/updater.ran" ]
+    done
+    for extra in "2.3.1" "--method npm" "--help 2.3.1"; do
+      rm -f "$TMP/updater.ran"
+      # shellcheck disable=SC2086
+      run "$HOME/.local/bin/opencode" "$sub" $extra
+      [ "$status" -eq 2 ]
+      [[ "$output" == *"takes no version or flags"* ]]
+      [[ "$output" != *REAL* ]]
+      [ ! -e "$TMP/updater.ran" ]
+    done
+  done
+  OPENCODE_DISABLE_AUTOUPDATE=0 run "$HOME/.local/bin/opencode" run x
+  [ "$output" = "REAL run x disable=1" ]
+}
+
+@test "the Claude launcher text is unchanged: any update/upgrade goes to aicoding" {
+  . "$BLUEPRINT_ROOT/lib/runtime.sh"
+  _aicoding_runtime_write_wrapper "$TMP/claude" "$AICODING_DATA_DIR/current/claude" bin/claude
+  grep -qx '  update|upgrade)' "$TMP/claude"
+  grep -qx '    exec "$updater" --once' "$TMP/claude"
+  grep -qx 'export DISABLE_AUTOUPDATER="${DISABLE_AUTOUPDATER:-1}"' "$TMP/claude"
+  grep -qx 'export FORCE_AUTOUPDATE_PLUGINS="${FORCE_AUTOUPDATE_PLUGINS:-1}"' "$TMP/claude"
+  if grep -qE 'OPENCODE|\$#:' "$TMP/claude"; then false; fi
+  [ "$(sed -n '/^case/,/^esac/p' "$TMP/claude" | wc -l)" -eq 12 ]
+}
+
+@test "the v2 config probe never opens an inherited live OpenCode database" {
+  mkdir -p "$HOME/live"
+  echo live > "$HOME/live/opencode.db"
+  cat > "$TMP/stubs/opencode" <<'STUB'
+#!/bin/sh
+[ "$1" = --version ] && { echo "opencode v2.3.2"; exit 0; }
+printf 'args=%s\ndb=%s\nhome=%s\npty=%s\n' "$*" "$OPENCODE_DB" "${OPENCODE_TEST_HOME:-unset}" "$OPENCODE_PTY_SOCKET_DIR" > "$TMP/probe.env"
+STUB
+  chmod +x "$TMP/stubs/opencode"
+  export OPENCODE_DB="$HOME/live/opencode.db" OPENCODE_TEST_HOME="$HOME/live"
+  _aicoding_opencode_config_probe
+  grep -qx 'args=debug config --standalone' "$TMP/probe.env"
+  db=$(sed -n 's/^db=//p' "$TMP/probe.env")
+  [ "$db" != "$HOME/live/opencode.db" ]
+  case "$db" in /*/data/opencode.db) ;; *) false ;; esac
+  grep -qx 'home=unset' "$TMP/probe.env"
+  [ -n "$(sed -n 's/^pty=//p' "$TMP/probe.env")" ]
+  [ "$(cat "$HOME/live/opencode.db")" = live ]
+}
+
+@test "OpenCode extraction allows only a real root directory marker besides the binary" {
+  . "$BLUEPRINT_ROOT/lib/update-opencode.sh"
+  python3 - "$TMP" <<'EOF'
+import io, sys, tarfile
+tmp = sys.argv[1]
+def build(name, entries):
+    with tarfile.open(f"{tmp}/{name}.tgz", "w:gz") as t:
+        for n, kind in entries:
+            i = tarfile.TarInfo(n)
+            if kind == "dir": i.type = tarfile.DIRTYPE; t.addfile(i)
+            elif kind == "link": i.type = tarfile.SYMTYPE; i.linkname = "/etc/passwd"; t.addfile(i)
+            else:
+                data = b"#!/bin/sh\necho opencode v2.3.2\n"; i.size = len(data); i.mode = 0o755
+                t.addfile(i, io.BytesIO(data))
+build("dirmarker", [("./", "dir"), ("./opencode", "file")])
+build("filemarker", [(".", "file"), ("opencode", "file")])
+build("linkmarker", [("./", "link"), ("opencode", "file")])
+build("twocopies", [("opencode", "file"), ("./opencode", "file")])
+build("subdir", [("bin", "dir"), ("opencode", "file")])
+EOF
+  for good in dirmarker; do
+    mkdir "$TMP/x-$good"; _aicoding_opencode_extract "$TMP/$good.tgz" "$TMP/x-$good"
+    [ -x "$TMP/x-$good/node_modules/.bin/opencode" ]
+  done
+  for bad in filemarker linkmarker twocopies subdir; do
+    mkdir "$TMP/x-$bad"
+    if _aicoding_opencode_extract "$TMP/$bad.tgz" "$TMP/x-$bad"; then echo "accepted $bad"; false; fi
+    [ ! -e "$TMP/x-$bad/node_modules/.bin/opencode" ]
+  done
 }

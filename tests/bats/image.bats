@@ -147,6 +147,14 @@ SH
   grep -qF 'codex-code-mode-host' "$IMAGE_DIR/smoke-test.sh"
 }
 
+@test "image: OpenCode seed is v2 from a checksum-verified release archive, never the v1 installer" {
+  if grep -qE 'curl[^#]*opencode\.ai/install' "$IMAGE_DIR/Dockerfile"; then false; fi
+  grep -qF 'releases/download/$oc_tag/SHA256SUMS' "$IMAGE_DIR/Dockerfile"
+  grep -qF 'sha256sum -c -' "$IMAGE_DIR/Dockerfile"
+  grep -qF "grep -E '^v2" "$IMAGE_DIR/Dockerfile"
+  grep -qF 'opencode seed is v2' "$IMAGE_DIR/smoke-test.sh"
+}
+
 @test "image: smoke-test.sh exists, is executable, and checks the core contract" {
   [ -x "$IMAGE_DIR/smoke-test.sh" ]
   run grep -c -E 'tmux-commit|daemon\.json|docker-init\.sh|codespace' "$IMAGE_DIR/smoke-test.sh"

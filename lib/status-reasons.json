@@ -33,12 +33,12 @@
     "archive_checksum_mismatch": {
       "kind": "action",
       "meaning": "The downloaded OpenCode archive does not match the release's SHA256SUMS, so it was discarded.",
-      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, the release asset may be broken upstream; read `~/.local/state/aicoding/auto-update/worker.log`."
+      "fix": "Retry with `aicoding-auto-update --once`, which prints its output in the terminal. If it fails again, the release asset may be broken upstream. Scheduled runs log to the journal (`journalctl --user -u aicoding-auto-update`); `~/.local/state/aicoding/auto-update/worker.log` only covers the fallback worker."
     },
     "archive_download_failed": {
       "kind": "action",
       "meaning": "Downloading the Cursor or OpenCode archive failed.",
-      "fix": "Check network access to the download source, then run `aicoding-auto-update --once`. Details are in `~/.local/state/aicoding/auto-update/worker.log`; for OpenCode, curl's last error is in `~/.local/state/aicoding/diagnostics/opencode-download.log`."
+      "fix": "Check network access to the download source, then run `aicoding-auto-update --once`, which prints its output in the terminal. For OpenCode, curl's last error is in `~/.local/state/aicoding/diagnostics/opencode-download.log`. Scheduled runs log to the journal (`journalctl --user -u aicoding-auto-update`); `~/.local/state/aicoding/auto-update/worker.log` only covers the fallback worker."
     },
     "archive_invalid": {
       "kind": "action",

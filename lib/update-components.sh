@@ -116,8 +116,10 @@ _aicoding_record_deferred() {
 # `opencode debug config` on v2 starts or reuses the shared background server,
 # so v2 probes with --standalone (a private server that exits with the
 # command) and throwaway state, cache and data dirs; the real config dir is
-# kept because it is what is being probed. v1 has no --standalone and no
-# shared server. Tests never start one: the probe is skipped offline.
+# kept because it is what is being probed. OPENCODE_DB (an absolute path
+# wins over the data dir) and OPENCODE_PTY_SOCKET_DIR point into the scratch
+# dir and OPENCODE_TEST_HOME is dropped, so no live store is opened. v1 has
+# no --standalone and no shared server. The probe is skipped offline.
 _aicoding_opencode_config_probe() (
   local version probe
   [ "${AICODINGSETUP_SKIP_NETWORK:-0}" = 1 ] && exit 0
@@ -127,7 +129,9 @@ _aicoding_opencode_config_probe() (
   set -- debug config
   case "$version" in ""|0.*|1.*) ;; *) set -- "$@" --standalone ;; esac
   cd "$probe" || exit 1
-  XDG_STATE_HOME="$probe/state" XDG_CACHE_HOME="$probe/cache" XDG_DATA_HOME="$probe/data" \
+  env -u OPENCODE_TEST_HOME \
+    XDG_STATE_HOME="$probe/state" XDG_CACHE_HOME="$probe/cache" XDG_DATA_HOME="$probe/data" \
+    OPENCODE_DB="$probe/data/opencode.db" OPENCODE_PTY_SOCKET_DIR="$probe/pty" \
     timeout "${AICODING_PROBE_TIMEOUT:-15}" opencode "$@" </dev/null >/dev/null 2>&1
 )
 
