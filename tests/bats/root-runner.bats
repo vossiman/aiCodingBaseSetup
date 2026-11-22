@@ -132,6 +132,41 @@ _select() { echo "$1" > "$TMP/selected"; }
   [ "$(cat "$CODEX_MANAGED_DIR/requirements.toml")" = 'admin = true' ]
 }
 
+_pkg_stubs() {
+  mkdir -p "$TMP/bin"
+  printf '#!/bin/sh\n[ "$3" = ripgrep ] && [ -n "${RG_INSTALLED:-}" ] && printf "install ok installed"\nexit 0\n' > "$TMP/bin/dpkg-query"
+  printf '#!/bin/sh\necho "$*" >> "%s/apt.log"\nexit "${APT_STATUS:-0}"\n' "$TMP" > "$TMP/bin/apt-get"
+  chmod +x "$TMP/bin/dpkg-query" "$TMP/bin/apt-get"
+  export AICODING_ROOT_DPKG_QUERY="$TMP/bin/dpkg-query" AICODING_ROOT_APT_GET="$TMP/bin/apt-get"
+}
+
+@test "host packages task installs a missing ripgrep" {
+  _pkg_stubs
+  run bash "$BLUEPRINT_ROOT/root/tasks.d/20-host-packages.sh"
+  [ "$status" -eq 0 ]
+  grep -qx 'update -qq' "$TMP/apt.log"
+  grep -qx 'install -y -qq --no-install-recommends ripgrep' "$TMP/apt.log"
+}
+
+@test "host packages task does nothing when ripgrep is installed" {
+  _pkg_stubs
+  RG_INSTALLED=1 run bash "$BLUEPRINT_ROOT/root/tasks.d/20-host-packages.sh"
+  [ "$status" -eq 0 ]
+  [ ! -e "$TMP/apt.log" ]
+}
+
+@test "host packages task fails the pass when apt fails" {
+  _pkg_stubs
+  APT_STATUS=100 run bash "$BLUEPRINT_ROOT/root/tasks.d/20-host-packages.sh"
+  [ "$status" -ne 0 ]
+}
+
+@test "host packages task skips a host without apt-get" {
+  AICODING_ROOT_APT_GET="$TMP/no-such-apt-get" run bash "$BLUEPRINT_ROOT/root/tasks.d/20-host-packages.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no apt-get"* ]]
+}
+
 @test "install files lands runner and units once, reloading only on change" {
   mkdir -p "$TMP/bin"
   printf '#!/bin/sh\necho "$*" >> "%s/systemctl.log"\n' "$TMP" > "$TMP/bin/systemctl"
