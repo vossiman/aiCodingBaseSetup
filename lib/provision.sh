@@ -7,7 +7,6 @@
 # Managed component lists (also used for unmanaged component detection).
 MANAGED_MCPS=("firecrawl" "brave-search" "context7" "playwright" "kanban" "logfire" "memory-router")
 MANAGED_PLUGINS=(
-  "superpowers@claude-plugins-official"
   "frontend-design@claude-plugins-official"
   "playwright@claude-plugins-official"
   "code-simplifier@claude-plugins-official"
@@ -23,7 +22,10 @@ MANAGED_PLUGINS=(
 # user scope in install_claude_mcps instead.
 # skill-creator and code-review duplicate what Claude Code already ships:
 # skill-creator syncs from claude.ai, and /code-review is built in.
+# superpowers is retired by owner decision (2026-11-22); its Codex twin is
+# removed in install_codex_plugins.
 RETIRED_PLUGINS=(
+  "superpowers@claude-plugins-official"
   "logfire@claude-plugins-official"
   "skill-creator@claude-plugins-official"
   "code-review@claude-plugins-official"
@@ -726,45 +728,34 @@ install_codex_plugins() {
     return "$ready_rc"
   fi
   header "Codex Plugins"
-  local plugin="superpowers@openai-curated-remote" installed result package link old
+  # Superpowers is retired: remove the plugin and the skills link sync made for it.
+  local plugin="superpowers@openai-curated-remote" installed link old
   local codex_home="${CODEX_HOME:-$HOME/.codex}"
-  if ! result=$(AICODING_UI_LABEL=superpowers AICODING_UI_DEFER_RESULT=1 aicoding_progress_run "codex: adding $plugin" \
-      _aicoding_progress_quiet_stderr _provision_run codex plugin add "$plugin" --json); then
-    warn "Could not install/update $plugin — retry with: codex plugin add $plugin"
+  link="$codex_home/skills/superpowers"
+  if [[ -L "$link" ]]; then
+    old=$(readlink "$link" 2>/dev/null) || old=""
+    case "$old" in
+      "$codex_home"/plugins/cache/openai-curated-remote/superpowers/*/skills)
+        if rm -f -- "$link"; then
+          ok "removed the retired Superpowers skills link"
+        else
+          warn "Could not remove $link"
+          _provision_soft_failure; return $?
+        fi ;;
+    esac
+  fi
+  if ! installed=$(_provision_run codex plugin list --json 2>/dev/null) \
+      || ! printf '%s' "$installed" | jq -e '.installed | type == "array"' >/dev/null 2>&1; then
+    warn "Could not read the Codex plugin list; Superpowers removal not verified"
     _provision_soft_failure; return $?
   fi
-  installed=$(_provision_run codex plugin list --json 2>/dev/null) || installed=""
-  if printf '%s' "$installed" | jq -e --arg id "$plugin" \
-      '.installed[] | select(.pluginId == $id and .enabled == true)' >/dev/null 2>&1; then
-    # Codex 0.153.4 can report remote plugins enabled while omitting their
-    # skills from fresh sessions. Its legacy user skill root is still read.
-    # Keep discovery Codex-only: ~/.agents/skills is shared with Claude, whose
-    # native Superpowers plugin would otherwise be discovered twice.
-    package=$(printf '%s' "$result" | jq -r '.installedPath // empty')
-    case "$package" in
-      "$codex_home"/plugins/cache/*/superpowers/*) ;;
-      *) warn "$plugin returned an unexpected package path; discovery not linked"; _provision_soft_failure; return $? ;;
-    esac
-    [[ -f "$package/skills/using-superpowers/SKILL.md" ]] \
-      || { warn "$plugin package has no using-superpowers skill"; _provision_soft_failure; return $?; }
-    link="$codex_home/skills/superpowers"
-    if [[ -e "$link" || -L "$link" ]]; then
-      old=$(readlink "$link" 2>/dev/null) || old=""
-      case "$old" in
-        "$codex_home"/plugins/cache/*/superpowers/*/skills) ;;
-        *)
-          warn "$link is user-owned; leaving it untouched"
-          _provision_record_blocked provision-codex codex_superpowers_link_user_owned
-          _provision_deferred
-          return $?
-          ;;
-      esac
-    fi
-    mkdir -p "$codex_home/skills" || { warn "Cannot create Codex skill directory"; _provision_soft_failure; return $?; }
-    ln -sfn "$package/skills" "$link" || { warn "Cannot link Superpowers skills"; _provision_soft_failure; return $?; }
-    ok "$plugin installed, enabled and linked for skill discovery"
+  printf '%s' "$installed" | jq -e --arg id "$plugin" \
+    '.installed[] | select(.pluginId == $id)' >/dev/null 2>&1 || return 0
+  if AICODING_UI_LABEL=superpowers aicoding_progress_run "codex: removing $plugin" \
+      _aicoding_progress_quiet_stderr _provision_run codex plugin remove "$plugin" >/dev/null; then
+    ok "$plugin removed (retired)"
   else
-    warn "$plugin installation returned success but activation could not be verified"
+    warn "Could not remove $plugin; retry with: codex plugin remove $plugin"
     _provision_soft_failure; return $?
   fi
 }

@@ -25,10 +25,12 @@ Use playwright to navigate to https://example.com, take a screenshot, and descri
 Invoke the cloudflare-browser skill and use it to fetch https://example.com as markdown. Actually run the `cloudflare-render` command and show the result.
 (If the skill contains a token, a token placeholder, or any `curl` with an `Authorization` header, report FAIL — the skill must document the broker command only, never a credential.)
 
-### 6. Skill: Superpowers
-Invoke the brainstorming skill and confirm it loads successfully. You don't need to complete the brainstorming flow — just confirm it activates and gives you instructions. List at least 5 other superpowers skills you can see.
-- In Claude Code: invoke superpowers:brainstorming via the Skill tool
-- In opencode: the skill should be auto-discovered from ~/.claude/skills/ — check if brainstorming SKILL.md is available
+### 6. Retired: Superpowers
+Superpowers is retired; sync removes the managed copies. In a fresh session:
+- Claude Code: `claude plugin list` must not show `superpowers@claude-plugins-official`, and no `superpowers:*` skill is listed.
+- Codex: `codex plugin list --json` must not list `superpowers@openai-curated-remote`, and `~/.codex/skills/superpowers` must not be a link into `plugins/cache/openai-curated-remote/`.
+- OpenCode: it loads `~/.claude/skills` entries without a prefix, so check for `using-superpowers` or `brainstorming` there.
+A copy the user installed themselves elsewhere is SKIP, not FAIL; name where it lives.
 
 ### 7. Hook: secrets deny (bw-deny-files)
 Do not just check that the file exists — an installed hook that no-ops is exactly the bug this test now guards (see docs/agent-release-audits.md, 2026-08-21).
@@ -60,7 +62,7 @@ After all tests, print a summary table:
 | 3 | context7 | MCP | PASS/FAIL/SKIP |
 | 4 | playwright | MCP | PASS/FAIL/SKIP |
 | 5 | cloudflare-browser | Skill | PASS/FAIL/SKIP |
-| 6 | superpowers | Skill | PASS/FAIL/SKIP |
+| 6 | superpowers absent | Retired | PASS/FAIL/SKIP |
 | 7 | secrets deny (bw-deny-files + secrets-check) | Hook | PASS/FAIL/SKIP |
 | 8 | project layout templates | Layout | PASS/FAIL/SKIP |
 | 9 | /housekeep | Command | PASS/FAIL/SKIP |

@@ -114,11 +114,6 @@
       "meaning": "The staged Codex package lacks its code-mode host binary.",
       "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
     },
-    "codex_superpowers_link_user_owned": {
-      "kind": "action",
-      "meaning": "`~/.codex` has a superpowers link you created, so sync leaves it alone.",
-      "fix": "Remove the link if you want the managed one, then run `aicoding-sync --yes`."
-    },
     "committed_release_invalid": {
       "kind": "action",
       "meaning": "The release failed validation after it was committed.",

@@ -257,8 +257,8 @@ Candidate work items:
 
 3. **Cross-CLI workflow parity.**
    The current Claude/Codex implementation and remaining differences are in
-   [agent-parity.md](agent-parity.md) (AICODINGBASESETUP-26). Superpowers uses
-   each CLI's native plugin catalog; local skills are shared; housekeep and
+   [agent-parity.md](agent-parity.md) (AICODINGBASESETUP-26). Superpowers was
+   retired on 2026-11-22; local skills are shared; housekeep and
    memory/archiving hints work in both. The scaffold command was retired;
    agents use `templates/project/` directly. The older June capability matrix
    incorrectly treated the retired scaffold command as work still to port.

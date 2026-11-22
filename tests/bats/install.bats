@@ -440,7 +440,8 @@ STUB
 #!/bin/sh
 case "$*" in
   --version) printf 'codex-cli 0.200.0\n'; exit 0 ;;
-  "plugin add"*) exit 1 ;;
+  "plugin list"*) printf '{"installed":[{"pluginId":"superpowers@openai-curated-remote"}]}\n'; exit 0 ;;
+  "plugin remove"*) exit 1 ;;
 esac
 exit 0
 STUB

@@ -8,7 +8,6 @@ UI, permission prompts, or third-party plugin inventories.
 
 | Capability | Claude Code | Codex |
 |---|---|---|
-| Superpowers | `superpowers@claude-plugins-official` | `superpowers@openai-curated-remote` |
 | Estate skills | `~/.claude/skills` | Same files via `~/.agents/skills` |
 | Independent PR review | Defaults to Codex | Defaults to Claude |
 | Review/fix handback | Shared throwaway-worktree driver, no commits/pushes | Same driver |
@@ -25,18 +24,13 @@ UI, permission prompts, or third-party plugin inventories.
 | Independent session messages | Native Claude peers | No equivalent cross-harness transport; AICODINGBASESETUP-29 |
 | Subagents | Native Claude tools | Native Codex multi-agent feature |
 
-`install.sh` and `aicoding-sync` install/update Superpowers using native
-`codex plugin add`, then verify `installed` and `enabled` through the CLI.
-Offline tests skip these network operations. Missing/old Codex or catalog
-failures produce a warning without breaking provisioning. Existing plugins
-are preserved; no Claude cache paths are copied or pinned into Codex.
-Codex 0.153.4's remote catalog can report enabled while omitting skills from
-fresh-session discovery. A Codex-only `~/.codex/skills/superpowers` symlink
-points to the native install result's `installedPath/skills` (or under
-`CODEX_HOME` when set). This legacy discovery root remains supported by the
-CLI; the link updates when the native package version changes. A user-owned
-directory or unrelated symlink is preserved with a warning. The fresh-session
-check discovered all 14 Superpowers skills after this bridge was added.
+Superpowers is retired (owner decision 2026-11-22). `install.sh` and
+`aicoding-sync` remove it from both CLIs: the Claude plugin is in
+`RETIRED_PLUGINS` and disabled in `enabledPlugins`, and on Codex
+`install_codex_plugins` runs `codex plugin remove
+superpowers@openai-curated-remote` and deletes the
+`~/.codex/skills/superpowers` link that earlier syncs created. A user-owned
+directory or unrelated symlink at that path is left alone.
 Start a fresh session after installing plugins to pick up their skills.
 The existing skill bridge preserves a real user-owned `~/.agents/skills`
 directory; users who adopted that layout must link the desired estate skills
@@ -177,6 +171,5 @@ collision), and review/fix on a disposable repository. Stubbed tests alone
 cannot prove model behavior or account access.
 
 References: [Codex skills](https://learn.chatgpt.com/docs/build-skills),
-[Codex hooks](https://learn.chatgpt.com/docs/hooks), and the installed
-Superpowers 6.3.0 README / Codex plugin manifest. CLI installation syntax
+[Codex hooks](https://learn.chatgpt.com/docs/hooks). CLI installation syntax
 verified with `codex-cli 0.153.4`; Claude adapter flags with Claude Code 2.1.263.
