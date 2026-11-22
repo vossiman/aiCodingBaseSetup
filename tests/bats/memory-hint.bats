@@ -243,6 +243,20 @@ print(mod['read_token']())
   [ "$output" = "correct-token" ]
 }
 
+@test "MEMORY_WRITE_TOKEN wins over MEMORY_ROUTER_TOKEN, and works alone" {
+  unset MEMORY_ROUTER_URL MEMORY_ROUTER_TEST_TOKEN
+  local store="$HOME/.aicodingsetup/.secrets.env"
+  printf 'MEMORY_ROUTER_TOKEN=read-token\nMEMORY_WRITE_TOKEN=write-token\n' > "$store"
+  run python3 -c "import runpy; print(runpy.run_path('$CLI')['read_token']())"
+  [ "$status" -eq 0 ]; [ "$output" = "write-token" ]
+  printf 'MEMORY_WRITE_TOKEN=write-only\n' > "$store"
+  run python3 -c "import runpy; print(runpy.run_path('$CLI')['read_token']())"
+  [ "$status" -eq 0 ]; [ "$output" = "write-only" ]
+  printf 'export MEMORY_WRITE_TOKEN=exported\n' > "$store"
+  run python3 -c "import runpy; print(runpy.run_path('$CLI')['read_token']())"
+  [ "$status" -eq 0 ]; [ "$output" = "exported" ]
+}
+
 @test "malformed invocation (unknown flag): no output, exit 0" {
   export MEMORY_ROUTER_URL="http://127.0.0.1:1"
   run bash -c "printf 'which ports are in use on vossisrv' | '$CLI' --bogus"
