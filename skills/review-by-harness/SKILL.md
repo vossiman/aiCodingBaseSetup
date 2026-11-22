@@ -31,16 +31,16 @@ the caller or machine default. Pass `--harness` and `--model` explicitly,
 plus `--effort` for Claude/Codex. Respect any explicit user selection,
 including a different harness.
 
-### Model identifiers (verified 2026-10-03 against the installed CLIs)
+### Model identifiers (verified 2026-11-22 against the installed CLIs)
 
 | harness | `--model` | `--effort` | note |
 |---|---|---|---|
 | claude | `opus` (alias, today `claude-opus-5-5`) | `high` | **default** |
 | claude | `sonnet` (alias, today `claude-sonnet-5-5`) | `high` | cheaper second reader |
-| claude | `fable` (alias, today `claude-fable-5-1`) | `high` | user override only |
-| codex | `gpt-6.1-sol` | `high` | **default** (Sol family) |
-| codex | `gpt-6-luna`, `gpt-6-sol`, `gpt-5.6-sol` | `high` | alternatives |
-| codex | `gpt-6-astra` | `high` | user override only |
+| claude | `fable` (alias, today `claude-fable-5-2`) | `high` | user override only |
+| codex | `gpt-6.2-sol` | `high` | **default** (Sol family) |
+| codex | `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna` | `high` | alternatives |
+| codex | `gpt-6.2-astra` | `high` | user override only |
 | cursor | `grok-4.7-high-fast` | (none) | **default**; effort is in the name |
 | cursor | `grok-4.7-high`, `gpt-5.6-sol-high`, `claude-opus-5-5-high` | (none) | alternatives |
 
@@ -62,7 +62,7 @@ Examples:
 
 ```bash
 run.sh 123 /path/to/repo --harness claude --model opus --effort high --review-only
-run.sh 123 /path/to/repo --harness codex --model gpt-6.1-sol --effort high --review-only
+run.sh 123 /path/to/repo --harness codex --model gpt-6.2-sol --effort high --review-only
 run.sh 123 /path/to/repo --harness cursor --model grok-4.7-high-fast --review-only
 ```
 
@@ -81,7 +81,7 @@ for older scripts, but skill-driven runs should always make the choice explicit.
   sandboxing where available; the existing `REVIEW_SANDBOX='-s danger-full-access'` opt-in
   applies where user namespaces are unavailable. Cursor's `--force` is not
   a Claude opt-in. User and managed hooks remain active.
-- `--harness codex`: the Sol family (`gpt-6.1-sol` today) at high reasoning, via `codex exec
+- `--harness codex`: the Sol family (`gpt-6.2-sol` today) at high reasoning, via `codex exec
   review`. Has a real built-in review mode.
 - `--harness cursor`: Grok 4.7 high, via `cursor-agent`. No built-in review
   mode, so the diff is handed to it with `prompts/review.md`.

@@ -245,7 +245,7 @@ chose otherwise. Default to
 the Sol family for Codex and the Opus family for Claude at `high` effort;
 resolve the exact id with
 `bash ~/.claude/skills/dev-process-lite/routes.sh <entry> reviewer` (today
-`gpt-6.1-sol` and the `opus` alias). Fable and Astra require an explicit user
+`gpt-6.2-sol` and the `opus` alias). Fable and Astra require an explicit user
 override; task complexity or machine defaults do not authorize an upgrade.
 
 ## Bugsink API access
