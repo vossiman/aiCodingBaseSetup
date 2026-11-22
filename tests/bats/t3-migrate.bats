@@ -60,6 +60,14 @@ start_legacy() {
   [ ! -f "$T3_MIGRATE_DIR/demo.tgz" ]
 }
 
+@test "export: refuses when open files under the source cannot be listed" {
+  printf '#!/bin/sh\nexit 1\n' > "$TMP/stubs/find"; chmod +x "$TMP/stubs/find"
+  run "$B/t3-migrate" --export --version 0.0.40
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"cannot list open files"* ]]
+  [ ! -f "$T3_MIGRATE_DIR/demo.tgz" ]
+}
+
 @test "export: without a running server or --version it refuses" {
   run "$B/t3-migrate" --export
   [ "$status" -eq 1 ]
