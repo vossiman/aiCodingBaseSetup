@@ -439,18 +439,23 @@ def member($xs; $x): $xs | any(.[]; . == $x);
           if at($r.p + [$k]) == null then setpath($r.p + [$k]; $in[$k]) else . end)
       elif at($r.p) == null then setpath($r.p; $in)
       else . end)
+| reduce $rules.reseeded[] as $x (.;
+    ($b | at($x.path)) as $in
+    | if $in != null and member($x.shipped; at($x.path)) then setpath($x.path; $in) else . end)
 | reduce $rules.retired[] as $x (.;
     if member($x.shipped; at($x.path)) then delpaths([$x.path]) else . end)
 '
 
-# Owned keys take the blueprint value, seeded keys are set only when missing,
-# and everything else in the file stays personal. Returns 3 for a malformed
+# Owned keys take the blueprint value, seeded keys are set only when missing
+# (or moved to the current seed while they still hold an earlier shipped
+# one), and everything else in the file stays personal. Returns 3 for a malformed
 # destination, which is never overwritten.
 _managed_mixed() {
   local dest=$1 src=$2 out=$3 rel rules rendered rc=0
   rel=${dest#"$HOME"/}
   rules=$(jq -c --arg r "$rel" \
-    '.mixed[$r] + {retired: [.retired_keys[] | select(.dest == $r)]}' \
+    '.mixed[$r] + {retired: [.retired_keys[] | select(.dest == $r)],
+                   reseeded: [(.reseeded_keys // [])[] | select(.dest == $r)]}' \
     "$(_managed_config_data)") || return 1
   rendered=$(mktemp) || return 1
   _substitute_file_to "$src" "$rendered" || { rm -f "$rendered"; return 1; }

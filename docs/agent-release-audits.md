@@ -167,9 +167,10 @@ end to end: its separate stored login was expired. models.dev gives 6.2-sol
 the same 1,050,000 / 922,000 / 128,000 limits as 6.1-sol, so the `limit`
 block carries over.
 
-Both `model` keys are seed-only (`configs/managed-config.json`), so only new
-installs get the new default; machines that already have a `model` keep it
-until it is changed by hand.
+Both `model` keys are seeded (`configs/managed-config.json`). They are also
+listed in `reseeded_keys`, so a machine whose `model` still equals an earlier
+blueprint default (`gpt-6.1-sol` and older) moves to `gpt-6.2-sol` on its
+next sync; a model chosen by hand stays.
 
 ### OpenCode default model `openai/gpt-6.1-sol` (2026-09-29, opencode 1.18.33)
 
