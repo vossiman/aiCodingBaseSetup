@@ -12,6 +12,12 @@ setup() {
 teardown() { rm -rf "$TMPDIR"; }
 
 @test "fable 5.1 in payload: injects the guidance" {
+  run bash -c "printf '%s' '{\"model\":\"claude-fable-5-1\"}' | bash '$HOOK'"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"targeted edit"* ]]
+}
+
+@test "fable 5.2 in payload: injects the guidance" {
   run bash -c "printf '%s' '{\"model\":\"claude-fable-5-2\"}' | bash '$HOOK'"
   [ "$status" -eq 0 ]
   [[ "$output" == *"targeted edit"* ]]

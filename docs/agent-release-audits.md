@@ -146,16 +146,24 @@ checkpoint, measured against how `configs/` actually uses each tool.
 Settings adopted outside an audit window. Listed here so a future audit
 recognises them as deliberate rather than drift.
 
-### Codex and OpenCode default model `gpt-6.2-sol` (2026-11-22, codex-cli 0.171.0, opencode 2.2.7)
+### Codex default model `gpt-6.2-sol`; OpenCode stays on `gpt-6.1-sol` (2026-11-22, codex-cli 0.171.0, opencode 2.2.7)
 
-Replaces `gpt-6.1-sol` in `configs/codex/config.toml` and
-`configs/opencode/opencode.json`, plus the review-by-harness Codex default.
-Both CLIs list it: `codex debug models` gives the same 500,000 default and
-872,000 max context as 6.1-sol, so the seeded Codex budget is unchanged;
-`opencode models --standalone` lists `openai/gpt-6.2-sol`, and models.dev
-gives it the same 1,050,000 / 922,000 / 128,000 limits as 6.1-sol. Both keys
-are seed-only (`configs/managed-config.json`), so machines that already have
-a `model` keep it until it is changed by hand.
+Codex: `configs/codex/config.toml` and the review-by-harness default move
+from `gpt-6.1-sol` to `gpt-6.2-sol`. `codex debug models` gives it the same
+500,000 default and 872,000 max context as 6.1-sol, so the seeded budget is
+unchanged.
+
+OpenCode: stays on `openai/gpt-6.1-sol`. These machines use the ChatGPT
+login, which OpenCode runs as `chatgpt-token-sharing`, and OpenCode 2.2.7
+hard-codes the models allowed over it. That set ends at `gpt-6.1-sol` and
+`gpt-6.1-terra`; the binary has no `gpt-6.2` string at all. A config entry
+for 6.2-sol would recreate it with default capabilities only (no PDF
+input). Move OpenCode once a release lists 6.2 there; a non-zero count from
+`strings "$(readlink -f "$(command -v opencode)")" | grep -c '"gpt-6\.2-sol"'`
+is the first sign.
+
+Both `model` keys are seed-only (`configs/managed-config.json`), so machines
+that already have a `model` keep it until it is changed by hand.
 
 ### OpenCode default model `openai/gpt-6.1-sol` (2026-09-29, opencode 1.18.33)
 

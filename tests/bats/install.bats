@@ -1061,7 +1061,7 @@ EOF
 
   [ -f "$HOME/.config/opencode/opencode.json" ]
   # All 5 servers present under the 'mcp' (not 'mcpServers') top-level key.
-  jq -e '.provider.openai.models["gpt-6.2-sol"].limit ==
+  jq -e '.provider.openai.models["gpt-6.1-sol"].limit ==
     {context: 1050000, input: 922000, output: 128000} and
     .compaction.auto == true and .compaction.reserved == 20000' \
     "$HOME/.config/opencode/opencode.json"
@@ -1178,13 +1178,13 @@ EOF
   jq -e '.mcp.playwright'       "$HOME/.config/opencode/opencode.json"
   jq -e '.mcp["memory-router"]' "$HOME/.config/opencode/opencode.json"
   jq -e '.provider.openai.models["personal-model"].limit.context == 100000 and
-    .provider.openai.models["gpt-6.2-sol"].limit.input == 922000' \
+    .provider.openai.models["gpt-6.1-sol"].limit.input == 922000' \
     "$HOME/.config/opencode/opencode.json"
 }
 
 @test "managed model defaults use the current pinned families" {
   grep -qx 'model = "gpt-6.2-sol"' "$BLUEPRINT_ROOT/configs/codex/config.toml"
-  jq -e '.model == "openai/gpt-6.2-sol"' "$BLUEPRINT_ROOT/configs/opencode/opencode.json"
+  jq -e '.model == "openai/gpt-6.1-sol"' "$BLUEPRINT_ROOT/configs/opencode/opencode.json"
 }
 
 @test "install.sh first-deploy: installs check-archived-docs hook so settings.json reference is not dangling" {

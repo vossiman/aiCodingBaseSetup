@@ -355,7 +355,7 @@ blueprint enforces `notify`, the approval and sandbox posture, its
 `[mcp_servers.*]` entries and its `[features]` keys.
 
 Subscription context defaults use the existing ChatGPT login. OpenCode's
-`openai/gpt-6.2-sol` entry declares 1,050,000 total context, 922,000 input, and
+`openai/gpt-6.1-sol` entry declares 1,050,000 total context, 922,000 input, and
 128,000 output tokens, with automatic compaction and a 20,000-token reserve.
 These are model metadata and client budgets, not an authentication change or
 a guarantee of one million input tokens. Codex requests an 872,000-token
