@@ -913,17 +913,55 @@ EOF
   if grep -q "mcp add brave-search" "$TMPDIR/claude-calls"; then false; fi
 }
 
+@test "ensure_stdio_env_mcp: leaves a user registration with extra env vars alone" {
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+case "\$*" in
+  "mcp get brave-search")
+    printf 'brave-search:\n  Scope: User config (available in all your projects)\n  Command: brave-search-mcp-server\n  Environment:\n    BRAVE_API_KEY=old\n    BRAVE_API_URL=http://self\n'
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+  export BRAVE_API_KEY=new-key
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "brave-search MCP: the user registration sets extra variables (BRAVE_API_KEY BRAVE_API_URL); left unchanged"
+  if echo "$output" | grep -q "http://self"; then false; fi
+  if grep -q "mcp remove -s user brave-search" "$TMPDIR/claude-calls"; then false; fi
+}
+
+@test "ensure_stdio_env_mcp: rotates a stock entry that lists only its key" {
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+case "\$*" in
+  "mcp get brave-search")
+    printf 'brave-search:\n  Scope: User config (available in all your projects)\n  Command: brave-search-mcp-server\n  Environment:\n    BRAVE_API_KEY=old\n'
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+  export BRAVE_API_KEY=new-key
+  _seed_brave_fingerprint old
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  grep -q "mcp remove -s user brave-search" "$TMPDIR/claude-calls"
+  grep "mcp add brave-search" "$TMPDIR/claude-calls" | grep -q "BRAVE_API_KEY=new-key"
+}
+
 @test "ensure_stdio_env_mcp: a local-scope entry does not block the user registration" {
   cat > "$TMPDIR/stubs/claude" <<EOF
 #!/bin/sh
 echo "\$@" >> '$TMPDIR/claude-calls'
 case "\$*" in
   "mcp get brave-search")
-    if grep -q "mcp add brave-search" '$TMPDIR/claude-calls'; then
-      printf 'brave-search:\n  Scope: User config (available in all your projects)\n  Command: brave-search-mcp-server\n'
-    else
-      printf 'brave-search:\n  Scope: Local config (private to you in this project)\n  Command: brave-search-mcp-server\n'
-    fi
+    printf 'brave-search:\n  Scope: Local config (private to you in this project)\n  Command: brave-search-mcp-server\n'
     ;;
 esac
 exit 0

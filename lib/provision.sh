@@ -435,17 +435,23 @@ ensure_stdio_env_mcp() {
   fp="$(printf '%s\n' "$var=$value" "$command" | sha256sum | awk '{print $1}')"
   [[ -f "$fp_file" ]] && stored="$(cat "$fp_file" 2>/dev/null)" || true
   # Unscoped `mcp get` also finds local/project entries; only a user-scope
-  # entry running our command is ours to replace.
-  local details scope cmd
+  # entry with our command and no extra env vars is ours to replace. Only
+  # variable names are parsed, never values.
+  local details scope cmd env_names
   details="$(_provision_run claude mcp get "$name" 2>/dev/null)" || details=""
   scope="$(printf '%s\n' "$details" | sed -n 's/^[[:space:]]*Scope:[[:space:]]*//p' | head -n1)"
   cmd="$(printf '%s\n' "$details" | sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' | head -n1)"
+  env_names="$(printf '%s\n' "$details" | sed -n 's/^[[:space:]]\{4,\}\([A-Z_][A-Z0-9_]*\)=.*/\1/p' | sort -u | tr '\n' ' ')"
   if [[ "$scope" == "User config"* ]]; then
     case "$cmd" in
       "$command"|"$HOME/.local/bin/$command") ;;
       *) warn "$name MCP: a user registration ($cmd) holds the name; left unchanged"
          return 0 ;;
     esac
+    if [[ -n "$env_names" && "$env_names" != "$var " ]]; then
+      warn "$name MCP: the user registration sets extra variables (${env_names% }); left unchanged"
+      return 0
+    fi
     if [[ "$stored" == "$fp" ]]; then
       ok "$name MCP already configured"
       return 0
@@ -456,8 +462,9 @@ ensure_stdio_env_mcp() {
       return 1
     fi
   fi
-  if _provision_run claude mcp add "$name" -s user -e "$var=$value" -- "$command" >/dev/null 2>&1 \
-      && _provision_run claude mcp get "$name" 2>/dev/null | grep -q '^[[:space:]]*Scope:[[:space:]]*User config'; then
+  # The add's exit status is the check: a read-back would see a shadowing
+  # local entry instead of the user one.
+  if _provision_run claude mcp add "$name" -s user -e "$var=$value" -- "$command" >/dev/null 2>&1; then
     mkdir -p "$AICODING_MCP_STATE" 2>/dev/null || true
     printf '%s\n' "$fp" > "$fp_file" 2>/dev/null || true
     ok "$name MCP configured"
