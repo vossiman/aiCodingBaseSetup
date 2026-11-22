@@ -86,7 +86,6 @@ the session's claim. There is no command-line fallback.
 
 ### Claude Code Plugins (Marketplace)
 
-- superpowers (brainstorming, TDD, plans, code review, debugging)
 - frontend-design
 - playwright
 - code-simplifier

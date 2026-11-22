@@ -89,7 +89,6 @@ Write-Host "  OK: playwright MCP configured" -ForegroundColor Green
 # --- Claude Code Plugins ---
 Write-Host "`n=== Claude Code Plugins ===" -ForegroundColor Green
 $plugins = @(
-    "superpowers@claude-plugins-official",
     "frontend-design@claude-plugins-official",
     "playwright@claude-plugins-official",
     "code-simplifier@claude-plugins-official",
@@ -99,6 +98,10 @@ $plugins = @(
 foreach ($plugin in $plugins) {
     & claude plugin install $plugin 2>$null
     Write-Host "  OK: $plugin" -ForegroundColor Green
+}
+# Retired plugins, removed from earlier installs.
+foreach ($plugin in @("superpowers@claude-plugins-official")) {
+    & claude plugin uninstall $plugin 2>$null
 }
 
 # --- Copy hooks and skills ---

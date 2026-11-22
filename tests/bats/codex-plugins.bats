@@ -1,58 +1,64 @@
 #!/usr/bin/env bats
+# Superpowers is retired: install_codex_plugins removes the Codex plugin and
+# the skills link earlier syncs made, and leaves user-owned files alone.
 setup() {
   : "${BLUEPRINT_ROOT:?run via tests/bats/run.sh}"
   TEST_DIR=$(mktemp -d)
   export HOME="$TEST_DIR/home" LOG="$TEST_DIR/calls"
   unset CODEX_HOME
   export PACKAGE="$HOME/.codex/plugins/cache/openai-curated-remote/superpowers/6.3.0"
-  mkdir -p "$PACKAGE/skills/using-superpowers"
-  touch "$PACKAGE/skills/using-superpowers/SKILL.md"
-  mkdir -p "$HOME" "$TEST_DIR/bin"
+  mkdir -p "$PACKAGE/skills/using-superpowers" "$HOME" "$TEST_DIR/bin"
   cat > "$TEST_DIR/bin/codex" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >> "$LOG"
 case "$*" in
-  'plugin add '*) printf '{"installedPath":"%s"}\n' "$PACKAGE"; exit "${ADD_STATUS:-0}" ;;
   'plugin list --json') printf '%s\n' "${LIST_RESULT}" ;;
+  'plugin remove '*) exit "${REMOVE_STATUS:-0}" ;;
 esac
 STUB
   chmod +x "$TEST_DIR/bin/codex"
   export PATH="$TEST_DIR/bin:/usr/bin:/bin"
   export LIST_RESULT='{"installed":[{"pluginId":"superpowers@openai-curated-remote","enabled":true}]}'
-  unset ADD_STATUS
+  unset REMOVE_STATUS
   . "$BLUEPRINT_ROOT/lib/provision.sh"
 }
 teardown() { rm -rf "$TEST_DIR"; }
-@test "offline install never launches Codex" {
+
+@test "offline sync never launches Codex" {
   run install_codex_plugins
   [ "$status" -eq 0 ]
   [ ! -e "$LOG" ]
 }
-@test "Codex plugin install uses native catalog and verifies activation on every run" {
+
+@test "an installed Superpowers plugin is removed with its managed skills link" {
   export AICODINGSETUP_SKIP_NETWORK=0
+  mkdir -p "$HOME/.codex/skills/mine"
+  ln -s "$PACKAGE/skills" "$HOME/.codex/skills/superpowers"
   run install_codex_plugins
   [ "$status" -eq 0 ]
-  [[ "$output" == *'installed, enabled and linked'* ]]
-  grep -qx 'plugin add superpowers@openai-curated-remote --json' "$LOG"
-  grep -qx 'plugin list --json' "$LOG"
-  run install_codex_plugins
-  [ "$status" -eq 0 ]
-  [ "$(wc -l < "$LOG")" -eq 4 ]
+  [[ "$output" == *'removed (retired)'* ]]
+  grep -qx 'plugin remove superpowers@openai-curated-remote' "$LOG"
+  [ ! -e "$HOME/.codex/skills/superpowers" ] && [ ! -L "$HOME/.codex/skills/superpowers" ]
+  [ -d "$HOME/.codex/skills/mine" ]
 }
-@test "failed install is fail-open and never claims success" {
-  export AICODINGSETUP_SKIP_NETWORK=0 ADD_STATUS=1
-  run install_codex_plugins
-  [ "$status" -eq 0 ]
-  [[ "$output" == *'Could not install/update'* ]]
-  [[ "$output" != *'installed, enabled and linked'* ]]
-}
-@test "successful install with disabled plugin warns" {
+
+@test "nothing installed means no remove call" {
   export AICODINGSETUP_SKIP_NETWORK=0 LIST_RESULT='{"installed":[]}'
   run install_codex_plugins
   [ "$status" -eq 0 ]
-  [[ "$output" == *'activation could not be verified'* ]]
+  grep -qx 'plugin list --json' "$LOG"
+  if grep -q 'plugin remove' "$LOG"; then false; fi
 }
-@test "host without Codex skips installation" {
+
+@test "a failed removal is fail-open and never claims success" {
+  export AICODINGSETUP_SKIP_NETWORK=0 REMOVE_STATUS=1
+  run install_codex_plugins
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'Could not remove'* ]]
+  [[ "$output" != *'removed (retired)'* ]]
+}
+
+@test "host without Codex skips the step" {
   rm "$TEST_DIR/bin/codex"
   export AICODINGSETUP_SKIP_NETWORK=0
   run install_codex_plugins
@@ -60,47 +66,20 @@ teardown() { rm -rf "$TEST_DIR"; }
   [ ! -e "$LOG" ]
 }
 
-@test "plugin update refreshes discovery link without touching other skills" {
-  export AICODINGSETUP_SKIP_NETWORK=0
-  install_codex_plugins
-  [ "$(readlink "$HOME/.codex/skills/superpowers")" = "$PACKAGE/skills" ]
-  export PACKAGE="$HOME/.codex/plugins/cache/openai-curated-remote/superpowers/6.4.0"
-  mkdir -p "$PACKAGE/skills/using-superpowers" "$HOME/.codex/skills/mine"
-  touch "$PACKAGE/skills/using-superpowers/SKILL.md"
-  install_codex_plugins
-  [ "$(readlink "$HOME/.codex/skills/superpowers")" = "$PACKAGE/skills" ]
-  [ -d "$HOME/.codex/skills/mine" ]
-}
-@test "user-owned Superpowers directory is preserved" {
-  export AICODINGSETUP_SKIP_NETWORK=0
+@test "a user-owned Superpowers directory is preserved" {
+  export AICODINGSETUP_SKIP_NETWORK=0 LIST_RESULT='{"installed":[]}'
   mkdir -p "$HOME/.codex/skills/superpowers"
   echo keep > "$HOME/.codex/skills/superpowers/mine"
   run install_codex_plugins
   [ "$status" -eq 0 ]
-  [[ "$output" == *'user-owned'* ]]
   [ "$(cat "$HOME/.codex/skills/superpowers/mine")" = keep ]
 }
 
-@test "persistent enrollment defers a user-owned Superpowers directory" {
-  export AICODINGSETUP_SKIP_NETWORK=0 AICODING_PERSISTENT_ENROLLMENT=1
-  mkdir -p "$HOME/.codex/skills/superpowers"
-  echo keep > "$HOME/.codex/skills/superpowers/mine"
-
-  install_codex_plugins
-
-  [ "${_AICODING_PREPARATION_DEFERRED:-0}" -eq 1 ]
-  [ "$(cat "$HOME/.codex/skills/superpowers/mine")" = keep ]
-}
-
-@test "scheduled provisioning reports a user-owned Superpowers directory as deferred" {
-  export AICODINGSETUP_SKIP_NETWORK=0 AICODING_SYNC_MODE=boot
-  _provision_tool_ready() { return 0; }
-  mkdir -p "$HOME/.codex/skills/superpowers"
-  echo keep > "$HOME/.codex/skills/superpowers/mine"
-
+@test "a user-owned Superpowers link elsewhere is preserved" {
+  export AICODINGSETUP_SKIP_NETWORK=0 LIST_RESULT='{"installed":[]}'
+  mkdir -p "$HOME/my-skills" "$HOME/.codex/skills"
+  ln -s "$HOME/my-skills" "$HOME/.codex/skills/superpowers"
   run install_codex_plugins
-
-  [ "$status" -eq 3 ]
-  [[ "$output" == *'user-owned'* ]]
-  [ "$(cat "$HOME/.codex/skills/superpowers/mine")" = keep ]
+  [ "$status" -eq 0 ]
+  [ "$(readlink "$HOME/.codex/skills/superpowers")" = "$HOME/my-skills" ]
 }

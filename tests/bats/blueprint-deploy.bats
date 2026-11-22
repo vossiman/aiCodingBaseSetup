@@ -107,7 +107,7 @@ retired_clone() {
           permissions:{allow:["Bash(mine:*)"], deny:["Read(/mine)"]},
           env:{MY_VAR:"1", CLAUDE_CODE_NO_FLICKER:"0"},
           hooks:{MyEvent:[{x:1}], Stop:[{mine:true}]},
-          enabledPlugins:{"mine@x":true, "superpowers@claude-plugins-official":false}}' \
+          enabledPlugins:{"mine@x":true, "superpowers@claude-plugins-official":true}}' \
     > "$HOME/.claude/settings.json"
   managed_config_apply >/dev/null
   local s="$HOME/.claude/settings.json" b="$TMPDIR/rendered.json"
@@ -116,7 +116,7 @@ retired_clone() {
          and .hooks.MyEvent == [{x:1}] and .enabledPlugins["mine@x"] == true' "$s"
   jq -e --slurpfile b "$b" '.env.CLAUDE_CODE_NO_FLICKER == $b[0].env.CLAUDE_CODE_NO_FLICKER
          and .hooks.Stop == $b[0].hooks.Stop
-         and .enabledPlugins["superpowers@claude-plugins-official"] == true
+         and .enabledPlugins["superpowers@claude-plugins-official"] == false
          and .outputStyle == $b[0].outputStyle
          and (.permissions.allow | index("Bash(mine:*)")) != null
          and (.permissions.deny | index("Read(/mine)")) != null

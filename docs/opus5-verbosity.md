@@ -135,6 +135,10 @@ third-party. If Layer 2 leaves narration heavy, that pressure is the next
 suspect, and the lever is which superpowers skills get installed rather
 than an edit to their text.
 
+Update 2026-11-22: that lever was pulled. Superpowers is retired from the
+blueprint and sync removes it from Claude and Codex, so neither preamble is
+loaded any more.
+
 The Opus 5 guide explicitly says several instruction *classes* backfire on
 this model, compounding with built-in behaviour to burn tokens with no
 quality gain. Audit `configs/claude/CLAUDE.md` and the superpowers skills
@@ -172,6 +176,7 @@ up in the session as a `UserPromptSubmit hook success:` line. If it is
 absent in an Opus 5 session, the hook is not matching, and the first thing
 to check is what model string the payload or transcript actually carries.
 
-If the block is present and the answers are still padded, the remaining
-suspect is the superpowers instruction load described under Layer 3, not
-another conciseness rule stacked on top.
+If the block is present and the answers are still padded, the superpowers
+instruction load described under Layer 3 is no longer a suspect (retired
+2026-11-22); look at `configs/claude/CLAUDE.md` next, not another
+conciseness rule stacked on top.
