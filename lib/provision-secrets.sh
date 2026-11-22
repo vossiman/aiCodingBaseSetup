@@ -2,7 +2,35 @@
 # for install.sh. Relies on install.sh globals and logging helpers; sourced
 # only (no shebang / set -e), matching lib/*.sh.
 
+# load_secrets_env sources the store as shell, so a value with whitespace,
+# quotes, $, backtick or backslash could break or run code during sync.
+_secret_value_ok() {
+  [[ "$1" != *[[:space:]\'\"\$\`\\]* ]]
+}
+
+# Parse KEY=value lines into the associative array named by $1. Values are
+# kept raw, as every reader of the store expects. Never echoes a value.
+_secrets_read_file() {
+  local -n _into=$1
+  local file=$2 line key n=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    n=$((n + 1))
+    line="${line%$'\r'}"
+    [[ -z "${line//[[:space:]]/}" || "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" == "export "* ]] && line="${line#export }"
+    key="${line%%=*}"
+    if [[ "$line" != *=* || ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      warn "$file line $n is not KEY=value; ignored"
+      continue
+    fi
+    _into["$key"]="${line#*=}"
+  done < "$file"
+}
+
 # --- Secrets Management ---
+# The example lists the keys a fresh machine is asked for. An existing store
+# is never rebuilt: missing keys are appended, every other byte is kept, and
+# the write is in place because containers bind this single file by inode.
 load_or_prompt_secrets() {
   header "Secrets Management"
   mkdir -p "$SECRETS_DIR"
@@ -13,26 +41,13 @@ load_or_prompt_secrets() {
     exit 1
   fi
 
-  # Parse required keys from example file
   local required_keys=()
-  while IFS= read -r line; do
-    # Skip comments and blank lines
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
     [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
-    local key="${line%%=*}"
-    required_keys+=("$key")
+    required_keys+=("${line%%=*}")
   done < "$example_file"
-
-  # Load existing secrets if present
-  declare -A secrets
-  if [[ -f "$SECRETS_FILE" ]]; then
-    info "Found existing secrets file"
-    while IFS='=' read -r key value; do
-      [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
-      secrets["$key"]="$value"
-    done < "$SECRETS_FILE"
-  else
-    info "No secrets file found — will prompt for all keys"
-  fi
 
   # Decide whether we can prompt (no tty, container mode, or env opt-out → no)
   local can_prompt=true
@@ -40,54 +55,86 @@ load_or_prompt_secrets() {
   [[ "$ENV_TYPE" == "container" ]] && can_prompt=false
   [[ "${AICODINGSETUP_NONINTERACTIVE:-}" == "1" ]] && can_prompt=false
 
-  # Prompt for missing keys (keys with empty values are treated as "skipped", not missing)
-  local prompted=false
+  # Only a run that may write takes the lock, and it reads the store under
+  # it, so two installs cannot both append the same key or race a create.
+  local lock_fd=""
+  if [[ ! -f "$SECRETS_FILE" || "$can_prompt" == "true" ]] && command -v flock >/dev/null 2>&1; then
+    if [[ -w "$SECRETS_DIR" ]]; then
+      exec {lock_fd}>>"$SECRETS_DIR/.secrets.lock"
+      flock "$lock_fd"
+    fi
+  fi
+
+  local rc=0
+  _secrets_load_prompt_write || rc=$?
+  [[ -n "$lock_fd" ]] && exec {lock_fd}>&-
+  return "$rc"
+}
+
+_secrets_load_prompt_write() {
+  declare -A secrets
+  local existed=false
+  if [[ -f "$SECRETS_FILE" ]]; then
+    existed=true
+    info "Found existing secrets file"
+    _secrets_read_file secrets "$SECRETS_FILE"
+  else
+    info "No secrets file found — will prompt for all keys"
+  fi
+
+  # Keys with empty values are "skipped", not missing, and are never asked again.
+  local new_keys=() key value
   for key in "${required_keys[@]}"; do
-    if [[ ! -v "secrets[$key]" ]]; then
-      if [[ "$can_prompt" == "true" ]]; then
-        prompted=true
-        read -rp "Enter $key [or press Enter to skip]: " value
-        secrets["$key"]="${value:-}"
-      else
-        info "$key not set (non-interactive — leaving empty)"
-        secrets["$key"]=""
-      fi
-    else
+    if [[ -v "secrets[$key]" ]]; then
       if [[ -n "${secrets[$key]}" ]]; then
         ok "$key already set"
       else
         ok "$key skipped (empty)"
       fi
+    elif [[ "$can_prompt" == "true" ]]; then
+      while true; do
+        value=""
+        if ! read -rp "Enter $key [or press Enter to skip]: " value; then
+          _secret_value_ok "$value" || value=""
+          break
+        fi
+        _secret_value_ok "$value" && break
+        warn "$key: value contains whitespace, a quote, \$, a backtick or a backslash; try again"
+      done
+      secrets["$key"]="$value"
+      new_keys+=("$key")
+    else
+      info "$key not set (non-interactive — leaving empty)"
+      secrets["$key"]=""
     fi
   done
 
-  # Write secrets file — but NEVER regenerate an existing one in non-interactive
-  # mode. ~/.aicodingsetup/.secrets.env is typically a host bind mount: the single
-  # source of truth shared across containers. A container can't prompt, so a
-  # rewrite would stamp every key it lacks (e.g. a freshly-added GH_TOKEN) to
-  # EMPTY — destroying the user's real tokens on the host. So: only (re)write when
-  # we can prompt (interactive host setup) or when bootstrapping a missing file.
-  # When an existing file is left untouched, values already loaded above are still
-  # exported below for secret substitution.
-  if [[ -f "$SECRETS_FILE" && "$can_prompt" != "true" ]]; then
-    info "Existing secrets file left untouched (non-interactive — host file is authoritative)"
-  else
-    {
-      echo "# AI Coding Base Setup — Secrets"
-      echo "# Auto-generated by install.sh — do not commit"
-      echo ""
-      for key in "${required_keys[@]}"; do
-        echo "${key}=${secrets[$key]:-}"
-      done
-    } > "$SECRETS_FILE"
-    chmod 600 "$SECRETS_FILE"
-  fi
-
-  if [[ "$prompted" == "true" ]]; then
+  if [[ "$existed" != "true" ]]; then
+    local buf=$'# AI Coding Base Setup — Secrets\n# Created by install.sh — do not commit\n\n'
+    for key in "${required_keys[@]}"; do
+      buf+="${key}=${secrets[$key]:-}"$'\n'
+    done
+    if ! ( umask 077 && printf '%s' "$buf" > "$SECRETS_FILE" ); then
+      err "Could not create $SECRETS_FILE"
+      return 1
+    fi
     ok "Secrets saved to $SECRETS_FILE"
+  elif (( ${#new_keys[@]} > 0 )); then
+    local buf=$'\n'
+    [[ -s "$SECRETS_FILE" && -n "$(tail -c1 "$SECRETS_FILE")" ]] && buf=$'\n\n'
+    for key in "${new_keys[@]}"; do
+      buf+="${key}=${secrets[$key]}"$'\n'
+    done
+    # One simple command: `if ! { ...; } >> f` does not see a failed redirect.
+    if ! printf '%s' "$buf" >> "$SECRETS_FILE"; then
+      err "Could not append ${new_keys[*]} to $SECRETS_FILE"
+      return 1
+    fi
+    ok "Added ${new_keys[*]} to $SECRETS_FILE"
   fi
 
-  # Export secrets for use by other functions
+  # Only the example's keys reach install's child processes; helpers read the
+  # store themselves.
   for key in "${required_keys[@]}"; do
     export "$key"="${secrets[$key]:-}"
   done

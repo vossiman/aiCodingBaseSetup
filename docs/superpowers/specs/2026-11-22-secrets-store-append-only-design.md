@@ -1,6 +1,6 @@
 # Secrets store: prompt for missing keys, never rewrite
 
-Status: draft rev 2, 2026-11-22, after a Codex `gpt-6.2-astra` review.
+Status: implemented on PR #289, 2026-11-22, after a Codex `gpt-6.2-astra` review.
 Ticket AICODINGBASESETUP-111, PR #289.
 
 ## Problem
@@ -127,13 +127,10 @@ answers on stdin.
 - The deny hook and the read-only container mount.
 - The "empty means skipped" rule.
 
-## Open question
+## Decided: `MEMORY_ROUTER_TOKEN` is retired
 
-**`MEMORY_ROUTER_TOKEN`.** The owner does not set it. `MEMORY_WRITE_TOKEN`
-already wins for MCP config (`lib/provision.sh:560`,
-`lib/blueprint-deploy.sh:227`), but `configs/memory/memory-hint:43` reads
-only `MEMORY_ROUTER_TOKEN`, so automatic hints have no token on the owner's
-machines. Recommendation: make `memory-hint` fall back to
-`MEMORY_WRITE_TOKEN` (it also authorizes search) and drop
-`MEMORY_ROUTER_TOKEN` from the example, which then matches the 11 keys
-exactly. The alternative is to keep it and set it everywhere (12 prompts).
+Owner decision 2026-11-22: every machine uses `MEMORY_WRITE_TOKEN`, which
+also authorizes search. `configs/memory/memory-hint` now prefers it and
+falls back to `MEMORY_ROUTER_TOKEN` only for an old store, the example drops
+`MEMORY_ROUTER_TOKEN`, and the "memory-router MCP skipped" warning names
+`MEMORY_WRITE_TOKEN`. The example now matches the owner's 11 keys exactly.

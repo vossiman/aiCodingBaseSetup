@@ -736,7 +736,7 @@ EOF
   _run_install_fn "$(_isolated_path)" install_claude_mcps
   [ "$status" -eq 0 ]
   if grep -qE "mcp add .*memory-router" "$TMPDIR/claude-calls"; then false; fi
-  echo "$output" | grep -q "MEMORY_ROUTER_TOKEN not set"
+  echo "$output" | grep -q "MEMORY_WRITE_TOKEN not set"
 }
 
 @test "install_claude_mcps: heals memory-router URL drift by remove + re-add" {
@@ -1165,7 +1165,7 @@ FIRECRAWL_API_KEY=fake-firecrawl-123
 BRAVE_API_KEY=fake-brave-456
 CLOUDFLARE_API_TOKEN=
 CLOUDFLARE_ACCOUNT_ID=
-MEMORY_ROUTER_TOKEN=fake-memtoken-789
+MEMORY_WRITE_TOKEN=fake-memtoken-789
 EOF
 
   bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
@@ -1191,7 +1191,7 @@ FIRECRAWL_API_KEY=fake-firecrawl-123
 BRAVE_API_KEY=fake-brave-456
 CLOUDFLARE_API_TOKEN=
 CLOUDFLARE_ACCOUNT_ID=
-MEMORY_ROUTER_TOKEN=fake-memtoken-789
+MEMORY_WRITE_TOKEN=fake-memtoken-789
 EOF
 
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
@@ -1224,7 +1224,7 @@ FIRECRAWL_API_KEY=fake-firecrawl-123
 BRAVE_API_KEY=fake-brave-456
 CLOUDFLARE_API_TOKEN=
 CLOUDFLARE_ACCOUNT_ID=
-MEMORY_ROUTER_TOKEN=fake-memtoken-789
+MEMORY_WRITE_TOKEN=fake-memtoken-789
 EOF
 
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
@@ -1302,7 +1302,7 @@ FIRECRAWL_API_KEY=fake-firecrawl-123
 BRAVE_API_KEY=fake-brave-456
 CLOUDFLARE_API_TOKEN=
 CLOUDFLARE_ACCOUNT_ID=
-MEMORY_ROUTER_TOKEN=fake-memtoken-789
+MEMORY_WRITE_TOKEN=fake-memtoken-789
 EOF
 
   bash "$BLUEPRINT_ROOT/install.sh" --force-reinstall </dev/null
