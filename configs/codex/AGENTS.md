@@ -159,7 +159,7 @@ keeps chasing, so do not treat a block as proof nothing else works.
   the Opus family for Claude and the Sol family for Codex at `high` effort;
   resolve the exact id with
   `bash ~/.claude/skills/dev-process-lite/routes.sh <entry> reviewer` (today
-  the `opus` alias and `gpt-6.1-sol`). Fable and Astra require an explicit
+  the `opus` alias and `gpt-6.2-sol`). Fable and Astra require an explicit
   user override. Verify findings against code.
 - `housekeep` archives completed docs and prunes dated completed TODO entries.
 - `wrapup` runs the end-of-session check. Use it only when the owner invokes `$wrapup`.

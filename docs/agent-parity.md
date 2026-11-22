@@ -97,21 +97,21 @@ this change does not use private session sockets or wake unrelated sessions.
 
 ```bash
 ~/.claude/skills/review-by-harness/run.sh 123 /path/to/repo --harness claude --model opus --effort high --review-only
-~/.claude/skills/review-by-harness/run.sh 123 /path/to/repo --harness codex --model gpt-6.1-sol --effort high --review-only
+~/.claude/skills/review-by-harness/run.sh 123 /path/to/repo --harness codex --model gpt-6.2-sol --effort high --review-only
 ```
 
 Explicit `--harness claude|codex|cursor` overrides caller-based selection.
 Without `--caller`, the driver recognizes `CLAUDECODE` / `CODEX_THREAD_ID`;
 unknown callers retain the historical Codex default. Skill-driven runs explicitly pass `--harness`, `--model`, and `--effort`
 (Claude/Codex), regardless of caller. Unless explicitly overridden by the user,
-use the Opus family (`opus` alias) or the Sol family (`gpt-6.1-sol` today); resolve with `bash ~/.claude/skills/dev-process-lite/routes.sh <entry> reviewer`. Fable and Astra
+use the Opus family (`opus` alias) or the Sol family (`gpt-6.2-sol` today); resolve with `bash ~/.claude/skills/dev-process-lite/routes.sh <entry> reviewer`. Fable and Astra
 require explicit user overrides; complexity alone does not select them.
 CLI flags override machine `REVIEW_MODEL` and
 `REVIEW_EFFORT`; both passes receive the same choice, recorded in
 `.review-round/run.json` and the header. Cursor effort belongs in its model
 selector; `--effort` is rejected for Cursor. For older callers, environment
 settings override adapter defaults; a model override must be valid for
-the selected harness. Claude defaults to `opus`, Codex to `gpt-6.1-sol`, Cursor to `grok-4.7-high-fast`.
+the selected harness. Claude defaults to `opus`, Codex to `gpt-6.2-sol`, Cursor to `grok-4.7-high-fast`.
 
 Claude review exposes only Read/Glob/Grep, with MCP tools excluded and
 `dontAsk` permission mode. The driver verifies that review left the worktree
@@ -133,12 +133,12 @@ A session that coordinates more than one task follows the shared
 wins. Routes name a model family per role; `routes.sh` resolves the newest
 installed model and blocks rather than substitute. Runs start from Claude,
 Codex or Cursor; OpenCode is not an entry harness. Tiers as resolved on
-2026-10-03:
+2026-11-22:
 
 | tier | Claude | Codex | Cursor |
 |---|---|---|---|
-| frontier (override only) | `fable` (`claude-fable-5-1`) | `astra` (`gpt-6-astra`) | `claude-fable-5-1-*`; no Grok or GPT frontier |
-| workhorse | `opus` (`claude-opus-5-5`) | `sol` (`gpt-6.1-sol`) | `grok` (`grok-4.7-xhigh`) |
+| frontier (override only) | `fable` (`claude-fable-5-2`) | `astra` (`gpt-6.2-astra`) | `claude-fable-5-*`; no Grok or GPT frontier |
+| workhorse | `opus` (`claude-opus-5-5`) | `sol` (`gpt-6.2-sol`) | `grok` (`grok-4.7-xhigh`) |
 | balanced (implementer) | `sonnet` (`claude-sonnet-5-5`) | `luna` (`gpt-6-luna`, unproven) | `grok` at `medium` (`grok-4.7-medium`) |
 | reviewer of this entry | Codex `sol` | Claude `opus` | Codex `astra` (alt: Claude `fable`) |
 

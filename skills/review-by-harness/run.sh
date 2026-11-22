@@ -99,7 +99,7 @@ done
 [ -z "$EFFORT_ARG" ] || REVIEW_EFFORT="$EFFORT_ARG"
 case "$HARNESS" in
     claude) REVIEW_MODEL="${REVIEW_MODEL:-opus}"; REVIEW_EFFORT="${REVIEW_EFFORT:-high}" ;;
-    codex) REVIEW_MODEL="${REVIEW_MODEL:-gpt-6.1-sol}"; REVIEW_EFFORT="${REVIEW_EFFORT:-high}" ;;
+    codex) REVIEW_MODEL="${REVIEW_MODEL:-gpt-6.2-sol}"; REVIEW_EFFORT="${REVIEW_EFFORT:-high}" ;;
     cursor)
         REVIEW_MODEL="${REVIEW_MODEL:-grok-4.7-high-fast}"
         if [ -n "$EFFORT_ARG" ]; then
