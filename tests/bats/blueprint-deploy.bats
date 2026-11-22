@@ -268,8 +268,17 @@ TOML
   jq -e '.mcp.kanban.command == ["my-kanban"]' "$HOME/.config/opencode/opencode.json"
 }
 
+_reseed_tool_stubs() {
+  mkdir -p "$TMPDIR/bin"
+  printf '#!/bin/sh\necho "codex-cli %s"\n' "$1" > "$TMPDIR/bin/codex"
+  printf '#!/bin/sh\necho "opencode v%s"\n' "$2" > "$TMPDIR/bin/opencode"
+  chmod +x "$TMPDIR/bin/codex" "$TMPDIR/bin/opencode"
+  export PATH="$TMPDIR/bin:$PATH"
+}
+
 @test "rule 2: a seed still at an earlier shipped value moves to the current seed" {
   unset KANBAN_TOKEN
+  _reseed_tool_stubs 0.171.0 2.3.2
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   local codex_now opencode_now
   codex_now=$(sed -n 's/^model = "\(.*\)"$/\1/p' "$BLUEPRINT_ROOT/configs/codex/config.toml")
@@ -283,8 +292,24 @@ TOML
   jq -e --arg m "$opencode_now" '.model == $m and .personal == 1' "$HOME/.config/opencode/opencode.json"
 }
 
-@test "rule 2: a model the user chose is never reseeded" {
+@test "rule 2: a reseed waits while the installed tool is older than it requires" {
   unset KANBAN_TOKEN
+  _reseed_tool_stubs 0.170.0 1.19.6
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$HOME/.codex" "$HOME/.config/opencode"
+  printf 'model = "gpt-6.1-sol"\n' > "$HOME/.codex/config.toml"
+  echo '{"model":"openai/gpt-6.1-sol"}' > "$HOME/.config/opencode/opencode.json"
+  managed_config_apply >/dev/null
+  grep -qx 'model = "gpt-6.1-sol"' "$HOME/.codex/config.toml"
+  jq -e '.model == "openai/gpt-6.1-sol"' "$HOME/.config/opencode/opencode.json"
+  rm "$TMPDIR/bin/opencode" "$TMPDIR/bin/codex"
+  PATH="$TMPDIR/bin:/usr/bin:/bin" managed_config_apply >/dev/null
+  jq -e '.model == "openai/gpt-6.1-sol"' "$HOME/.config/opencode/opencode.json"
+}
+
+@test "rule 2: a model outside the shipped list is never reseeded" {
+  unset KANBAN_TOKEN
+  _reseed_tool_stubs 0.171.0 2.3.2
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   mkdir -p "$HOME/.codex" "$HOME/.config/opencode"
   printf 'model = "gpt-6.2-astra"\n' > "$HOME/.codex/config.toml"

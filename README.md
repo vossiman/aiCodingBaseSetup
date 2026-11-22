@@ -350,7 +350,7 @@ including the unattended `--boot` pass, applies managed config the same way
 and never prompts (`--yes` is accepted for old callers). The rules are listed
 under [Managed config](#managed-config) below. For Codex, `model`,
 `model_reasoning_effort`, `[projects.*]` and `[tui]` stay personal (a `model`
-still at an earlier blueprint default follows the new one); the
+still equal to an earlier blueprint default follows the new one); the
 blueprint enforces `notify`, the approval and sandbox posture, its
 `[mcp_servers.*]` entries and its `[features]` keys.
 
@@ -482,7 +482,11 @@ resolve.
    Seeded keys are written only when missing. A seeded key listed in
    `reseeded_keys` also moves to the current seed while it still holds a
    value the blueprint shipped before (for example the Codex and OpenCode
-   default `model`); a value you chose stays. Everything else is personal. A
+   default `model`). Sync compares values only, so an old default you set on
+   purpose moves too; any value outside the shipped list stays. An entry with
+   `requires` waits until that tool reports at least `min_version`, so a new
+   default never replaces a working one the installed tool cannot run.
+   Everything else is personal. A
    blueprint MCP entry whose secret is missing is removed. A file that is not
    valid JSON or TOML is reported and never overwritten. `~/.bashrc` gets one
    marker block that sources `~/.bashrc.d/*.sh`; the rest of the file is yours.

@@ -170,7 +170,9 @@ block carries over.
 Both `model` keys are seeded (`configs/managed-config.json`). They are also
 listed in `reseeded_keys`, so a machine whose `model` still equals an earlier
 blueprint default (`gpt-6.1-sol` and older) moves to `gpt-6.2-sol` on its
-next sync; a model chosen by hand stays.
+next sync, even if that old value was set by hand; any other model stays.
+The OpenCode reseed requires `opencode` 2.3.1+ and the Codex one
+`codex` 0.171.0+, so a v1 or older v2 OpenCode keeps its working model.
 
 ### OpenCode default model `openai/gpt-6.1-sol` (2026-09-29, opencode 1.18.33)
 
