@@ -87,16 +87,14 @@ t3_legacy_stop() {
 }
 
 t3_open_under() {
-  local p fd t
+  local fd t p
   T3_OPEN=()
-  for p in /proc/[0-9]*; do
-    p=${p#/proc/}
-    [ -O "/proc/$p" ] || continue
-    for fd in "/proc/$p"/fd/*; do
-      t=$(readlink "$fd" 2>/dev/null) || continue
-      case "$t" in "$1"/*) T3_OPEN+=("$p"); break ;; esac
-    done
-  done
+  # One find pass: a readlink fork per descriptor took ~30 s on a busy desktop.
+  while IFS=' ' read -r fd t; do
+    case "$t" in "$1"/*) ;; *) continue ;; esac
+    p=${fd#/proc/}; p=${p%%/*}
+    case " ${T3_OPEN[*]} " in *" $p "*) ;; *) T3_OPEN+=("$p") ;; esac
+  done < <(find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 -uid "$(id -u)" -printf '%p %l\n' 2>/dev/null)
 }
 
 t3_migrate_export() {
