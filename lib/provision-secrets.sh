@@ -2,10 +2,10 @@
 # for install.sh. Relies on install.sh globals and logging helpers; sourced
 # only (no shebang / set -e), matching lib/*.sh.
 
-# load_secrets_env sources the store as shell, so a value with whitespace,
-# quotes, $, backtick or backslash could break or run code during sync.
+# load_secrets_env sources the store as shell, so only characters that are
+# literal in an unquoted assignment are allowed (no ~, &, ;, quotes, $, ...).
 _secret_value_ok() {
-  [[ "$1" != *[[:space:]\'\"\$\`\\]* ]]
+  [[ "$1" =~ ^[A-Za-z0-9._:/+=@%,-]*$ ]]
 }
 
 # Parse KEY=value lines into the associative array named by $1. Values are
@@ -13,6 +13,10 @@ _secret_value_ok() {
 _secrets_read_file() {
   local -n _into=$1
   local file=$2 line key n=0
+  if [[ ! -r "$file" ]]; then
+    err "Cannot read $file"
+    return 1
+  fi
   while IFS= read -r line || [[ -n "$line" ]]; do
     n=$((n + 1))
     line="${line%$'\r'}"
@@ -55,14 +59,14 @@ load_or_prompt_secrets() {
   [[ "$ENV_TYPE" == "container" ]] && can_prompt=false
   [[ "${AICODINGSETUP_NONINTERACTIVE:-}" == "1" ]] && can_prompt=false
 
-  # Only a run that may write takes the lock, and it reads the store under
-  # it, so two installs cannot both append the same key or race a create.
+  # A run that may write reads the store under the lock, so two installs
+  # cannot both append the same key or race a create. The write itself
+  # refuses to run unlocked; a run with nothing to write needs no lock.
   local lock_fd=""
-  if [[ ! -f "$SECRETS_FILE" || "$can_prompt" == "true" ]] && command -v flock >/dev/null 2>&1; then
-    if [[ -w "$SECRETS_DIR" ]]; then
-      exec {lock_fd}>>"$SECRETS_DIR/.secrets.lock"
-      flock "$lock_fd"
-    fi
+  if [[ ! -f "$SECRETS_FILE" || "$can_prompt" == "true" ]] \
+      && command -v flock >/dev/null 2>&1 \
+      && { exec {lock_fd}>>"$SECRETS_DIR/.secrets.lock"; } 2>/dev/null; then
+    flock "$lock_fd" || { exec {lock_fd}>&-; lock_fd=""; }
   fi
 
   local rc=0
@@ -77,7 +81,7 @@ _secrets_load_prompt_write() {
   if [[ -f "$SECRETS_FILE" ]]; then
     existed=true
     info "Found existing secrets file"
-    _secrets_read_file secrets "$SECRETS_FILE"
+    _secrets_read_file secrets "$SECRETS_FILE" || return 1
   else
     info "No secrets file found — will prompt for all keys"
   fi
@@ -94,12 +98,12 @@ _secrets_load_prompt_write() {
     elif [[ "$can_prompt" == "true" ]]; then
       while true; do
         value=""
-        if ! read -rp "Enter $key [or press Enter to skip]: " value; then
+        if ! IFS= read -rp "Enter $key [or press Enter to skip]: " value; then
           _secret_value_ok "$value" || value=""
           break
         fi
         _secret_value_ok "$value" && break
-        warn "$key: value contains whitespace, a quote, \$, a backtick or a backslash; try again"
+        warn "$key: only letters, digits and . _ : / + = @ % , - are allowed; try again"
       done
       secrets["$key"]="$value"
       new_keys+=("$key")
@@ -108,6 +112,11 @@ _secrets_load_prompt_write() {
       secrets["$key"]=""
     fi
   done
+
+  if [[ ( "$existed" != "true" || ${#new_keys[@]} -gt 0 ) && -z "$lock_fd" ]]; then
+    err "Could not lock $SECRETS_DIR/.secrets.lock; not writing $SECRETS_FILE"
+    return 1
+  fi
 
   if [[ "$existed" != "true" ]]; then
     local buf=$'# AI Coding Base Setup — Secrets\n# Created by install.sh — do not commit\n\n'

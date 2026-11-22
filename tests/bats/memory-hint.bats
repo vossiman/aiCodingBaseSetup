@@ -252,6 +252,9 @@ print(mod['read_token']())
   printf 'MEMORY_WRITE_TOKEN=write-only\n' > "$store"
   run python3 -c "import runpy; print(runpy.run_path('$CLI')['read_token']())"
   [ "$status" -eq 0 ]; [ "$output" = "write-only" ]
+  printf 'export MEMORY_WRITE_TOKEN=exported\n' > "$store"
+  run python3 -c "import runpy; print(runpy.run_path('$CLI')['read_token']())"
+  [ "$status" -eq 0 ]; [ "$output" = "exported" ]
 }
 
 @test "malformed invocation (unknown flag): no output, exit 0" {

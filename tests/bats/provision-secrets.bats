@@ -20,7 +20,7 @@ echo "EXPORT AAA=\${AAA_TOKEN-unset} BBB=\${BBB_TOKEN-unset} EXTRA=\${EXTRA_KEY-
 EOF
 }
 
-teardown() { rm -rf "$T"; }
+teardown() { chmod -R u+rwx "$T" 2>/dev/null || true; rm -rf "$T"; }
 
 # Drive the function on a pty, answering its prompts from $1.
 interactive() {
@@ -63,10 +63,40 @@ noninteractive() {
 
 @test "interactive: a value the sync-time shell source could misread is refused" {
   printf 'BBB_TOKEN=b\n' > "$STORE"
-  interactive 'bad value\ngood\n'
+  interactive 'bad value\na&b\n~home\n  padded  \ngh_pat/+=@%%,-.:9\n'
   [ "$status" -eq 0 ] || { echo "$output"; false; }
-  echo "$output" | grep -q "WARN: AAA_TOKEN: value contains"
-  grep -qx 'AAA_TOKEN=good' "$STORE"
+  [ "$(echo "$output" | grep -c "WARN: AAA_TOKEN: only letters")" -eq 4 ]
+  grep -qx 'AAA_TOKEN=gh_pat/+=@%,-.:9' "$STORE"
+}
+
+@test "an unreadable store fails before prompting or exporting" {
+  [ "$(id -u)" -ne 0 ] || skip "root ignores file modes"
+  printf 'AAA_TOKEN=a\nBBB_TOKEN=b\n' > "$STORE"
+  chmod 200 "$STORE"
+  interactive 'x\nx\n'
+  [ "$status" -ne 0 ] || { echo "$output"; false; }
+  echo "$output" | grep -q "ERROR: Cannot read"
+  if echo "$output" | grep -q "Enter \|EXPORT"; then false; fi
+}
+
+@test "interactive: a missing key is not appended when the lock cannot be taken" {
+  [ "$(id -u)" -ne 0 ] || skip "root ignores file modes"
+  printf 'BBB_TOKEN=b\n' > "$STORE"
+  chmod 555 "$STORE_DIR"
+  interactive 'a1\n'
+  chmod 755 "$STORE_DIR"
+  [ "$status" -ne 0 ] || { echo "$output"; false; }
+  echo "$output" | grep -q "ERROR: Could not lock"
+  [ "$(cat "$STORE")" = "BBB_TOKEN=b" ]
+}
+
+@test "non-interactive: an existing complete store in a read-only directory needs no lock" {
+  printf 'AAA_TOKEN=a\nBBB_TOKEN=b\n' > "$STORE"
+  chmod 555 "$STORE_DIR"
+  noninteractive
+  chmod 755 "$STORE_DIR"
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  echo "$output" | grep -q "EXPORT AAA=a BBB=b"
 }
 
 @test "interactive: a read-only store fails loudly instead of claiming success" {
