@@ -69,6 +69,15 @@ noninteractive() {
   grep -qx 'AAA_TOKEN=gh_pat/+=@%,-.:9' "$STORE"
 }
 
+@test "interactive: end of input (Ctrl-D) at a prompt writes nothing" {
+  printf 'BBB_TOKEN=b\n' > "$STORE"
+  unset AICODINGSETUP_NONINTERACTIVE
+  run bash -c "printf '\004' | script -qec 'bash $T/driver.sh' /dev/null"
+  [ "$status" -ne 0 ] || { echo "$output"; false; }
+  echo "$output" | grep -q "ERROR: Input ended at the AAA_TOKEN prompt"
+  [ "$(cat "$STORE")" = "BBB_TOKEN=b" ]
+}
+
 @test "an unreadable store fails before prompting or exporting" {
   [ "$(id -u)" -ne 0 ] || skip "root ignores file modes"
   printf 'AAA_TOKEN=a\nBBB_TOKEN=b\n' > "$STORE"

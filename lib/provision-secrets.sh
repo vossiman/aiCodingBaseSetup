@@ -99,8 +99,9 @@ _secrets_load_prompt_write() {
       while true; do
         value=""
         if ! IFS= read -rp "Enter $key [or press Enter to skip]: " value; then
-          _secret_value_ok "$value" || value=""
-          break
+          echo
+          err "Input ended at the $key prompt; nothing written"
+          return 1
         fi
         _secret_value_ok "$value" && break
         warn "$key: only letters, digits and . _ : / + = @ % , - are allowed; try again"
