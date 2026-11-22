@@ -38,7 +38,8 @@ teardown() { rm -rf "$TEST_DIR"; }
   [ "$status" -eq 0 ]
   [[ "$output" == *'removed (retired)'* ]]
   grep -qx 'plugin remove superpowers@openai-curated-remote' "$LOG"
-  [ ! -e "$HOME/.codex/skills/superpowers" ] && [ ! -L "$HOME/.codex/skills/superpowers" ]
+  [ ! -e "$HOME/.codex/skills/superpowers" ]
+  [ ! -L "$HOME/.codex/skills/superpowers" ]
   [ -d "$HOME/.codex/skills/mine" ]
 }
 
@@ -82,4 +83,29 @@ teardown() { rm -rf "$TEST_DIR"; }
   run install_codex_plugins
   [ "$status" -eq 0 ]
   [ "$(readlink "$HOME/.codex/skills/superpowers")" = "$HOME/my-skills" ]
+}
+
+@test "a link into another marketplace's Superpowers cache is preserved" {
+  export AICODINGSETUP_SKIP_NETWORK=0 LIST_RESULT='{"installed":[]}'
+  local other="$HOME/.codex/plugins/cache/my-local/superpowers/7.0.1/skills"
+  mkdir -p "$other" "$HOME/.codex/skills"
+  ln -s "$other" "$HOME/.codex/skills/superpowers"
+  run install_codex_plugins
+  [ "$status" -eq 0 ]
+  [ "$(readlink "$HOME/.codex/skills/superpowers")" = "$other" ]
+}
+
+@test "an unreadable plugin list is a failure, not a clean removal" {
+  export AICODINGSETUP_SKIP_NETWORK=0 LIST_RESULT='not json'
+  run install_codex_plugins
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'Could not read the Codex plugin list'* ]]
+  if grep -q 'plugin remove' "$LOG"; then false; fi
+}
+
+@test "scheduled sync reports an unreadable plugin list as a failure" {
+  export AICODINGSETUP_SKIP_NETWORK=0 AICODING_SYNC_MODE=boot LIST_RESULT='not json'
+  _provision_tool_ready() { return 0; }
+  run install_codex_plugins
+  [ "$status" -ne 0 ]
 }

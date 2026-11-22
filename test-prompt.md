@@ -26,7 +26,11 @@ Invoke the cloudflare-browser skill and use it to fetch https://example.com as m
 (If the skill contains a token, a token placeholder, or any `curl` with an `Authorization` header, report FAIL — the skill must document the broker command only, never a credential.)
 
 ### 6. Retired: Superpowers
-Superpowers is retired. Confirm no `superpowers:*` skill is available (PASS when none is listed, FAIL when one is).
+Superpowers is retired; sync removes the managed copies. In a fresh session:
+- Claude Code: `claude plugin list` must not show `superpowers@claude-plugins-official`, and no `superpowers:*` skill is listed.
+- Codex: `codex plugin list --json` must not list `superpowers@openai-curated-remote`, and `~/.codex/skills/superpowers` must not be a link into `plugins/cache/openai-curated-remote/`.
+- OpenCode: it loads `~/.claude/skills` entries without a prefix, so check for `using-superpowers` or `brainstorming` there.
+A copy the user installed themselves elsewhere is SKIP, not FAIL; name where it lives.
 
 ### 7. Hook: secrets deny (bw-deny-files)
 Do not just check that the file exists — an installed hook that no-ops is exactly the bug this test now guards (see docs/agent-release-audits.md, 2026-08-21).

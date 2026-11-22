@@ -735,13 +735,22 @@ install_codex_plugins() {
   if [[ -L "$link" ]]; then
     old=$(readlink "$link" 2>/dev/null) || old=""
     case "$old" in
-      "$codex_home"/plugins/cache/*/superpowers/*/skills)
-        rm -f -- "$link" && ok "removed the retired Superpowers skills link" ;;
+      "$codex_home"/plugins/cache/openai-curated-remote/superpowers/*/skills)
+        if rm -f -- "$link"; then
+          ok "removed the retired Superpowers skills link"
+        else
+          warn "Could not remove $link"
+          _provision_soft_failure; return $?
+        fi ;;
     esac
   fi
-  installed=$(_provision_run codex plugin list --json 2>/dev/null) || installed=""
+  if ! installed=$(_provision_run codex plugin list --json 2>/dev/null) \
+      || ! printf '%s' "$installed" | jq -e '.installed | type == "array"' >/dev/null 2>&1; then
+    warn "Could not read the Codex plugin list; Superpowers removal not verified"
+    _provision_soft_failure; return $?
+  fi
   printf '%s' "$installed" | jq -e --arg id "$plugin" \
-    '.installed[]? | select(.pluginId == $id)' >/dev/null 2>&1 || return 0
+    '.installed[] | select(.pluginId == $id)' >/dev/null 2>&1 || return 0
   if AICODING_UI_LABEL=superpowers aicoding_progress_run "codex: removing $plugin" \
       _aicoding_progress_quiet_stderr _provision_run codex plugin remove "$plugin" >/dev/null; then
     ok "$plugin removed (retired)"
