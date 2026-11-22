@@ -134,10 +134,22 @@ _select() { echo "$1" > "$TMP/selected"; }
 
 _pkg_stubs() {
   mkdir -p "$TMP/bin"
-  printf '#!/bin/sh\n[ "$3" = ripgrep ] && [ -n "${RG_INSTALLED:-}" ] && printf "install ok installed"\nexit 0\n' > "$TMP/bin/dpkg-query"
-  printf '#!/bin/sh\necho "$*" >> "%s/apt.log"\nexit "${APT_STATUS:-0}"\n' "$TMP" > "$TMP/bin/apt-get"
+  cat > "$TMP/bin/dpkg-query" <<'STUB'
+#!/bin/sh
+[ "$3" = ripgrep ] && [ -n "${RG_STATE:-}" ] && printf '%s' "$RG_STATE"
+exit 0
+STUB
+  cat > "$TMP/bin/apt-get" <<STUB
+#!/bin/sh
+echo "\$*" >> "$TMP/apt.log"
+case "\$1" in
+  update) exit "\${APT_UPDATE_STATUS:-0}" ;;
+  install) exit "\${APT_INSTALL_STATUS:-0}" ;;
+esac
+STUB
   chmod +x "$TMP/bin/dpkg-query" "$TMP/bin/apt-get"
   export AICODING_ROOT_DPKG_QUERY="$TMP/bin/dpkg-query" AICODING_ROOT_APT_GET="$TMP/bin/apt-get"
+  export AICODINGSETUP_SKIP_NETWORK=0
 }
 
 @test "host packages task installs a missing ripgrep" {
@@ -148,17 +160,33 @@ _pkg_stubs() {
   grep -qx 'install -y -qq --no-install-recommends ripgrep' "$TMP/apt.log"
 }
 
-@test "host packages task does nothing when ripgrep is installed" {
+@test "host packages task does nothing when ripgrep is installed or held" {
   _pkg_stubs
-  RG_INSTALLED=1 run bash "$BLUEPRINT_ROOT/root/tasks.d/20-host-packages.sh"
+  RG_STATE=installed run bash "$BLUEPRINT_ROOT/root/tasks.d/20-host-packages.sh"
   [ "$status" -eq 0 ]
   [ ! -e "$TMP/apt.log" ]
 }
 
-@test "host packages task fails the pass when apt fails" {
+@test "host packages task still installs when apt-get update fails" {
   _pkg_stubs
-  APT_STATUS=100 run bash "$BLUEPRINT_ROOT/root/tasks.d/20-host-packages.sh"
+  APT_UPDATE_STATUS=100 run bash "$BLUEPRINT_ROOT/root/tasks.d/20-host-packages.sh"
+  [ "$status" -eq 0 ]
+  grep -qx 'install -y -qq --no-install-recommends ripgrep' "$TMP/apt.log"
+  [[ "$output" == *"trying the install anyway"* ]]
+}
+
+@test "host packages task fails the pass when the install fails" {
+  _pkg_stubs
+  APT_INSTALL_STATUS=100 run bash "$BLUEPRINT_ROOT/root/tasks.d/20-host-packages.sh"
   [ "$status" -ne 0 ]
+}
+
+@test "host packages task never calls apt with the network disabled" {
+  _pkg_stubs
+  AICODINGSETUP_SKIP_NETWORK=1 run bash "$BLUEPRINT_ROOT/root/tasks.d/20-host-packages.sh"
+  [ "$status" -eq 0 ]
+  [ ! -e "$TMP/apt.log" ]
+  [[ "$output" == *"network disabled"* ]]
 }
 
 @test "host packages task skips a host without apt-get" {
