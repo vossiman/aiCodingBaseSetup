@@ -591,7 +591,7 @@ install_claude_mcps() {
     ensure_http_mcp memory-router http://10.0.0.249:8091/mcp \
       -H "Authorization: Bearer ${memory_router_bearer}" || rc=1
   else
-    warn "memory-router MCP skipped (MEMORY_ROUTER_TOKEN not set)"
+    warn "memory-router MCP skipped (MEMORY_WRITE_TOKEN not set)"
   fi
 
   # kanban: the estate backlog's hosted MCP, bearer-authenticated with the

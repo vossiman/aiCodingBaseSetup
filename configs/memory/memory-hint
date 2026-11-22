@@ -36,16 +36,17 @@ def read_token() -> str:
     """
     if os.environ.get("MEMORY_ROUTER_URL"):
         return os.environ.get("MEMORY_ROUTER_TEST_TOKEN", "")
-    token = ""
+    found = {}
     try:
         with open(SECRETS, encoding="utf-8") as fh:
             for line in fh:
-                match = re.match(r"^MEMORY_ROUTER_TOKEN=(['\"]?)(.*)\1\s*$", line)
+                match = re.match(r"^(?:export\s+)?(MEMORY_WRITE_TOKEN|MEMORY_ROUTER_TOKEN)=(['\"]?)(.*)\2\s*$", line)
                 if match:
-                    token = match.group(2).rstrip()  # last-match-wins convention
+                    found[match.group(1)] = match.group(3).rstrip()  # last-match-wins
     except Exception:
         pass
-    return token
+    # The write token also authorizes search; the read-only one is legacy.
+    return found.get("MEMORY_WRITE_TOKEN") or found.get("MEMORY_ROUTER_TOKEN", "")
 
 
 def router_base() -> str:

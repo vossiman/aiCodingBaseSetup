@@ -288,7 +288,7 @@ _source_host_lib() {
   # installer's load_or_prompt_secrets exports every key from the secrets
   # FILE (ambient env is overwritten), so provide it there.
   mkdir -p "$HOME/.aicodingsetup"
-  printf 'MEMORY_ROUTER_TOKEN=hosttoken\n' > "$HOME/.aicodingsetup/.secrets.env"
+  printf 'MEMORY_WRITE_TOKEN=hosttoken\n' > "$HOME/.aicodingsetup/.secrets.env"
   mkdir -p "$HOME/.cursor"
   cat > "$HOME/.cursor/mcp.json" <<'EOF'
 {
