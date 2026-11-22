@@ -156,7 +156,9 @@ unchanged.
 OpenCode: stays on `openai/gpt-6.1-sol`. These machines use the ChatGPT
 login, which OpenCode runs as `chatgpt-token-sharing`, and OpenCode 2.2.7
 hard-codes the models allowed over it. That set ends at `gpt-6.1-sol` and
-`gpt-6.1-terra`; the binary has no `gpt-6.2` string at all. A config entry
+`gpt-6.1-terra`; the binary has no `gpt-6.2` string at all. Live check
+over the ChatGPT login: `opencode run -m openai/gpt-6.1-sol` answers,
+`-m openai/gpt-6.2-sol` fails with `Model unavailable`. A config entry
 for 6.2-sol would recreate it with default capabilities only (no PDF
 input). Move OpenCode once a release lists 6.2 there; a non-zero count from
 `strings "$(readlink -f "$(command -v opencode)")" | grep -c '"gpt-6\.2-sol"'`
