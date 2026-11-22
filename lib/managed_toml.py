@@ -103,6 +103,11 @@ def apply(doc, rendered, raw, rules, retired):
         for key_path in keys:
             if get(doc, key_path) is MISSING:
                 put(doc, key_path, get(rendered, key_path))
+    for entry in rules.get("reseeded", []):
+        incoming = get(rendered, entry["path"])
+        current = get(doc, entry["path"])
+        if incoming is not MISSING and current is not MISSING and plain(current) in entry["shipped"]:
+            put(doc, entry["path"], incoming)
     for entry in retired:
         current = get(doc, entry["path"])
         if current is not MISSING and plain(current) in entry["shipped"]:

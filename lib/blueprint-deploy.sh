@@ -439,19 +439,55 @@ def member($xs; $x): $xs | any(.[]; . == $x);
           if at($r.p + [$k]) == null then setpath($r.p + [$k]; $in[$k]) else . end)
       elif at($r.p) == null then setpath($r.p; $in)
       else . end)
+| reduce $rules.reseeded[] as $x (.;
+    ($b | at($x.path)) as $in
+    | if $in != null and member($x.shipped; at($x.path)) then setpath($x.path; $in) else . end)
 | reduce $rules.retired[] as $x (.;
     if member($x.shipped; at($x.path)) then delpaths([$x.path]) else . end)
 '
 
-# Owned keys take the blueprint value, seeded keys are set only when missing,
-# and everything else in the file stays personal. Returns 3 for a malformed
+# Owned keys take the blueprint value, seeded keys are set only when missing
+# (or moved to the current seed while they still hold an earlier shipped
+# one), and everything else in the file stays personal. Returns 3 for a malformed
 # destination, which is never overwritten.
+# A reseed with "requires" waits until that tool reports at least min_version,
+# so a new default never replaces a working one the installed tool cannot run.
+_managed_reseed_ready() {
+  local v
+  command -v "$1" >/dev/null 2>&1 || return 1
+  v=$(timeout "${AICODING_PROBE_TIMEOUT:-15}" "$1" --version </dev/null 2>/dev/null \
+    | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  [[ -n "$v" ]] && [[ "$(printf '%s\n%s\n' "$2" "$v" | sort -V | head -1)" == "$2" ]]
+}
+
+# Only entries whose old value appears in the destination are probed, so a
+# pass with nothing to reseed (and every dry run on a fresh home) starts no tool.
+_managed_reseed_filter() {
+  local rules=$1 dest=$2 entry tool min value hit keep='[]'
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    hit=0
+    while IFS= read -r value; do
+      [[ -n "$value" ]] && grep -qF -- "\"$value\"" "$dest" 2>/dev/null && { hit=1; break; }
+    done < <(jq -r '.shipped[] | strings' <<<"$entry")
+    [[ "$hit" == 1 ]] || continue
+    tool=$(jq -r '.requires.tool // empty' <<<"$entry")
+    min=$(jq -r '.requires.min_version // empty' <<<"$entry")
+    if [[ -z "$tool" ]] || _managed_reseed_ready "$tool" "$min"; then
+      keep=$(jq -c --argjson e "$entry" '. + [$e]' <<<"$keep")
+    fi
+  done < <(jq -c '.reseeded[]?' <<<"$rules")
+  jq -c --argjson k "$keep" '.reseeded = $k' <<<"$rules"
+}
+
 _managed_mixed() {
   local dest=$1 src=$2 out=$3 rel rules rendered rc=0
   rel=${dest#"$HOME"/}
   rules=$(jq -c --arg r "$rel" \
-    '.mixed[$r] + {retired: [.retired_keys[] | select(.dest == $r)]}' \
+    '.mixed[$r] + {retired: [.retired_keys[] | select(.dest == $r)],
+                   reseeded: [(.reseeded_keys // [])[] | select(.dest == $r)]}' \
     "$(_managed_config_data)") || return 1
+  rules=$(_managed_reseed_filter "$rules" "$dest") || return 1
   rendered=$(mktemp) || return 1
   _substitute_file_to "$src" "$rendered" || { rm -f "$rendered"; return 1; }
   if [[ ! -s "$dest" ]]; then
