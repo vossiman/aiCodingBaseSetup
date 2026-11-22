@@ -46,6 +46,15 @@ fi
 REPO_DIR="$(cd "$REPO_ARG" && git rev-parse --show-toplevel)"
 cd "$REPO_DIR"
 WT_ROOT="$REPO_DIR/.claude/worktrees"
+LOCK_DIR="$(cd "$(git rev-parse --git-common-dir)" && pwd)/review-by-harness"
+
+# lock_review <name>: take run.sh's lock for review-pr<N>-<harness> on fd 8.
+lock_review() {
+    command -v flock >/dev/null || return 0
+    mkdir -p "$LOCK_DIR"
+    exec 8>"$LOCK_DIR/${1#review-}.lock"
+    flock -n 8
+}
 
 pr_state() { gh pr view "$1" --json state -q .state 2>/dev/null || echo UNKNOWN; }
 
@@ -85,15 +94,22 @@ clean_pr() {  # clean_pr <pr> <state>: returns 1 when something was kept
     while read -r wt; do
         [ -n "$wt" ] || continue
         name="${wt##*/}"
+        if ! lock_review "$name"; then
+            echo "!!! $name: a review is running in it; left alone."
+            kept=1
+            continue
+        fi
         if has_handback "$wt" && [ "$DISCARD" -eq 0 ] && [ "$state" != MERGED ] && [ "$state" != CLOSED ]; then
             echo "!!! $name: the fix pass left changes that are not incorporated (PR $state)."
             echo "!!! Apply them to the PR branch, then rerun with --discard."
             kept=1
+            exec 8>&-
             continue
         fi
         [ -z "$ARCHIVE" ] || archive_round "$wt"
         git worktree remove --force "$wt"
         echo "### $name: worktree removed"
+        exec 8>&-
     done < <(review_worktrees "$pr")
     # Branches whose worktree is already gone (removed by hand, or pruned).
     git worktree prune

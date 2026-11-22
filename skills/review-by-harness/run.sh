@@ -165,6 +165,25 @@ TITLE=$(gh pr view "$PR" --json title -q .title)
 WT="$REPO_DIR/.claude/worktrees/review-pr$PR-$HARNESS"
 OUT="$WT/.review-round"
 
+# One run per PR and harness at a time: the reset below would delete a
+# concurrent session's worktree mid-review. cleanup.sh takes the same lock.
+# flock is util-linux; without it (macOS) the run proceeds unlocked.
+if command -v flock >/dev/null; then
+    LOCK_DIR="$(cd "$(git rev-parse --git-common-dir)" && pwd)/review-by-harness"
+    mkdir -p "$LOCK_DIR"
+    exec 9>"$LOCK_DIR/pr$PR-$HARNESS.lock"
+    flock -n 9 || { echo "!!! another review of PR #$PR with $HARNESS is running; not touching $WT" >&2; exit 1; }
+fi
+
+# A fix pass's diff lives only in this worktree, and the reset below would
+# drop it with the previous round's report.
+if [ -f "$OUT/fix.md" ] && { ! git -C "$WT" diff --quiet HEAD 2>/dev/null ||
+       [ -n "$(git -C "$WT" ls-files --others --exclude-standard 2>/dev/null)" ]; }; then
+    echo "!!! $WT holds an earlier fix pass's changes. Incorporate them, then run" >&2
+    echo "!!! $SKILL_DIR/cleanup.sh $PR --harness $HARNESS --archive DIR --discard" >&2
+    exit 1
+fi
+
 # Always re-fetch and reset: a PR head moves, and reviewing a stale commit
 # produces findings about code that is no longer there. (Seen 2026-08-27: two
 # runs minutes apart reviewed different commits and disagreed entirely.)

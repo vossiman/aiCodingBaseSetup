@@ -157,7 +157,14 @@ are incorporated, that is, verified fixes are committed on the PR branch:
   review, since another session may be using it.
 
 A second round re-creates the worktree and deletes the first round's
-`.review-round/`, so archive round 1 before starting round 2.
+`.review-round/`, so archive round 1 before starting round 2. `run.sh`
+refuses to start over a worktree that still holds a fix pass's diff.
+
+Both scripts take a per-PR, per-harness lock under the repo's git directory
+(`review-by-harness/pr<N>-<harness>.lock`, via `flock`). A second run of the
+same review fails fast instead of deleting the first one's worktree, and
+cleanup leaves a worktree alone while a run holds it. Without `flock`
+(macOS), both proceed unlocked.
 
 ## This skill runs on more than one kind of machine
 

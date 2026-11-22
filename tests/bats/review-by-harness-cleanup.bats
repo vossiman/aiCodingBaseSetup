@@ -142,3 +142,31 @@ gone() {  # gone <pr>: no worktree, branch or ref is left for the PR
   gone 1
   [ -d "$REPO/.claude/worktrees/review-pr12-stub" ]
 }
+
+@test "a live review's lock stops a second run and cleanup from touching its worktree" {
+  review 1
+  lock="$REPO/.git/review-by-harness/pr1-stub.lock"
+  [ -f "$lock" ]
+  exec 7>"$lock"; flock -n 7
+  run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"another review of PR #1 with stub is running"* ]]
+  run "$SKILL/cleanup.sh" 1 "$REPO"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"a review is running in it"* ]]
+  [ -d "$REPO/.claude/worktrees/review-pr1-stub" ]
+  exec 7>&-
+  run "$SKILL/cleanup.sh" 1 "$REPO"
+  [ "$status" -eq 0 ]
+  gone 1
+}
+
+@test "a new round refuses to reset a worktree that still holds a fix diff" {
+  review_fix 1
+  run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"holds an earlier fix pass's changes"* ]]
+  grep -q "edited by stub" "$REPO/.claude/worktrees/review-pr1-stub/src.txt"
+  "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/a" --discard
+  review 1
+}

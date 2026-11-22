@@ -16,7 +16,9 @@ The overseer keeps `.claude/dev-process-runs/<session>/overseer.md`, written
 for a reader who did not watch the run. `<session>` is
 `CLAUDE_CODE_SESSION_ID` in Claude and `CODEX_THREAD_ID` in Codex. A Codex
 overseer never uses `CLAUDE_CODE_SESSION_ID`: Codex can inherit a stale one
-from whatever launched it. Add `.claude/dev-process-runs/` to
+from whatever launched it. A Cursor overseer has no such variable, so it
+picks `cursor-<UTC time>` once at the start (`date -u +%Y%m%dT%H%M%SZ`) and
+writes it in Plan. Add `.claude/dev-process-runs/` to
 `.git/info/exclude` when the repo does not ignore it.
 
 Append an entry at each milestone (task prepared, handed off, accepted,
@@ -130,3 +132,9 @@ overseer's approval, recorded under Decisions with the reason.
 **Review.** One integrated review per run with `review-by-harness`, passing
 the reviewer route as `--harness` and `--model`, plus `--effort` only when the reviewer harness is claude or codex. Every
 reviewer is from another vendor than the entry harness.
+
+**Integration.** Worker branches never open their own PRs. The overseer
+reads each worker's diff and merges the accepted ones into one integration
+branch it owns, and that branch's PR gets the review. When the plan ships
+tasks as independent PRs instead, each PR gets one review; record that
+choice under Decisions.
