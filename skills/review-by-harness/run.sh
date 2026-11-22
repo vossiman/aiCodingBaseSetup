@@ -179,8 +179,11 @@ fi
 # worktree, and the reset below would drop them with the previous report.
 # fix-started is written before the fix adapter runs, so an interrupted pass
 # counts too; reviewed-head is the PR commit the run started from.
-if [ -d "$OUT" ] && [ ! -L "$OUT" ] && [ -f "$OUT/fix-started" ]; then
-    _prev=$(cat "$OUT/reviewed-head" 2>/dev/null || echo HEAD)
+# Trusted only when the PR does not track .review-round itself.
+if [ -d "$OUT" ] && [ ! -L "$OUT" ] && [ -f "$OUT/fix-started" ] &&
+   [ -z "$(git -C "$WT" ls-tree --name-only HEAD .review-round 2>/dev/null)" ]; then
+    _prev=$(head -c 64 "$OUT/reviewed-head" 2>/dev/null | tr -dc '0-9a-f')
+    _prev=$(git -C "$WT" rev-parse --verify --quiet "${_prev:-HEAD}^{commit}" || echo HEAD)
     if ! git -C "$WT" diff --quiet "$_prev" 2>/dev/null ||
        [ -n "$(git -C "$WT" ls-files --others --exclude-standard 2>/dev/null)" ]; then
         echo "!!! $WT holds an earlier fix pass's changes. Incorporate them, then run" >&2
@@ -192,6 +195,12 @@ fi
 # Always re-fetch and reset: a PR head moves, and reviewing a stale commit
 # produces findings about code that is no longer there. (Seen 2026-08-27: two
 # runs minutes apart reviewed different commits and disagreed entirely.)
+# The fetched ref is shared by every harness's review of this PR; the per-PR
+# lock keeps cleanup.sh from deleting it between the fetch and worktree add.
+if command -v flock >/dev/null; then
+    exec 7>"$LOCK_DIR/pr$PR.lock"
+    flock -w 60 7 || { echo "!!! timed out waiting for the PR #$PR ref lock" >&2; exit 1; }
+fi
 git worktree remove --force "$WT" 2>/dev/null || true
 # refs/pull/N/head, not origin/<headRefName>: for a PR from a fork the head ref
 # is only the fork branch's short name, so fetching it from origin either fails
@@ -200,6 +209,7 @@ git worktree remove --force "$WT" 2>/dev/null || true
 git fetch origin "refs/pull/$PR/head:refs/review-by-harness/pr$PR" --force --quiet
 git fetch origin "$BASE" --quiet
 git worktree add --force -B "review-pr$PR-$HARNESS" "$WT" "refs/review-by-harness/pr$PR" >/dev/null
+exec 7>&-
 # The PR controls every checked-out path. Never accept its scratch directory
 # (or a symlink/file in its place): even a real directory can contain report
 # symlinks that redirect our writes. mkdir without -p claims a fresh directory

@@ -17,8 +17,10 @@ for a reader who did not watch the run. `<session>` is
 `CLAUDE_CODE_SESSION_ID` in Claude and `CODEX_THREAD_ID` in Codex. A Codex
 overseer never uses `CLAUDE_CODE_SESSION_ID`: Codex can inherit a stale one
 from whatever launched it. A Cursor overseer has no such variable, so it
-picks `cursor-<UTC time>` once at the start (`date -u +%Y%m%dT%H%M%SZ`) and
-writes it in Plan. Add `.claude/dev-process-runs/` to
+picks `cursor-<UTC time>-<random>` once at the start
+(`cursor-$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N3 -tx1 /dev/urandom | tr -d ' ')`),
+creates the run directory with `mkdir` (no `-p`, so a clash fails) and
+writes the id in Plan. Add `.claude/dev-process-runs/` to
 `.git/info/exclude` when the repo does not ignore it.
 
 Append an entry at each milestone (task prepared, handed off, accepted,

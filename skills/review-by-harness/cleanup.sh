@@ -40,22 +40,23 @@ fi
 [ -z "$HARNESS" ] || [[ "$HARNESS" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo "invalid harness name" >&2; exit 2; }
 if [ -n "$ARCHIVE" ]; then
     mkdir -p "$ARCHIVE"
-    ARCHIVE="$(cd "$ARCHIVE" && pwd)"
+    ARCHIVE="$(cd -P "$ARCHIVE" && pwd)"
 fi
 
 REPO_DIR="$(cd "$REPO_ARG" && git rev-parse --show-toplevel)"
 cd "$REPO_DIR"
 LOCK_DIR="$(cd "$(git rev-parse --git-common-dir)" && pwd)/review-by-harness"
+TAB=$'\t'
 
 # The GitHub repo behind origin, where run.sh fetched the pull ref from.
-# Plain gh would honour GH_REPO or a set-default that points elsewhere.
-GH_REPO_ID=$(git remote get-url origin 2>/dev/null \
-    | sed -nE 's#^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+/[^/]+)$#\2#p' \
-    | sed 's/\.git$//')
+# Plain gh would honour GH_REPO or a set-default that points elsewhere, so an
+# origin that does not resolve leaves every PR state UNKNOWN (left alone).
+GH_REPO_ID=${REVIEW_GH_REPO:-$(git remote get-url origin 2>/dev/null \
+    | sed -nE 's#^(https://|ssh://)?(git@)?(ssh\.)?github\.com(:443)?[:/]([^/]+/[^/]+)$#\5#p' \
+    | sed 's/\.git$//')}
 pr_state() {
-    local repo=()
-    [ -z "$GH_REPO_ID" ] || repo=(--repo "$GH_REPO_ID")
-    gh pr view "$1" ${repo[@]+"${repo[@]}"} --json state -q .state 2>/dev/null || echo UNKNOWN
+    [ -n "$GH_REPO_ID" ] || { echo UNKNOWN; return; }
+    gh pr view "$1" --repo "$GH_REPO_ID" --json state -q .state 2>/dev/null || echo UNKNOWN
 }
 
 # lock_take <pr> <harness>: take run.sh's lock on fd 8 until unlock, so no run
@@ -67,19 +68,18 @@ lock_take() {
     flock -n 8
 }
 unlock() { exec 8>&-; }
-# no_live_run <pr>: no harness holds a lock for this PR (run.sh takes its lock
-# before fetching the shared ref).
-no_live_run() {
-    command -v flock >/dev/null || return 0
-    local l
-    for l in "$LOCK_DIR/pr$1-"*.lock; do
-        [ -e "$l" ] || continue
-        flock -n "$l" true || return 1
-    done
+
+# driver_round <wt>: .review-round is the driver's, not a PR-tracked path or link.
+driver_round() {
+    [ -d "$1/.review-round" ] && [ ! -L "$1/.review-round" ] &&
+        [ -f "$1/.review-round/run.json" ] && [ ! -L "$1/.review-round/run.json" ] &&
+        [ -z "$(git -C "$1" ls-tree --name-only HEAD .review-round)" ]
 }
 
-# review_worktrees <pr>: "<path> <branch>" for every registered review
-# worktree of the PR, in whichever checkout of the repo run.sh put it.
+# review_worktrees <pr>: "<path><TAB><branch>" for every review worktree of
+# the PR that run.sh made, in whichever checkout of the repo it put it.
+# A lookalike worktree without the driver's scratch directory is reported,
+# never returned.
 review_worktrees() {
     local wt="" br="" line name parent
     { git worktree list --porcelain; echo; } | while IFS= read -r line; do
@@ -92,7 +92,11 @@ review_worktrees() {
                     if [[ "$name" =~ ^review-pr$1-[a-zA-Z0-9_-]+$ ]] &&
                        [ "${parent##*/}" = worktrees ] && [ "$(basename "${parent%/*}")" = .claude ] &&
                        { [ -z "$HARNESS" ] || [ "$name" = "review-pr$1-$HARNESS" ]; }; then
-                        echo "$wt ${br:--}"
+                        if driver_round "$wt"; then
+                            printf '%s\t%s\n' "$wt" "${br:--}"
+                        else
+                            echo "### $name: not made by run.sh (no .review-round/run.json), left alone" >&2
+                        fi
                     fi
                 fi
                 wt="" ;;
@@ -100,64 +104,72 @@ review_worktrees() {
     done
 }
 
-# driver_round <wt>: .review-round is the driver's, not a PR-tracked path or link.
-driver_round() {
-    [ -d "$1/.review-round" ] && [ ! -L "$1/.review-round" ] &&
-        [ -z "$(git -C "$1" ls-tree --name-only HEAD .review-round)" ]
-}
-reviewed_head() {  # the PR commit the run started from, else the worktree HEAD
-    local f="$1/.review-round/reviewed-head" sha=""
-    if driver_round "$1" && [ -f "$f" ] && [ ! -L "$f" ]; then
+# reviewed_head <wt> <pr>: the PR commit the review started from. Older runs
+# recorded none; then the fetched ref stands in only while HEAD still equals
+# it. Fails when the commit cannot be established.
+reviewed_head() {
+    local f="$1/.review-round/reviewed-head" sha="" head
+    if [ -f "$f" ] && [ ! -L "$f" ]; then
         sha=$(head -c 64 "$f" | tr -dc '0-9a-f')
+        [ -z "$sha" ] || { git -C "$1" rev-parse --verify --quiet "$sha^{commit}" && return; }
     fi
-    git -C "$1" rev-parse --verify --quiet "${sha:-HEAD}^{commit}" || git -C "$1" rev-parse HEAD
+    head=$(git -C "$1" rev-parse HEAD)
+    [ "$(git rev-parse --verify --quiet "refs/review-by-harness/pr$2^{commit}" || true)" = "$head" ] || return 1
+    echo "$head"
 }
 
-# has_handback <wt>: edits, new files or commits since the reviewed commit.
+# has_handback <wt> <pr>: edits, new files or commits since the reviewed
+# commit, or a reviewed commit that cannot be established.
 has_handback() {
-    if git -C "$1" diff --quiet "$(reviewed_head "$1")"; then
+    local rh
+    rh=$(reviewed_head "$1" "$2") || return 0
+    if git -C "$1" diff --quiet "$rh"; then
         [ -n "$(git -C "$1" ls-files --others --exclude-standard)" ]
     fi
 }
 
-# archive_round <wt>: copy into a fresh directory outside the checkout; never
-# write inside the worktree, whose paths the PR controls.
+# archive_round <wt> <pr>: build in a temporary sibling, publish by rename
+# only when every step worked, and never write inside the worktree.
 archive_round() {
-    local wt="$1" name dest k=2 rh
+    local wt="$1" pr="$2" name dest tmp k=2 rh
     name="${wt##*/}"
+    case "$ARCHIVE/" in "$(cd -P "$wt" && pwd)/"*)
+        echo "!!! $name: the archive directory is inside the worktree being removed"; return 1 ;;
+    esac
+    tmp=$(mktemp -d "$ARCHIVE/.$name.XXXXXX") || return 1
+    if ! {
+        cp -RP "$wt/.review-round" "$tmp/review-round" &&
+        if rh=$(reviewed_head "$wt" "$pr"); then echo "$rh" > "$tmp/reviewed-head"
+        else rh=$(git -C "$wt" rev-parse HEAD); echo "unknown; diff is against HEAD $rh" > "$tmp/reviewed-head"; fi &&
+        if has_handback "$wt" "$pr"; then
+            git -C "$wt" --no-pager diff --binary "$rh" > "$tmp/handback.diff" &&
+            git -C "$wt" ls-files -z --others --exclude-standard \
+                | tar -C "$wt" --null -T - -cf "$tmp/handback-untracked.tar"
+        fi
+    }; then
+        rm -rf "$tmp"; return 1
+    fi
     dest="$ARCHIVE/$name"
     while [ -e "$dest" ] || [ -L "$dest" ]; do dest="$ARCHIVE/$name-$k"; k=$((k + 1)); done
-    mkdir "$dest" || return 1
-    if driver_round "$wt"; then
-        cp -RP "$wt/.review-round" "$dest/review-round" || return 1
-    else
-        echo "### $name: no driver-made .review-round to archive"
-    fi
-    rh=$(reviewed_head "$wt") || return 1
-    echo "$rh" > "$dest/reviewed-head" || return 1
-    if has_handback "$wt"; then
-        git -C "$wt" --no-pager diff --binary "$rh" > "$dest/handback.diff" || return 1
-        git -C "$wt" ls-files -z --others --exclude-standard \
-            | tar -C "$wt" --null -T - -cf "$dest/handback-untracked.tar" || return 1
-    fi
+    mv "$tmp" "$dest" || { rm -rf "$tmp"; return 1; }
     echo "### $name: archived to $dest"
 }
 
-clean_pr() {  # clean_pr <pr> <state>: returns 1 when something was kept
+clean_pr() {  # clean_pr <pr> <state>: returns 1 when something was kept or failed
     local pr="$1" state="$2" wt br name h kept=0
-    while read -r wt br; do
+    while IFS="$TAB" read -r wt br; do
         [ -n "$wt" ] || continue
         name="${wt##*/}"; h="${name#review-pr"$pr"-}"
         if ! lock_take "$pr" "$h"; then
             echo "!!! $name: a review is running in it; left alone."
             kept=1; continue
         fi
-        if has_handback "$wt" && [ "$DISCARD" -eq 0 ] && [ "$state" != MERGED ] && [ "$state" != CLOSED ]; then
-            echo "!!! $name: the fix pass left changes that are not incorporated (PR $state)."
+        if has_handback "$wt" "$pr" && [ "$DISCARD" -eq 0 ] && [ "$state" != MERGED ] && [ "$state" != CLOSED ]; then
+            echo "!!! $name: the fix pass left changes that are not incorporated, or the reviewed commit is unknown (PR $state)."
             echo "!!! Apply them to the PR branch, then rerun with --discard."
             kept=1; unlock; continue
         fi
-        if [ -n "$ARCHIVE" ] && ! archive_round "$wt"; then
+        if [ -n "$ARCHIVE" ] && ! archive_round "$wt" "$pr"; then
             echo "!!! $name: archiving failed; worktree kept."
             kept=1; unlock; continue
         fi
@@ -166,21 +178,30 @@ clean_pr() {  # clean_pr <pr> <state>: returns 1 when something was kept
         fi
         echo "### $name: worktree removed"
         # Only the branch run.sh made for this worktree, never a lookalike.
-        if [ "$br" = "$name" ] && git branch -D --quiet "$br"; then
-            echo "### $br: branch deleted"
+        if [ "$br" = "$name" ]; then
+            if git branch -D --quiet "$br"; then echo "### $br: branch deleted"
+            else echo "!!! $br: branch deletion failed"; kept=1; fi
         fi
         unlock
     done < <(review_worktrees "$pr")
-    # The fetched PR head is shared by every harness: drop it with the last review.
-    if [ -z "$(HARNESS="" review_worktrees "$pr")" ] && no_live_run "$pr" &&
-       git show-ref --verify --quiet "refs/review-by-harness/pr$pr"; then
-        git update-ref -d "refs/review-by-harness/pr$pr"
-        echo "### refs/review-by-harness/pr$pr deleted"
+    # The fetched PR head is shared by every harness: drop it with the last
+    # review, under the per-PR lock run.sh holds from fetch to worktree add.
+    if command -v flock >/dev/null; then
+        exec 6>"$LOCK_DIR/pr$pr.lock"
+        flock -w 60 6 || { echo "!!! pr$pr: ref lock busy; ref kept"; exec 6>&-; return 1; }
     fi
+    if [ -z "$(HARNESS="" review_worktrees "$pr" 2>/dev/null)" ] &&
+       git show-ref --verify --quiet "refs/review-by-harness/pr$pr"; then
+        if git update-ref -d "refs/review-by-harness/pr$pr"; then
+            echo "### refs/review-by-harness/pr$pr deleted"
+        else
+            echo "!!! refs/review-by-harness/pr$pr: deletion failed"; kept=1
+        fi
+    fi
+    exec 6>&-
     return "$kept"
 }
 
-git worktree prune
 if [ "$PRUNE" -eq 0 ]; then
     clean_pr "$PR" "$(pr_state "$PR")" || exit 1
     exit 0
@@ -199,7 +220,7 @@ for pr in $PRS; do
     esac
 done
 for br in $(git for-each-ref --format='%(refname:short)' 'refs/heads/review-pr*'); do
-    git worktree list --porcelain | grep -qx "branch refs/heads/$br" && continue
+    git worktree list --porcelain | grep -qxF "branch refs/heads/$br" && continue
     echo "### $br: branch without a review worktree, left for manual cleanup"
 done
 exit "$status"

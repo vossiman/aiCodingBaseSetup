@@ -40,6 +40,7 @@ esac
 GH
   chmod +x "$TMPDIR/bin/gh"
   export PATH="$TMPDIR/bin:$PATH"
+  export REVIEW_GH_REPO=test/repo
 
   git init -q --bare -b main "$TMPDIR/origin.git"
   git init -q -b main "$TMPDIR/seed"
@@ -240,4 +241,85 @@ gone() {  # gone <pr>: no worktree, branch or ref is left for the PR
   run "$SKILL/cleanup.sh" 1 "$REPO/.claude/worktrees/feat"
   [ "$status" -eq 0 ]
   gone 1
+}
+
+@test "an origin that is not a known GitHub URL leaves every PR state unknown" {
+  review 1
+  echo MERGED > "$TMPDIR/state-1"
+  unset REVIEW_GH_REPO
+  run "$SKILL/cleanup.sh" --prune "$REPO"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pr1: UNKNOWN, left alone"* ]]
+  [ -d "$REPO/.claude/worktrees/review-pr1-stub" ]
+}
+
+@test "GitHub SSH-over-443 and scp-style origins resolve to owner/repo" {
+  for url in ssh://git@ssh.github.com:443/own/rep.git git@github.com:own/rep.git https://github.com/own/rep; do
+    git -C "$REPO" remote set-url origin "$url"
+    printf '#!/bin/sh\necho "$*" >> "%s/gh.log"; echo OPEN\n' "$TMPDIR" > "$TMPDIR/bin/gh"
+    unset REVIEW_GH_REPO
+    git -C "$REPO" update-ref refs/review-by-harness/pr5 HEAD
+    "$SKILL/cleanup.sh" --prune "$REPO" >/dev/null
+    tail -n1 "$TMPDIR/gh.log" | grep -q -- '--repo own/rep'
+  done
+}
+
+@test "a lookalike worktree the driver did not make is never removed" {
+  git -C "$REPO" worktree add -q "$REPO/.claude/worktrees/review-pr1-notes" -b review-pr1-notes origin/main
+  echo draft > "$REPO/.claude/worktrees/review-pr1-notes/notes.txt"
+  echo MERGED > "$TMPDIR/state-1"
+  run "$SKILL/cleanup.sh" --prune "$REPO"
+  [ -f "$REPO/.claude/worktrees/review-pr1-notes/notes.txt" ]
+  git -C "$REPO" show-ref --verify --quiet refs/heads/review-pr1-notes
+  [[ "$output" == *"review-pr1-notes: not made by run.sh"* ]]
+}
+
+@test "an archive directory inside the worktree being removed is refused" {
+  review 1
+  run "$SKILL/cleanup.sh" 1 "$REPO" --archive "$REPO/.claude/worktrees/review-pr1-stub/out"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"inside the worktree being removed"* ]]
+  [ -d "$REPO/.claude/worktrees/review-pr1-stub" ]
+}
+
+@test "a review under a path with spaces is cleaned" {
+  git clone -q "$TMPDIR/origin.git" "$TMPDIR/My Repo"
+  REPO="$TMPDIR/My Repo"
+  review 1
+  run "$SKILL/cleanup.sh" 1 "$REPO"
+  [ "$status" -eq 0 ]
+  gone 1
+}
+
+@test "an older review with a commit but no reviewed-head is kept on an open PR" {
+  sed -i 's|echo "stub fix report"|git -C "$2" -c user.name=t -c user.email=t@t commit -qam fix; echo "stub fix report"|' "$SKILL/harnesses/stub.sh"
+  review_fix 1
+  rm "$REPO/.claude/worktrees/review-pr1-stub/.review-round/reviewed-head"
+  run "$SKILL/cleanup.sh" 1 "$REPO"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"reviewed commit is unknown"* ]]
+  [ -d "$REPO/.claude/worktrees/review-pr1-stub" ]
+}
+
+@test "a failed archive leaves no partial round behind" {
+  review 1
+  chmod 000 "$REPO/.claude/worktrees/review-pr1-stub/.review-round/review.md"
+  run "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/a"
+  chmod 600 "$REPO/.claude/worktrees/review-pr1-stub/.review-round/review.md"
+  [ "$status" -eq 1 ]
+  [ -z "$(ls -A "$TMPDIR/a")" ]
+  "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/a"
+  [ -d "$TMPDIR/a/review-pr1-stub" ]
+  [ ! -e "$TMPDIR/a/review-pr1-stub-2" ]
+}
+
+@test "a PR-tracked fix-started marker does not block the next round" {
+  ( cd "$TMPDIR/seed"
+    mkdir .review-round; : > .review-round/fix-started; echo nonsense > .review-round/reviewed-head
+    git add .review-round; git commit -qm scratch; git push -q -f origin HEAD:refs/pull/1/head )
+  run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"refusing pre-existing review scratch path"* ]]
+  ( cd "$TMPDIR/seed"; git rm -rqf .review-round; git commit -qm clean; git push -q -f origin HEAD:refs/pull/1/head )
+  review 1
 }

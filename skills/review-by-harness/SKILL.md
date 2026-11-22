@@ -161,9 +161,13 @@ are incorporated, that is, verified fixes are committed on the PR branch:
   review whose PR is merged or closed, including refs whose worktree is
   already gone, and never an open PR's. It lists stray `review-pr*` branches
   without a worktree instead of deleting them.
-- Cleanup asks GitHub about the repo behind `origin`, so `GH_REPO` or a
-  `gh repo set-default` pointing elsewhere cannot mark the wrong PR merged.
-  It finds reviews made from any checkout of the repo.
+- Cleanup asks GitHub about the repo behind `origin` (https, scp-style or
+  SSH-over-443 URLs), so `GH_REPO` or a `gh repo set-default` pointing
+  elsewhere cannot mark the wrong PR merged. An origin it cannot resolve
+  makes every state `UNKNOWN`, which leaves reviews alone; `REVIEW_GH_REPO`
+  names the repo explicitly. It finds reviews made from any checkout of the
+  repo, and only those `run.sh` made (with its `.review-round/run.json`): a
+  lookalike worktree is reported, never removed.
 
 A second round re-creates the worktree and deletes the first round's
 `.review-round/`, so archive round 1 before starting round 2. `run.sh`

@@ -31,7 +31,8 @@ The scripts and the policy sit beside this file, in
    committed there, run
    `bash ~/.claude/skills/review-by-harness/cleanup.sh <N> --harness <reviewer harness> --archive .claude/dev-process-runs/<session>/reviews --discard`.
    It archives the review for the assessment and removes only that review's
-   worktree, branch and ref. Do this before a second round too, which would
+   worktree and branch; the fetched PR ref is shared by every reviewer and
+   goes with the last one. Do this before a second round too, which would
    otherwise overwrite the first round's report. Log each PR's number, base,
    head and review under Plan.
 7. Before closeout, check the Board section against policy section 2, and
