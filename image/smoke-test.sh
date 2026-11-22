@@ -44,6 +44,7 @@ check "daemon.json log rotation baked" 'jq -e ".\"log-opts\".\"max-size\" == \"2
 check "docker-init.sh present"         '[ -x /usr/local/share/docker-init.sh ]'
 check "claude seed"                    '[ -x ~/.local/bin/claude ]'
 check "opencode seed"                  '[ -x ~/.local/bin/opencode ]'
+check "opencode seed is v2, no v1 dir"  '~/.local/bin/opencode --version | grep -q "^opencode v2\." && [ ! -e ~/.opencode/bin/opencode ]'
 check "codex seed"                     '[ -x ~/.local/bin/codex ]'
 # Both halves or none: a lone `codex` is a codex whose Code Mode fails closed.
 check "codex code-mode sidecar seed"   '[ -x ~/.local/bin/codex-code-mode-host ]'

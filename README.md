@@ -448,7 +448,7 @@ state directory. Different CLIs have different update paths:
 | CLI | Update path | Scheduled? |
 |-----|-------------|---------------------|
 | Claude Code | exact requested version through the official installer in isolated staging, then validated immutable activation | ✅ |
-| opencode | exact npm version in an isolated prefix, validated before immutable activation | ✅ |
+| opencode | newest v2 GitHub release (`anomalyco/opencode`, plain `v2.x.y`, no drafts or prereleases), archive checked against the release `SHA256SUMS`, safely extracted and version-probed before immutable activation. The managed launcher always sets `OPENCODE_DISABLE_AUTOUPDATE=1`, sends a bare `opencode update`/`upgrade` to `aicoding-auto-update --once`, passes `--help` through and refuses a version or other flags; the blueprint also owns `"autoupdate": false` as a fallback for launches that bypass it. The devbox image seeds v2 from the same checksum-verified archive | ✅ |
 | Cursor Agent | exact Linux x64/arm64 archive selected from the official installer, safely extracted and version-probed before immutable activation | ✅ |
 | OpenAI Codex | exact npm version plus matching `codex-code-mode-host`, validated before immutable activation | ✅ |
 

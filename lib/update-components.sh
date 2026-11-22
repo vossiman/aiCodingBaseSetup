@@ -113,6 +113,28 @@ _aicoding_record_deferred() {
   AICODING_COMPONENT_ATTEMPT_DISPOSITION=deferred
 }
 
+# `opencode debug config` on v2 starts or reuses the shared background server,
+# so v2 probes with --standalone (a private server that exits with the
+# command) and throwaway state, cache and data dirs; the real config dir is
+# kept because it is what is being probed. OPENCODE_DB (an absolute path
+# wins over the data dir) and OPENCODE_PTY_SOCKET_DIR point into the scratch
+# dir and OPENCODE_TEST_HOME is dropped, so no live store is opened. v1 has
+# no --standalone and no shared server. The probe is skipped offline.
+_aicoding_opencode_config_probe() (
+  local version probe
+  [ "${AICODINGSETUP_SKIP_NETWORK:-0}" = 1 ] && exit 0
+  version=$(_aicoding_version_from_command opencode) || version=""
+  probe=$(mktemp -d) || exit 1
+  trap 'rm -rf "$probe"' EXIT
+  set -- debug config
+  case "$version" in ""|0.*|1.*) ;; *) set -- "$@" --standalone ;; esac
+  cd "$probe" || exit 1
+  env -u OPENCODE_TEST_HOME \
+    XDG_STATE_HOME="$probe/state" XDG_CACHE_HOME="$probe/cache" XDG_DATA_HOME="$probe/data" \
+    OPENCODE_DB="$probe/data/opencode.db" OPENCODE_PTY_SOCKET_DIR="$probe/pty" \
+    timeout "${AICODING_PROBE_TIMEOUT:-15}" opencode "$@" </dev/null >/dev/null 2>&1
+)
+
 # Print a short result reason and return nonzero when an actionable managed
 # config depends on a tool capability that is not installed and verified.
 aicoding_config_is_compatible() {
@@ -131,8 +153,7 @@ aicoding_config_is_compatible() {
       _aicoding_exact_mcp_config_allows "$dest" \
         || { echo mcp_exact_version_staging_unavailable; return 1; }
       _aicoding_command_is_linux opencode || { echo opencode_not_installed; return 1; }
-      timeout "${AICODING_PROBE_TIMEOUT:-15}" opencode debug config </dev/null >/dev/null 2>&1 \
-        || { echo opencode_config_probe_failed; return 1; }
+      _aicoding_opencode_config_probe || { echo opencode_config_probe_failed; return 1; }
       ;;
     "$HOME/.cursor/mcp.json"|"$HOME/.cursor/cli-config.json"|"$HOME/.cursor/hooks.json")
       # Discovery intentionally leaves absent and Windows-side CLIs alone.
@@ -1204,7 +1225,10 @@ aicoding_update_component() {
 _aicoding_update_component_impl() {
   case "$1" in
     codex) aicoding_update_npm_component codex codex @openai/codex ;;
-    opencode) aicoding_update_npm_component opencode opencode opencode-ai ;;
+    opencode)
+      . "${BASH_SOURCE[0]%/*}/update-opencode.sh"
+      aicoding_update_opencode
+      ;;
     pi) aicoding_update_npm_component pi pi @earendil-works/pi-coding-agent ;;
     claude) aicoding_update_claude ;;
     cursor)

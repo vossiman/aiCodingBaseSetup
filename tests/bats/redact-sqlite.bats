@@ -323,3 +323,105 @@ PYEOF
   [[ "$stderr" == "redact-sqlite: "* ]]
   [[ "$stderr" != *"Traceback"* ]]
 }
+
+# make_opencode_v2 DB: the text-carrying tables of the OpenCode 2.3.2 store
+# (columns as created by the real binary), each holding V1 once.
+make_opencode_v2() {
+  python3 - "$1" "$V1" <<'EOF'
+import sqlite3, sys, json
+db, v1 = sys.argv[1:]
+c = sqlite3.connect(db); c.execute("pragma journal_mode=wal")
+c.executescript("""
+create table session_v2(id text primary key, project_id text, title text, summary_diffs text, metadata text, revert text, permission text, idle_outcome text, time_created integer);
+create table session_part(message_id text, session_id text, ordinal integer, type text, call_id text, time_created integer, time_updated integer, data text);
+create table session_message(id text primary key, session_id text, type text, seq integer, time_created integer, time_updated integer, data text);
+create table event(id text primary key, aggregate_id text, seq integer, created integer, type text, data text);
+create table session_inbox(id text primary key, session_id text, type text, payload text, delivery text, enqueued_seq integer, time_created integer);
+create table job(notification_id text, id text primary key, session_id text, child_session_id text, kind text, title text, status text, output text, error text, recovery text, time_created integer, time_updated integer);
+create table automation(id text primary key, project_id text, session_id text, name text, action text, last_outcome text, last_output text, state text);
+create table kv(key text primary key, value text);
+create table permission(id text primary key, project_id text, action text, resource text);
+create table project(id text primary key, worktree text, name text, commands text);
+create table instruction_entry(session_id text, key text, value text, removed integer, time_created integer, time_updated integer);
+create table instruction_state(session_id text, epoch_start integer, through_seq integer, initial_values text, current_values text);
+create table instruction_blob(hash text primary key, value text);
+create table if not exists credential(id text primary key, value text);
+create table if not exists account(id text primary key, access_token text);
+""")
+k = "KEY=%s" % v1
+c.execute("insert into session_v2 values('ses_2', 'p', ?, ?, ?, ?, ?, ?, 1)", (k, k, json.dumps({"m": k}), json.dumps({"r": k}), json.dumps([{"allow": k}]), k))
+c.execute("insert into session_part values('msg_2','ses_2',0,'tool','call_1',1,1,?)", (json.dumps({"output": k}),))
+c.execute("insert into session_message values('sm_2','ses_2','assistant',1,1,1,?)", (json.dumps({"text": k}),))
+c.execute("insert into event values('evt_2','ses_2',1,1,'session.part',?)", (json.dumps({"output": k}),))
+c.execute("insert into session_inbox values('in_1','ses_2','prompt',?,'now',1,1)", (json.dumps({"text": k}),))
+c.execute("insert into job values('n','job_1','ses_2',null,'shell',?,'done',?,?,?,1,1)", (k, k, k, json.dumps({"command": "export " + k, "cwd": "/w"})))
+c.execute("insert into automation values('a1','p','ses_2','nightly',?,?,?,?)", (k, k, k, json.dumps({"last": {"prompt": k}, "n": 1})))
+c.execute("insert into kv values('draft',?)", (k,))
+c.execute("insert into permission values('pm1','p','allow',?)", ("bash:" + k,))
+c.execute("insert into project values('p','/w','demo',?)", (json.dumps({"deploy": k}),))
+c.execute("insert into instruction_entry values('ses_2','AGENTS.md',?,0,1,1)", (k,))
+c.execute("insert into instruction_state values('ses_2',0,1,?,?)", (k, k))
+c.execute("insert into instruction_blob values('h1',?)", (k,))
+c.execute("insert or ignore into credential values('c1',?)", (v1,))
+c.execute("insert into account values('a1',?)", (v1,))
+c.commit()
+EOF
+}
+# v2_leaked DB VALUE: occurrences of VALUE left in any scrubbed v2 column.
+v2_leaked() { python3 -c "
+import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); n=0
+for t,cols in [('session_v2',['title','summary_diffs','metadata','revert','permission','idle_outcome']),('session_part',['data']),('session_message',['data']),('event',['data']),('session_inbox',['payload']),('job',['title','output','error','recovery']),('automation',['action','last_outcome','last_output','state']),('kv',['value']),('permission',['resource']),('project',['commands']),('instruction_entry',['value']),('instruction_state',['initial_values','current_values']),('instruction_blob',['value'])]:
+    for col in cols: n+=c.execute(f'select count(*) from {t} where instr({col},?)>0',(sys.argv[2],)).fetchone()[0]
+print(n)" "$1" "$2"; }
+
+@test "opencode v2: a fresh 2.3.2 store is recognised and every text column scrubbed" {
+  make_opencode_v2 "$HOME/opencode.db"
+  [ "$(v2_leaked "$HOME/opencode.db" "$V1")" -gt 0 ]
+  run --separate-stderr run_helper "$HOME/opencode.db"
+  [ "$status" -eq 0 ]
+  [ "$(v2_leaked "$HOME/opencode.db" "$V1")" -eq 0 ]
+  [ "$(grep -c 'hit OPENROUTER_API_KEY' <<< "$output")" -eq 25 ]
+  [[ "$output" == *"session=ses_2"* ]]
+  [[ "$output" != *"skipped-table message"* ]]
+  [[ "$output" != *"skipped-table"* ]]
+  [ "$(col "$HOME/opencode.db" "select value from credential")" = "$V1" ]
+  [ "$(col "$HOME/opencode.db" "select access_token from account")" = "$V1" ]
+  [[ "$output" != *"$V1"* ]]; [[ "$stderr" != *"$V1"* ]]
+}
+
+@test "opencode v2: a store migrated from v1 holds both generations and both are scrubbed" {
+  make_opencode "$HOME/opencode.db"
+  python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('drop table session_message'); c.execute('drop table event'); c.commit()" "$HOME/opencode.db"
+  make_opencode_v2 "$HOME/opencode.db"
+  run --separate-stderr run_helper "$HOME/opencode.db"
+  [ "$status" -eq 0 ]
+  [ "$(v2_leaked "$HOME/opencode.db" "$V1")" -eq 0 ]
+  [ "$(leaked "$HOME/opencode.db" "$V1")" -eq 0 ]
+  [ "$(leaked "$HOME/opencode.db" "$V2")" -eq 0 ]
+  [[ "$output" == *"session=ses_1"* ]]
+  [[ "$output" == *"session=ses_2"* ]]
+}
+
+@test "opencode v1: a v1-only store does not report v2 tables as skipped" {
+  make_opencode "$HOME/opencode.db"
+  run run_helper "$HOME/opencode.db"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"skipped-table session_part"* ]]
+  [[ "$output" != *"skipped-table session_v2"* ]]
+  [ "$(leaked "$HOME/opencode.db" "$V1")" -eq 0 ]
+}
+
+@test "opencode v2: job title and recovery command and automation state are scrubbed and still decode" {
+  make_opencode_v2 "$HOME/opencode.db"
+  run --separate-stderr run_helper "$HOME/opencode.db"
+  [ "$status" -eq 0 ]
+  python3 - "$HOME/opencode.db" "$V1" <<'EOF'
+import json, sqlite3, sys
+c = sqlite3.connect(sys.argv[1]); v1 = sys.argv[2]
+title, recovery = c.execute("select title, recovery from job").fetchone()
+state, = c.execute("select state from automation").fetchone()
+assert v1 not in title and "[REDACTED:OPENROUTER_API_KEY]" in title
+rec = json.loads(recovery); assert v1 not in rec["command"] and rec["cwd"] == "/w"
+st = json.loads(state); assert v1 not in st["last"]["prompt"] and st["n"] == 1
+EOF
+}

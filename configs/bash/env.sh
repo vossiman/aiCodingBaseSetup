@@ -62,3 +62,18 @@ unset LOGFIRE_TOKEN DOKPLOY_API_TOKEN KANBAN_TOKEN
 # future codex route runs Xvfb, :0 is where it will live. Only defaulted,
 # never overridden (X11-forwarded sessions keep theirs).
 export DISPLAY="${DISPLAY:-:0}"
+
+# Older devbox images seeded OpenCode v1 with opencode.ai/install, which put
+# `export PATH=~/.opencode/bin:$PATH` in ~/.bashrc ahead of this block and so
+# shadowed the managed ~/.local/bin/opencode launcher. Move that directory to
+# the end of PATH; nothing else changes order, and nothing happens without it.
+case ":$PATH:" in
+  *":$HOME/.opencode/bin:"*)
+    _aicoding_p=":$PATH:"
+    while case "$_aicoding_p" in *":$HOME/.opencode/bin:"*) true ;; *) false ;; esac; do
+      _aicoding_p=${_aicoding_p/":$HOME/.opencode/bin:"/:}
+    done
+    _aicoding_p=${_aicoding_p#:}; _aicoding_p=${_aicoding_p%:}
+    PATH="${_aicoding_p:+$_aicoding_p:}$HOME/.opencode/bin"
+    unset _aicoding_p ;;
+esac

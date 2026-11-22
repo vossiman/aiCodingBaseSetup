@@ -146,6 +146,65 @@ checkpoint, measured against how `configs/` actually uses each tool.
 Settings adopted outside an audit window. Listed here so a future audit
 recognises them as deliberate rather than drift.
 
+### OpenCode v2 from GitHub releases instead of npm v1 (2026-11-22, opencode 2.3.2)
+
+Owner decision. The updater used to install npm `opencode-ai`, which only
+carries v1 (`latest` is 1.19.6). v2 is published as GitHub release archives
+of `anomalyco/opencode` (with `SHA256SUMS`), on npm as `@opencode/cli`, and
+in a Homebrew tap; the blueprint chose the GitHub archives, which ship one
+self-contained binary and a checksum file. `lib/update-opencode.sh` now picks
+the highest plain `v2.x.y` tag that is not a draft or prerelease, following
+the API's Link header for a few pages (the repo's "Latest" flag can point at
+a v1 release, so it is not used),
+downloads the matching `opencode-linux-{x64,arm64}[-baseline][-musl].tar.gz`
+plus `SHA256SUMS`, refuses a checksum mismatch or any archive that is not one
+regular `opencode` file, probes `opencode --version`, and activates it like
+Cursor. The binary sits at `node_modules/.bin/opencode`, the path npm v1
+releases used, because activation only accepts a changed launcher whose
+executable also exists in the old release; that is what lets an active v1
+release hand over. A failed download keeps curl's last error in
+`~/.local/state/aicoding/diagnostics/opencode-download.log`. `ensure_opencode` on a fresh machine calls the same adapter instead of
+the `opencode.ai/install` script, which installs v1 into `~/.opencode/bin`.
+
+v2 reads `update` (`disable|notify|auto`) and falls back to the deprecated
+`autoupdate`, where `false` means disable; a personal `"update": "auto"`
+would win. Its updater checks `OPENCODE_DISABLE_AUTOUPDATE` before either
+(verified in the 2.3.2 binary), so the managed launcher always exports
+`OPENCODE_DISABLE_AUTOUPDATE=1`. A bare `opencode update`/`upgrade` runs
+`aicoding-auto-update --once`, `--help`/`-h` passes through (it only prints
+usage), and a version or any other flag is refused unchanged. The Claude
+launcher is unchanged.
+The blueprint also owns `"autoupdate": false` as a fallback: v1 accepts that
+key too, while an `update` key could fail a v1 config probe during the
+switch. The config probe runs `opencode debug config --standalone` on v2
+(the plain command starts or reuses the shared background server) with
+throwaway state, cache and data dirs, `OPENCODE_DB` and
+`OPENCODE_PTY_SOCKET_DIR` pointed into its scratch dir and
+`OPENCODE_TEST_HOME` dropped, so an inherited live database is never
+opened; plain on v1, and not at all offline.
+
+The SQLite transcript redaction (`lib/redact-sqlite.py`) recognises the v2
+store (`session_part` + `session_v2`) as well as v1 (`message` + `part`), and
+scrubs both in a migrated database. Every TEXT column of the fresh 2.3.2
+schema was audited; the user-content ones are scrubbed: `session_part.data`,
+`session_v2` title/summary_diffs/metadata/revert/permission/idle_outcome,
+`session_inbox.payload`, `job` title/output/error/recovery, `automation`
+name/action/last_outcome/last_output/state, `kv.value`,
+`permission.resource`, `project.commands`, `instruction_entry.value`,
+`instruction_state` values and `instruction_blob.value`, plus the shared
+`session_message` and `event`. Ids, paths, enums and OpenCode's own
+credentials are left alone, and `blob` (binary, content-addressed) is not
+rewritten.
+
+The devbox image no longer runs `opencode.ai/install`: it seeds v2 from the
+release archive with the same `SHA256SUMS` check, and the smoke test asserts
+a v2 seed and no `~/.opencode/bin`. On containers built from older images,
+the managed `env.sh` moves `~/.opencode/bin` (put first in `~/.bashrc` by the
+v1 installer) to the end of PATH, so the managed launcher wins. Machines that still run v1 move to
+v2 on their next updater pass. A Homebrew `opencode-v2` ahead of
+`~/.local/bin` on PATH keeps shadowing the managed copy; uninstall it to use
+the managed one.
+
 ### Codex and OpenCode default model `gpt-6.2-sol` (2026-11-22, codex-cli 0.171.0, opencode 2.3.2)
 
 Replaces `gpt-6.1-sol` in `configs/codex/config.toml`,

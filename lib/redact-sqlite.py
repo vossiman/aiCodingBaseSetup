@@ -14,7 +14,11 @@ Two store kinds, detected from the schema:
             get a same-length marker, because a length-delimited protobuf
             field carries its byte length in a varint prefix that a longer
             or shorter payload would falsify.
-  OpenCode  message/part/event/... text columns rewritten row by row.
+  OpenCode  text columns rewritten row by row. v1 stores (message + part)
+            and v2 stores (session_part + session_v2) are both recognised,
+            and a migrated database holding both gets both scrubbed. The v2
+            `blob` table is binary and content-addressed (blob_ref points at
+            its hash), so it is not rewritten.
 
 Stdout: "hit KEY N [session=ID]", "skipped-table T", "checkpoint-incomplete".
 Exit: 0 ok, 1 failure, 4 busy, 5 unrecognised store or unresolvable root.
@@ -29,12 +33,14 @@ from collections import Counter
 
 EXIT_BUSY, EXIT_SCHEMA = 4, 5
 
-# (table, text column, column naming the session)
-OPENCODE_COLUMNS = [
-    ("message", "data", "session_id"),
-    ("part", "data", "session_id"),
+# (table, text column, column naming the session or None)
+OPENCODE_SHARED = [
     ("session_message", "data", "session_id"),
     ("event", "data", "aggregate_id"),
+]
+OPENCODE_V1 = [
+    ("message", "data", "session_id"),
+    ("part", "data", "session_id"),
     ("session", "title", "id"),
     ("session", "summary_diffs", "id"),
     ("todo", "content", "session_id"),
@@ -42,6 +48,37 @@ OPENCODE_COLUMNS = [
     ("session_context_epoch", "baseline", "session_id"),
     ("session_context_epoch", "snapshot", "session_id"),
 ]
+# Schema of the OpenCode 2.3.2 store, fresh and migrated from v1. Every TEXT
+# column that can carry prompts, output, commands or user-written text is
+# listed; ids, paths, enums and OpenCode's own credentials are not.
+OPENCODE_V2 = [
+    ("session_part", "data", "session_id"),
+    ("session_v2", "title", "id"),
+    ("session_v2", "summary_diffs", "id"),
+    ("session_v2", "metadata", "id"),
+    ("session_v2", "revert", "id"),
+    ("session_v2", "permission", "id"),
+    ("session_v2", "idle_outcome", "id"),
+    ("session_inbox", "payload", "session_id"),
+    ("job", "title", "session_id"),
+    ("job", "output", "session_id"),
+    ("job", "error", "session_id"),
+    ("job", "recovery", "session_id"),
+    ("automation", "name", "session_id"),
+    ("automation", "action", "session_id"),
+    ("automation", "last_outcome", "session_id"),
+    ("automation", "last_output", "session_id"),
+    ("automation", "state", "session_id"),
+    ("kv", "value", None),
+    ("permission", "resource", None),
+    ("project", "commands", None),
+    ("instruction_entry", "value", "session_id"),
+    ("instruction_state", "initial_values", "session_id"),
+    ("instruction_state", "current_values", "session_id"),
+    ("instruction_blob", "value", None),
+]
+OPENCODE_V1_TABLES = {"message", "part"}
+OPENCODE_V2_TABLES = {"session_part", "session_v2"}
 
 
 def read_rules(stream):
@@ -104,16 +141,25 @@ def as_bytes(s):
     return s.encode("utf-8", "surrogateescape")
 
 
+def opencode_columns(present):
+    cols = list(OPENCODE_SHARED)
+    if OPENCODE_V1_TABLES <= present:
+        cols += OPENCODE_V1
+    if OPENCODE_V2_TABLES <= present:
+        cols += OPENCODE_V2
+    return cols
+
+
 def scrub_opencode(conn, rules, out):
     present = tables(conn)
-    for table, col, sess in OPENCODE_COLUMNS:
+    for table, col, sess in opencode_columns(present):
         cols = columns(conn, table) if table in present else set()
         if col not in cols:
             out.append("skipped-table %s" % table)
             continue
         # A renamed session column must not fail the SELECT (that would roll
         # back everything and defer the store forever); it just costs the id.
-        sess_expr = '"%s"' % sess if sess in cols else "'-'"
+        sess_expr = '"%s"' % sess if sess and sess in cols else "'-'"
         where = " or ".join('instr("%s", ?) > 0' % col for _ in rules)
         params = [as_text(p) for p, _ in rules]
         rows = conn.execute(
@@ -211,7 +257,7 @@ def main():
         present = tables(conn)
         if {"blobs", "meta"} <= present:
             scrub = scrub_cursor
-        elif {"message", "part"} <= present:
+        elif OPENCODE_V1_TABLES <= present or OPENCODE_V2_TABLES <= present:
             scrub = scrub_opencode
         else:
             return EXIT_SCHEMA

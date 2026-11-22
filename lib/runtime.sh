@@ -175,6 +175,35 @@ _aicoding_runtime_write_wrapper() {
         'export DISABLE_AUTOUPDATER="${DISABLE_AUTOUPDATER:-1}"' \
         'export FORCE_AUTOUPDATE_PLUGINS="${FORCE_AUTOUPDATE_PLUGINS:-1}"'
     fi
+    if [ "$relative" = node_modules/.bin/opencode ] && [ "${current##*/}" = opencode ]; then
+      # aicoding owns OpenCode updates: its own updater would rewrite an
+      # immutable release. A bare `update`/`upgrade` runs aicoding's updater,
+      # `--help`/`-h` only prints usage and passes through, and a version or
+      # any other flag is refused without changing anything.
+      printf '%s\n' \
+        'case "${1:-}" in' \
+        '  update|upgrade)' \
+        '    case "$#:${2:-}" in' \
+        '      1:)' \
+        '        updater="$HOME/.local/bin/aicoding-auto-update"' \
+        '        [ -x "$updater" ] || updater=$(command -v aicoding-auto-update 2>/dev/null) || updater=' \
+        '        if [ -z "$updater" ]; then' \
+        "          echo 'opencode: updates are managed by aicoding, but aicoding-auto-update is not installed' >&2" \
+        '          exit 1' \
+        '        fi' \
+        "        echo 'opencode: updates are managed by aicoding; running aicoding-auto-update --once' >&2" \
+        '        exec "$updater" --once' \
+        '        ;;' \
+        '      2:--help|2:-h) ;;' \
+        '      *)' \
+        "        echo \"opencode: updates are managed by aicoding, so 'opencode \$1' takes no version or flags; run 'opencode \$1' alone or 'aicoding-auto-update --once'\" >&2" \
+        '        exit 2' \
+        '        ;;' \
+        '    esac' \
+        '    ;;' \
+        'esac' \
+        'export OPENCODE_DISABLE_AUTOUPDATE=1'
+    fi
     printf '%s\n' \
       'release=$(readlink -f -- "$current") || exit 1' \
       '[ -x "$release/$relative" ] || exit 1' \
