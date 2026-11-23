@@ -30,9 +30,9 @@ old releases are never deleted by age or by the `previous` pointer alone. On a
 host (profile `host` or `minimal-pi`, outside a container), a scheduled pass
 that succeeded without deferrals ends with a retention step. A directory
 `versions/<component>/<version>` is a removal candidate on a run only when all
-of these hold, and is kept whenever any check is unclear (the browser cache
-that follows a release is covered under "The browser cache" below; source
-snapshots under `sources/` are never pruned):
+of these hold, and is kept whenever any check is unclear. Retention never
+renames, stamps or deletes anything outside `versions/<component>/` and its own
+stamp directories (see the end of this section):
 
 - it is a real directory, not a symlink, and its name has no leading dot and
   no `.staging.` or `.replaced.` part, so staging and transaction trees and a
@@ -49,10 +49,11 @@ snapshots under `sources/` are never pruned):
   kept, not only the final target. A chain that cannot be followed to its end,
   including one that reaches a missing path, keeps every component it
   touched. One exception keeps pruning possible: a link inside a release whose
-  missing step lies in that same release, and which touched no other part of
-  `versions/` than the directories above that release, keeps nothing, whether
+  missing step lies inside that same release directory keeps nothing, whether
   its text is relative or absolute (dangling links inside `node_modules` are
-  common). A dangling link that never touches `versions/` keeps nothing
+  common). Passing through its own release is not enough: a link
+  `versions/pi/1.0/x -> <data>/versions/pi/1.0/../../../missing` fails
+  outside the release and keeps the component. A dangling link that never touches `versions/` keeps nothing
   either, even when the text after its missing step names a release: only
   steps that really exist count. A link inside a release that resolves back
   into the same release does not protect that release;
@@ -75,7 +76,9 @@ snapshots under `sources/` are never pruned):
   An argument that names a component's `versions/` or `current/` path and
   also contains a `.` or `..` segment, such as
   `<data>/versions/pi/1.1/../1.0/cli.js`, keeps every version of that
-  component for the run;
+  component for the run. Each entry of a `:` or `,` separated list counts as
+  a path of its own, so `--paths=<data>/versions/pi/1.0/..:/opt/other` keeps
+  every `pi` version too;
 - no process holds a launcher lease on it (below);
 - no process of the user belongs to the component without holding any of its
   releases (the unknown-release rule, below);
@@ -130,83 +133,28 @@ name. Such a process is another program that only shares the launcher's name,
 for example `/usr/libexec/geoclue-2.0/demos/agent` next to the Cursor
 launcher `agent`. The name match still counts when the executable has another
 name (an interpreter such as `node` that renamed itself), lies inside the data
-directory or `~/.local/bin`, or cannot be read. A process that belongs to a
-component but holds no path under that component's `versions/` keeps every
-version of the component on that run, with one log line naming its pid, short
-name and component. One exception: when the program itself names a release,
-the release it uses is known. The program is `argv[0]`, or, when the basename
-of `argv[0]` is an interpreter (`python`, `python3`, `python3.<N>`, `node`,
-`nodejs`, `bash`, `sh`, `dash`, `perl`, `ruby` or `bun`), its first argument
-that does not start with `-`. That whole argument must be a path inside
-`versions/<component>/<name>/` under the data directory without `.` or `..`
-segments, and the command line must name no `current/<component>` path. That
-release is kept (as every release named on a command line is), and the process
-does not keep the rest of the component. A `python3
-<data>/versions/aicoding/<sha>/bin/kanban-work` helper therefore keeps only
-release `<sha>`. A release named anywhere else, such as in
-`--log=<data>/versions/cursor/1.1/log`, is kept but proves only that it is
-referenced, not that the process runs it. Such a process, one that also names
-`current/<component>`, and one that matched the component only by name keep
-the whole component as before. The list holds interpreters whose first
-operand is the script they run. `deno` is left out because its first operand
-is a subcommand (`deno run`), so a `deno` process keeps the component.
+directory or `~/.local/bin`, or cannot be read.
 
-**The browser cache.** One tree outside `versions/` belongs to a release and
-follows it: the Playwright browser cache
-`browser-cache/mcp-playwright/<version>` belongs to
-`versions/mcp-playwright/<version>`. Source snapshots under `sources/` are
-never pruned: retention never renames, stamps or deletes anything there,
-because a directory there may be a hand-made checkout with uncommitted work.
-A cache is a removal candidate only when all of these hold:
-
-- its release directory was already absent when the run began (it was pruned
-  on an earlier run, or never existed). A release and its cache are therefore
-  never removed on the same run, preview and a real run agree, and the
-  cache's own observation window starts one run after its release went;
-- its name is a valid version name, and not the release that
-  `current/mcp-playwright` or `previous/mcp-playwright` points at;
-- it carries the records provisioning leaves there, a plain `.links/`
-  directory and a regular `.browser-bin` file. A directory without them is
-  never touched and never stamped;
-- every rule above holds for it as well: a plain directory under plain (not
-  symlinked) `browser-cache/` and `browser-cache/mcp-playwright/`
-  directories; no mount point at or below it; no link under the data
-  directory or in `~/.local/bin`, and no file in `~/.local/bin`, that resolves
-  into it, passes through it or names it (links inside the same cache
-  excepted); no process with its executable, working directory, an open file
-  or a mapping inside it, and no command line naming it.
-
-A process whose working directory or an open descriptor is `browser-cache/`
-or `browser-cache/mcp-playwright/` itself may use any cache by a relative
-path, so it keeps every cache for the run. A command line argument that names
-a path under the data directory with a `.` or `..` segment, or that names a
-cache root rather than one cache, keeps every cache for the run. A dangling
-link inside a cache whose missing step lies in that same cache keeps nothing,
-whether its text is absolute or relative: passing through `browser-cache/`
-and `browser-cache/mcp-playwright/` on the way is not a reference to every
-cache. A dangling link that reaches into another cache keeps every cache. A
-component kept as a whole (by a pointer check, an activation lock, the
-unknown-release rule, a link that cannot be followed or an untrustworthy
-stamp store) keeps its caches too.
-
-A browser cache also carries Playwright's own records. Each file in
-`<cache>/.links/` holds the path of a Playwright package directory (for
-example `versions/mcp-playwright/<version>/node_modules/playwright-core`)
-that installed browsers into that cache; Playwright reads them to decide
-which browsers it may delete. `<cache>/.browser-bin` holds the path of the
-browser binary that provisioning validated inside that cache. Retention keeps
-a cache while any package a `.links` record names still exists, so a cache
-that another release installed into stays with that release. A `.links`
-record that spans several lines keeps its own cache, and a `.links/` that is
-not a plain directory does too. Every line of a `.links` or `.browser-bin`
-record is read as a path, first step by step without touching the file
-system (`.`, `..` and repeated slashes collapsed), then through `readlink -m`.
-Every other cache that the path passes through or ends in is kept, so a
-record `<data>/browser-cache/mcp-playwright/0.3/../0.1/chrome` in cache 0.3
-keeps cache 0.1. A line that is relative, or that ends on a cache root, could
-mean any cache and keeps every cache for the run. Because an unreadable
-record might name any cache, a `.links` entry or `.browser-bin` that is not a
-regular file or cannot be read keeps every cache for the run.
+A process that belongs to a component but holds no path under that
+component's `versions/` keeps every version of the component on that run,
+with one log line naming its pid, short name and component. One exception:
+when the program itself is a path inside a release, the release it runs is
+known. That holds only in two shapes. Either the whole `argv[0]` is a path
+inside `versions/<component>/<name>/` under the data directory, or the
+basename of `argv[0]` is an interpreter (`python`, `python3`, `python3.<N>`,
+`node`, `nodejs`, `bash`, `sh`, `dash`, `perl`, `ruby` or `bun`) and its
+very first argument, with no option before it, is such a path as a whole.
+The path must have no `.` or `..` segments, and the command line must name
+no `current/<component>` path. That release is kept (as every release named
+on a command line is), and the process does not keep the rest of the
+component. A `python3 <data>/versions/aicoding/<sha>/bin/kanban-work` helper
+therefore keeps only release `<sha>`. Any other shape keeps the whole
+component as before: `python3 -u <release path>`, `node --require
+<data>/versions/tool/1.0/preload.js /opt/wrapper.js`, a release named only in
+an option such as `--log=<data>/versions/cursor/1.1/log`, a process that also
+names `current/<component>`, and one that matched the component only by name.
+`deno` is left out of the list because its first operand is a subcommand
+(`deno run`), so a `deno` process keeps the component.
 
 **Processes that cannot be inspected.** A process of the user counts as
 inspected only when its executable link, working directory link, descriptor
@@ -243,12 +191,7 @@ nothing. The default applies only when the variable is unset. A version is due o
 the time since its stamp reaches the window. The first run that sees it as a
 candidate records a stamp,
 `~/.local/state/aicoding/retention/<component>/<version>`, whose mtime is that
-moment. A browser cache has its own stamp in a separate namespace,
-`retention/.aux.browser-cache.mcp-playwright/<version>`; the leading dot means
-it can never be mistaken for a component's stamp directory, so a release and
-its cache never share a stamp. Every rule below applies to that directory and
-its stamps as well, and stamps of caches that no longer exist are deleted too.
-`retention/` and each component directory in it are created private
+moment. `retention/` and each component directory in it are created private
 (mode 0700) and must be plain directories inside the resolved state
 directory. A symlinked or otherwise odd component directory keeps every
 version of that component with a warning; such a `retention/` itself keeps
@@ -261,8 +204,8 @@ written is not trusted: a component directory the user cannot write or
 search keeps every version of that component with a warning, and when
 deleting or creating a stamp fails during a run, that component is kept for
 the rest of the run, so a stale stamp is never honoured after its reset
-failed. The candidate whose stamp could not be created or reset is kept on
-that run too, even with `AICODING_RETENTION_GRACE=0`. A run that sees the version referenced, in use, or kept by any rule
+failed. The candidate whose stamp could not be created is kept on that run
+too, even with `AICODING_RETENTION_GRACE=0`. A run that sees the version referenced, in use, or kept by any rule
 deletes its stamp, so the window starts again. Stamps of versions that no
 longer exist are deleted. A run that removes nothing because a scan was
 incomplete, the mount table could not be read, an uninspectable process was
@@ -276,28 +219,37 @@ version to a dot-prefixed tombstone in the same directory, then deletes it, so
 an interrupted removal never leaves a half-deleted tree under a valid version
 name; the next run finishes such a tombstone. Each removed version is logged
 with its size, followed by one total. A failed removal is a warning and never
-changes the pass result. Fallback workers loaded before retention existed are
-replaced by the idle upgrade path, because their receipt lacks the `retention`
-capability. The receipt keeps its first line in the original three fields
-(protocol, pid, start time), which older releases parse to verify ownership,
-and records `capabilities retention` on a second line. A one-line receipt
-still proves ownership but counts as a worker without retention. A worker
-that has the capability may still be older than the active release, so each
-of its passes loads the retention library of the release `current/aicoding`
-points at, when that pointer's own target is exactly
-`../versions/aicoding/<name>` or its absolute form, a real release directory,
-and the library there is a regular file. Otherwise it uses its own copy.
+changes the pass result. A fallback worker keeps the library it loaded for
+its whole life, so each of its passes loads the retention library of the
+release `current/aicoding` points at, and only when every check holds:
+`current/` is a plain directory, the pointer's own target is exactly
+`../versions/aicoding/<name>` or that path under the resolved data
+directory, `<name>` is a valid release name, the release is a real
+directory, and `<release>/lib/version-retention.sh` resolves to exactly that
+path under the resolved data directory and is a regular file. A symlinked
+`lib/` or a symlinked directory above the release fails the last check.
+Otherwise the worker uses its own copy. Workers that cannot do this are
+replaced by the idle upgrade path, because their receipt lacks the
+`retention2` capability: that covers workers loaded before retention existed
+and workers that advertise only `retention` and always ran their own copy.
+The receipt keeps its first line in the original three fields (protocol,
+pid, start time), which older releases parse to verify ownership, and records
+`capabilities retention2` on a second line. A one-line receipt, or one with
+an older capability, still proves ownership but counts as an outdated
+worker.
 
 `AICODING_RETENTION=preview` logs, per candidate, whether it would be removed
 now or the date it becomes eligible, and lists leftover tombstones a real run
-would delete; it removes nothing and writes no stamp. Cache candidates are
-labelled `auxiliary tree browser-cache/mcp-playwright/<version>` and get their
-own total line. `AICODING_RETENTION=off`
+would delete; it removes nothing and writes no stamp. `AICODING_RETENTION=off`
 disables the step. `aicoding-auto-update --retention-preview` prints the same
 preview without an update pass. Containers never prune: a rebuild replaces
-their whole tree. Other trees under the data directory, such as `cache/`,
-`runtime/`, `vendor/`, `source-staging/` and `sources/`, are not pruned on
-any machine.
+their whole tree. Source snapshots under `sources/` and the Playwright browser
+cache under `browser-cache/` are never pruned on any machine: retention never
+renames, stamps or deletes anything there. A directory under `sources/` may be
+a hand-made checkout with uncommitted work, and a running Playwright process
+can select its cache through the `PLAYWRIGHT_BROWSERS_PATH` environment
+variable, which retention could see only by reading other processes'
+environments.
 
 Source releases carry `.aicoding-version` and a retained-tree digest. Exact npm
 components retain the dependency tree and validate package metadata,
