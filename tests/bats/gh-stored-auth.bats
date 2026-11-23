@@ -94,11 +94,11 @@ teardown() { rm -rf "$TMPD"; }
 
 @test "env.sh exports no secret from the secrets file" {
   mkdir -p "$HOME/.aicodingsetup"
-  printf 'GH_TOKEN=ghp_x\nBRAVE_API_KEY=brave123\nOPENROUTER_API_KEY=sk-or-x\nFIRECRAWL_API_KEY=fc_x\nMEMORY_ROUTER_TOKEN=mrt_x\nCLOUDFLARE_API_TOKEN=cf_x\nLOGFIRE_TOKEN=lf_x\nDOKPLOY_API_TOKEN=dk_x\nKANBAN_TOKEN=kb_x\n' \
+  printf 'GH_TOKEN=ghp_x\nBRAVE_API_KEY=brave123\nOPENROUTER_API_KEY=sk-or-x\nFIRECRAWL_API_KEY=fc_x\nMEMORY_WRITE_TOKEN=mrt_x\nCLOUDFLARE_API_TOKEN=cf_x\nLOGFIRE_TOKEN=lf_x\nDOKPLOY_API_TOKEN=dk_x\nKANBAN_TOKEN=kb_x\n' \
     > "$HOME/.aicodingsetup/.secrets.env"
   run bash -c ". '$BLUEPRINT_ROOT/configs/bash/env.sh'; \
     for k in GH_TOKEN BRAVE_API_KEY OPENROUTER_API_KEY FIRECRAWL_API_KEY \
-             MEMORY_ROUTER_TOKEN CLOUDFLARE_API_TOKEN LOGFIRE_TOKEN \
+             MEMORY_WRITE_TOKEN CLOUDFLARE_API_TOKEN LOGFIRE_TOKEN \
              DOKPLOY_API_TOKEN KANBAN_TOKEN; do \
       echo \"\$k=[\${!k:-}]\"; done"
   [ "$status" -eq 0 ]
@@ -110,7 +110,7 @@ teardown() { rm -rf "$TMPD"; }
   # what env.sh does. Verified 2026-08-27.
   local k
   for k in GH_TOKEN BRAVE_API_KEY OPENROUTER_API_KEY FIRECRAWL_API_KEY \
-           MEMORY_ROUTER_TOKEN CLOUDFLARE_API_TOKEN LOGFIRE_TOKEN \
+           MEMORY_WRITE_TOKEN CLOUDFLARE_API_TOKEN LOGFIRE_TOKEN \
            DOKPLOY_API_TOKEN KANBAN_TOKEN; do
     [[ "$output" == *"$k=[]"* ]] || { echo "leaked into the environment: $k"; return 1; }
   done

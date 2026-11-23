@@ -16,9 +16,9 @@ setup() {
   MH="$CLI"
   TMPDIR=$(mktemp -d)
   export HOME="$TMPDIR"
-  unset MEMORY_ROUTER_TOKEN MEMORY_ROUTER_URL
+  unset MEMORY_WRITE_TOKEN MEMORY_ROUTER_URL
   mkdir -p "$HOME/.aicodingsetup"
-  printf 'MEMORY_ROUTER_TOKEN=test-token\n' > "$HOME/.aicodingsetup/.secrets.env"
+  printf 'MEMORY_WRITE_TOKEN=test-token\n' > "$HOME/.aicodingsetup/.secrets.env"
   export MEMORY_ROUTER_TEST_TOKEN="test-token"
 }
 
@@ -228,11 +228,11 @@ PY
   [ "$status" -eq 0 ]; [ -z "$output" ]
 }
 
-@test "multiple MEMORY_ROUTER_TOKEN lines: uses last (corrected) value" {
+@test "multiple MEMORY_WRITE_TOKEN lines: uses last (corrected) value" {
   # Store parsing only runs when MEMORY_ROUTER_URL is unset (the production
   # path); with an override present the store is not consulted at all, so
   # this exercises read_token() directly rather than through a stub server.
-  printf 'MEMORY_ROUTER_TOKEN=stale-token\nMEMORY_ROUTER_TOKEN=correct-token\n' > "$HOME/.aicodingsetup/.secrets.env"
+  printf 'MEMORY_WRITE_TOKEN=stale-token\nMEMORY_WRITE_TOKEN=correct-token\n' > "$HOME/.aicodingsetup/.secrets.env"
   unset MEMORY_ROUTER_URL MEMORY_ROUTER_TEST_TOKEN
   run python3 -c "
 import runpy
@@ -243,12 +243,9 @@ print(mod['read_token']())
   [ "$output" = "correct-token" ]
 }
 
-@test "MEMORY_WRITE_TOKEN wins over MEMORY_ROUTER_TOKEN, and works alone" {
+@test "MEMORY_WRITE_TOKEN is read from the store, with or without export" {
   unset MEMORY_ROUTER_URL MEMORY_ROUTER_TEST_TOKEN
   local store="$HOME/.aicodingsetup/.secrets.env"
-  printf 'MEMORY_ROUTER_TOKEN=read-token\nMEMORY_WRITE_TOKEN=write-token\n' > "$store"
-  run python3 -c "import runpy; print(runpy.run_path('$CLI')['read_token']())"
-  [ "$status" -eq 0 ]; [ "$output" = "write-token" ]
   printf 'MEMORY_WRITE_TOKEN=write-only\n' > "$store"
   run python3 -c "import runpy; print(runpy.run_path('$CLI')['read_token']())"
   [ "$status" -eq 0 ]; [ "$output" = "write-only" ]
@@ -285,7 +282,7 @@ print(mod['read_token']())
 
 @test "an override refuses to read the protected store" {
   # A closed port would prove nothing here: a regressed read_token() that
-  # fell back to the store (seeded by setup() with MEMORY_ROUTER_TOKEN=
+  # fell back to the store (seeded by setup() with MEMORY_WRITE_TOKEN=
   # test-token) would also throw on connect and get swallowed silently,
   # passing this test for the wrong reason. Use a real loopback listener
   # that records the Authorization header it receives instead, the same

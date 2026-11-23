@@ -44,7 +44,7 @@ Configured for **all four CLIs**: `claude mcp add` for Claude Code, `~/.config/o
 The board serves its MCP at `https://kanban.dataprospectors.at/mcp` (streamable
 HTTP, stateless). Every harness's config holds only that URL and an
 `Authorization: Bearer` header, rendered from `KANBAN_TOKEN` at deploy time
-into the same mode `0600`, deny-listed files that carry `MEMORY_ROUTER_TOKEN`.
+into the same mode `0600`, deny-listed files that carry `MEMORY_WRITE_TOKEN`.
 Without the token the entry is left out. Codex marks the server
 `required = false`, so an unreachable board never blocks startup. Tools, tool
 schemas and server instructions ship with the board; no tool change needs a

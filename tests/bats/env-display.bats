@@ -18,6 +18,12 @@ teardown() { rm -rf "$TMPDIR"; }
   [[ "$output" == ":0" ]]
 }
 
+@test "env.sh clears an inherited memory token, the retired read name included" {
+  run -0 env MEMORY_ROUTER_TOKEN=inherited-read MEMORY_WRITE_TOKEN=inherited-write \
+    bash -c "source '$BLUEPRINT_ROOT/configs/bash/env.sh'; printf '%s|%s' \"\${MEMORY_ROUTER_TOKEN-unset}\" \"\${MEMORY_WRITE_TOKEN-unset}\""
+  [[ "$output" == "unset|unset" ]]
+}
+
 @test "env.sh leaves an existing DISPLAY alone" {
   run -0 env DISPLAY=:7 bash -c "source '$BLUEPRINT_ROOT/configs/bash/env.sh'; printf %s \"\$DISPLAY\""
   [[ "$output" == ":7" ]]

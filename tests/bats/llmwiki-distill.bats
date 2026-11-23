@@ -194,7 +194,7 @@ pad() { head -c 8192 /dev/zero | tr '\0' 'q'; printf '\n'; }
   # which is what makes this assertion able to fail.
   literal="deadbeefcafebabefeedface12345678"
   mkdir -p "$HOME/.aicodingsetup"
-  printf 'MEMORY_ROUTER_TOKEN=%s\n' "$literal" > "$HOME/.aicodingsetup/.secrets.env"
+  printf 'MEMORY_WRITE_TOKEN=%s\n' "$literal" > "$HOME/.aicodingsetup/.secrets.env"
 
   {
     printf 'ordinary prose about the tmux server that must survive\n'
@@ -218,7 +218,7 @@ pad() { head -c 8192 /dev/zero | tr '\0' 'q'; printf '\n'; }
   grep -q 'ordinary prose about the tmux server that must survive' "$spooled"
   grep -q 'FOO_TOKEN=' "$spooled"
   # The read-only secrets file is never rewritten.
-  grep -qx "MEMORY_ROUTER_TOKEN=$literal" "$HOME/.aicodingsetup/.secrets.env"
+  grep -qx "MEMORY_WRITE_TOKEN=$literal" "$HOME/.aicodingsetup/.secrets.env"
 }
 
 # Decision (a): an ABSENT secrets file is not a failure — a machine with no
@@ -253,7 +253,7 @@ pad() { head -c 8192 /dev/zero | tr '\0' 'q'; printf '\n'; }
   fi
   export LLMWIKI_NUDGE_INTERVAL=0
   mkdir -p "$HOME/.aicodingsetup"
-  printf 'MEMORY_ROUTER_TOKEN=deadbeefcafebabefeedface12345678\n' \
+  printf 'MEMORY_WRITE_TOKEN=deadbeefcafebabefeedface12345678\n' \
     > "$HOME/.aicodingsetup/.secrets.env"
   chmod 000 "$HOME/.aicodingsetup/.secrets.env"
 
