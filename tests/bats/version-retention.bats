@@ -1529,6 +1529,7 @@ fake_exe() { ln -sfn "$2" "$TEST_ROOT/proc/$1/exe"; }
   point current aicoding ../versions/aicoding/ccc
   fakeproc 5201 "$UID" python3 python3 "$D/versions/aicoding/aaa/bin/kanban-work" --hook
   inspectable 5201
+  fake_exe 5201 /usr/bin/python3
   run aicoding_version_retention
   [ "$status" -eq 0 ]
   [ -d "$D/versions/aicoding/aaa" ]
@@ -1542,6 +1543,7 @@ fake_exe() { ln -sfn "$2" "$TEST_ROOT/proc/$1/exe"; }
   point current aicoding ../versions/aicoding/ccc
   fakeproc 5202 "$UID" python3 python3 "$D/versions/aicoding/aaa/bin/kanban-work" "--lib=$D/current/aicoding/lib"
   inspectable 5202
+  fake_exe 5202 /usr/bin/python3
   run aicoding_version_retention
   [ "$status" -eq 0 ]
   [ -d "$D/versions/aicoding/bbb" ]
@@ -1549,6 +1551,7 @@ fake_exe() { ln -sfn "$2" "$TEST_ROOT/proc/$1/exe"; }
   rm -rf "$TEST_ROOT/proc/5202"
   fakeproc 5203 "$UID" python3 python3 "$D/versions/aicoding/aaa/../aaa/bin/kanban-work"
   inspectable 5203
+  fake_exe 5203 /usr/bin/python3
   run aicoding_version_retention
   [ -d "$D/versions/aicoding/bbb" ]
   [ -d "$D/versions/aicoding/aaa" ]
@@ -1606,6 +1609,7 @@ fake_exe() { ln -sfn "$2" "$TEST_ROOT/proc/$1/exe"; }
   rm -rf "$TEST_ROOT/proc/5601"
   fakeproc 5602 "$UID" python3 /usr/bin/python3 /opt/x/run.py "$D/versions/cursor/1.1/bin/tool"
   inspectable 5602
+  fake_exe 5602 /usr/bin/python3
   run aicoding_version_retention
   [ -d "$D/versions/cursor/1.0" ]
   [[ "$output" == *"process 5602 (python3) runs cursor from a release it does not hold open"* ]]
@@ -1613,8 +1617,10 @@ fake_exe() { ln -sfn "$2" "$TEST_ROOT/proc/$1/exe"; }
   rm -rf "$TEST_ROOT/proc/5602"
   fakeproc 5603 "$UID" tool "$D/versions/cursor/1.1/bin/tool" --serve
   inspectable 5603
+  fake_exe 5603 "$D/versions/cursor/1.1/bin/tool"
   fakeproc 5604 "$UID" python3.12 python3.12 "$D/versions/cursor/1.1/bin/tool" -u
   inspectable 5604
+  fake_exe 5604 /usr/bin/python3.12
   run aicoding_version_retention
   [ ! -e "$D/versions/cursor/1.0" ]
   [ -d "$D/versions/cursor/1.1" ]
@@ -1626,6 +1632,7 @@ fake_exe() { ln -sfn "$2" "$TEST_ROOT/proc/$1/exe"; }
   # The preload is a named release, but the program is /opt/wrapper.js.
   fakeproc 5611 "$UID" node node --require "$D/versions/tool/1.0/preload.js" /opt/wrapper.js
   inspectable 5611
+  fake_exe 5611 /usr/bin/node
   run aicoding_version_retention
   [ "$status" -eq 0 ]
   [ -d "$D/versions/tool/1.0" ]
@@ -1634,6 +1641,7 @@ fake_exe() { ln -sfn "$2" "$TEST_ROOT/proc/$1/exe"; }
   rm -rf "$TEST_ROOT/proc/5611"
   fakeproc 5612 "$UID" python3 python3 -u "$D/versions/tool/1.0/bin/tool"
   inspectable 5612
+  fake_exe 5612 /usr/bin/python3
   run aicoding_version_retention
   [ -d "$D/versions/tool/1.0" ]
   [ -d "$D/versions/tool/1.1" ]
@@ -1642,6 +1650,7 @@ fake_exe() { ln -sfn "$2" "$TEST_ROOT/proc/$1/exe"; }
   rm -rf "$TEST_ROOT/proc/5612"
   fakeproc 5613 "$UID" python3 python3 "$D/versions/tool/1.0/bin/tool" -u
   inspectable 5613
+  fake_exe 5613 /usr/bin/python3
   run aicoding_version_retention
   [ -d "$D/versions/tool/1.0" ]
   [ ! -e "$D/versions/tool/1.1" ]
@@ -1653,6 +1662,7 @@ fake_exe() { ln -sfn "$2" "$TEST_ROOT/proc/$1/exe"; }
   point current pi ../versions/pi/1.2.0
   fakeproc 5621 "$UID" helper /usr/bin/helper "--paths=$D/versions/pi/1.0.0/..:/opt/other"
   inspectable 5621 "$D/versions/pi/1.2.0/payload"
+  fake_exe 5621 /usr/bin/helper
   run aicoding_version_retention
   [ "$status" -eq 0 ]
   [ -d "$D/versions/pi/1.0.0" ]
@@ -1660,12 +1670,14 @@ fake_exe() { ln -sfn "$2" "$TEST_ROOT/proc/$1/exe"; }
   rm -rf "$TEST_ROOT/proc/5621"
   fakeproc 5622 "$UID" helper /usr/bin/helper "/opt/a,$D/versions/pi/1.0.0/.,/opt/b"
   inspectable 5622 "$D/versions/pi/1.2.0/payload"
+  fake_exe 5622 /usr/bin/helper
   run aicoding_version_retention
   [ -d "$D/versions/pi/1.1.0" ]
   # Canonical entries name only their release.
   rm -rf "$TEST_ROOT/proc/5622"
   fakeproc 5623 "$UID" helper /usr/bin/helper "--paths=$D/versions/pi/1.0.0/bin:/opt/other,/opt/more"
   inspectable 5623 "$D/versions/pi/1.2.0/payload"
+  fake_exe 5623 /usr/bin/helper
   run aicoding_version_retention
   [ -d "$D/versions/pi/1.0.0" ]
   [ ! -e "$D/versions/pi/1.1.0" ]
@@ -1676,6 +1688,7 @@ fake_exe() { ln -sfn "$2" "$TEST_ROOT/proc/$1/exe"; }
   point current pi ../versions/pi/1.2.0
   fakeproc 5701 "$UID" node node "$D//versions/pi//1.0.0/cli.js"
   inspectable 5701 "$D/versions/pi/1.2.0"
+  fake_exe 5701 /usr/bin/node
   run aicoding_version_retention
   [ "$status" -eq 0 ]
   [ -d "$D/versions/pi/1.0.0" ]
@@ -1685,6 +1698,7 @@ fake_exe() { ln -sfn "$2" "$TEST_ROOT/proc/$1/exe"; }
   rm -rf "$TEST_ROOT/proc/5701"
   fakeproc 5702 "$UID" node node "$D/versions/pi/1.0.0//../1.1.0/cli.js"
   inspectable 5702 "$D/versions/pi/1.2.0"
+  fake_exe 5702 /usr/bin/node
   mkver pi 0.9.0
   run aicoding_version_retention
   [ -d "$D/versions/pi/0.9.0" ]
@@ -1713,6 +1727,29 @@ fake_exe() { ln -sfn "$2" "$TEST_ROOT/proc/$1/exe"; }
   run aicoding_version_retention
   [ -d "$D/versions/tool/0.9" ]
   [ -d "$D/versions/tool/0.8" ]
+}
+
+@test "a dangling link that passes through another release keeps the component" {
+  mkver tool 0.9; mkver tool 1.0; mkver tool 1.1; mkver tool 2.0
+  point current tool ../versions/tool/2.0
+  # 1.1 steers the walk back into 1.0, where the last step is missing.
+  ln -s ../../1.0 "$D/versions/tool/1.1/bin/back"
+  ln -s ../1.1/bin/back/missing "$D/versions/tool/1.0/x"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/tool/0.9" ]
+  [ -d "$D/versions/tool/1.0" ]
+  [ -d "$D/versions/tool/1.1" ]
+  # The same missing step reached without leaving 1.0 keeps nothing.
+  rm "$D/versions/tool/1.0/x" "$D/versions/tool/1.1/bin/back"
+  ln -s bin/../missing "$D/versions/tool/1.0/x"
+  ln -s "$D/versions/tool/1.0/missing" "$D/versions/tool/1.0/y"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ ! -e "$D/versions/tool/0.9" ]
+  [ ! -e "$D/versions/tool/1.0" ]
+  [ ! -e "$D/versions/tool/1.1" ]
+  [ -d "$D/versions/tool/2.0" ]
 }
 
 @test "a stamp that cannot be created keeps its candidate even with no window" {
@@ -1780,4 +1817,57 @@ _worker_retention() {
   rm -f "$D/current/aicoding"
   run _worker_retention
   [ "$output" = old-retention ]
+}
+
+# An older worker's release and an active release sha1 with library BODY.
+_worker_with_active_lib() {
+  mkdir -p "$TEST_ROOT/oldrel/lib"
+  cp "$BLUEPRINT_ROOT/lib/auto-update.sh" "$TEST_ROOT/oldrel/lib/"
+  printf 'aicoding_version_retention() { echo old-retention; }\n' > "$TEST_ROOT/oldrel/lib/version-retention.sh"
+  mkver aicoding sha1
+  mkdir -p "$D/versions/aicoding/sha1/lib"
+  printf '%s\n' "$1" > "$D/versions/aicoding/sha1/lib/version-retention.sh"
+  point current aicoding ../versions/aicoding/sha1
+}
+
+@test "a current/aicoding pointer whose target ends in a newline is not trusted" {
+  _worker_with_active_lib 'aicoding_version_retention() { echo new-retention; }'
+  point current aicoding "../versions/aicoding/sha1"$'\n'
+  run _worker_retention
+  [ "$status" -eq 0 ]
+  [ "$output" = old-retention ]
+  # Not even when that spelling resolves to the release.
+  ln -s sha1 "$D/versions/aicoding/sha1"$'\n'
+  run _worker_retention
+  [ "$output" = old-retention ]
+}
+
+@test "a current/aicoding pointer in the configured data directory spelling is accepted" {
+  _worker_with_active_lib 'aicoding_version_retention() { echo new-retention; }'
+  ln -s "$D" "$TEST_ROOT/datalink"
+  export AICODING_DATA_DIR="$TEST_ROOT/datalink/"
+  point current aicoding "$TEST_ROOT/datalink/versions/aicoding/sha1"
+  run _worker_retention
+  [ "$status" -eq 0 ]
+  [ "$output" = new-retention ]
+}
+
+@test "an active library that cannot be sourced or has no entry point runs the worker's own copy once" {
+  local body
+  for body in $'aicoding_version_retention() { echo new-retention; }\nif then' \
+      'other_function() { echo new-retention; }'; do
+    _worker_with_active_lib "$body"
+    run _worker_retention
+    [ "$status" -eq 0 ]
+    [ "$(grep -c old-retention <<< "$output")" -eq 1 ]
+    [[ "$output" != *new-retention* ]]
+  done
+  # An entered active library is the pass's only retention, whatever it returns.
+  for body in 'aicoding_version_retention() { echo new-retention; }' \
+      'aicoding_version_retention() { echo new-retention; return 3; }'; do
+    _worker_with_active_lib "$body"
+    run _worker_retention
+    [ "$status" -eq 0 ]
+    [ "$output" = new-retention ]
+  done
 }

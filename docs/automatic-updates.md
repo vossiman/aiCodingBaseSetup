@@ -49,9 +49,11 @@ stamp directories (see the end of this section):
   kept, not only the final target. A chain that cannot be followed to its end,
   including one that reaches a missing path, keeps every component it
   touched. One exception keeps pruning possible: a link inside a release whose
-  missing step lies inside that same release directory keeps nothing, whether
+  missing step lies inside that same release directory, and whose resolution
+  entered no other release on the way, keeps nothing, whether
   its text is relative or absolute (dangling links inside `node_modules` are
-  common). Passing through its own release is not enough: a link
+  common). A link that reaches its missing step through another release keeps
+  the component. Passing through its own release is not enough: a link
   `versions/pi/1.0/x -> <data>/versions/pi/1.0/../../../missing` fails
   outside the release and keeps the component. A dangling link that never touches `versions/` keeps nothing
   either, even when the text after its missing step names a release: only
@@ -223,20 +225,26 @@ changes the pass result. A fallback worker keeps the library it loaded for
 its whole life, so each of its passes loads the retention library of the
 release `current/aicoding` points at, and only when every check holds:
 `current/` is a plain directory, the pointer's own target is exactly
-`../versions/aicoding/<name>` or that path under the resolved data
-directory, `<name>` is a valid release name, the release is a real
-directory, and `<release>/lib/version-retention.sh` resolves to exactly that
+`../versions/aicoding/<name>` or that path under the configured or the
+resolved data directory, `<name>` is a valid release name, the release is a
+real directory, the pointer resolves to exactly that directory, and
+`<release>/lib/version-retention.sh` resolves to exactly that
 path under the resolved data directory and is a regular file. A symlinked
 `lib/` or a symlinked directory above the release fails the last check.
-Otherwise the worker uses its own copy. Workers that cannot do this are
+Otherwise the worker uses its own copy. It also uses its own copy when the
+active library cannot be sourced or defines no `aicoding_version_retention`;
+once the active entry point has run, whatever it returned, the pass runs no
+second retention. Workers that cannot do this are
 replaced by the idle upgrade path, because their receipt lacks the
 `retention2` capability: that covers workers loaded before retention existed
 and workers that advertise only `retention` and always ran their own copy.
 The receipt keeps its first line in the original three fields (protocol,
 pid, start time), which older releases parse to verify ownership, and records
-`capabilities retention2` on a second line. A one-line receipt, or one with
-an older capability, still proves ownership but counts as an outdated
-worker.
+`capabilities retention2` on a second line and `capabilities retention` on a
+third. The previous release accepts a worker only on that exact third line,
+so without it each release's enrollment would replace the other's worker. A
+one-line receipt, or one with only an older capability, still proves
+ownership but counts as an outdated worker.
 
 `AICODING_RETENTION=preview` logs, per candidate, whether it would be removed
 now or the date it becomes eligible, and lists leftover tombstones a real run

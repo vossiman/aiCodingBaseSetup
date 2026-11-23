@@ -1194,6 +1194,28 @@ CHILD
   done
 }
 
+@test "a worker receipt satisfies the previous release's capability check too" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_lines 1
+  local worker receipt="$AICODING_STATE_DIR/auto-update/worker.protocol" key value found=0
+  worker=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")
+  for _ in $(seq 40); do [ -s "$receipt" ] && break; sleep 0.025; done
+  # The previous release accepts a worker only on the exact line "capabilities retention".
+  while read -r key value; do
+    if [ "$key" = capabilities ] && [ "$value" = retention ]; then found=1; fi
+  done < <(tail -n +2 -- "$receipt")
+  [ "$found" = 1 ]
+  bash -c '. "$1/lib/auto-update.sh"; _aicoding_auto_worker_protocol_current "$2" "$3"' _ \
+    "$TEST_ROOT/runtime" "$AICODING_STATE_DIR/auto-update" "$worker"
+  # Each enrollment leaves the other's worker alone.
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  sleep 0.3
+  [ "$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")" = "$worker" ]
+  [ -d "/proc/$worker" ]
+}
+
 @test "a worker receipt without capabilities still proves ownership of a deleted lock" {
   false_systemd_shim
   export AICODING_AUTO_UPDATE_INTERVAL=3600
