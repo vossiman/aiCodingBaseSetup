@@ -1086,40 +1086,69 @@ aicoding_update_dvw() {
   aicoding_result_record dvw updated "$sha" installed "$sha"
 }
 
+# Every wrapper must parse, and every file it sources from its own directory
+# must be a regular file in the release too: `bash -n` cannot see a missing
+# sourced file. Returns 1 for a bad wrapper, 2 for a bad or missing helper.
+_aicoding_bw_release_valid() {
+  local dir=$1 script dep directives deps
+  for script in claude-bw.sh opencode-bw.sh pi-bw.sh; do
+    [ -x "$dir/$script" ] && bash -n "$dir/$script" || return 1
+    directives=$(grep -cE '^[[:space:]]*(source|\.)[[:space:]]+.*SCRIPT_DIR' "$dir/$script") || true
+    deps=$(sed -nE 's/^[[:space:]]*(source|\.)[[:space:]]+"\$(SCRIPT_DIR|\{SCRIPT_DIR\})\/([^"$]+)"[[:space:]]*(#.*)?$/\3/p' "$dir/$script")
+    # A directive this parser cannot read is treated as a missing helper.
+    [ "$directives" -eq "$(printf '%s' "$deps" | grep -c .)" ] || return 2
+    for dep in $deps; do
+      [ -f "$dir/$dep" ] && [ ! -L "$dir/$dep" ] && bash -n "$dir/$dep" || return 2
+    done
+  done
+}
+
 aicoding_update_bw() {
-  local sha source final stage script
+  local sha source final stage rc=0 replace=0
   sha=$(aicoding_select_ci_sha bw-AICode) || { _aicoding_record_deferred bw-AICode blocked "" ci_selection_unavailable; return 1; }
   source="$AICODING_DATA_DIR/sources/bw-AICode/$sha"
   final="$AICODING_DATA_DIR/versions/bw-AICode/$sha"
   _aicoding_stage_git_source "${AICODING_BW_REMOTE:-https://github.com/vossiman/bw-AICode}" "$sha" "$source" \
     || { aicoding_result_record bw-AICode failed "$sha" source_stage_failed; return 1; }
-  for script in claude-bw.sh opencode-bw.sh pi-bw.sh; do
-    [ -x "$source/$script" ] && bash -n "$source/$script" || { aicoding_result_record bw-AICode failed "$sha" staged_validation_failed; return 1; }
-  done
+  _aicoding_bw_release_valid "$source" \
+    || { aicoding_result_record bw-AICode failed "$sha" staged_validation_failed; return 1; }
   if [ -d "$final" ]; then
     [ "$(cat "$final/.aicoding-version" 2>/dev/null)" = "$sha" ] \
       && [ -x "$final/bin/bw-docker-guard" ] \
       || { aicoding_result_record bw-AICode failed "$sha" existing_release_invalid; return 1; }
-    for script in claude-bw.sh opencode-bw.sh pi-bw.sh; do
-      [ -x "$final/$script" ] && bash -n "$final/$script" \
-        || { aicoding_result_record bw-AICode failed "$sha" existing_release_invalid; return 1; }
-    done
-  else
+    _aicoding_bw_release_valid "$final" || rc=$?
+    # Releases packaged before bw-common.sh was copied fail only on helpers:
+    # rebuild those in place. Any other damage stays an error.
+    case $rc in
+      0) ;;
+      2) replace=1 ;;
+      *) aicoding_result_record bw-AICode failed "$sha" existing_release_invalid; return 1 ;;
+    esac
+  fi
+  if [ ! -d "$final" ] || [ "$replace" = 1 ]; then
     command -v go >/dev/null 2>&1 \
       || { _aicoding_record_deferred bw-AICode blocked "$sha" "$(_aicoding_missing_runtime_reason go)"; return 1; }
     (cd "$source" && aicoding_progress_run "bw-AICode: testing runtime (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_progress_capture /dev/null timeout "$AICODING_VENDOR_TIMEOUT" go test ./... </dev/null) \
       || { aicoding_result_record bw-AICode failed "$sha" tests_failed; return 1; }
     stage="$AICODING_DATA_DIR/versions/bw-AICode/.staging.$sha.$$"
     rm -rf "$stage"; mkdir -p "$stage/bin" || return 1
-    cp -a "$source/claude-bw.sh" "$source/opencode-bw.sh" "$source/pi-bw.sh" \
+    cp -a "$source/bw-common.sh" "$source/claude-bw.sh" "$source/opencode-bw.sh" "$source/pi-bw.sh" \
       "$source/.aicoding-version" "$stage/" \
       || { rm -rf "$stage"; aicoding_result_record bw-AICode failed "$sha" stage_copy_failed; return 1; }
+    _aicoding_bw_release_valid "$stage" \
+      || { rm -rf "$stage"; aicoding_result_record bw-AICode failed "$sha" staged_validation_failed; return 1; }
     (cd "$source" && aicoding_progress_run "bw-AICode: building runtime (timeout ${AICODING_VENDOR_TIMEOUT}s)" timeout "$AICODING_VENDOR_TIMEOUT" go build -o "$stage/bin/bw-docker-guard" ./cmd/bw-docker-guard </dev/null) \
       || { rm -rf "$stage"; aicoding_result_record bw-AICode failed "$sha" build_failed; return 1; }
     [ -x "$stage/bin/bw-docker-guard" ] \
       || { rm -rf "$stage"; aicoding_result_record bw-AICode failed "$sha" staged_validation_failed; return 1; }
-    mkdir -p "$(dirname "$final")" && mv "$stage" "$final" \
-      || { rm -rf "$stage"; aicoding_result_record bw-AICode failed "$sha" activation_stage_failed; return 1; }
+    if [ "$replace" = 1 ]; then
+      mv "$final" "$final.replaced.$$" && mv "$stage" "$final" \
+        || { [ -d "$final" ] || mv "$final.replaced.$$" "$final"; rm -rf "$stage"; aicoding_result_record bw-AICode failed "$sha" activation_stage_failed; return 1; }
+      rm -rf "$final.replaced.$$"
+    else
+      mkdir -p "$(dirname "$final")" && mv "$stage" "$final" \
+        || { rm -rf "$stage"; aicoding_result_record bw-AICode failed "$sha" activation_stage_failed; return 1; }
+    fi
   fi
   _aicoding_activate_vendor_release bw-AICode "$sha" \
       claude-bw claude-bw.sh opencode-bw opencode-bw.sh pi-bw pi-bw.sh \

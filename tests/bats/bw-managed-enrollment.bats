@@ -16,9 +16,10 @@ setup() {
     mkdir -p "$3"
     local name
     for name in claude-bw opencode-bw pi-bw; do
-      printf '#!/bin/sh\necho managed\n' > "$3/$name.sh"
+      printf '#!/bin/bash\nSCRIPT_DIR="$(dirname "$(readlink -f "$0")")"\nsource "$SCRIPT_DIR/bw-common.sh"\necho "managed$BW_COMMON"\n' > "$3/$name.sh"
       chmod +x "$3/$name.sh"
     done
+    [ "${OMIT_COMMON:-0}" = 1 ] || printf 'BW_COMMON=-common\n' > "$3/bw-common.sh"
     printf '%s\n' "$2" > "$3/.aicoding-version"
   }
   cat > "$TMP/stubs/go" <<'SH'
@@ -58,6 +59,73 @@ teardown() { rm -rf "$TMP"; }
     [ "$status" -eq 0 ]
     [[ "$output" == managed* ]]
   done
+}
+
+@test "managed bw release ships the files its wrappers source" {
+  aicoding_update_bw
+  local name
+  for name in claude-bw opencode-bw pi-bw; do
+    run "$HOME/.local/bin/$name"
+    [ "$status" -eq 0 ]
+    [ "$output" = managed-common ]
+  done
+}
+
+@test "managed bw staging rejects a wrapper whose sourced file is missing" {
+  export OMIT_COMMON=1
+  run aicoding_update_bw
+  [ "$status" -ne 0 ]
+  jq -e '.components["bw-AICode"].state == "failed" and .components["bw-AICode"].reason == "staged_validation_failed"' "$AICODING_RESULTS_FILE"
+  [ ! -e "$AICODING_DATA_DIR/current/bw-AICode" ]
+}
+
+@test "existing bw release packaged without its sourced file is rebuilt in place" {
+  local rel="$AICODING_DATA_DIR/versions/bw-AICode/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  aicoding_update_bw
+  rm "$rel/bw-common.sh"
+  run aicoding_update_bw
+  [ "$status" -eq 0 ]
+  [ -f "$rel/bw-common.sh" ]
+  run "$HOME/.local/bin/pi-bw"
+  [ "$output" = managed-common ]
+  [ -z "$(find "$(dirname "$rel")" -maxdepth 1 -name '*.replaced.*')" ]
+}
+
+@test "existing bw release whose sourced file is a symlink is rebuilt" {
+  local rel="$AICODING_DATA_DIR/versions/bw-AICode/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  aicoding_update_bw
+  mv "$rel/bw-common.sh" "$TMP/outside-common.sh"
+  ln -s "$TMP/outside-common.sh" "$rel/bw-common.sh"
+  run aicoding_update_bw
+  [ "$status" -eq 0 ]
+  [ -f "$rel/bw-common.sh" ]
+  [ ! -L "$rel/bw-common.sh" ]
+}
+
+@test "existing bw release with a broken wrapper is still reported invalid" {
+  local rel="$AICODING_DATA_DIR/versions/bw-AICode/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  aicoding_update_bw
+  chmod -x "$rel/pi-bw.sh"
+  run aicoding_update_bw
+  [ "$status" -ne 0 ]
+  jq -e '.components["bw-AICode"].reason == "existing_release_invalid"' "$AICODING_RESULTS_FILE"
+}
+
+@test "bw validator reads braced SCRIPT_DIR and rejects directives it cannot parse" {
+  local d="$TMP/rel" name
+  mkdir -p "$d"
+  : > "$d/bw-common.sh"
+  for name in claude-bw opencode-bw pi-bw; do
+    printf '#!/bin/bash\nsource "${SCRIPT_DIR}/bw-common.sh"\n' > "$d/$name.sh"
+    chmod +x "$d/$name.sh"
+  done
+  _aicoding_bw_release_valid "$d"
+  printf '#!/bin/bash\nsource "${SCRIPT_DIR}/extra.sh"\n' > "$d/pi-bw.sh"
+  run _aicoding_bw_release_valid "$d"
+  [ "$status" -eq 2 ]
+  printf '#!/bin/bash\nsource "$SCRIPT_DIR"/bw-common.sh\n' > "$d/pi-bw.sh"
+  run _aicoding_bw_release_valid "$d"
+  [ "$status" -eq 2 ]
 }
 
 @test "persistent provisioning propagates managed build failure without reporting installed" {
@@ -119,7 +187,7 @@ teardown() { rm -rf "$TMP"; }
   [ ! -e "$TMP/legacy-called" ]
   [ ! -L "$HOME/.local/bin/claude-bw" ]
   run "$HOME/.local/bin/claude-bw"
-  [ "$output" = managed ]
+  [ "$output" = managed-common ]
 }
 
 @test "unenrolled local provisioning retains the legacy installer route" {
