@@ -124,10 +124,12 @@ _aicoding_opencode_config_probe() (
   local version probe
   [ "${AICODINGSETUP_SKIP_NETWORK:-0}" = 1 ] && exit 0
   version=$(_aicoding_version_from_command opencode) || version=""
+  # An unknown version could be v2, and without --standalone that attaches to the shared server.
+  [ -n "$version" ] || exit 1
   probe=$(mktemp -d) || exit 1
   trap 'rm -rf "$probe"' EXIT
   set -- debug config
-  case "$version" in ""|0.*|1.*) ;; *) set -- "$@" --standalone ;; esac
+  case "$version" in 0.*|1.*) ;; *) set -- "$@" --standalone ;; esac
   cd "$probe" || exit 1
   env -u OPENCODE_TEST_HOME \
     XDG_STATE_HOME="$probe/state" XDG_CACHE_HOME="$probe/cache" XDG_DATA_HOME="$probe/data" \

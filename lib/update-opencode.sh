@@ -17,6 +17,7 @@ _aicoding_opencode_target() (
   local url=$AICODING_OPENCODE_RELEASES_API page=0 tags="" headers body next
   headers=$(mktemp) && body=$(mktemp) || exit 1
   trap 'rm -f "$headers" "$body"' EXIT
+  # No early exit: a lower backport on page 1 must not beat a higher version on a later page.
   while [ -n "$url" ] && [ "$page" -lt "${AICODING_OPENCODE_MAX_PAGES:-5}" ]; do
     page=$((page + 1))
     timeout "$AICODING_VENDOR_TIMEOUT" curl -fsSL --proto '=https' --proto-redir '=https' \
@@ -28,6 +29,33 @@ _aicoding_opencode_target() (
   done
   printf '%s' "$tags" | grep -E '^v2\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -V | tail -n 1 | grep -E '^2\.[0-9]+\.[0-9]+$'
 )
+
+# The GitHub API allows 60 unauthenticated calls per hour per IP, so a failed
+# lookup may reuse the last successful one for a day. Only a version the real
+# lookup returned is ever stored; downloads and checksums are unchanged.
+AICODING_OPENCODE_TARGET_CACHE_TTL=${AICODING_OPENCODE_TARGET_CACHE_TTL:-86400}
+_aicoding_opencode_target_cache_file() { printf '%s\n' "$AICODING_STATE_DIR/opencode-target-version"; }
+
+_aicoding_opencode_target_cache_write() {
+  local file tmp
+  file=$(_aicoding_opencode_target_cache_file)
+  mkdir -p "${file%/*}" 2>/dev/null || return 0
+  tmp=$(mktemp "$file.XXXXXX" 2>/dev/null) || return 0
+  if printf '%s\n' "$1" > "$tmp" && mv -f "$tmp" "$file"; then :; else rm -f "$tmp"; fi
+  return 0
+}
+
+_aicoding_opencode_target_cache_read() {
+  local file version now mtime
+  file=$(_aicoding_opencode_target_cache_file)
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  mtime=$(stat -c %Y "$file" 2>/dev/null) || return 1
+  now=$(date +%s)
+  [ "$((now - mtime))" -lt "$AICODING_OPENCODE_TARGET_CACHE_TTL" ] || return 1
+  IFS= read -r version < "$file" || [ -n "$version" ] || return 1
+  printf '%s\n' "$version" | grep -qE '^2\.[0-9]+\.[0-9]+$' || return 1
+  printf '%s\n' "$version"
+}
 
 # glibc builds by default; musl hosts get the musl build, and x64 CPUs
 # without AVX2 the baseline build.
@@ -124,8 +152,13 @@ aicoding_update_opencode() {
     || { _aicoding_record_deferred opencode blocked "" unsupported_platform; return 1; }
   command -v python3 >/dev/null 2>&1 \
     || { _aicoding_record_deferred opencode blocked "" python_runtime_unavailable; return 1; }
-  target=$(aicoding_progress_run "opencode: resolving release (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_opencode_target) \
-    || { aicoding_result_record opencode failed "" target_version_unavailable; return 1; }
+  if target=$(aicoding_progress_run "opencode: resolving release (timeout ${AICODING_VENDOR_TIMEOUT}s)" _aicoding_opencode_target); then
+    _aicoding_opencode_target_cache_write "$target"
+  elif target=$(_aicoding_opencode_target_cache_read); then
+    printf 'opencode: release lookup failed, using the cached target %s from the last successful lookup\n' "$target" >&2
+  else
+    aicoding_result_record opencode failed "" target_version_unavailable; return 1
+  fi
   final="$AICODING_DATA_DIR/versions/opencode/$target"
   mkdir -p "$AICODING_DATA_DIR/versions/opencode" || return 1
   work=$(mktemp -d "$AICODING_DATA_DIR/versions/opencode/.staging.$target.XXXXXX") || return 1
