@@ -92,12 +92,23 @@ _aicoding_retention_glob_quote() {
   printf '%s' "$s"
 }
 
-# Set _belongs to the components a process's comm and argv name.
+# Interpreters whose first operand is the program they run.
+_aicoding_retention_interpreter() {
+  case "$1" in python|python3|node|nodejs|bash|sh|dash|perl|ruby|bun) return 0 ;; esac
+  [[ "$1" =~ ^python3\.[0-9]+$ ]]
+}
+
+# Set _belongs to the components a process's comm and argv name, and
+# _belongs_known to those whose release the program itself names: the whole
+# argv[0], or an interpreter's argv[1], is a canonical path inside it.
+# EXE is the process's executable link, empty when it could not be read.
 _aicoding_retention_belongs() {
-  local comm=$1 arg d rest c base kind
+  local comm=$1 exe=$2 arg d rest c base kind ebase= foreign=0 m prog=
   local re="^(${_AICODING_RETENTION_SEG})(/(${_AICODING_RETENTION_SEG}))?"
-  shift
+  local -A named_rel=() named_cur=()
+  shift 2
   _belongs=""
+  _belongs_known=""
   # Each occurrence counts on its own, so one argument can name several paths.
   for arg in "$@"; do
     for d in "${data_prefixes[@]}"; do
@@ -108,19 +119,46 @@ _aicoding_retention_belongs() {
           [[ "$rest" =~ $re ]] || continue
           c=${BASH_REMATCH[1]}
           _belongs+=" $c"
-          # A path with . or .. segments may name another release than it seems to.
-          case "$arg" in */../*|*/./*|*/..|*/.) keep_comp[$c]=1 ;; esac
+          # A path with . or .. segments may name another release than it seems
+          # to; each entry of a : or , separated list counts as a path.
+          case "${arg//[:,]//}" in */../*|*/./*|*/..|*/.) keep_comp[$c]=1 ;; esac
+          [ "$kind" = versions ] || { named_cur[$c]=1; continue; }
           # A named release is used, whatever the process holds open.
-          [ "$kind" != versions ] || [ -z "${BASH_REMATCH[3]}" ] || used[$c/${BASH_REMATCH[3]}]=1
+          [ -z "${BASH_REMATCH[3]}" ] || used[$c/${BASH_REMATCH[3]}]=1
         done
       done
     done
   done
   if [ "$#" -gt 0 ]; then
-    base=${1##*/}
-    [ -z "${launcher_comp[$base]:-}" ] || _belongs+="${launcher_comp[$base]}"
+    prog=$1
+    if _aicoding_retention_interpreter "${1##*/}"; then prog=${2:-}; fi
+    case "$prog" in */../*|*/./*|*/..|*/.) prog= ;; esac
+    for d in "${data_prefixes[@]}"; do
+      [[ "$prog" == "$d/versions/"* ]] || continue
+      rest=${prog#"$d/versions/"}
+      [[ "$rest" =~ ^(${_AICODING_RETENTION_SEG})/${_AICODING_RETENTION_SEG}/. ]] && named_rel[${BASH_REMATCH[1]}]=1
+    done
   fi
-  [ -z "$comm" ] || [ -z "${comm_comp[$comm]:-}" ] || _belongs+="${comm_comp[$comm]}"
+  for c in "${!named_rel[@]}"; do
+    [ -n "${named_cur[$c]:-}" ] || _belongs_known+=" $c"
+  done
+  # An executable outside the managed trees with the matched name is another
+  # program that only shares the launcher's name.
+  exe=${exe% (deleted)}
+  if [[ "$exe" == /* ]]; then
+    foreign=1
+    for m in "${managed[@]}"; do
+      case "$exe" in "$m"/*|"$m") foreign=0 ;; esac
+    done
+    ebase=${exe##*/}
+  fi
+  if [ "$#" -gt 0 ]; then
+    base=${1##*/}
+    [ -z "${launcher_comp[$base]:-}" ] || { [ "$foreign" = 1 ] && [ "$ebase" = "$base" ]; } \
+      || _belongs+="${launcher_comp[$base]}"
+  fi
+  [ -z "$comm" ] || [ -z "${comm_comp[$comm]:-}" ] || { [ "$foreign" = 1 ] && [ "${ebase:0:15}" = "$comm" ]; } \
+    || _belongs+="${comm_comp[$comm]}"
   return 0
 }
 
@@ -144,13 +182,14 @@ _aicoding_retention_scan_proc() {
   # Bytes throughout: under UTF-8, read joins a line cut mid-character to the next.
   local LC_ALL=C
   local me=$BASHPID end=aicoding-retention-scan-end line rest p kind val uid euid
-  local path target arg m c q comm hit depth st_ended=0 fd_ended=0 map_ended=0 rc=0 _belongs
+  local path target arg m c q i comm hit depth st_ended=0 fd_ended=0 map_ended=0 rc=0 _belongs _belongs_known
   local -a status_files=() mine=() starts=() maps=() args=() managed=()
-  local -A ppid=() pstate=() pstart=() pname=() is_mine=() bad=() seen_exe=() seen_cwd=()
+  local -A ppid=() pstate=() pstart=() pname=() is_mine=() bad=() seen_exe=() seen_cwd=() exe_of=()
   local _stat_state _stat_start
-  local -A belongs=() inspected=() warned=()
+  local -A belongs=() known=() inspected=() warned=()
   for m in "$AICODING_DATA_DIR" "$data" "$HOME/.local/bin" "$(readlink -e -- "$HOME/.local/bin" 2>/dev/null)"; do
     [ -n "$m" ] || continue
+    while [[ "$m" == *//* ]]; do m=${m//\/\//\/}; done
     while [ "${m%/}" != "$m" ]; do m=${m%/}; done
     [ -n "$m" ] && managed+=("$m")
   done
@@ -201,7 +240,7 @@ _aicoding_retention_scan_proc() {
     p=${rest%%/*}
     kind=${rest#*/}
     [ -n "$target" ] || continue
-    case "$kind" in exe) seen_exe[$p]=1 ;; cwd) seen_cwd[$p]=1 ;; esac
+    case "$kind" in exe) seen_exe[$p]=1; exe_of[$p]=$target ;; cwd) seen_cwd[$p]=1 ;; esac
     case "$target" in "$_vroot"/*) _aicoding_retention_mark_path "$target" "$p" ;; esac
   done < <(s=0; LC_ALL=C find "${starts[@]}" -maxdepth 1 \
              \( ! -path "$gproc/*/fd/*" -o -lname "$gvroot/*" \) -printf '%p\0%l\0' 2>"$_work/find.err" || s=$?
@@ -231,6 +270,10 @@ _aicoding_retention_scan_proc() {
     args=()
     if mapfile -d '' -t args 2>/dev/null < "$proc/$p/cmdline"; then
       cmd_ok[$p]=1
+      # a//b names a/b: collapse repeated separators before any match.
+      for i in "${!args[@]}"; do
+        while [[ "${args[$i]}" == *//* ]]; do args[$i]=${args[$i]//\/\//\/}; done
+      done
       for arg in "${args[@]}"; do
         for m in "${managed[@]}"; do
           case "$arg" in *"$m/"*|*"$m") cmd_managed[$p]=1; break 2 ;; esac
@@ -238,8 +281,9 @@ _aicoding_retention_scan_proc() {
       done
     fi
     comm=${pname[$p]:-}
-    _aicoding_retention_belongs "$comm" "${args[@]}"
+    _aicoding_retention_belongs "$comm" "${exe_of[$p]:-}" "${args[@]}"
     belongs[$p]=$_belongs
+    known[$p]=$_belongs_known
   done
 
   for p in "${mine[@]}"; do
@@ -279,11 +323,13 @@ _aicoding_retention_scan_proc() {
   [ "$rc" -eq 0 ] || return 1
   _aicoding_retention_scan_settled || return 1
 
-  # Unknown-release rule: a process of component C that holds nothing of C.
+  # Unknown-release rule: a process of component C that holds nothing of C,
+  # unless its program is a path inside the physical release it runs.
   for p in "${mine[@]}"; do
     [ -n "${inspected[$p]:-}" ] && [ -n "${belongs[$p]}" ] || continue
     for c in ${belongs[$p]}; do
       [ -z "${held_comp[$p/$c]:-}" ] || continue
+      case " ${known[$p]} " in *" $c "*) continue ;; esac
       keep_comp[$c]=1
       [ -n "${comp_known[$c]:-}" ] && [ -z "${warned[$p/$c]:-}" ] || continue
       warned[$p/$c]=1
@@ -339,8 +385,9 @@ _aicoding_retention_scan_settled() {
 }
 
 # Mark every release a link's resolution steps through, except the link's own
-# release; walk_comps and walk_rels record what it touched. Returns 2 when a
-# step is missing, 1 when the resolution cannot be followed for another reason.
+# release; walk_comps records what it touched. Returns 2 when a step is
+# missing, with its path in walk_miss, 1 when the resolution cannot be
+# followed for another reason.
 _aicoding_retention_walk_link() {
   local link=$1 raw=$2 owner=$3 cur rest part nxt t r c n=0
   cur=${link%/*}
@@ -357,9 +404,9 @@ _aicoding_retention_walk_link() {
     case "$nxt" in
       "$_vroot"/*/*)
         r=${nxt#"$_vroot"/}; c=${r%%/*}; r=${r#*/}; r=${r%%/*}
-        walk_comps[$c]=1; walk_rels[$c/$r]=1
+        walk_comps[$c]=1
         [ "$c/$r" = "$owner" ] || used[$c/$r]=1 ;;
-      "$_vroot"/*) r=${nxt#"$_vroot"/}; walk_comps[$r]=1; walk_rels[$r]=1 ;;
+      "$_vroot"/*) r=${nxt#"$_vroot"/}; walk_comps[$r]=1 ;;
     esac
     if [ -L "$nxt" ]; then
       n=$((n + 1))
@@ -374,24 +421,23 @@ _aicoding_retention_walk_link() {
       rest="$t${rest:+/$rest}"
       continue
     fi
-    [ -e "$nxt" ] || return 2
+    [ -e "$nxt" ] || { walk_miss=$nxt; return 2; }
     cur=$nxt
   done
   return 0
 }
 
 # Walk one link; when it cannot be followed, keep every component it touched.
-# A link whose missing step lies inside its own release, and which touched no
-# other part of versions/, cannot lead anywhere else and keeps nothing.
+# A link whose missing step lies inside its own release, whether its text is
+# relative or absolute, cannot lead anywhere else and keeps nothing.
 _aicoding_retention_follow_link() {
-  local link=$1 raw=$2 owner=$3 rc=0 c
-  walk_comps=(); walk_rels=()
+  local link=$1 raw=$2 owner=$3 rc=0 c walk_miss=
+  walk_comps=()
   _aicoding_retention_walk_link "$link" "$raw" "$owner" || rc=$?
   walk_rc=$rc
   [ "$rc" -ne 0 ] || return 0
-  if [ "$rc" -eq 2 ] && [ -n "$owner" ] && [ "${#walk_rels[@]}" -eq 1 ] \
-      && [ -n "${walk_rels[$owner]:-}" ]; then
-    return 0
+  if [ "$rc" -eq 2 ] && [ -n "$owner" ]; then
+    case "$walk_miss" in "$_vroot/$owner"/*) return 0 ;; esac
   fi
   for c in "${!walk_comps[@]}"; do keep_comp[$c]=1; done
 }
@@ -403,7 +449,7 @@ _aicoding_retention_follow_link() {
 _aicoding_retention_scan_links() {
   local dir=$1 i owner rest comp name walk_rc
   local -a links=() raws=() pairs=() targets=()
-  local -A link_raw=() walk_comps=() walk_rels=()
+  local -A link_raw=() walk_comps=()
   mapfile -d '' pairs < <(find "$dir" -type l -printf '%p\0%l\0' 2>/dev/null; printf 'rc=%s\0\0' "$?")
   [ "${#pairs[@]}" -ge 2 ] || return 1
   [ "${pairs[-2]}" = rc=0 ] || return 1
@@ -439,7 +485,7 @@ _aicoding_retention_scan_links() {
 _aicoding_retention_scan_bin() {
   local bin=$1 rc file line comp name walk_rc
   local -a files=() managed_files=() link_files=()
-  local -A link_raw=() walk_comps=() walk_rels=()
+  local -A link_raw=() walk_comps=()
   [ -e "$bin" ] || [ -L "$bin" ] || return 0
   [[ "$bin" == /* ]] || return 1
   # Every release on the way to it keeps, not only the final directory.
@@ -489,7 +535,7 @@ _aicoding_retention_add_launcher() {
 
 _aicoding_retention_scan_links_bin() {
   local bin=$1 path raw real rest
-  local -A link_raw=() walk_comps=() walk_rels=()
+  local -A link_raw=() walk_comps=()
   while IFS= read -r -d '' path && IFS= read -r -d '' raw; do
     [ "$path" = aicoding-retention-scan-end ] && return 0
     # Every release on the way keeps, not only the final target.
@@ -689,6 +735,7 @@ _aicoding_retention_main() {
   # shellcheck disable=SC2064
   trap "rm -rf -- $(printf '%q' "$_work")" EXIT
   for m in "$AICODING_DATA_DIR" "$data"; do
+    while [[ "$m" == *//* ]]; do m=${m//\/\//\/}; done
     while [ "${m%/}" != "$m" ]; do m=${m%/}; done
     [ -n "$m" ] && data_prefixes+=("$m")
   done
@@ -816,6 +863,7 @@ _aicoding_retention_main() {
               && rm -f -- "$stamp" && (set -C; : > "$stamp"); } 2>/dev/null || {
             _aicoding_retention_warn "cannot record when $comp/$name was first seen unused; keeping every $comp version this run"
             keep_comp[$comp]=1
+            continue
           }
         fi
       fi

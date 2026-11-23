@@ -30,7 +30,9 @@ old releases are never deleted by age or by the `previous` pointer alone. On a
 host (profile `host` or `minimal-pi`, outside a container), a scheduled pass
 that succeeded without deferrals ends with a retention step. A directory
 `versions/<component>/<version>` is a removal candidate on a run only when all
-of these hold, and is kept whenever any check is unclear:
+of these hold, and is kept whenever any check is unclear. Retention never
+renames, stamps or deletes anything outside `versions/<component>/` and its own
+stamp directories (see the end of this section):
 
 - it is a real directory, not a symlink, and its name has no leading dot and
   no `.staging.` or `.replaced.` part, so staging and transaction trees and a
@@ -47,9 +49,11 @@ of these hold, and is kept whenever any check is unclear:
   kept, not only the final target. A chain that cannot be followed to its end,
   including one that reaches a missing path, keeps every component it
   touched. One exception keeps pruning possible: a link inside a release whose
-  missing step lies in that same release, and which touched no other part of
-  `versions/`, keeps nothing (dangling links inside `node_modules` are
-  common). A dangling link that never touches `versions/` keeps nothing
+  missing step lies inside that same release directory keeps nothing, whether
+  its text is relative or absolute (dangling links inside `node_modules` are
+  common). Passing through its own release is not enough: a link
+  `versions/pi/1.0/x -> <data>/versions/pi/1.0/../../../missing` fails
+  outside the release and keeps the component. A dangling link that never touches `versions/` keeps nothing
   either, even when the text after its missing step names a release: only
   steps that really exist count. A link inside a release that resolves back
   into the same release does not protect that release;
@@ -67,10 +71,14 @@ of these hold, and is kept whenever any check is unclear:
   user's processes names `versions/<component>/<name>` under the data
   directory, whatever that process holds open. Every occurrence in an
   argument counts on its own, so `--paths=<data>/versions/pi/1.0/bin:<data>/current/pi/bin`
-  names release `pi/1.0` and component `pi`. An argument that names a
-  component's `versions/` or `current/` path and also contains a `.` or `..`
-  segment, such as `<data>/versions/pi/1.1/../1.0/cli.js`, keeps every
-  version of that component for the run;
+  names release `pi/1.0` and component `pi`. Repeated slashes in an argument
+  are read as one, so `<data>//versions/pi//1.0/cli.js` names `pi/1.0` too.
+  An argument that names a component's `versions/` or `current/` path and
+  also contains a `.` or `..` segment, such as
+  `<data>/versions/pi/1.1/../1.0/cli.js`, keeps every version of that
+  component for the run. Each entry of a `:` or `,` separated list counts as
+  a path of its own, so `--paths=<data>/versions/pi/1.0/..:/opt/other` keeps
+  every `pi` version too;
 - no process holds a launcher lease on it (below);
 - no process of the user belongs to the component without holding any of its
   releases (the unknown-release rule, below);
@@ -117,10 +125,36 @@ line mentions `current/<component>/` or `versions/<component>/` under the data
 directory, or when its `argv[0]` matches a managed launcher of that
 component: `argv[0]` is compared by its full basename, while the kernel short
 name (`comm`) is compared against the first 15 bytes of the launcher name (from the `current=` line of the
-launchers in `~/.local/bin`). A process that belongs to a component but holds
-no path under that component's `versions/` keeps every version of the
-component on that run, with one log line naming its pid, short name and
-component.
+launchers in `~/.local/bin`). A name match does not count when the process's
+own executable (`/proc/<pid>/exe`) lies outside the data directory and
+outside `~/.local/bin` (given and resolved) and has that same name: its
+basename equals the `argv[0]` basename, or its first 15 bytes equal the short
+name. Such a process is another program that only shares the launcher's name,
+for example `/usr/libexec/geoclue-2.0/demos/agent` next to the Cursor
+launcher `agent`. The name match still counts when the executable has another
+name (an interpreter such as `node` that renamed itself), lies inside the data
+directory or `~/.local/bin`, or cannot be read.
+
+A process that belongs to a component but holds no path under that
+component's `versions/` keeps every version of the component on that run,
+with one log line naming its pid, short name and component. One exception:
+when the program itself is a path inside a release, the release it runs is
+known. That holds only in two shapes. Either the whole `argv[0]` is a path
+inside `versions/<component>/<name>/` under the data directory, or the
+basename of `argv[0]` is an interpreter (`python`, `python3`, `python3.<N>`,
+`node`, `nodejs`, `bash`, `sh`, `dash`, `perl`, `ruby` or `bun`) and its
+very first argument, with no option before it, is such a path as a whole.
+The path must have no `.` or `..` segments, and the command line must name
+no `current/<component>` path. That release is kept (as every release named
+on a command line is), and the process does not keep the rest of the
+component. A `python3 <data>/versions/aicoding/<sha>/bin/kanban-work` helper
+therefore keeps only release `<sha>`. Any other shape keeps the whole
+component as before: `python3 -u <release path>`, `node --require
+<data>/versions/tool/1.0/preload.js /opt/wrapper.js`, a release named only in
+an option such as `--log=<data>/versions/cursor/1.1/log`, a process that also
+names `current/<component>`, and one that matched the component only by name.
+`deno` is left out of the list because its first operand is a subcommand
+(`deno run`), so a `deno` process keeps the component.
 
 **Processes that cannot be inspected.** A process of the user counts as
 inspected only when its executable link, working directory link, descriptor
@@ -170,7 +204,8 @@ written is not trusted: a component directory the user cannot write or
 search keeps every version of that component with a warning, and when
 deleting or creating a stamp fails during a run, that component is kept for
 the rest of the run, so a stale stamp is never honoured after its reset
-failed. A run that sees the version referenced, in use, or kept by any rule
+failed. The candidate whose stamp could not be created is kept on that run
+too, even with `AICODING_RETENTION_GRACE=0`. A run that sees the version referenced, in use, or kept by any rule
 deletes its stamp, so the window starts again. Stamps of versions that no
 longer exist are deleted. A run that removes nothing because a scan was
 incomplete, the mount table could not be read, an uninspectable process was
@@ -184,12 +219,24 @@ version to a dot-prefixed tombstone in the same directory, then deletes it, so
 an interrupted removal never leaves a half-deleted tree under a valid version
 name; the next run finishes such a tombstone. Each removed version is logged
 with its size, followed by one total. A failed removal is a warning and never
-changes the pass result. Fallback workers loaded before retention existed are
-replaced by the idle upgrade path, because their receipt lacks the `retention`
-capability. The receipt keeps its first line in the original three fields
-(protocol, pid, start time), which older releases parse to verify ownership,
-and records `capabilities retention` on a second line. A one-line receipt
-still proves ownership but counts as a worker without retention.
+changes the pass result. A fallback worker keeps the library it loaded for
+its whole life, so each of its passes loads the retention library of the
+release `current/aicoding` points at, and only when every check holds:
+`current/` is a plain directory, the pointer's own target is exactly
+`../versions/aicoding/<name>` or that path under the resolved data
+directory, `<name>` is a valid release name, the release is a real
+directory, and `<release>/lib/version-retention.sh` resolves to exactly that
+path under the resolved data directory and is a regular file. A symlinked
+`lib/` or a symlinked directory above the release fails the last check.
+Otherwise the worker uses its own copy. Workers that cannot do this are
+replaced by the idle upgrade path, because their receipt lacks the
+`retention2` capability: that covers workers loaded before retention existed
+and workers that advertise only `retention` and always ran their own copy.
+The receipt keeps its first line in the original three fields (protocol,
+pid, start time), which older releases parse to verify ownership, and records
+`capabilities retention2` on a second line. A one-line receipt, or one with
+an older capability, still proves ownership but counts as an outdated
+worker.
 
 `AICODING_RETENTION=preview` logs, per candidate, whether it would be removed
 now or the date it becomes eligible, and lists leftover tombstones a real run
@@ -197,7 +244,12 @@ would delete; it removes nothing and writes no stamp. `AICODING_RETENTION=off`
 disables the step. `aicoding-auto-update --retention-preview` prints the same
 preview without an update pass. Containers never prune: a rebuild replaces
 their whole tree. Source snapshots under `sources/` and the Playwright browser
-cache under `browser-cache/` are not pruned on any machine.
+cache under `browser-cache/` are never pruned on any machine: retention never
+renames, stamps or deletes anything there. A directory under `sources/` may be
+a hand-made checkout with uncommitted work, and a running Playwright process
+can select its cache through the `PLAYWRIGHT_BROWSERS_PATH` environment
+variable, which retention could see only by reading other processes'
+environments.
 
 Source releases carry `.aicoding-version` and a retained-tree digest. Exact npm
 components retain the dependency tree and validate package metadata,

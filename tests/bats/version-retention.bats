@@ -1451,3 +1451,333 @@ _mount_appears() {
   [[ "$output" == *"WARN"*"AICODING_RETENTION_GRACE"* ]]
   [ ! -e "$AICODING_STATE_DIR/retention/claude/1.0.0" ]
 }
+
+# Point a fake process's exe link at PATH: fake_exe PID PATH.
+fake_exe() { ln -sfn "$2" "$TEST_ROOT/proc/$1/exe"; }
+
+@test "another program that only shares a launcher's name does not keep the component" {
+  mkver cursor 1.0; mkver cursor 1.1
+  point current cursor ../versions/cursor/1.1
+  launcher agent cursor bin/tool
+  fakeproc 5101 "$UID" agent /usr/libexec/geoclue-2.0/demos/agent
+  inspectable 5101
+  fake_exe 5101 /usr/libexec/geoclue-2.0/demos/agent
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ ! -e "$D/versions/cursor/1.0" ]
+  [ -d "$D/versions/cursor/1.1" ]
+  [[ "$output" != *"runs cursor from a release"* ]]
+  # A deleted executable of the same name is still another program.
+  mkver cursor 1.0
+  fake_exe 5101 "/usr/libexec/geoclue-2.0/demos/agent (deleted)"
+  run aicoding_version_retention
+  [ ! -e "$D/versions/cursor/1.0" ]
+}
+
+@test "a launcher name still counts when the executable is an interpreter, managed or unreadable" {
+  mkver cursor 1.0; mkver cursor 1.1
+  point current cursor ../versions/cursor/1.1
+  launcher agent cursor bin/tool
+  # A node tool that renamed itself.
+  fakeproc 5102 "$UID" agent agent --serve
+  inspectable 5102
+  fake_exe 5102 /usr/bin/node
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/cursor/1.0" ]
+  [[ "$output" == *"process 5102 (agent) runs cursor from a release it does not hold open"* ]]
+  # An executable of that name inside ~/.local/bin is the launcher itself.
+  fake_exe 5102 "$HOME/.local/bin/agent"
+  run aicoding_version_retention
+  [ -d "$D/versions/cursor/1.0" ]
+  [[ "$output" == *"process 5102 (agent) runs cursor from a release it does not hold open"* ]]
+  # An unreadable executable leaves the uninspectable rules in charge.
+  rm -rf "$TEST_ROOT/proc/5102"
+  fakeproc 5103 "$UID" agent /usr/libexec/geoclue-2.0/demos/agent
+  run aicoding_version_retention
+  [ -d "$D/versions/cursor/1.0" ]
+  [[ "$output" == *"process 5103 (agent) cannot be inspected and runs a managed launcher"* ]]
+}
+
+@test "a truncated short name is compared with the executable name as the kernel cuts it" {
+  mkver tool 1.0; mkver tool 1.1
+  point current tool ../versions/tool/1.1
+  launcher aicodingtesttool tool bin/tool
+  # comm is the first 15 bytes of the executable name, whichever is longer.
+  fakeproc 5111 "$UID" aicodingtesttoo /opt/x/aicodingtesttool-helper
+  inspectable 5111
+  fake_exe 5111 /opt/x/aicodingtesttool-helper
+  fakeproc 5112 "$UID" aicodingtesttoo /opt/x/aicodingtesttoo
+  inspectable 5112
+  fake_exe 5112 /opt/x/aicodingtesttoo
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ ! -e "$D/versions/tool/1.0" ]
+  [[ "$output" != *"runs tool from a release"* ]]
+  # The same short name on an interpreter still keeps the component.
+  mkver tool 1.0
+  fakeproc 5113 "$UID" aicodingtesttoo /usr/bin/node /opt/x/tool.js
+  inspectable 5113
+  fake_exe 5113 /usr/bin/node
+  run aicoding_version_retention
+  [ -d "$D/versions/tool/1.0" ]
+  [[ "$output" == *"process 5113 (aicodingtesttoo) runs tool from a release it does not hold open"* ]]
+}
+
+@test "a process that names its physical release keeps only that release" {
+  mkver aicoding aaa; mkver aicoding bbb; mkver aicoding ccc
+  point current aicoding ../versions/aicoding/ccc
+  fakeproc 5201 "$UID" python3 python3 "$D/versions/aicoding/aaa/bin/kanban-work" --hook
+  inspectable 5201
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/aicoding/aaa" ]
+  [ ! -e "$D/versions/aicoding/bbb" ]
+  [ -d "$D/versions/aicoding/ccc" ]
+  [[ "$output" != *"runs aicoding from a release"* ]]
+}
+
+@test "a named physical release next to current, or through a dot segment, still keeps the component" {
+  mkver aicoding aaa; mkver aicoding bbb; mkver aicoding ccc
+  point current aicoding ../versions/aicoding/ccc
+  fakeproc 5202 "$UID" python3 python3 "$D/versions/aicoding/aaa/bin/kanban-work" "--lib=$D/current/aicoding/lib"
+  inspectable 5202
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/aicoding/bbb" ]
+  [[ "$output" == *"process 5202 (python3) runs aicoding from a release it does not hold open"* ]]
+  rm -rf "$TEST_ROOT/proc/5202"
+  fakeproc 5203 "$UID" python3 python3 "$D/versions/aicoding/aaa/../aaa/bin/kanban-work"
+  inspectable 5203
+  run aicoding_version_retention
+  [ -d "$D/versions/aicoding/bbb" ]
+  [ -d "$D/versions/aicoding/aaa" ]
+}
+
+@test "the browser cache and source snapshots are never touched or stamped" {
+  mkver mcp-playwright 0.3
+  point current mcp-playwright ../versions/mcp-playwright/0.3
+  mkver dvw sha2
+  point current dvw ../versions/dvw/sha2
+  local c="$D/browser-cache/mcp-playwright/0.0.1"
+  mkdir -p "$c/chromium-1" "$c/.links" "$D/sources/dvw/sha1/bin" "$D/sources/dvw/local-checkout/.git"
+  printf '%s' "$D/versions/mcp-playwright/0.0.1/node_modules/playwright-core" > "$c/.links/hash"
+  printf '%s\n' "$c/chromium-1/chrome" > "$c/.browser-bin"
+  printf 'work\n' > "$D/sources/dvw/local-checkout/uncommitted"
+  local old=$(( $(date +%s) - 400 * 86400 ))
+  touch -d @"$old" "$c" "$c/chromium-1" "$D/sources/dvw/sha1" "$D/sources/dvw/sha1/bin"
+  export AICODING_RETENTION=preview
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"browser-cache"* ]]
+  [[ "$output" != *"sources/"* ]]
+  unset AICODING_RETENTION
+  local grace
+  for grace in 3600 0; do
+    export AICODING_RETENTION_GRACE=$grace
+    run aicoding_version_retention
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"browser-cache"* ]]
+    [[ "$output" != *"sources/"* ]]
+  done
+  [ -d "$c/chromium-1" ]
+  [ -d "$D/sources/dvw/sha1/bin" ]
+  [ -f "$D/sources/dvw/local-checkout/uncommitted" ]
+  [ -z "$(find "$D/browser-cache" "$D/sources" -name '.aicoding-retired.*')" ]
+  [ -z "$(find "$AICODING_STATE_DIR/retention" -name '0.0.1' -o -name 'sha1' -o -name '.aux.*' 2>/dev/null)" ]
+  # The release-side pass still ran.
+  [ ! -e "$D/versions/claude/1.0.0" ]
+}
+
+@test "only the program itself can name the release a process runs" {
+  mkver cursor 1.0; mkver cursor 1.1; mkver cursor 1.2
+  point current cursor ../versions/cursor/1.2
+  launcher agent cursor bin/tool
+  # A renamed node tool whose option names a release proves only that 1.1 is referenced.
+  fakeproc 5601 "$UID" agent agent "--log=$D/versions/cursor/1.1/log"
+  inspectable 5601
+  fake_exe 5601 /usr/bin/node
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/cursor/1.0" ]
+  [ -d "$D/versions/cursor/1.1" ]
+  [[ "$output" == *"process 5601 (agent) runs cursor from a release it does not hold open"* ]]
+  # An interpreter whose script lies elsewhere, with a release path further on.
+  rm -rf "$TEST_ROOT/proc/5601"
+  fakeproc 5602 "$UID" python3 /usr/bin/python3 /opt/x/run.py "$D/versions/cursor/1.1/bin/tool"
+  inspectable 5602
+  run aicoding_version_retention
+  [ -d "$D/versions/cursor/1.0" ]
+  [[ "$output" == *"process 5602 (python3) runs cursor from a release it does not hold open"* ]]
+  # argv[0] inside the release, or the script an interpreter runs, names it.
+  rm -rf "$TEST_ROOT/proc/5602"
+  fakeproc 5603 "$UID" tool "$D/versions/cursor/1.1/bin/tool" --serve
+  inspectable 5603
+  fakeproc 5604 "$UID" python3.12 python3.12 "$D/versions/cursor/1.1/bin/tool" -u
+  inspectable 5604
+  run aicoding_version_retention
+  [ ! -e "$D/versions/cursor/1.0" ]
+  [ -d "$D/versions/cursor/1.1" ]
+}
+
+@test "an option before an interpreter's script keeps the whole component" {
+  mkver tool 1.0; mkver tool 1.1; mkver tool 1.2
+  point current tool ../versions/tool/1.2
+  # The preload is a named release, but the program is /opt/wrapper.js.
+  fakeproc 5611 "$UID" node node --require "$D/versions/tool/1.0/preload.js" /opt/wrapper.js
+  inspectable 5611
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/tool/1.0" ]
+  [ -d "$D/versions/tool/1.1" ]
+  [[ "$output" == *"process 5611 (node) runs tool from a release it does not hold open"* ]]
+  rm -rf "$TEST_ROOT/proc/5611"
+  fakeproc 5612 "$UID" python3 python3 -u "$D/versions/tool/1.0/bin/tool"
+  inspectable 5612
+  run aicoding_version_retention
+  [ -d "$D/versions/tool/1.0" ]
+  [ -d "$D/versions/tool/1.1" ]
+  [[ "$output" == *"process 5612 (python3) runs tool from a release it does not hold open"* ]]
+  # The script as the very first argument names the release it runs.
+  rm -rf "$TEST_ROOT/proc/5612"
+  fakeproc 5613 "$UID" python3 python3 "$D/versions/tool/1.0/bin/tool" -u
+  inspectable 5613
+  run aicoding_version_retention
+  [ -d "$D/versions/tool/1.0" ]
+  [ ! -e "$D/versions/tool/1.1" ]
+  [[ "$output" != *"runs tool from a release"* ]]
+}
+
+@test "a path list entry with a dot segment keeps the whole component" {
+  mkver pi 1.0.0; mkver pi 1.1.0; mkver pi 1.2.0
+  point current pi ../versions/pi/1.2.0
+  fakeproc 5621 "$UID" helper /usr/bin/helper "--paths=$D/versions/pi/1.0.0/..:/opt/other"
+  inspectable 5621 "$D/versions/pi/1.2.0/payload"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/pi/1.0.0" ]
+  [ -d "$D/versions/pi/1.1.0" ]
+  rm -rf "$TEST_ROOT/proc/5621"
+  fakeproc 5622 "$UID" helper /usr/bin/helper "/opt/a,$D/versions/pi/1.0.0/.,/opt/b"
+  inspectable 5622 "$D/versions/pi/1.2.0/payload"
+  run aicoding_version_retention
+  [ -d "$D/versions/pi/1.1.0" ]
+  # Canonical entries name only their release.
+  rm -rf "$TEST_ROOT/proc/5622"
+  fakeproc 5623 "$UID" helper /usr/bin/helper "--paths=$D/versions/pi/1.0.0/bin:/opt/other,/opt/more"
+  inspectable 5623 "$D/versions/pi/1.2.0/payload"
+  run aicoding_version_retention
+  [ -d "$D/versions/pi/1.0.0" ]
+  [ ! -e "$D/versions/pi/1.1.0" ]
+}
+
+@test "repeated slashes on a command line still name a release" {
+  mkver pi 1.0.0; mkver pi 1.1.0; mkver pi 1.2.0
+  point current pi ../versions/pi/1.2.0
+  fakeproc 5701 "$UID" node node "$D//versions/pi//1.0.0/cli.js"
+  inspectable 5701 "$D/versions/pi/1.2.0"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/pi/1.0.0" ]
+  [ ! -e "$D/versions/pi/1.1.0" ]
+  # A dot segment behind a repeated slash is still a dot segment.
+  mkver pi 1.1.0
+  rm -rf "$TEST_ROOT/proc/5701"
+  fakeproc 5702 "$UID" node node "$D/versions/pi/1.0.0//../1.1.0/cli.js"
+  inspectable 5702 "$D/versions/pi/1.2.0"
+  mkver pi 0.9.0
+  run aicoding_version_retention
+  [ -d "$D/versions/pi/0.9.0" ]
+}
+
+@test "a dangling link is harmless only when its missing step lies in its own release" {
+  mkver tool 1.0; mkver tool 1.1; mkver tool 2.0
+  point current tool ../versions/tool/2.0
+  # It passes through its own release but fails outside it.
+  ln -s "$D/versions/tool/1.0/../../../missing" "$D/versions/tool/1.0/x"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/tool/1.0" ]
+  [ -d "$D/versions/tool/1.1" ]
+  # Absolute or relative, a missing step inside its own release keeps nothing.
+  rm "$D/versions/tool/1.0/x"
+  ln -s "$D/versions/tool/1.0/missing" "$D/versions/tool/1.0/self"
+  ln -s ../missing/cli.js "$D/versions/tool/1.1/bin/cli"
+  run aicoding_version_retention
+  [ ! -e "$D/versions/tool/1.0" ]
+  [ ! -e "$D/versions/tool/1.1" ]
+  [ -d "$D/versions/tool/2.0" ]
+  # A missing step in another release keeps the component.
+  mkver tool 0.9; mkver tool 0.8
+  ln -s "$D/versions/tool/0.8/missing" "$D/versions/tool/0.9/other"
+  run aicoding_version_retention
+  [ -d "$D/versions/tool/0.9" ]
+  [ -d "$D/versions/tool/0.8" ]
+}
+
+@test "a stamp that cannot be created keeps its candidate even with no window" {
+  [ "$(id -u)" -ne 0 ] || skip "root writes read-only directories"
+  mkdir -p "$AICODING_STATE_DIR/retention"
+  chmod 0500 "$AICODING_STATE_DIR/retention"
+  run aicoding_version_retention
+  chmod 0700 "$AICODING_STATE_DIR/retention"
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/claude/1.0.0" ]
+  [[ "$output" == *"cannot record when claude/1.0.0 was first seen unused"* ]]
+}
+
+# The retention step of an older worker whose own release has a stub library.
+_worker_retention() {
+  (
+    unset AICODINGSETUP_SKIP_NETWORK
+    . "$TEST_ROOT/oldrel/lib/auto-update.sh"
+    _aicoding_auto_version_retention
+  )
+}
+
+@test "the fallback worker runs the retention library of the active aicoding release" {
+  mkdir -p "$TEST_ROOT/oldrel/lib"
+  cp "$BLUEPRINT_ROOT/lib/auto-update.sh" "$TEST_ROOT/oldrel/lib/"
+  printf 'aicoding_version_retention() { echo old-retention; }\n' > "$TEST_ROOT/oldrel/lib/version-retention.sh"
+  mkver aicoding sha1
+  local lib="$D/versions/aicoding/sha1/lib/version-retention.sh"
+  mkdir -p "${lib%/*}"
+  printf 'aicoding_version_retention() { echo new-retention; }\n' > "$lib"
+  point current aicoding ../versions/aicoding/sha1
+  run _worker_retention
+  [ "$status" -eq 0 ]
+  [ "$output" = new-retention ]
+  point current aicoding "$(readlink -e "$D")/versions/aicoding/sha1"
+  run _worker_retention
+  [ "$output" = new-retention ]
+  # Without a valid pointer or a regular library, the worker's own copy runs.
+  point current aicoding ../versions/aicoding/missing
+  run _worker_retention
+  [ "$output" = old-retention ]
+  point current aicoding ../versions/aicoding/sha1/
+  run _worker_retention
+  [ "$output" = old-retention ]
+  point current aicoding ../versions/aicoding/sha1
+  mv "$lib" "$lib.real"
+  ln -s "$lib.real" "$lib"
+  run _worker_retention
+  [ "$output" = old-retention ]
+  rm "$lib"; mv "$lib.real" "$lib"
+  # A symlinked lib/ is not part of the release, even when the file there is regular.
+  mkdir -p "$TEST_ROOT/otherlib"
+  printf 'aicoding_version_retention() { echo other-retention; }\n' > "$TEST_ROOT/otherlib/version-retention.sh"
+  mv "$D/versions/aicoding/sha1/lib" "$TEST_ROOT/sha1-lib"
+  ln -s "$TEST_ROOT/otherlib" "$D/versions/aicoding/sha1/lib"
+  run _worker_retention
+  [ "$output" = old-retention ]
+  rm "$D/versions/aicoding/sha1/lib"; mv "$TEST_ROOT/sha1-lib" "$D/versions/aicoding/sha1/lib"
+  # So is a symlinked component directory above the release.
+  mv "$D/versions/aicoding" "$TEST_ROOT/aicoding-versions"
+  ln -s "$TEST_ROOT/aicoding-versions" "$D/versions/aicoding"
+  run _worker_retention
+  [ "$output" = old-retention ]
+  rm "$D/versions/aicoding"; mv "$TEST_ROOT/aicoding-versions" "$D/versions/aicoding"
+  rm -f "$D/current/aicoding"
+  run _worker_retention
+  [ "$output" = old-retention ]
+}
