@@ -25,8 +25,15 @@ fi
 echo "  installing: ${missing[*]}"
 # One broken third-party source must not block an install the cached index
 # can still satisfy (same as apt_install in lib/provision-system.sh).
-# The lock timeout waits out unattended-upgrades instead of failing the pass.
-DEBIAN_FRONTEND=noninteractive "$apt_get" update -o DPkg::Lock::Timeout=60 -qq \
-  || echo "  warn: apt-get update failed; trying the install anyway" >&2
+# The dpkg lock timeout waits out unattended-upgrades on install, but update
+# takes the lists lock without waiting, so it is retried by hand on contention.
+updated=0
+for try in 1 2 3; do
+  if err=$(DEBIAN_FRONTEND=noninteractive "$apt_get" update -qq 2>&1); then updated=1; break; fi
+  [ -z "$err" ] || printf '%s\n' "$err" >&2
+  case "$err" in *lists/lock*|*"Could not get lock"*) ;; *) break ;; esac
+  [ "$try" -lt 3 ] && sleep "${AICODING_APT_LOCK_SLEEP:-10}"
+done
+[ "$updated" = 1 ] || echo "  warn: apt-get update failed; trying the install anyway" >&2
 DEBIAN_FRONTEND=noninteractive "$apt_get" install -o DPkg::Lock::Timeout=60 -y -qq --no-install-recommends "${missing[@]}"
 echo "  ok: installed ${missing[*]}"
