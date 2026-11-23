@@ -19,7 +19,7 @@ Owner answers in revision 3:
 
 ## Context
 
-Eleven PRs merged on 2026-11-22. The rollout is healthy: CI is green on
+Eleven PRs merged across 2026-11-22 and 2026-11-23 (local time). The rollout is healthy: CI is green on
 `611735c`, the desktop activated it at 06:03 with no blockers, and devMachine
 pins it. A read-only review found no blocker but several defects. This plan
 fixes them in six small PRs.
@@ -369,8 +369,10 @@ destination, key path, old and new value. Model ids are not secrets.
 `~/.codex` is a shared root (`lib/blueprint-deploy.sh:608-613`), and the gate
 probes only the local binary. An offline container with an older Codex would
 inherit the new default. `_provision_tool_ready` (`lib/provision.sh:293`)
-already verifies shared consumers for provisioning. Find out whether the
-reseed gate can reuse it. If not, document the limit.
+classifies and locks the shared root, then checks only the local update
+receipt and the local executable's version; it does not inspect other
+consumers of that root. Reusing it would not close this gap: cross-consumer
+compatibility would need separate evidence. Document the limit.
 
 ### E4. Small
 
