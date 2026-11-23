@@ -490,6 +490,9 @@ _managed_reseed_filter() {
       jq -e --argjson v "$current" 'any(.shipped[]; . == $v)' <<<"$entry" >/dev/null || continue
     elif [[ "$state" != 1 ]]; then
       continue
+    elif [[ "${_MANAGED_DRY_RUN:-0}" == 1 ]]; then
+      # A dry run writes nothing and reports the file either way: start no tool.
+      continue
     fi
     tool=$(jq -r '.requires.tool // empty' <<<"$entry")
     min=$(jq -r '.requires.min_version // empty' <<<"$entry")
@@ -712,6 +715,7 @@ _managed_claim_shared() {
 managed_config_apply() {
   local dry=0 dest kind source src out reason rc=0 changes=0 inventory hold=0 held=0
   [[ "${1:-}" == --dry-run ]] && dry=1
+  _MANAGED_DRY_RUN=$dry
   declare -gA MANAGED_RESULT=()
   inventory=$(managed_inventory) || { echo "      could not list managed files" >&2; return 1; }
   _managed_newer_release_owns_shared && hold=1
