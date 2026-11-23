@@ -199,12 +199,37 @@ old() { t3_iso '-2 hours'; }
   t3_bin_as make sleep
   t3_fake_setup
   "$B/t3-start"
-  srv=$(jq -r .pid "$T3_ENVS_ROOT/demo/userdata/server-runtime.json")
-  # Outlive the whole window: under suite load the checks before it can take
-  # longer than a short-lived process, which then exits before any sample.
-  ( sleep 0.5; tok=$(t3_owner token); env T3_AICODING_OWNER="$tok" "$TMP/bin/make" $((T3_IDLE_WINDOW + 3)) ) &
+  # "start" runs the helper and returns once it is observably running; the first
+  # "scan" call records the scan result and stops the helper, so it exists only
+  # across that one scan and the final checks of t3_idle_full cannot see it.
+  tok=$(t3_owner token)
+  cat > "$TMP/hook.sh" <<HOOK
+#!/bin/bash
+if [ "\$1" = start ]; then
+  env T3_AICODING_OWNER="$tok" "$TMP/bin/make" 120 >/dev/null 2>&1 3>&- &
+  pid=\$!
+  echo \$pid > "$TMP/make.pid"
+  for _ in \$(seq 600); do
+    [ "\$(cat /proc/\$pid/comm 2>/dev/null)" = make ] && exit 0
+    sleep 0.2
+  done
+  exit 1
+fi
+if [ ! -e "$TMP/scan1" ]; then
+  echo "\$2" > "$TMP/scan1"
+  pid=\$(cat "$TMP/make.pid")
+  kill "\$pid" 2>/dev/null
+  for _ in \$(seq 600); do
+    [ -d /proc/\$pid ] && [ "\$(cut -d' ' -f3 /proc/\$pid/stat 2>/dev/null)" != Z ] || exit 0
+    sleep 0.1
+  done
+fi
+HOOK
+  chmod +x "$TMP/hook.sh"
+  export T3_IDLE_WINDOW_HOOK="$TMP/hook.sh"
   run full
-  wait
+  unset T3_IDLE_WINDOW_HOOK
+  [ "$(cat "$TMP/scan1")" = 1 ]
   [ "$status" -eq 1 ]
   [[ "$output" == *process_make* ]]
 }
