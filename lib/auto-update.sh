@@ -44,7 +44,8 @@ _aicoding_auto_close_shared_lock_fds() {
 }
 
 # Capabilities a worker must have loaded; one without them is replaced.
-_AICODING_AUTO_WORKER_CAPABILITIES=retention
+# retention2: each pass loads the active release's verified retention library.
+_AICODING_AUTO_WORKER_CAPABILITIES=retention2
 
 # The receipt binds the worker to its PID and process start time, not a
 # reusable PID alone. Line 1 keeps the three fields older releases parse;
@@ -268,22 +269,24 @@ _aicoding_auto_version_retention() {
 }
 
 # The retention library of the release current/aicoding points at: its own
-# target must be exactly ../versions/aicoding/<name> or the absolute form, a
-# real release directory, and the library a regular file.
+# target must be exactly ../versions/aicoding/<name> or that path under the
+# resolved data directory, and the library must resolve to exactly the file
+# inside that real release directory, so no symlink on the way is trusted.
 _aicoding_auto_current_retention_lib() {
-  local data=${AICODING_DATA_DIR:-$HOME/.local/share/aicoding} real raw name= lib
+  local data=${AICODING_DATA_DIR:-$HOME/.local/share/aicoding} real raw name= rel lib
   real=$(readlink -e -- "$data" 2>/dev/null) || return 1
-  [ -L "$data/current/aicoding" ] && raw=$(readlink -- "$data/current/aicoding") || return 1
+  [ -d "$real/current" ] && [ ! -L "$real/current" ] || return 1
+  [ -L "$real/current/aicoding" ] && raw=$(readlink -- "$real/current/aicoding") || return 1
   case "$raw" in
     ../versions/aicoding/*) name=${raw#../versions/aicoding/} ;;
-    "$data"/versions/aicoding/*) name=${raw#"$data"/versions/aicoding/} ;;
     "$real"/versions/aicoding/*) name=${raw#"$real"/versions/aicoding/} ;;
   esac
   [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || return 1
   case "$name" in *.staging.*|*.replaced.*) return 1 ;; esac
-  [ -d "$real/versions/aicoding/$name" ] && [ ! -L "$real/versions/aicoding/$name" ] || return 1
-  lib="$real/versions/aicoding/$name/lib/version-retention.sh"
-  [ -f "$lib" ] && [ ! -L "$lib" ] || return 1
+  rel="$real/versions/aicoding/$name"
+  [ -d "$rel" ] && [ ! -L "$rel" ] || return 1
+  lib=$(readlink -e -- "$rel/lib/version-retention.sh" 2>/dev/null) || return 1
+  [ "$lib" = "$rel/lib/version-retention.sh" ] && [ -f "$lib" ] || return 1
   printf '%s\n' "$lib"
 }
 
