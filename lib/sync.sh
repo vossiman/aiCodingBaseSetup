@@ -1116,6 +1116,10 @@ aicoding_sync() {
         fi
       fi
     fi
+    # Launchers written by an older release gain the current text (the lease).
+    if declare -F aicoding_runtime_refresh_launchers >/dev/null 2>&1; then
+      aicoding_runtime_refresh_launchers || echo 'aicoding-sync: some managed launchers could not be refreshed' >&2
+    fi
   fi
   # 3. Reconcile config after tool outcomes. Unrelated compatible config still
   #    advances when one component is blocked.

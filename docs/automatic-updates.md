@@ -25,11 +25,179 @@ command unchanged. If an activation mutation fails, the runtime attempts to
 restore the prior state; an incomplete rollback retains its recovery directory
 and reports the path.
 
-Old release, source, and browser trees intentionally remain available because
-a running process may still hold a physical path after a pointer advances.
-Monitor disk use under `~/.local/share/aicoding`; do not delete retained trees
-solely by age or the `previous` pointer. Liveness-aware retention is tracked in
-`AICODINGBASESETUP-52`.
+A running process may still hold a physical path after a pointer advances, so
+old releases are never deleted by age or by the `previous` pointer alone. On a
+host (profile `host` or `minimal-pi`, outside a container), a scheduled pass
+that succeeded without deferrals ends with a retention step. A directory
+`versions/<component>/<version>` is a removal candidate on a run only when all
+of these hold, and is kept whenever any check is unclear:
+
+- it is a real directory, not a symlink, and its name has no leading dot and
+  no `.staging.` or `.replaced.` part, so staging and transaction trees and a
+  release set aside by an in-place rebuild are never touched;
+- `current/<component>` is a symlink whose own target (read once, not fully
+  resolved) is exactly `../versions/<component>/<name>` or the absolute form
+  of that path, and that release is a real directory, not a symlink. A
+  staging directory, a deeper path, a chain through another link or another
+  component's release keeps the whole component. Any `previous/<component>`
+  must pass the same check;
+- no symlink anywhere under `~/.local/share/aicoding` (including every
+  `current/` and `previous/` pointer, relative or absolute) resolves into it
+  or through it: every release that a link's resolution steps through is
+  kept, not only the final target. A chain that cannot be followed to its end,
+  including one that reaches a missing path, keeps every component it
+  touched. One exception keeps pruning possible: a link inside a release whose
+  missing step lies in that same release, and which touched no other part of
+  `versions/`, keeps nothing (dangling links inside `node_modules` are
+  common). A dangling link that never touches `versions/` keeps nothing
+  either, even when the text after its missing step names a release: only
+  steps that really exist count. A link inside a release that resolves back
+  into the same release does not protect that release;
+- no file in `~/.local/bin` names it, no symlink there resolves into it or
+  through it (resolved step by step like the links above, so a chain through
+  an alias outside the data directory keeps every release it passes, and one
+  that cannot be followed keeps the components it touched), no regular file
+  that such a symlink points to names it, wherever that file lives (a target
+  that cannot be read stops the run; symlinked directories are not followed),
+  and `~/.local/bin` itself neither resolves into it nor reaches its final
+  directory through it (its path is walked step by step too, so a parent
+  directory or a link whose text passes through a release keeps it);
+- no process of the user has its executable, working directory, an open file
+  or directory, or a memory-mapped file inside it, and no command line of the
+  user's processes names `versions/<component>/<name>` under the data
+  directory, whatever that process holds open. Every occurrence in an
+  argument counts on its own, so `--paths=<data>/versions/pi/1.0/bin:<data>/current/pi/bin`
+  names release `pi/1.0` and component `pi`. An argument that names a
+  component's `versions/` or `current/` path and also contains a `.` or `..`
+  segment, such as `<data>/versions/pi/1.1/../1.0/cli.js`, keeps every
+  version of that component for the run;
+- no process holds a launcher lease on it (below);
+- no process of the user belongs to the component without holding any of its
+  releases (the unknown-release rule, below);
+- no mount point lies at or below it (read from `/proc/self/mountinfo`, which
+  also lists bind mounts on the same filesystem); such a version is kept with
+  a warning, and so is a leftover tombstone that contains a mount point. The
+  table is read again right before each rename of a release, right after it
+  (before its tombstone is deleted) and before each leftover tombstone is
+  deleted, so a mount that appears during the run is never deleted through;
+  a table that cannot be read at that moment keeps the tree;
+- the update lock (`sync.lock`) and the component's activation lock are free.
+
+**The launcher lease.** An interpreter-run tool (for example a node tool such
+as `pi`) can have an executable and a working directory outside its release,
+and may rewrite its own command line. To keep them visible, every managed launcher
+in `~/.local/bin` opens a read-only descriptor on the physical release
+directory just before its `exec`, and the tool inherits it; the descriptor scan
+then finds the release. The launcher also takes a shared `flock` on that
+descriptor. The lock belongs to the open file, so it lasts while any process
+still holds an inherited copy, including a detached child whose parent has
+exited. Retention does not need `/proc` to see it: immediately before it
+renames a release into its tombstone, it opens the release directory and
+tries an exclusive, non-blocking lock, which it holds until the rename is
+done. If the lock cannot be taken, the release is kept, its stamp is deleted
+so the window starts again, and one line says it is held by a running
+process. Every run, preview included, makes the same test for each candidate
+and drops the test lock at once. A launcher that finds its shared lock refused
+because retention holds the exclusive one (flock's exit status 1) closes the
+descriptor, resolves `current/<component>` once more, opens and locks that
+release, and runs it; it never retries a second time. A failed open or a
+missing or otherwise failing `flock` never stops or delays the launcher.
+The lock protects only processes that keep the inherited descriptor. Some
+programs close extra descriptors in the children they start (Python's
+`subprocess` does by default); for such descendants the `/proc` checks are
+the fallback. Retention itself needs `flock`:
+without it, the run removes nothing and says so once. Launchers
+written by an older release are rewritten by the next sync, even for a
+component that is already current. That refresh accepts a relative or an
+absolute `current/<component>` pointer and never moves or rewrites `current`
+or `previous`.
+
+**The unknown-release rule.** A process belongs to a component when its command
+line mentions `current/<component>/` or `versions/<component>/` under the data
+directory, or when its `argv[0]` matches a managed launcher of that
+component: `argv[0]` is compared by its full basename, while the kernel short
+name (`comm`) is compared against the first 15 bytes of the launcher name (from the `current=` line of the
+launchers in `~/.local/bin`). A process that belongs to a component but holds
+no path under that component's `versions/` keeps every version of the
+component on that run, with one log line naming its pid, short name and
+component.
+
+**Processes that cannot be inspected.** A process of the user counts as
+inspected only when its executable link, working directory link, descriptor
+directory and memory map could all be read; one that exits during the scan
+uses nothing. If the scan itself cannot be proven complete, the run removes
+nothing. A live process that cannot be inspected (for example a non-dumpable
+or setuid helper) stops the whole run when it is relevant: its command line
+cannot be read, mentions the data directory or `~/.local/bin`, its `argv[0]`
+basename or short name matches a managed launcher, or a process in its parent
+chain belongs to a component or holds a path under `versions/`. The parent
+chain check walks at most 64 ancestors and stops at PID 1; a chain that loops
+back on itself also stops the run. The warning names only its pid and short
+name. An uninspectable process that is not
+relevant is ignored, so a release used only by an unrelated, uninspectable
+process outside any managed process tree could still be removed.
+
+The process scan is a snapshot. After it, retention lists the user's
+processes once more. If a process that held a managed release or belonged to
+a component has exited meanwhile, has become a zombie (its children may have
+been reparented), or now has another start time than in the first pass (its
+PID was reused), or a new process appeared whose parent is such a process,
+the scan counts as incomplete: the run removes nothing and
+leaves every stamp untouched. Retention's own helper processes are ignored.
+This catches only what the snapshot could attribute; the launcher lock above
+covers everything started through a launcher, and the `/proc` rules remain
+for processes started before launchers took the lock or without a launcher.
+
+**The observation window.** A candidate is removed only after it stayed a
+candidate on every run for `AICODING_RETENTION_GRACE` seconds (default seven
+days). The value is read as a decimal number of seconds, so a leading zero
+never makes it octal; anything other than plain digits, an empty value
+included, or more than ten years (315360000 seconds), warns and removes
+nothing. The default applies only when the variable is unset. A version is due once
+the time since its stamp reaches the window. The first run that sees it as a
+candidate records a stamp,
+`~/.local/state/aicoding/retention/<component>/<version>`, whose mtime is that
+moment. `retention/` and each component directory in it are created private
+(mode 0700) and must be plain directories inside the resolved state
+directory. A symlinked or otherwise odd component directory keeps every
+version of that component with a warning; such a `retention/` itself keeps
+everything. Stamp cleanup never follows a symlink and deletes only regular
+files named like a version. Before a stamp is deleted or created, an existing
+entry must be a regular file; a symlink, FIFO, directory or other entry is
+left in place, its version is kept, and one warning names it. A new stamp is
+created exclusively, never through a link. A stamp store that cannot be
+written is not trusted: a component directory the user cannot write or
+search keeps every version of that component with a warning, and when
+deleting or creating a stamp fails during a run, that component is kept for
+the rest of the run, so a stale stamp is never honoured after its reset
+failed. A run that sees the version referenced, in use, or kept by any rule
+deletes its stamp, so the window starts again. Stamps of versions that no
+longer exist are deleted. A run that removes nothing because a scan was
+incomplete, the mount table could not be read, an uninspectable process was
+relevant, or an update was running leaves every stamp untouched.
+`AICODING_RETENTION_GRACE=0` removes on the first clean run, for a deliberate
+manual run.
+
+The step runs inside the pass's `run.lock` after every component finished and
+only when the pass succeeded and recorded no deferrals. Removal renames the
+version to a dot-prefixed tombstone in the same directory, then deletes it, so
+an interrupted removal never leaves a half-deleted tree under a valid version
+name; the next run finishes such a tombstone. Each removed version is logged
+with its size, followed by one total. A failed removal is a warning and never
+changes the pass result. Fallback workers loaded before retention existed are
+replaced by the idle upgrade path, because their receipt lacks the `retention`
+capability. The receipt keeps its first line in the original three fields
+(protocol, pid, start time), which older releases parse to verify ownership,
+and records `capabilities retention` on a second line. A one-line receipt
+still proves ownership but counts as a worker without retention.
+
+`AICODING_RETENTION=preview` logs, per candidate, whether it would be removed
+now or the date it becomes eligible, and lists leftover tombstones a real run
+would delete; it removes nothing and writes no stamp. `AICODING_RETENTION=off`
+disables the step. `aicoding-auto-update --retention-preview` prints the same
+preview without an update pass. Containers never prune: a rebuild replaces
+their whole tree. Source snapshots under `sources/` and the Playwright browser
+cache under `browser-cache/` are not pruned on any machine.
 
 Source releases carry `.aicoding-version` and a retained-tree digest. Exact npm
 components retain the dependency tree and validate package metadata,

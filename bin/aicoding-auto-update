@@ -43,8 +43,12 @@ case "${1:-}" in
   --ensure) aicoding_auto_update_ensure ;;
   --enroll) aicoding_auto_update_enroll ;;
   --worker) aicoding_auto_update_worker ;;
+  --retention-preview)
+    . "$AICODING_RUNTIME_ROOT/lib/version-retention.sh" || exit 1
+    AICODING_RETENTION=preview aicoding_version_retention
+    ;;
   -h|--help|'')
-    echo 'usage: aicoding-auto-update --once|--ensure'
+    echo 'usage: aicoding-auto-update --once|--ensure|--retention-preview'
     ;;
   *)
     echo "aicoding-auto-update: unknown argument: $1" >&2

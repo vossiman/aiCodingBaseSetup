@@ -1153,6 +1153,53 @@ CHILD
   [ -s "$AICODING_STATE_DIR/auto-update/worker.protocol" ]
 }
 
+@test "a worker receipt without the retention capability is replaced while idle" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_lines 1
+  local old_worker protocol pid ticks caps
+  old_worker=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")
+  for _ in $(seq 40); do [ -s "$AICODING_STATE_DIR/auto-update/worker.protocol" ] && break; sleep 0.025; done
+  # Line 1 parses with the three-field read older releases use.
+  read -r protocol pid ticks < "$AICODING_STATE_DIR/auto-update/worker.protocol"
+  [ "$protocol" = 1 ] && [ "$pid" = "$old_worker" ]
+  [ "$ticks" = "$(bash -c '. "$1/lib/auto-update.sh"; _aicoding_auto_process_start_ticks "$2"' _ "$TEST_ROOT/runtime" "$old_worker")" ]
+  [ "$(sed -n 2p "$AICODING_STATE_DIR/auto-update/worker.protocol")" = "capabilities retention" ]
+  # A two-line receipt is current: ensure leaves the worker alone.
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  sleep 0.3
+  [ "$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")" = "$old_worker" ]
+  kill -0 "$old_worker"
+  # The receipt a worker from before retention wrote: same identity, no capability.
+  printf '%s %s %s\n' "$protocol" "$pid" "$ticks" > "$AICODING_STATE_DIR/auto-update/worker.protocol"
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_replacement "$old_worker"
+  for _ in $(seq 80); do
+    caps=$(sed -n 2p "$AICODING_STATE_DIR/auto-update/worker.protocol" 2>/dev/null || true)
+    read -r _ pid _ < "$AICODING_STATE_DIR/auto-update/worker.protocol" 2>/dev/null || true
+    [ "$pid" != "$old_worker" ] && [ "${caps:-}" = "capabilities retention" ] && break
+    sleep 0.05
+  done
+  [ "${caps:-}" = "capabilities retention" ]
+}
+
+@test "a worker receipt without capabilities still proves ownership of a deleted lock" {
+  false_systemd_shim
+  export AICODING_AUTO_UPDATE_INTERVAL=3600
+  "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
+  wait_for_lines 1
+  local worker protocol pid ticks
+  worker=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")
+  for _ in $(seq 40); do [ -s "$AICODING_STATE_DIR/auto-update/worker.protocol" ] && break; sleep 0.025; done
+  read -r protocol pid ticks < "$AICODING_STATE_DIR/auto-update/worker.protocol"
+  printf '%s %s %s\n' "$protocol" "$pid" "$ticks" > "$AICODING_STATE_DIR/auto-update/worker.protocol"
+  rm "$AICODING_STATE_DIR/auto-update/worker.lock"
+  run bash -c '. "$1/lib/auto-update.sh"; _aicoding_auto_stop_worker' _ "$TEST_ROOT/runtime"
+  [ "$status" -eq 0 ]
+  if kill -0 "$worker" 2>/dev/null; then false; fi
+}
+
 @test "outdated-worker upgrade waits for its active sync to finish" {
   false_systemd_shim
   export AICODING_AUTO_UPDATE_INTERVAL=3600
