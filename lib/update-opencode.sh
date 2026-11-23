@@ -143,7 +143,7 @@ _aicoding_opencode_probe() {
 }
 
 aicoding_update_opencode() {
-  local target asset final work state=updated
+  local target active asset final work state=updated
   if [ "${AICODINGSETUP_SKIP_NETWORK:-0}" = 1 ]; then
     _aicoding_record_deferred opencode blocked "" network_disabled
     return 1
@@ -156,6 +156,12 @@ aicoding_update_opencode() {
     _aicoding_opencode_target_cache_write "$target"
   elif target=$(_aicoding_opencode_target_cache_read); then
     printf 'opencode: release lookup failed, using the cached target %s from the last successful lookup\n' "$target" >&2
+    # The cache can predate the active release (another state dir): never go backwards.
+    active=$(jq -r '.components.opencode.successful_version // empty' "$AICODING_RESULTS_FILE" 2>/dev/null || true)
+    if printf '%s\n' "$active" | grep -qE '^2\.[0-9]+\.[0-9]+$' \
+        && [ "$(printf '%s\n%s\n' "$target" "$active" | sort -V | tail -n1)" = "$active" ]; then
+      target=$active
+    fi
   else
     aicoding_result_record opencode failed "" target_version_unavailable; return 1
   fi

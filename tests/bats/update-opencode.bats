@@ -321,6 +321,17 @@ target_cache() { printf '%s' "$AICODING_STATE_DIR/opencode-target-version"; }
   jq -e '.components.opencode.state == "current" and .components.opencode.target_version == "2.3.2"' "$AICODING_RESULTS_FILE"
 }
 
+@test "OpenCode never downgrades to a cached target older than the verified active version" {
+  aicoding_update_component opencode
+  printf '2.3.1\n' > "$(target_cache)"
+  fail_lookup
+  run aicoding_update_component opencode
+  [ "$status" -eq 0 ]
+  [ "$(readlink "$AICODING_DATA_DIR/current/opencode")" = ../versions/opencode/2.3.2 ]
+  [ ! -e "$AICODING_DATA_DIR/versions/opencode/2.3.1" ]
+  jq -e '.components.opencode.state == "current" and .components.opencode.successful_version == "2.3.2"' "$AICODING_RESULTS_FILE"
+}
+
 @test "OpenCode ignores a target cache older than 24 hours" {
   aicoding_update_component opencode
   touch -d '25 hours ago' "$(target_cache)"
