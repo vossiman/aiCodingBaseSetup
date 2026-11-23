@@ -27,6 +27,8 @@ setup() {
 
 teardown() {
   local pid
+  # Never through a test's stubs.
+  PATH=/usr/bin:/bin
   for pid in "${HELPERS[@]}"; do
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
@@ -333,6 +335,9 @@ fakeproc() {
   [ -e "$TEST_ROOT/proc/self/mountinfo" ] || cat /proc/self/mountinfo > "$TEST_ROOT/proc/self/mountinfo"
   printf 'Name:\t%s\nState:\tS (sleeping)\nPPid:\t%s\nUid:\t%s\t%s\t%s\t%s\n' \
     "$comm" "${FAKE_PPID:-1}" "$uid" "$uid" "$uid" "$uid" > "$dir/status"
+  # Field 22 is the start time; FAKE_START sets it.
+  printf '%s (%s) S %s 0 0 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 %s 0 0\n' \
+    "${dir##*/}" "$comm" "${FAKE_PPID:-1}" "${FAKE_START:-1000}" > "$dir/stat"
   printf '%s\n' "$comm" > "$dir/comm"
   : > "$dir/cmdline"
   [ "$#" -eq 0 ] || printf '%s\0' "$@" > "$dir/cmdline"
@@ -1237,4 +1242,212 @@ _hook_scan() {
   [ "$status" -eq 0 ]
   [ -d "$D/versions/claude/1.0.0" ]
   [[ "$output" == *"process 4302 ("*") cannot be inspected and runs a managed launcher"* ]]
+}
+
+@test "a launcher that finds its release locked by retention resolves current once more" {
+  mkver tool 1.0.0; mkver tool 1.1.0
+  point current tool ../versions/tool/1.1.0
+  launcher aicodingtesttool tool bin/tool
+  local real fd
+  real=$(command -v readlink)
+  # The first resolution still sees the release retention is about to rename.
+  printf '#!/bin/sh\nif mkdir "%s/readlink-once" 2>/dev/null; then echo "%s/versions/tool/1.0.0"; exit 0; fi\nexec %s "$@"\n' \
+    "$TEST_ROOT" "$D" "$real" > "$TEST_ROOT/stubs/readlink"
+  chmod +x "$TEST_ROOT/stubs/readlink"
+  exec {fd}<"$D/versions/tool/1.0.0"
+  flock -x -n "$fd"
+  run "$HOME/.local/bin/aicodingtesttool"
+  exec {fd}<&-
+  [ "$status" -eq 0 ]
+  [ "$output" = 1.1.0 ]
+  # Without the exclusive lock the first resolution is used as before.
+  rmdir "$TEST_ROOT/readlink-once"
+  run "$HOME/.local/bin/aicodingtesttool"
+  [ "$status" -eq 0 ]
+  [ "$output" = 1.0.0 ]
+}
+
+@test "a ~/.local/bin reached through a release keeps that release" {
+  mkver pi 1.0.0; mkver pi 1.2.0
+  point current pi ../versions/pi/1.2.0
+  mkdir -p "$D/launchers"
+  rmdir "$HOME/.local/bin"
+  ln -s "$D/versions/pi/1.0.0/../../../launchers" "$HOME/.local/bin"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/pi/1.0.0" ]
+  [ ! -e "$D/versions/claude/1.0.0" ]
+  # A parent of ~/.local/bin that passes through a release counts too.
+  rm "$HOME/.local/bin"
+  mkdir -p "$D/dotlocal/bin"
+  rmdir "$HOME/.local"
+  ln -s "$D/versions/pi/1.0.0/../../../dotlocal" "$HOME/.local"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/pi/1.0.0" ]
+}
+
+@test "a ~/.local/bin link to a script elsewhere has that script's contents scanned" {
+  mkver pi 1.0.0; mkver pi 1.1.0
+  point current pi ../versions/pi/1.1.0
+  mkdir -p "$HOME/scripts"
+  printf '#!/bin/sh\nexec %s/versions/pi/1.0.0/bin/tool "$@"\n' "$D" > "$HOME/scripts/pi-old"
+  chmod +x "$HOME/scripts/pi-old"
+  ln -s "$HOME/scripts/pi-old" "$HOME/.local/bin/pi-old"
+  # A symlinked directory is not followed.
+  ln -s "$HOME/scripts" "$HOME/.local/bin/scripts"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/pi/1.0.0" ]
+  [ ! -e "$D/versions/claude/1.0.0" ]
+  # An unreadable target makes the scan fail closed.
+  [ "$(id -u)" -ne 0 ] || skip "root reads mode 000 files"
+  mkver claude 0.9.0
+  chmod 000 "$HOME/scripts/pi-old"
+  run aicoding_version_retention
+  chmod 0755 "$HOME/scripts/pi-old"
+  [ -d "$D/versions/claude/0.9.0" ]
+  [[ "$output" == *"cannot read every launcher in ~/.local/bin; nothing removed"* ]]
+}
+
+@test "a non-canonical release path on a command line keeps every version of the component" {
+  mkver pi 1.0.0; mkver pi 1.1.0; mkver pi 1.2.0
+  point current pi ../versions/pi/1.2.0
+  fakeproc 4821 "$UID" node node "$D/versions/pi/1.1.0/../1.0.0/bin/cli.js"
+  inspectable 4821 "$D/versions/pi/1.2.0"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/pi/1.0.0" ]
+  [ -d "$D/versions/pi/1.1.0" ]
+  [ ! -e "$D/versions/claude/1.0.0" ]
+}
+
+@test "a managed process that turns into a zombie or is replaced during the scan removes nothing" {
+  export AICODING_RETENTION_GRACE=3600
+  mkdir -p "$AICODING_STATE_DIR/retention/claude"
+  touch -d @1000000000 "$AICODING_STATE_DIR/retention/claude/1.0.0"
+  fakeproc 4711 "$UID" claude /opt/claude
+  inspectable 4711 "$D/versions/claude/1.0.2/bin/tool"
+  _hook_scan 'sed -i "s/) S /) Z /" "$TEST_ROOT/proc/4711/stat"'
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/claude/1.0.0" ]
+  [[ "$output" == *"cannot prove"* ]]
+  [ "$(stat -c %Y "$AICODING_STATE_DIR/retention/claude/1.0.0")" = 1000000000 ]
+  # The same PID with a new start time is another process.
+  rm -f "$TEST_ROOT/hook-ran"
+  fakeproc 4711 "$UID" claude /opt/claude
+  _hook_scan 'FAKE_START=2000 fakeproc 4711 "$UID" claude /opt/claude'
+  run aicoding_version_retention
+  [ -d "$D/versions/claude/1.0.0" ]
+  [[ "$output" == *"cannot prove"* ]]
+  [ "$(stat -c %Y "$AICODING_STATE_DIR/retention/claude/1.0.0")" = 1000000000 ]
+  # Unchanged, the same tree prunes.
+  . "$BLUEPRINT_ROOT/lib/version-retention.sh"
+  run aicoding_version_retention
+  [ ! -e "$D/versions/claude/1.0.0" ]
+}
+
+@test "a stamp directory that cannot be written keeps every version of its component" {
+  [ "$(id -u)" -ne 0 ] || skip "root ignores directory permissions"
+  export AICODING_RETENTION_GRACE=3600
+  mkver codex 1.0.0; mkver codex 2.0.0
+  point current codex ../versions/codex/2.0.0
+  mkdir -p "$AICODING_STATE_DIR/retention/claude" "$AICODING_STATE_DIR/retention/codex"
+  touch -d @"$(( $(date +%s) - 3700 ))" "$AICODING_STATE_DIR/retention/claude/1.0.0" \
+    "$AICODING_STATE_DIR/retention/codex/1.0.0"
+  chmod 0555 "$AICODING_STATE_DIR/retention/claude"
+  run aicoding_version_retention
+  chmod 0755 "$AICODING_STATE_DIR/retention/claude"
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/claude/1.0.0" ]
+  [[ "$output" == *"WARN"*"retention/claude"*"keeping every claude version"* ]]
+  [ ! -e "$D/versions/codex/1.0.0" ]
+}
+
+@test "a stamp that cannot be reset keeps its component for the rest of the run" {
+  export AICODING_RETENTION_GRACE=3600
+  point previous claude ../versions/claude/1.0.0
+  mkdir -p "$AICODING_STATE_DIR/retention/claude"
+  : > "$AICODING_STATE_DIR/retention/claude/1.0.0"
+  touch -d @"$(( $(date +%s) - 3700 ))" "$AICODING_STATE_DIR/retention/claude/1.0.1"
+  local real
+  real=$(command -v rm)
+  printf '#!/bin/sh\ncase "$*" in */retention/claude/1.0.0) exit 1 ;; esac\nexec %s "$@"\n' "$real" > "$TEST_ROOT/stubs/rm"
+  chmod +x "$TEST_ROOT/stubs/rm"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/claude/1.0.1" ]
+  [[ "$output" == *"WARN"*"retention/claude/1.0.0"* ]]
+}
+
+# Add a mount at PATH to the fake mount table right after its first read.
+_mount_appears() {
+  declare -F _test_orig_read_mounts >/dev/null \
+    || eval "$(declare -f _aicoding_retention_read_mounts | sed '1s/_aicoding_retention_read_mounts/_test_orig_read_mounts/')"
+  _TEST_LATE_MOUNT=$1
+  _aicoding_retention_read_mounts() {
+    _test_orig_read_mounts || return
+    [ ! -e "$TEST_ROOT/mount-added" ] || return 0
+    : > "$TEST_ROOT/mount-added"
+    printf '905 1 0:99 / %s rw - tmpfs tmpfs rw\n' "$_TEST_LATE_MOUNT" >> "$TEST_ROOT/proc/self/mountinfo"
+  }
+}
+
+@test "a mount that appears after the first mount table read is never deleted through" {
+  fakeproc 4611 "$UID" idle /usr/bin/idle
+  inspectable 4611
+  local tomb="$D/versions/claude/.aicoding-retired.0.1.0.abcdef"
+  mkdir -p "$tomb/item/mnt"
+  : > "$tomb/item/mnt/file"
+  _mount_appears "$tomb/item/mnt"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -f "$tomb/item/mnt/file" ]
+  [[ "$output" == *"leftover $tomb contains a mount point; kept"* ]]
+  # The same for a release, checked again right before its rename.
+  rm -f "$TEST_ROOT/mount-added"
+  mkver claude 0.9.0
+  mkdir -p "$D/versions/claude/0.9.0/mnt"
+  _mount_appears "$D/versions/claude/0.9.0/mnt"
+  run aicoding_version_retention
+  [ -d "$D/versions/claude/0.9.0/mnt" ]
+  [[ "$output" == *"claude/0.9.0 contains a mount point; kept"* ]]
+}
+
+@test "a mount that appears inside a tombstone right after the rename is not deleted through" {
+  fakeproc 4612 "$UID" idle /usr/bin/idle
+  inspectable 4612
+  mkdir -p "$D/versions/claude/1.0.0/mnt"
+  : > "$D/versions/claude/1.0.0/mnt/file"
+  local real
+  real=$(command -v mv)
+  printf '#!/bin/sh\n%s "$@" || exit\nfor a; do dst=$a; done\nprintf "906 1 0:99 / %%s/mnt rw - tmpfs tmpfs rw\\n" "$dst" >> "%s"\n' \
+    "$real" "$TEST_ROOT/proc/self/mountinfo" > "$TEST_ROOT/stubs/mv"
+  chmod +x "$TEST_ROOT/stubs/mv"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ ! -e "$D/versions/claude/1.0.0" ]
+  compgen -G "$D/versions/claude/.aicoding-retired.1.0.0.*/item/mnt/file" >/dev/null
+  [[ "$output" == *"removed claude/1.0.0 from use, but could not delete all of"* ]]
+}
+
+@test "a dangling link through a missing directory does not pin the release its text names" {
+  mkver pi 1.0.0; mkver pi 1.1.0
+  point current pi ../versions/pi/1.1.0
+  mkdir -p "$D/sources/x"
+  ln -s "$D/nowhere/../versions/pi/1.0.0/bin/tool" "$D/sources/x/through-missing"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ ! -e "$D/versions/pi/1.0.0" ]
+  [ -d "$D/versions/pi/1.1.0" ]
+}
+
+@test "an empty grace period removes nothing" {
+  export AICODING_RETENTION_GRACE=
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/claude/1.0.0" ]
+  [[ "$output" == *"WARN"*"AICODING_RETENTION_GRACE"* ]]
+  [ ! -e "$AICODING_STATE_DIR/retention/claude/1.0.0" ]
 }

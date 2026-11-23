@@ -211,7 +211,15 @@ _aicoding_runtime_write_wrapper() {
       '# Lease: this open descriptor marks the release as in use for retention.' \
       '{ command exec {aicoding_lease}<"$release"; } 2>/dev/null || :' \
       '# A shared lock on it lasts while any process still inherits the descriptor.' \
-      '[ -z "${aicoding_lease:-}" ] || { command flock -s -n "$aicoding_lease"; } >/dev/null 2>&1 || :' \
+      'aicoding_held=0' \
+      '[ -z "${aicoding_lease:-}" ] || { command flock -s -n "$aicoding_lease"; } >/dev/null 2>&1 || aicoding_held=$?' \
+      '# 1: retention holds it exclusively to rename it, so resolve current once more.' \
+      'if [ "$aicoding_held" = 1 ]; then' \
+      '  exec {aicoding_lease}<&-' \
+      '  release=$(readlink -f -- "$current") || exit 1' \
+      '  [ -x "$release/$relative" ] || exit 1' \
+      '  { command exec {aicoding_lease}<"$release"; } 2>/dev/null && { command flock -s -n "$aicoding_lease"; } >/dev/null 2>&1 || :' \
+      'fi' \
       'exec "$release/$relative" "$@"'
   } > "$output" || return 1
   chmod 0755 "$output"

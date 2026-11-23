@@ -50,25 +50,37 @@ of these hold, and is kept whenever any check is unclear:
   missing step lies in that same release, and which touched no other part of
   `versions/`, keeps nothing (dangling links inside `node_modules` are
   common). A dangling link that never touches `versions/` keeps nothing
-  either. A link inside a release that resolves back into the same release
-  does not protect that release;
+  either, even when the text after its missing step names a release: only
+  steps that really exist count. A link inside a release that resolves back
+  into the same release does not protect that release;
 - no file in `~/.local/bin` names it, no symlink there resolves into it or
   through it (resolved step by step like the links above, so a chain through
   an alias outside the data directory keeps every release it passes, and one
-  that cannot be followed keeps the components it touched), and
-  `~/.local/bin` itself does not resolve into it;
+  that cannot be followed keeps the components it touched), no regular file
+  that such a symlink points to names it, wherever that file lives (a target
+  that cannot be read stops the run; symlinked directories are not followed),
+  and `~/.local/bin` itself neither resolves into it nor reaches its final
+  directory through it (its path is walked step by step too, so a parent
+  directory or a link whose text passes through a release keeps it);
 - no process of the user has its executable, working directory, an open file
   or directory, or a memory-mapped file inside it, and no command line of the
   user's processes names `versions/<component>/<name>` under the data
   directory, whatever that process holds open. Every occurrence in an
   argument counts on its own, so `--paths=<data>/versions/pi/1.0/bin:<data>/current/pi/bin`
-  names release `pi/1.0` and component `pi`;
+  names release `pi/1.0` and component `pi`. An argument that names a
+  component's `versions/` or `current/` path and also contains a `.` or `..`
+  segment, such as `<data>/versions/pi/1.1/../1.0/cli.js`, keeps every
+  version of that component for the run;
 - no process holds a launcher lease on it (below);
 - no process of the user belongs to the component without holding any of its
   releases (the unknown-release rule, below);
 - no mount point lies at or below it (read from `/proc/self/mountinfo`, which
   also lists bind mounts on the same filesystem); such a version is kept with
-  a warning, and so is a leftover tombstone that contains a mount point;
+  a warning, and so is a leftover tombstone that contains a mount point. The
+  table is read again right before each rename of a release, right after it
+  (before its tombstone is deleted) and before each leftover tombstone is
+  deleted, so a mount that appears during the run is never deleted through;
+  a table that cannot be read at that moment keeps the tree;
 - the update lock (`sync.lock`) and the component's activation lock are free.
 
 **The launcher lease.** An interpreter-run tool (for example a node tool such
@@ -85,8 +97,15 @@ tries an exclusive, non-blocking lock, which it holds until the rename is
 done. If the lock cannot be taken, the release is kept, its stamp is deleted
 so the window starts again, and one line says it is held by a running
 process. Every run, preview included, makes the same test for each candidate
-and drops the test lock at once. A failed open or a missing or failing
-`flock` never stops or delays the launcher. Retention itself needs `flock`:
+and drops the test lock at once. A launcher that finds its shared lock refused
+because retention holds the exclusive one (flock's exit status 1) closes the
+descriptor, resolves `current/<component>` once more, opens and locks that
+release, and runs it; it never retries a second time. A failed open or a
+missing or otherwise failing `flock` never stops or delays the launcher.
+The lock protects only processes that keep the inherited descriptor. Some
+programs close extra descriptors in the children they start (Python's
+`subprocess` does by default); for such descendants the `/proc` checks are
+the fallback. Retention itself needs `flock`:
 without it, the run removes nothing and says so once. Launchers
 written by an older release are rewritten by the next sync, even for a
 component that is already current. That refresh accepts a relative or an
@@ -120,8 +139,10 @@ process outside any managed process tree could still be removed.
 
 The process scan is a snapshot. After it, retention lists the user's
 processes once more. If a process that held a managed release or belonged to
-a component has exited meanwhile, or a new process appeared whose parent is
-such a process, the scan counts as incomplete: the run removes nothing and
+a component has exited meanwhile, has become a zombie (its children may have
+been reparented), or now has another start time than in the first pass (its
+PID was reused), or a new process appeared whose parent is such a process,
+the scan counts as incomplete: the run removes nothing and
 leaves every stamp untouched. Retention's own helper processes are ignored.
 This catches only what the snapshot could attribute; the launcher lock above
 covers everything started through a launcher, and the `/proc` rules remain
@@ -130,8 +151,9 @@ for processes started before launchers took the lock or without a launcher.
 **The observation window.** A candidate is removed only after it stayed a
 candidate on every run for `AICODING_RETENTION_GRACE` seconds (default seven
 days). The value is read as a decimal number of seconds, so a leading zero
-never makes it octal; anything other than plain digits, or more than ten
-years (315360000 seconds), warns and removes nothing. A version is due once
+never makes it octal; anything other than plain digits, an empty value
+included, or more than ten years (315360000 seconds), warns and removes
+nothing. The default applies only when the variable is unset. A version is due once
 the time since its stamp reaches the window. The first run that sees it as a
 candidate records a stamp,
 `~/.local/state/aicoding/retention/<component>/<version>`, whose mtime is that
@@ -143,7 +165,12 @@ everything. Stamp cleanup never follows a symlink and deletes only regular
 files named like a version. Before a stamp is deleted or created, an existing
 entry must be a regular file; a symlink, FIFO, directory or other entry is
 left in place, its version is kept, and one warning names it. A new stamp is
-created exclusively, never through a link. A run that sees the version referenced, in use, or kept by any rule
+created exclusively, never through a link. A stamp store that cannot be
+written is not trusted: a component directory the user cannot write or
+search keeps every version of that component with a warning, and when
+deleting or creating a stamp fails during a run, that component is kept for
+the rest of the run, so a stale stamp is never honoured after its reset
+failed. A run that sees the version referenced, in use, or kept by any rule
 deletes its stamp, so the window starts again. Stamps of versions that no
 longer exist are deleted. A run that removes nothing because a scan was
 incomplete, the mount table could not be read, an uninspectable process was

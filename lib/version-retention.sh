@@ -6,7 +6,8 @@
 #
 #   AICODING_RETENTION        unset|on (remove), preview (log only), off
 #   AICODING_RETENTION_GRACE  seconds a version must stay unreferenced and
-#                             unused before removal (default 7 days)
+#                             unused before removal (default 7 days when
+#                             unset; an empty value removes nothing)
 
 : "${AICODING_DATA_DIR:=$HOME/.local/share/aicoding}"
 : "${AICODING_STATE_DIR:=$HOME/.local/state/aicoding}"
@@ -107,6 +108,8 @@ _aicoding_retention_belongs() {
           [[ "$rest" =~ $re ]] || continue
           c=${BASH_REMATCH[1]}
           _belongs+=" $c"
+          # A path with . or .. segments may name another release than it seems to.
+          case "$arg" in */../*|*/./*|*/..|*/.) keep_comp[$c]=1 ;; esac
           # A named release is used, whatever the process holds open.
           [ "$kind" != versions ] || [ -z "${BASH_REMATCH[3]}" ] || used[$c/${BASH_REMATCH[3]}]=1
         done
@@ -121,6 +124,18 @@ _aicoding_retention_belongs() {
   return 0
 }
 
+# Set _stat_state and _stat_start (field 22) from $proc/PID/stat; 1 if unreadable.
+_aicoding_retention_stat() {
+  local st= f
+  { IFS= read -r -d '' st < "$proc/$1/stat"; } 2>/dev/null || :
+  # The name in parentheses may contain anything, so parse after the last ')'.
+  [[ "$st" == *')'* ]] || return 1
+  read -r -a f <<< "${st##*)}"
+  _stat_state=${f[0]:-}
+  _stat_start=${f[19]:-}
+  [ -n "$_stat_state" ] && [[ "$_stat_start" =~ ^[0-9]+$ ]]
+}
+
 # Batched status, find (exe, cwd, fd) and maps passes over the user's processes.
 # Returns 1 when the scan is incomplete or an uninspectable process is relevant.
 _aicoding_retention_scan_proc() {
@@ -131,7 +146,8 @@ _aicoding_retention_scan_proc() {
   local me=$BASHPID end=aicoding-retention-scan-end line rest p kind val uid euid
   local path target arg m c q comm hit depth st_ended=0 fd_ended=0 map_ended=0 rc=0 _belongs
   local -a status_files=() mine=() starts=() maps=() args=() managed=()
-  local -A ppid=() pstate=() pname=() is_mine=() bad=() seen_exe=() seen_cwd=()
+  local -A ppid=() pstate=() pstart=() pname=() is_mine=() bad=() seen_exe=() seen_cwd=()
+  local _stat_state _stat_start
   local -A belongs=() inspected=() warned=()
   for m in "$AICODING_DATA_DIR" "$data" "$HOME/.local/bin" "$(readlink -e -- "$HOME/.local/bin" 2>/dev/null)"; do
     [ -n "$m" ] || continue
@@ -167,6 +183,7 @@ _aicoding_retention_scan_proc() {
   bad=()
   for p in "${!is_mine[@]}"; do
     case "${pstate[$p]:-}" in Z|X) continue ;; esac
+    _aicoding_retention_stat "$p" && pstart[$p]=$_stat_start
     mine+=("$p")
     starts+=("$proc/$p/fd" "$proc/$p/cwd" "$proc/$p/exe")
     maps+=("$proc/$p/maps")
@@ -300,8 +317,12 @@ _aicoding_retention_scan_settled() {
   [ "${#relevant[@]}" -gt 0 ] || return 0
   for path in "$proc"/[0-9]*; do now[${path##*/}]=1; done
   for p in "${!relevant[@]}"; do
-    [ -n "${now[$p]:-}" ] && continue
-    _aicoding_retention_say "process $p, which used a managed release, exited during the scan"
+    # A zombie, or a reused PID, may have handed its use to a reparented child.
+    if [ -n "${now[$p]:-}" ] && [ -n "${pstart[$p]:-}" ] && _aicoding_retention_stat "$p" \
+        && [ "$_stat_start" = "${pstart[$p]}" ]; then
+      case "$_stat_state" in Z|X) ;; *) continue ;; esac
+    fi
+    _aicoding_retention_say "process $p, which used a managed release, exited or was replaced during the scan"
     return 1
   done
   for p in "${!now[@]}"; do
@@ -366,6 +387,7 @@ _aicoding_retention_follow_link() {
   local link=$1 raw=$2 owner=$3 rc=0 c
   walk_comps=(); walk_rels=()
   _aicoding_retention_walk_link "$link" "$raw" "$owner" || rc=$?
+  walk_rc=$rc
   [ "$rc" -ne 0 ] || return 0
   if [ "$rc" -eq 2 ] && [ -n "$owner" ] && [ "${#walk_rels[@]}" -eq 1 ] \
       && [ -n "${walk_rels[$owner]:-}" ]; then
@@ -379,7 +401,7 @@ _aicoding_retention_follow_link() {
 # cannot be followed, every component it touched is kept. Returns 1 if the
 # listing failed.
 _aicoding_retention_scan_links() {
-  local dir=$1 i owner rest comp name
+  local dir=$1 i owner rest comp name walk_rc
   local -a links=() raws=() pairs=() targets=()
   local -A link_raw=() walk_comps=() walk_rels=()
   mapfile -d '' pairs < <(find "$dir" -type l -printf '%p\0%l\0' 2>/dev/null; printf 'rc=%s\0\0' "$?")
@@ -403,6 +425,8 @@ _aicoding_retention_scan_links() {
         owner="$comp/$name" ;;
     esac
     _aicoding_retention_follow_link "${links[$i]}" "${raws[$i]}" "$owner"
+    # Past a missing step, readlink -m only guesses; the walk already kept what it touched.
+    [ "$walk_rc" -ne 2 ] || continue
     if [ -n "$owner" ]; then
       case "${targets[$i]}" in "$_vroot/$owner"|"$_vroot/$owner"/*) continue ;; esac
     fi
@@ -413,9 +437,13 @@ _aicoding_retention_scan_links() {
 # Managed launchers and legacy links in ~/.local/bin; maps launcher names to
 # components. Returns 1 on a read error.
 _aicoding_retention_scan_bin() {
-  local bin=$1 rc file line comp name
-  local -a files=() managed_files=()
+  local bin=$1 rc file line comp name walk_rc
+  local -a files=() managed_files=() link_files=()
+  local -A link_raw=() walk_comps=() walk_rels=()
   [ -e "$bin" ] || [ -L "$bin" ] || return 0
+  [[ "$bin" == /* ]] || return 1
+  # Every release on the way to it keeps, not only the final directory.
+  _aicoding_retention_follow_link "$bin" "$bin" ""
   # find does not descend into a symlinked start directory.
   bin=$(readlink -e -- "$bin") || return 1
   # The launcher directory itself may live inside a release.
@@ -425,13 +453,15 @@ _aicoding_retention_scan_bin() {
   mapfile -d '' files < <(find "$bin" -type f -print0 2>/dev/null; printf 'rc=%s\0' "$?")
   [ "${files[-1]:-}" = rc=0 ] || return 1
   unset 'files[-1]'
-  [ "${#files[@]}" -gt 0 ] || return 0
+  [ "$((${#files[@]} + ${#link_files[@]}))" -gt 0 ] || return 0
   rc=0
+  # Regular files that links point to are read too, wherever they live.
   grep -aohE "versions/${_AICODING_RETENTION_SEG}/${_AICODING_RETENTION_SEG}" \
-    -- "${files[@]}" > "$_work/bin-tokens" 2>/dev/null || rc=$?
+    -- "${files[@]}" "${link_files[@]}" > "$_work/bin-tokens" 2>/dev/null || rc=$?
   # 1 is "no match"; 2 is a file that could not be read.
   [ "$rc" -le 1 ] || return 1
   _aicoding_retention_mark_tokens < "$_work/bin-tokens"
+  [ "${#files[@]}" -gt 0 ] || return 0
   rc=0
   mapfile -d '' managed_files < <(grep -lZxF -e "$_AICODING_RETENTION_MARKER" -- "${files[@]}" 2>/dev/null || rc=$?
                                   printf 'rc=%s\0' "$rc")
@@ -466,6 +496,7 @@ _aicoding_retention_scan_links_bin() {
     _aicoding_retention_follow_link "$path" "$raw" ""
     real=$(readlink -m -- "$path" 2>/dev/null)
     _aicoding_retention_mark_path "$real"
+    [ ! -f "$real" ] || link_files+=("$real")
     case "$real" in
       "$_vroot"/*/*)
         rest=${real#"$_vroot"/}
@@ -515,18 +546,17 @@ _aicoding_retention_pointer_ok() {
 }
 
 # Remove one version: re-verify, rename into a dot-prefixed tombstone, delete.
-# Returns 1 when nothing changed, 3 when the tombstone could not be deleted,
-# 4 when a mount point lies inside, 5 when a process holds a launcher lease.
+# Returns 1 when nothing changed, 3 when the tombstone could not be deleted or
+# a mount appeared in it, 4 when a mount point lies inside, 5 when a process
+# holds a launcher lease.
 _aicoding_retention_remove() {
-  local comp=$1 name=$2 dir tomb real lfd
+  local comp=$1 name=$2 dir tomb real lfd rc
   dir="$_vroot/$comp/$name"
   _aicoding_retention_safe "$comp" && _aicoding_retention_safe "$name" || return 1
   [ -d "$_vroot/$comp" ] && [ ! -L "$_vroot/$comp" ] || return 1
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
   real=$(readlink -e -- "$dir") || return 1
   [ "$real" = "$dir" ] || return 1
-  _aicoding_retention_read_mounts || return 1
-  if _aicoding_retention_has_mount "$dir"; then return 4; fi
   # Held until the rename: no launcher can take a new lease meanwhile.
   { command exec {lfd}<"$dir"; } 2>/dev/null || return 1
   if ! flock -x -n "$lfd" 2>/dev/null; then
@@ -534,13 +564,29 @@ _aicoding_retention_remove() {
     return 5
   fi
   tomb=$(mktemp -d "$_vroot/$comp/.aicoding-retired.$name.XXXXXX" 2>/dev/null) || { exec {lfd}<&-; return 1; }
-  if ! mv -T -- "$dir" "$tomb/item" 2>/dev/null; then
+  # The mount table is read again right before the rename, and again before the delete.
+  rc=0
+  if ! _aicoding_retention_read_mounts; then rc=1
+  elif _aicoding_retention_has_mount "$dir"; then rc=4
+  elif ! mv -T -- "$dir" "$tomb/item" 2>/dev/null; then rc=1
+  fi
+  if [ "$rc" -ne 0 ]; then
     exec {lfd}<&-
     rmdir -- "$tomb" 2>/dev/null || true
-    return 1
+    return "$rc"
   fi
   exec {lfd}<&-
-  _aicoding_retention_delete_tree "$tomb" || { _retired_left=$tomb; return 3; }
+  _retired_left=$tomb
+  if ! _aicoding_retention_read_mounts; then
+    _aicoding_retention_warn "cannot read the mount table; $tomb not deleted"
+    return 3
+  fi
+  if _aicoding_retention_has_mount "$tomb"; then
+    _aicoding_retention_warn "$tomb contains a mount point; not deleted"
+    return 3
+  fi
+  _aicoding_retention_delete_tree "$tomb" || return 3
+  _retired_left=
 }
 
 # 0 when no process holds a launcher lease on DIR, 1 when one does, 2 when
@@ -561,10 +607,15 @@ _aicoding_retention_stamp_plain() {
   return 1
 }
 
-# Delete a stamp so the window starts again; 1 when the entry is not a regular file.
+# Delete a stamp so the window starts again; 1 when the entry is not a regular
+# file or cannot be deleted. A stamp that survives its reset would be trusted
+# later, so its component (LABEL is component/version) is kept for this run.
 _aicoding_retention_stamp_drop() {
   _aicoding_retention_stamp_plain "$1" "$2" || return 1
-  rm -f -- "$1" 2>/dev/null || true
+  rm -f -- "$1" 2>/dev/null && { [ ! -e "$1" ] && [ ! -L "$1" ]; } && return 0
+  _aicoding_retention_warn "cannot delete $1; keeping every ${2%%/*} version this run"
+  keep_comp[${2%%/*}]=1
+  return 1
 }
 
 # Build caches can leave read-only directories; restore access to directories
@@ -576,7 +627,8 @@ _aicoding_retention_delete_tree() {
 }
 
 _aicoding_retention_main() {
-  local mode=${AICODING_RETENTION:-on} grace=${AICODING_RETENTION_GRACE:-604800}
+  # The default applies only when unset: an empty value is invalid.
+  local mode=${AICODING_RETENTION:-on} grace=${AICODING_RETENTION_GRACE-604800}
   case "$mode" in
     off) return 0 ;;
     on|remove) mode=remove ;;
@@ -697,9 +749,19 @@ _aicoding_retention_main() {
       _aicoding_retention_warn "$sdir is not a plain directory; keeping every $comp version"
       continue
     fi
+    # Stamps that could not be reset are not trustworthy.
+    if [ -d "$sdir" ] && { [ ! -w "$sdir" ] || [ ! -x "$sdir" ]; }; then
+      _aicoding_retention_warn "$sdir cannot be written; keeping every $comp version"
+      continue
+    fi
     for dir in "$_vroot/$comp"/.aicoding-retired.*; do
       [ -d "$dir" ] && [ ! -L "$dir" ] || continue
       if [ -n "${keep_comp[$comp]:-}" ]; then continue; fi
+      # A fresh table: a bind mount may have appeared since the first read.
+      if ! _aicoding_retention_read_mounts; then
+        _aicoding_retention_warn "cannot read the mount table; leftover $dir kept"
+        continue
+      fi
       if _aicoding_retention_has_mount "$dir"; then
         _aicoding_retention_warn "leftover $dir contains a mount point; kept"
         continue
@@ -751,8 +813,10 @@ _aicoding_retention_main() {
           # noclobber creates the stamp exclusively, never through a planted link.
           { { [ -d "$sroot" ] || mkdir -m 0700 -- "$sroot"; } && [ ! -L "$sroot" ] \
               && { [ -d "$sdir" ] || mkdir -m 0700 -- "$sdir"; } && [ ! -L "$sdir" ] \
-              && rm -f -- "$stamp" && (set -C; : > "$stamp"); } 2>/dev/null \
-            || _aicoding_retention_warn "cannot record when $comp/$name was first seen unused"
+              && rm -f -- "$stamp" && (set -C; : > "$stamp"); } 2>/dev/null || {
+            _aicoding_retention_warn "cannot record when $comp/$name was first seen unused; keeping every $comp version this run"
+            keep_comp[$comp]=1
+          }
         fi
       fi
       due=$((first + grace))
