@@ -190,8 +190,10 @@ A second round re-creates the worktree and deletes the first round's
 `.review-round/`, so archive round 1 before starting round 2. `run.sh`
 refuses to start over a worktree that still holds a handback, using the
 same check as cleanup, or whose reviewed commit is unknown. A review-only
-round can always be run again: it never starts a fix pass, so anything it
-changed is not a handback.
+round can be run again when the worktree has a valid `reviewed-head`: it
+never starts a fix pass, so anything it changed is not a handback. An older
+worktree without one is refused when its baseline cannot be established, for
+example after another harness refreshed the fetched PR ref.
 
 Both scripts take a per-PR, per-harness lock under the repo's git directory
 (`review-by-harness/pr<N>-<harness>.lock`, via `flock`). A second run of the

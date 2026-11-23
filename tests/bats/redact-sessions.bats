@@ -525,7 +525,7 @@ EOF
   printf '{"text":"%s"}\n' "$V1" > "$f"; old "$f"
   # fingerprint as the previous release computed it, same rules and salt
   local fpfile; fpfile="$(ls "$STATE"/rules.fp.* | head -1)"
-  ( REDACT_SESSIONS_SOURCE_ONLY=1 . "$RS"; SWEEP_VERSION=1; load_rules; fingerprint_rules ) > "$fpfile"
+  ( REDACT_SESSIONS_SOURCE_ONLY=1 . "$RS"; SWEEP_VERSION=; load_rules; fingerprint_rules ) > "$fpfile"
   "$RS" --sweep
   [[ "$(cat "$f")" != *"$V1"* ]]
   grep -q 'full rescan' "$STATE/log"

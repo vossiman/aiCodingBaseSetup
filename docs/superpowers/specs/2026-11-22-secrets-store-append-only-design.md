@@ -89,9 +89,11 @@ for**, not the keys **allowed to survive**.
    credentials to every package and plugin process the installer spawns,
    and a key named like `PATH` would change installer behaviour. Install's
    consumers are the renderer, which uses named placeholders
-   (`lib/blueprint-deploy.sh:240`), and `install_claude_mcps` in
-   `lib/provision.sh`, which reads the environment too; helpers read the
-   file themselves.
+   (`lib/blueprint-deploy.sh:240`), `install_claude_mcps` in
+   `lib/provision.sh`, which reads the environment too, and
+   `ensure_gh_credential_helper` (`lib/sync.sh:80-90`), which uses an
+   exported `GH_TOKEN` for `gh auth setup-git`; helpers read the file
+   themselves.
 9. **Example file contents** become the owner's 11 keys, each with a short
    comment naming its reader. `DOKPLOY_API_TOKEN` and the Kuma keys that
    PR #289 added come out again: nothing asks for them on a fresh machine,
