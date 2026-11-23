@@ -1165,14 +1165,15 @@ CHILD
   read -r protocol pid ticks < "$AICODING_STATE_DIR/auto-update/worker.protocol"
   [ "$protocol" = 1 ] && [ "$pid" = "$old_worker" ]
   [ "$ticks" = "$(bash -c '. "$1/lib/auto-update.sh"; _aicoding_auto_process_start_ticks "$2"' _ "$TEST_ROOT/runtime" "$old_worker")" ]
-  [ "$(sed -n 2p "$AICODING_STATE_DIR/auto-update/worker.protocol")" = "capabilities retention2" ]
+  [ "$(tail -n +2 "$AICODING_STATE_DIR/auto-update/worker.protocol")" = $'capabilities retention3\ncapabilities retention2\ncapabilities retention' ]
   # A receipt with the current capability is current: ensure leaves the worker alone.
   "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
   sleep 0.3
   [ "$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")" = "$old_worker" ]
   kill -0 "$old_worker"
   # The receipt an older worker wrote, before or after retention: same identity.
-  for old_caps in "capabilities retention" ""; do
+  # fe09450 writes only retention2; 1e98290 only retention.
+  for old_caps in "capabilities retention2" "capabilities retention" ""; do
     old_worker=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")
     read -r protocol pid ticks < "$AICODING_STATE_DIR/auto-update/worker.protocol"
     { printf '%s %s %s\n' "$protocol" "$pid" "$ticks"
@@ -1187,28 +1188,45 @@ CHILD
     for _ in $(seq 80); do
       caps=$(sed -n 2p "$AICODING_STATE_DIR/auto-update/worker.protocol" 2>/dev/null || true)
       read -r _ pid _ < "$AICODING_STATE_DIR/auto-update/worker.protocol" 2>/dev/null || true
-      [ "$pid" != "$old_worker" ] && [ "${caps:-}" = "capabilities retention2" ] && break
+      [ "$pid" != "$old_worker" ] && [ "${caps:-}" = "capabilities retention3" ] && break
       sleep 0.05
     done
-    [ "${caps:-}" = "capabilities retention2" ]
+    [ "${caps:-}" = "capabilities retention3" ]
   done
 }
 
-@test "a worker receipt satisfies the previous release's capability check too" {
+# Release 1e98290's current-worker check: any later line equal to "capabilities retention".
+_current_in_1e98290() {
+  bash -c '. "$1/lib/auto-update.sh"
+    _aicoding_auto_worker_receipt_owned "$2" "$3" || exit 1
+    while read -r key value; do
+      [ "$key" != capabilities ] || [ "$value" != retention ] || exit 0
+    done < <(tail -n +2 -- "$2/worker.protocol" 2>/dev/null)
+    exit 1' _ "$TEST_ROOT/runtime" "$1" "$2"
+}
+
+# Release fe09450's current-worker check: any later line equal to "capabilities retention2".
+_current_in_fe09450() {
+  bash -c '. "$1/lib/auto-update.sh"
+    _aicoding_auto_worker_receipt_owned "$2" "$3" || exit 1
+    while read -r key value; do
+      [ "$key" != capabilities ] || [ "$value" != retention2 ] || exit 0
+    done < <(tail -n +2 -- "$2/worker.protocol" 2>/dev/null)
+    exit 1' _ "$TEST_ROOT/runtime" "$1" "$2"
+}
+
+@test "a worker receipt satisfies the previous releases' capability checks too" {
   false_systemd_shim
   export AICODING_AUTO_UPDATE_INTERVAL=3600
   "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
   wait_for_lines 1
-  local worker receipt="$AICODING_STATE_DIR/auto-update/worker.protocol" key value found=0
-  worker=$(cat "$AICODING_STATE_DIR/auto-update/worker.pid")
-  for _ in $(seq 40); do [ -s "$receipt" ] && break; sleep 0.025; done
-  # The previous release accepts a worker only on the exact line "capabilities retention".
-  while read -r key value; do
-    if [ "$key" = capabilities ] && [ "$value" = retention ]; then found=1; fi
-  done < <(tail -n +2 -- "$receipt")
-  [ "$found" = 1 ]
+  local worker state="$AICODING_STATE_DIR/auto-update"
+  worker=$(cat "$state/worker.pid")
+  for _ in $(seq 40); do [ -s "$state/worker.protocol" ] && break; sleep 0.025; done
+  _current_in_1e98290 "$state" "$worker"
+  _current_in_fe09450 "$state" "$worker"
   bash -c '. "$1/lib/auto-update.sh"; _aicoding_auto_worker_protocol_current "$2" "$3"' _ \
-    "$TEST_ROOT/runtime" "$AICODING_STATE_DIR/auto-update" "$worker"
+    "$TEST_ROOT/runtime" "$state" "$worker"
   # Each enrollment leaves the other's worker alone.
   "$TEST_ROOT/aicoding-auto-update" --ensure </dev/null
   sleep 0.3

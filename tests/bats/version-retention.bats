@@ -1617,7 +1617,8 @@ fake_exe() { ln -sfn "$2" "$TEST_ROOT/proc/$1/exe"; }
   rm -rf "$TEST_ROOT/proc/5602"
   fakeproc 5603 "$UID" tool "$D/versions/cursor/1.1/bin/tool" --serve
   inspectable 5603
-  fake_exe 5603 "$D/versions/cursor/1.1/bin/tool"
+  # An executable outside the managed trees, so only argv[0] can name 1.1.
+  fake_exe 5603 /opt/x/cursor-native
   fakeproc 5604 "$UID" python3.12 python3.12 "$D/versions/cursor/1.1/bin/tool" -u
   inspectable 5604
   fake_exe 5604 /usr/bin/python3.12
@@ -1850,6 +1851,21 @@ _worker_with_active_lib() {
   run _worker_retention
   [ "$status" -eq 0 ]
   [ "$output" = new-retention ]
+  # The literal configured spelling, trailing slash included, as launcher refresh accepts it.
+  point current aicoding "$TEST_ROOT/datalink//versions/aicoding/sha1"
+  run _worker_retention
+  [ "$status" -eq 0 ]
+  [ "$output" = new-retention ]
+}
+
+@test "an active library that links to a sibling whose name ends in a newline is not sourced" {
+  local lib="$D/versions/aicoding/sha1/lib/version-retention.sh"
+  _worker_with_active_lib 'aicoding_version_retention() { echo new-retention; }'
+  mv "$lib" "$lib"$'\n'
+  ln -s "version-retention.sh"$'\n' "$lib"
+  run _worker_retention
+  [ "$status" -eq 0 ]
+  [ "$output" = old-retention ]
 }
 
 @test "an active library that cannot be sourced or has no entry point runs the worker's own copy once" {

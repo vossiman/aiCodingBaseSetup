@@ -44,11 +44,13 @@ _aicoding_auto_close_shared_lock_fds() {
 }
 
 # Capabilities a worker must have loaded; one without them is replaced.
-# retention2: each pass loads the active release's verified retention library.
-_AICODING_AUTO_WORKER_CAPABILITIES=retention2
-# Also written to the receipt: the previous release accepts only this exact line,
-# so without it each release's enrollment would replace the other's worker.
-_AICODING_AUTO_WORKER_LEGACY_CAPABILITIES=retention
+# retention3: each pass loads the active release's verified retention library,
+# falling back to its own copy when that library cannot be entered.
+# Rule: to force a replacement, bump this value and keep writing every earlier one.
+_AICODING_AUTO_WORKER_CAPABILITIES=retention3
+# Also written: release 1e98290 requires retention and fe09450 retention2 on
+# some line after the first; without them each would replace this worker.
+_AICODING_AUTO_WORKER_LEGACY_CAPABILITIES="retention2 retention"
 
 # The receipt binds the worker to its PID and process start time, not a
 # reusable PID alone. Line 1 keeps the three fields older releases parse;
@@ -303,6 +305,8 @@ _aicoding_auto_current_retention_lib() {
   case "$raw" in
     ../versions/aicoding/*) name=${raw#../versions/aicoding/} ;;
     "$real"/versions/aicoding/*) name=${raw#"$real"/versions/aicoding/} ;;
+    # The literal configured spelling, as launcher refresh accepts it.
+    "$data"/versions/aicoding/*) name=${raw#"$data"/versions/aicoding/} ;;
     "$m"/versions/aicoding/*) [ -z "$m" ] || name=${raw#"$m"/versions/aicoding/} ;;
   esac
   [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || return 1
@@ -312,7 +316,8 @@ _aicoding_auto_current_retention_lib() {
   resolved=$(readlink -e -- "$real/current/aicoding" 2>/dev/null && printf x) || return 1
   resolved=${resolved%x}; resolved=${resolved%$'\n'}
   [ "$resolved" = "$rel" ] || return 1
-  lib=$(readlink -e -- "$rel/lib/version-retention.sh" 2>/dev/null) || return 1
+  lib=$(readlink -e -- "$rel/lib/version-retention.sh" 2>/dev/null && printf x) || return 1
+  lib=${lib%x}; lib=${lib%$'\n'}
   [ "$lib" = "$rel/lib/version-retention.sh" ] && [ -f "$lib" ] || return 1
   printf '%s\n' "$lib"
 }
@@ -640,10 +645,13 @@ aicoding_auto_update_worker() {
   exec {lock_fd}>"$state/worker.lock" || return 1
   flock -n "$lock_fd" || { exec {lock_fd}>&-; return 0; }
   pid_file="$state/worker.pid"
-  local ticks
+  local ticks receipt cap
   ticks=$(_aicoding_auto_process_start_ticks "$$") || { exec {lock_fd}>&-; return 1; }
-  _aicoding_auto_atomic_number "$state/worker.protocol" \
-    "1 $$ $ticks"$'\n'"capabilities $_AICODING_AUTO_WORKER_CAPABILITIES"$'\n'"capabilities $_AICODING_AUTO_WORKER_LEGACY_CAPABILITIES" \
+  receipt="1 $$ $ticks"
+  for cap in $_AICODING_AUTO_WORKER_CAPABILITIES $_AICODING_AUTO_WORKER_LEGACY_CAPABILITIES; do
+    receipt+=$'\n'"capabilities $cap"
+  done
+  _aicoding_auto_atomic_number "$state/worker.protocol" "$receipt" \
     || { exec {lock_fd}>&-; return 1; }
   printf '%s\n' "$$" > "$pid_file" || { exec {lock_fd}>&-; return 1; }
   trap '[ -z "${sleep_pid:-}" ] || kill "$sleep_pid" 2>/dev/null || true; test "$(cat "$pid_file" 2>/dev/null)" != "$$" || rm -f -- "$pid_file"; exit 0' TERM INT HUP
