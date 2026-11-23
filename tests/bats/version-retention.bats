@@ -1451,3 +1451,342 @@ _mount_appears() {
   [[ "$output" == *"WARN"*"AICODING_RETENTION_GRACE"* ]]
   [ ! -e "$AICODING_STATE_DIR/retention/claude/1.0.0" ]
 }
+
+# Point a fake process's exe link at PATH: fake_exe PID PATH.
+fake_exe() { ln -sfn "$2" "$TEST_ROOT/proc/$1/exe"; }
+
+@test "another program that only shares a launcher's name does not keep the component" {
+  mkver cursor 1.0; mkver cursor 1.1
+  point current cursor ../versions/cursor/1.1
+  launcher agent cursor bin/tool
+  fakeproc 5101 "$UID" agent /usr/libexec/geoclue-2.0/demos/agent
+  inspectable 5101
+  fake_exe 5101 /usr/libexec/geoclue-2.0/demos/agent
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ ! -e "$D/versions/cursor/1.0" ]
+  [ -d "$D/versions/cursor/1.1" ]
+  [[ "$output" != *"runs cursor from a release"* ]]
+  # A deleted executable of the same name is still another program.
+  mkver cursor 1.0
+  fake_exe 5101 "/usr/libexec/geoclue-2.0/demos/agent (deleted)"
+  run aicoding_version_retention
+  [ ! -e "$D/versions/cursor/1.0" ]
+}
+
+@test "a launcher name still counts when the executable is an interpreter, managed or unreadable" {
+  mkver cursor 1.0; mkver cursor 1.1
+  point current cursor ../versions/cursor/1.1
+  launcher agent cursor bin/tool
+  # A node tool that renamed itself.
+  fakeproc 5102 "$UID" agent agent --serve
+  inspectable 5102
+  fake_exe 5102 /usr/bin/node
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/cursor/1.0" ]
+  [[ "$output" == *"process 5102 (agent) runs cursor from a release it does not hold open"* ]]
+  # An executable of that name inside ~/.local/bin is the launcher itself.
+  fake_exe 5102 "$HOME/.local/bin/agent"
+  run aicoding_version_retention
+  [ -d "$D/versions/cursor/1.0" ]
+  [[ "$output" == *"process 5102 (agent) runs cursor from a release it does not hold open"* ]]
+  # An unreadable executable leaves the uninspectable rules in charge.
+  rm -rf "$TEST_ROOT/proc/5102"
+  fakeproc 5103 "$UID" agent /usr/libexec/geoclue-2.0/demos/agent
+  run aicoding_version_retention
+  [ -d "$D/versions/cursor/1.0" ]
+  [[ "$output" == *"process 5103 (agent) cannot be inspected and runs a managed launcher"* ]]
+}
+
+@test "a truncated short name is compared with the executable name as the kernel cuts it" {
+  mkver tool 1.0; mkver tool 1.1
+  point current tool ../versions/tool/1.1
+  launcher aicodingtesttool tool bin/tool
+  # comm is the first 15 bytes of the executable name, whichever is longer.
+  fakeproc 5111 "$UID" aicodingtesttoo /opt/x/aicodingtesttool-helper
+  inspectable 5111
+  fake_exe 5111 /opt/x/aicodingtesttool-helper
+  fakeproc 5112 "$UID" aicodingtesttoo /opt/x/aicodingtesttoo
+  inspectable 5112
+  fake_exe 5112 /opt/x/aicodingtesttoo
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ ! -e "$D/versions/tool/1.0" ]
+  [[ "$output" != *"runs tool from a release"* ]]
+  # The same short name on an interpreter still keeps the component.
+  mkver tool 1.0
+  fakeproc 5113 "$UID" aicodingtesttoo /usr/bin/node /opt/x/tool.js
+  inspectable 5113
+  fake_exe 5113 /usr/bin/node
+  run aicoding_version_retention
+  [ -d "$D/versions/tool/1.0" ]
+  [[ "$output" == *"process 5113 (aicodingtesttoo) runs tool from a release it does not hold open"* ]]
+}
+
+@test "a process that names its physical release keeps only that release" {
+  mkver aicoding aaa; mkver aicoding bbb; mkver aicoding ccc
+  point current aicoding ../versions/aicoding/ccc
+  fakeproc 5201 "$UID" python3 python3 "$D/versions/aicoding/aaa/bin/kanban-work" --hook
+  inspectable 5201
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/aicoding/aaa" ]
+  [ ! -e "$D/versions/aicoding/bbb" ]
+  [ -d "$D/versions/aicoding/ccc" ]
+  [[ "$output" != *"runs aicoding from a release"* ]]
+}
+
+@test "a named physical release next to current, or through a dot segment, still keeps the component" {
+  mkver aicoding aaa; mkver aicoding bbb; mkver aicoding ccc
+  point current aicoding ../versions/aicoding/ccc
+  fakeproc 5202 "$UID" python3 python3 "$D/versions/aicoding/aaa/bin/kanban-work" "--lib=$D/current/aicoding/lib"
+  inspectable 5202
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/aicoding/bbb" ]
+  [[ "$output" == *"process 5202 (python3) runs aicoding from a release it does not hold open"* ]]
+  rm -rf "$TEST_ROOT/proc/5202"
+  fakeproc 5203 "$UID" python3 python3 "$D/versions/aicoding/aaa/../aaa/bin/kanban-work"
+  inspectable 5203
+  run aicoding_version_retention
+  [ -d "$D/versions/aicoding/bbb" ]
+  [ -d "$D/versions/aicoding/aaa" ]
+}
+
+# A Playwright browser cache as provisioning leaves it: mkcache VERSION [LINKED_PACKAGE].
+mkcache() {
+  local c="$D/browser-cache/mcp-playwright/$1"
+  mkdir -p "$c/chromium-1/chrome-linux64" "$c/.links"
+  printf '#!/bin/sh\n' > "$c/chromium-1/chrome-linux64/chrome"
+  chmod +x "$c/chromium-1/chrome-linux64/chrome"
+  head -c 4096 /dev/zero > "$c/chromium-1/payload"
+  printf '%s' "${2:-$D/versions/mcp-playwright/$1/node_modules/playwright-core}" > "$c/.links/hash$1"
+  printf '%s\n' "$c/chromium-1/chrome-linux64/chrome" > "$c/.browser-bin"
+}
+
+# mcp-playwright: 0.3 current, 0.2 previous.
+mkplaywright() {
+  mkver mcp-playwright 0.2; mkver mcp-playwright 0.3
+  mkdir -p "$D/versions/mcp-playwright/0.2/node_modules/playwright-core" \
+    "$D/versions/mcp-playwright/0.3/node_modules/playwright-core"
+  point current mcp-playwright ../versions/mcp-playwright/0.3
+  point previous mcp-playwright ../versions/mcp-playwright/0.2
+}
+
+@test "a browser cache follows its release" {
+  mkplaywright
+  mkcache 0.1; mkcache 0.2; mkcache 0.3
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ ! -e "$D/browser-cache/mcp-playwright/0.1" ]
+  [ -d "$D/browser-cache/mcp-playwright/0.2" ]
+  [ -d "$D/browser-cache/mcp-playwright/0.3" ]
+  [[ "$output" == *"removed auxiliary tree browser-cache/mcp-playwright/0.1 ("*"KiB)"* ]]
+  [[ "$output" == *"removed 1 auxiliary tree, freed "* ]]
+  if compgen -G "$D/browser-cache/mcp-playwright/.*retired*" >/dev/null; then false; fi
+  # A cache whose release was removed in this run waits for its own window.
+  export AICODING_RETENTION_GRACE=3600
+  mkver mcp-playwright 0.0.9; mkcache 0.0.9
+  mkdir -p "$AICODING_STATE_DIR/retention/mcp-playwright"
+  touch -d @"$(( $(date +%s) - 3700 ))" "$AICODING_STATE_DIR/retention/mcp-playwright/0.0.9"
+  run aicoding_version_retention
+  [ ! -e "$D/versions/mcp-playwright/0.0.9" ]
+  [ -d "$D/browser-cache/mcp-playwright/0.0.9" ]
+  [[ "$output" == *"auxiliary tree browser-cache/mcp-playwright/0.0.9 unused since "*"; eligible for removal from "* ]]
+}
+
+@test "a browser cache another release or cache refers to is kept" {
+  mkplaywright
+  # Linked by a release that still exists.
+  mkcache 0.0.7 "$D/versions/mcp-playwright/0.3/node_modules/playwright-core"
+  # Linked by a package outside the data directory that still exists.
+  mkdir -p "$TEST_ROOT/global/playwright-core"
+  mkcache 0.0.6 "$TEST_ROOT/global/playwright-core"
+  # A symlink in another cache resolves into it.
+  mkcache 0.0.5
+  mkcache 0.3
+  ln -s ../0.0.5/chromium-1/chrome-linux64 "$D/browser-cache/mcp-playwright/0.3/old-chrome"
+  # Another cache's marker names it.
+  mkcache 0.0.4
+  printf '%s\n' "$D/browser-cache/mcp-playwright/0.0.4/chromium-1/chrome-linux64/chrome" \
+    > "$D/browser-cache/mcp-playwright/0.3/.browser-bin"
+  # A link back into itself, and a link file that names a vanished package, keep nothing.
+  mkcache 0.0.3
+  ln -s chromium-1/chrome-linux64/chrome "$D/browser-cache/mcp-playwright/0.0.3/self"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/browser-cache/mcp-playwright/0.0.7" ]
+  [ -d "$D/browser-cache/mcp-playwright/0.0.6" ]
+  [ -d "$D/browser-cache/mcp-playwright/0.0.5" ]
+  [ -d "$D/browser-cache/mcp-playwright/0.0.4" ]
+  [ ! -e "$D/browser-cache/mcp-playwright/0.0.3" ]
+  # A link file that cannot be read keeps its cache.
+  [ "$(id -u)" -ne 0 ] || skip "root reads mode 000 files"
+  mkcache 0.0.2
+  chmod 000 "$D/browser-cache/mcp-playwright/0.0.2/.links/hash0.0.2"
+  run aicoding_version_retention
+  chmod 644 "$D/browser-cache/mcp-playwright/0.0.2/.links/hash0.0.2"
+  [ -d "$D/browser-cache/mcp-playwright/0.0.2" ]
+}
+
+@test "a browser cache a process uses is kept" {
+  mkplaywright
+  mkcache 0.0.8; mkcache 0.0.7; mkcache 0.0.6; mkcache 0.0.5; mkcache 0.0.1
+  fakeproc 5301 "$UID" chrome /opt/chrome --type=renderer
+  inspectable 5301
+  fake_exe 5301 "$D/browser-cache/mcp-playwright/0.0.8/chromium-1/chrome-linux64/chrome"
+  fakeproc 5302 "$UID" helper /usr/bin/helper
+  inspectable 5302
+  printf '7f0000000000-7f0000001000 r--p 00000000 08:01 1234                       %s\n' \
+    "$D/browser-cache/mcp-playwright/0.0.7/chromium-1/payload" > "$TEST_ROOT/proc/5302/maps"
+  fakeproc 5303 "$UID" helper /usr/bin/helper
+  inspectable 5303 "$D/browser-cache/mcp-playwright/0.0.6/chromium-1/payload"
+  fakeproc 5304 "$UID" helper /usr/bin/helper "--browsers=$D/browser-cache/mcp-playwright/0.0.5"
+  inspectable 5304
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/browser-cache/mcp-playwright/0.0.8" ]
+  [ -d "$D/browser-cache/mcp-playwright/0.0.7" ]
+  [ -d "$D/browser-cache/mcp-playwright/0.0.6" ]
+  [ -d "$D/browser-cache/mcp-playwright/0.0.5" ]
+  [ ! -e "$D/browser-cache/mcp-playwright/0.0.1" ]
+}
+
+@test "preview lists auxiliary candidates and removes none" {
+  mkplaywright
+  mkcache 0.1
+  mkver dvw sha2
+  point current dvw ../versions/dvw/sha2
+  mkdir -p "$D/sources/dvw/sha1" "$D/sources/dvw/sha2"
+  export AICODING_RETENTION=preview
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/browser-cache/mcp-playwright/0.1" ]
+  [ -d "$D/sources/dvw/sha1" ]
+  [[ "$output" == *"would remove auxiliary tree browser-cache/mcp-playwright/0.1 now ("* ]]
+  [[ "$output" == *"would remove auxiliary tree sources/dvw/sha1 now ("* ]]
+  [[ "$output" != *"sources/dvw/sha2"* ]]
+  [[ "$output" == *"would remove 2 auxiliary trees now, freeing "* ]]
+  [ ! -e "$AICODING_STATE_DIR/retention" ]
+}
+
+@test "a component kept as a whole keeps its auxiliary trees" {
+  mkplaywright
+  mkcache 0.1
+  mkver dvw sha2
+  point current dvw ../versions/dvw/sha2
+  mkdir -p "$D/sources/dvw/sha1"
+  mkdir -p "$AICODING_STATE_DIR/locks"
+  exec {fd}>"$AICODING_STATE_DIR/locks/mcp-playwright.lock"
+  flock -n "$fd"
+  # A process of dvw that holds none of its releases.
+  fakeproc 5401 "$UID" node node "$D/current/dvw/bin/dvw"
+  inspectable 5401
+  run aicoding_version_retention
+  exec {fd}>&-
+  [ "$status" -eq 0 ]
+  [ -d "$D/browser-cache/mcp-playwright/0.1" ]
+  [ -d "$D/sources/dvw/sha1" ]
+  # A component with no versions/ directory keeps its sources.
+  mkdir -p "$D/sources/kanban/sha9"
+  rm -rf "$TEST_ROOT/proc/5401"
+  fakeproc 5402 "$UID" idle /usr/bin/idle
+  inspectable 5402
+  run aicoding_version_retention
+  [ ! -e "$D/browser-cache/mcp-playwright/0.1" ]
+  [ ! -e "$D/sources/dvw/sha1" ]
+  [ -d "$D/sources/kanban/sha9" ]
+  # A missing release named by previous/ keeps every tree of the component.
+  mkcache 0.0.5
+  point previous mcp-playwright ../versions/mcp-playwright/0.0.5
+  run aicoding_version_retention
+  [ -d "$D/browser-cache/mcp-playwright/0.0.5" ]
+}
+
+@test "a source snapshot follows its release" {
+  mkver dvw sha1; mkver dvw sha2
+  point current dvw ../versions/dvw/sha2
+  point previous dvw ../versions/dvw/sha1
+  local s
+  for s in sha0 sha1 sha2 sha3 sha4 sha5 sha6 sha7; do
+    mkdir -p "$D/sources/dvw/$s/bin"; printf '%s\n' "$s" > "$D/sources/dvw/$s/.aicoding-version"
+  done
+  mkdir -p "$D/sources/dvw/sha8.staging.42" "$D/sources/dvw/.hidden"
+  # A link from a release into a snapshot keeps it.
+  ln -s "$D/sources/dvw/sha3/bin" "$D/versions/dvw/sha2/src"
+  # A launcher naming a snapshot keeps it.
+  printf '#!/bin/sh\nexec %s/sources/dvw/sha4/bin/dvw "$@"\n' "$D" > "$HOME/.local/bin/old-dvw"
+  chmod +x "$HOME/.local/bin/old-dvw"
+  # A process working inside a snapshot keeps it.
+  fakeproc 5501 "$UID" bash /bin/bash
+  inspectable 5501
+  ln -sfn "$D/sources/dvw/sha5/bin" "$TEST_ROOT/proc/5501/cwd"
+  # A link inside a snapshot into itself keeps nothing.
+  ln -s bin "$D/sources/dvw/sha6/self"
+  # A mount point inside a snapshot keeps it.
+  mkdir -p "$D/sources/dvw/sha7/mnt"
+  printf '907 1 0:99 / %s rw - tmpfs tmpfs rw\n' "$D/sources/dvw/sha7/mnt" >> "$TEST_ROOT/proc/self/mountinfo"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ ! -e "$D/sources/dvw/sha0" ]
+  [ -d "$D/sources/dvw/sha1" ]
+  [ -d "$D/sources/dvw/sha2" ]
+  [ -d "$D/sources/dvw/sha3" ]
+  [ -d "$D/sources/dvw/sha4" ]
+  [ -d "$D/sources/dvw/sha5" ]
+  [ ! -e "$D/sources/dvw/sha6" ]
+  [ -d "$D/sources/dvw/sha7" ]
+  [[ "$output" == *"auxiliary tree sources/dvw/sha7 contains a mount point; kept"* ]]
+  [ -d "$D/sources/dvw/sha8.staging.42" ]
+  [ -d "$D/sources/dvw/.hidden" ]
+  [[ "$output" == *"removed auxiliary tree sources/dvw/sha0 ("* ]]
+}
+
+@test "a symlinked auxiliary root is never followed" {
+  mkver dvw sha2
+  point current dvw ../versions/dvw/sha2
+  mkdir -p "$TEST_ROOT/elsewhere/dvw/sha1" "$D"
+  ln -s "$TEST_ROOT/elsewhere" "$D/sources"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$TEST_ROOT/elsewhere/dvw/sha1" ]
+  rm "$D/sources"
+  mkdir -p "$D/sources"
+  ln -s "$TEST_ROOT/elsewhere/dvw" "$D/sources/dvw"
+  run aicoding_version_retention
+  [ -d "$TEST_ROOT/elsewhere/dvw/sha1" ]
+}
+
+@test "stamps of releases and of auxiliary trees never stand in for each other" {
+  export AICODING_RETENTION_GRACE=3600
+  mkplaywright
+  local old=$(( $(date +%s) - 3700 )) r="$AICODING_STATE_DIR/retention"
+  # An old release stamp for a version whose release is gone but whose cache remains.
+  mkcache 0.0.9
+  mkdir -p "$r/mcp-playwright"
+  touch -d @"$old" "$r/mcp-playwright/0.0.9"
+  # An old cache stamp for a release that is now unused for the first time.
+  mkver mcp-playwright 0.1
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/browser-cache/mcp-playwright/0.0.9" ]
+  [ -d "$D/versions/mcp-playwright/0.1" ]
+  [ -f "$r/mcp-playwright/0.1" ]
+  local aux=("$r"/.aux.*)
+  [ "${#aux[@]}" -eq 1 ]
+  [ -f "${aux[0]}/0.0.9" ]
+  [ "$(stat -c %a "${aux[0]}")" = 700 ]
+  [ ! -e "$r/mcp-playwright/0.0.9" ]
+  # Once the cache's own stamp is old enough, it goes.
+  touch -d @"$old" "${aux[0]}/0.0.9"
+  run aicoding_version_retention
+  [ ! -e "$D/browser-cache/mcp-playwright/0.0.9" ]
+  [ ! -e "${aux[0]}/0.0.9" ]
+  # An old aux stamp does not let the release go early.
+  mkdir -p "${aux[0]}"
+  touch -d @"$old" "${aux[0]}/0.1"
+  rm -f "$r/mcp-playwright/0.1"
+  run aicoding_version_retention
+  [ -d "$D/versions/mcp-playwright/0.1" ]
+}
