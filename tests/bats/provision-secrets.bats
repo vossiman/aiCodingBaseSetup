@@ -136,3 +136,76 @@ noninteractive() {
   [ "$(stat -c %a "$STORE")" = 600 ]
   [ "$(grep -v '^#' "$STORE" | grep -v '^$')" = "$(printf 'AAA_TOKEN=\nBBB_TOKEN=')" ]
 }
+
+@test "reader: space-indented, tab-indented and multi-space export keys count as set" {
+  printf '  AAA_TOKEN=a\n\tBBB_TOKEN=b\n' > "$STORE"
+  local before; before=$(sha256sum "$STORE")
+  interactive ''
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  echo "$output" | grep -q "EXPORT AAA=a BBB=b"
+  if echo "$output" | grep -q "Enter "; then false; fi
+  [ "$(sha256sum "$STORE")" = "$before" ]
+  printf 'export   AAA_TOKEN=a\nexport\tBBB_TOKEN=b\n' > "$STORE"
+  before=$(sha256sum "$STORE")
+  interactive ''
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  echo "$output" | grep -q "EXPORT AAA=a BBB=b"
+  if echo "$output" | grep -q "Enter "; then false; fi
+  [ "$(sha256sum "$STORE")" = "$before" ]
+}
+
+@test "interactive: a read-only store with a missing key fails before any prompt" {
+  [ "$(id -u)" -ne 0 ] || skip "root ignores file modes"
+  printf 'BBB_TOKEN=b\n' > "$STORE"
+  chmod 400 "$STORE"
+  interactive 'a1\n'
+  [ "$status" -ne 0 ] || { echo "$output"; false; }
+  echo "$output" | grep -q "ERROR: Could not append AAA_TOKEN"
+  if echo "$output" | grep -q "Enter "; then false; fi
+}
+
+@test "non-interactive: a read-only store with a missing key still succeeds" {
+  [ "$(id -u)" -ne 0 ] || skip "root ignores file modes"
+  printf 'BBB_TOKEN=b\n' > "$STORE"
+  chmod 400 "$STORE"
+  noninteractive
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  echo "$output" | grep -q "EXPORT AAA= BBB=b"
+}
+
+@test "host: a 0644 store is tightened to 0600 in place" {
+  printf 'AAA_TOKEN=a\nBBB_TOKEN=b\n' > "$STORE"
+  chmod 644 "$STORE"
+  local inode; inode=$(stat -c %i "$STORE")
+  noninteractive
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  [ "$(stat -c %a "$STORE")" = 600 ]
+  [ "$(stat -c %i "$STORE")" = "$inode" ]
+}
+
+@test "host: a 0400 store stays 0400 and keeps its inode" {
+  printf 'AAA_TOKEN=a\nBBB_TOKEN=b\n' > "$STORE"
+  chmod 400 "$STORE"
+  local inode; inode=$(stat -c %i "$STORE")
+  noninteractive
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  [ "$(stat -c %a "$STORE")" = 400 ]
+  [ "$(stat -c %i "$STORE")" = "$inode" ]
+}
+
+@test "0400 with group read is tightened to 0400, not given owner write" {
+  printf 'AAA_TOKEN=a\nBBB_TOKEN=b\n' > "$STORE"
+  chmod 440 "$STORE"
+  noninteractive
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  [ "$(stat -c %a "$STORE")" = 400 ]
+}
+
+@test "container: a 0644 store is left alone" {
+  printf 'AAA_TOKEN=a\nBBB_TOKEN=b\n' > "$STORE"
+  chmod 644 "$STORE"
+  sed -i 's/^ENV_TYPE=linux/ENV_TYPE=container/' "$T/driver.sh"
+  noninteractive
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  [ "$(stat -c %a "$STORE")" = 644 ]
+}
