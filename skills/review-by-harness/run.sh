@@ -10,6 +10,8 @@
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=handback.sh
+. "$SKILL_DIR/handback.sh"
 
 PR=""
 REPO_ARG="."
@@ -175,21 +177,23 @@ if command -v flock >/dev/null; then
     flock -n 9 || { echo "!!! another review of PR #$PR with $HARNESS is running; not touching $WT" >&2; exit 1; }
 fi
 
-# A fix pass's changes (edits, new files or commits) live only in this
-# worktree, and the reset below would drop them with the previous report.
-# fix-started is written before the fix adapter runs, so an interrupted pass
-# counts too; reviewed-head is the PR commit the run started from.
-# Trusted only when the PR does not track .review-round itself.
-if [ -d "$OUT" ] && [ ! -L "$OUT" ] && [ -f "$OUT/fix-started" ] &&
-   [ -z "$(git -C "$WT" ls-tree --name-only HEAD .review-round 2>/dev/null)" ]; then
-    _prev=$(head -c 64 "$OUT/reviewed-head" 2>/dev/null | tr -dc '0-9a-f')
-    _prev=$(git -C "$WT" rev-parse --verify --quiet "${_prev:-HEAD}^{commit}" || echo HEAD)
-    if ! git -C "$WT" diff --quiet "$_prev" 2>/dev/null ||
-       [ -n "$(git -C "$WT" ls-files --others --exclude-standard 2>/dev/null)" ]; then
-        echo "!!! $WT holds an earlier fix pass's changes. Incorporate them, then run" >&2
-        echo "!!! $SKILL_DIR/cleanup.sh $PR --harness $HARNESS --archive DIR --discard" >&2
-        exit 1
-    fi
+# A fix pass's changes (edits, new files, out/ files or commits) live only
+# in this worktree, and the reset below would drop them with the previous
+# report. An unknown reviewed commit counts as changes. reviewed-head and
+# fix-started arrived together, so a valid reviewed-head without fix-started
+# is a review-only round, whose stray edits are not a handback. Older
+# worktrees have neither marker and are checked. .review-round is trusted
+# only when the PR does not track it itself.
+review_only_round() {
+    [ -f "$OUT/run.json" ] && [ ! -e "$OUT/fix-started" ] && [ ! -L "$OUT/fix-started" ] &&
+        reviewed_head "$WT" >/dev/null
+}
+if [ -e "$WT/.git" ] && [ ! -L "$OUT" ] &&
+   [ -z "$(git -C "$WT" ls-tree --name-only HEAD .review-round 2>/dev/null || true)" ] &&
+   ! review_only_round && [ "$(handback_state "$WT" "$PR")" != none ]; then
+    echo "!!! $WT holds an earlier fix pass's changes. Incorporate them, then run" >&2
+    echo "!!! $SKILL_DIR/cleanup.sh $PR --harness $HARNESS --archive DIR --discard" >&2
+    exit 1
 fi
 
 # Always re-fetch and reset: a PR head moves, and reviewing a stale commit
@@ -347,7 +351,7 @@ echo "### requested model: ${REVIEW_MODEL:-adapter-default}   effort: ${REVIEW_E
 # unchecked, the harness gets an empty patch, answers with nothing, and the
 # run looks like a clean review instead of a no-op. Seen on memory-lanes#44,
 # which merged between two runs.
-if git -C "$WT" diff --quiet "origin/$BASE...HEAD"; then
+if git -C "$WT" diff --no-ext-diff --quiet "origin/$BASE...HEAD"; then
     STATE=$(gh pr view "$PR" --json state -q .state)
     echo "!!! no diff against origin/$BASE — nothing to review (PR state: $STATE)"
     [ "$STATE" = "MERGED" ] && echo "!!! this PR is already merged"
@@ -364,8 +368,8 @@ cat "$OUT/review.md"
 restore_agents
 
 if [ "$REVIEW_ONLY" -eq 1 ]; then
-    if [ "$RESTORE_UNSAFE" -ne 0 ] || ! git -C "$WT" diff --quiet "$START_HEAD" ||
-       [ -n "$(git -C "$WT" ls-files --others --exclude-standard)" ] ||
+    if [ "$RESTORE_UNSAFE" -ne 0 ] || ! git -C "$WT" diff --no-ext-diff --quiet "$START_HEAD" ||
+       [ -n "$(handback_files "$WT")" ] ||
        [ "$(git -C "$WT" rev-parse HEAD)" != "$START_HEAD" ]; then
         echo "!!! review-only harness changed the worktree; inspect $WT"
         git -C "$WT" --no-pager diff "$START_HEAD"
@@ -405,7 +409,7 @@ git -C "$WT" --no-pager diff HEAD
 echo "### files touched"
 git -C "$WT" --no-pager diff HEAD --stat
 
-UNTRACKED=$(git -C "$WT" ls-files --others --exclude-standard)
+UNTRACKED=$(handback_files "$WT")
 if [ -n "$UNTRACKED" ]; then
     echo "### untracked files the harness created"
     printf '%s\n' "$UNTRACKED"

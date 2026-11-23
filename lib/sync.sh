@@ -144,7 +144,7 @@ ensure_gh_stored_auth() {
   local secrets token
   secrets="${AICODING_SECRETS_FILE:-$HOME/.aicodingsetup/.secrets.env}"
   [ -r "$secrets" ] || { _gh_auth_log "skipped — secrets file not readable: $secrets"; return 0; }
-  token=$(sed -n 's/^GH_TOKEN=//p' "$secrets" | tail -1)
+  token=$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?GH_TOKEN=//p' "$secrets" | tail -1)
   token=${token%\"}; token=${token#\"}
   token=${token%\'}; token=${token#\'}
   [ -n "$token" ] || { _gh_auth_log "skipped — no GH_TOKEN in $secrets"; return 0; }

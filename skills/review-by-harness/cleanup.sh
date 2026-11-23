@@ -6,13 +6,21 @@
 #   cleanup.sh <pr-number> [repo-dir] [--harness NAME] [--archive DIR] [--discard]
 #   cleanup.sh --prune [repo-dir] [--archive DIR]
 #
-# A worktree whose fix pass left changes is kept until they are
-# incorporated: the PR is merged or closed, or the caller says --discard
-# after applying them to the PR branch. --archive copies the driver's
-# .review-round/ plus the fix changes to DIR/review-pr<N>-<harness>[-k]
-# first; if that fails nothing is removed. --prune is maintenance: it cleans
-# every review whose PR is merged or closed and never touches an open PR's.
+# A fix pass's changes (see handback.sh) exist only in the review worktree.
+# On an open PR, or when the PR state is unknown, such a worktree is kept
+# until the caller says --discard after applying the changes to the PR
+# branch. On a merged or closed PR it is archived to --archive DIR, or else
+# to <git-common-dir>/review-by-harness/archive/, and then removed; --discard
+# skips the default archive. An archive, DIR/review-pr<N>-<harness>[-k],
+# holds the driver's .review-round/ plus the fix changes, and a git bundle
+# of harness commits when the reviewed commit is unknown. If archiving fails
+# nothing is removed. --prune is maintenance: it cleans every review whose
+# PR is merged or closed and never touches an open PR's.
 set -euo pipefail
+
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=handback.sh
+. "$SKILL_DIR/handback.sh"
 
 PR=""
 REPO_ARG="."
@@ -26,7 +34,7 @@ while [ $# -gt 0 ]; do
         --archive) ARCHIVE="${2:?--archive needs a directory}"; shift 2 ;;
         --discard) DISCARD=1; shift ;;
         --prune)   PRUNE=1; shift ;;
-        -h|--help) sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*) echo "unknown option: $1" >&2; exit 2 ;;
         *)  if [ "$PRUNE" -eq 0 ] && [ -z "$PR" ]; then PR="$1"; else REPO_ARG="$1"; fi; shift ;;
     esac
@@ -92,7 +100,10 @@ review_worktrees() {
                     if [[ "$name" =~ ^review-pr$1-[a-zA-Z0-9_-]+$ ]] &&
                        [ "${parent##*/}" = worktrees ] && [ "$(basename "${parent%/*}")" = .claude ] &&
                        { [ -z "$HARNESS" ] || [ "$name" = "review-pr$1-$HARNESS" ]; }; then
-                        if driver_round "$wt"; then
+                        if [ ! -e "$wt" ] && [ ! -L "$wt" ]; then
+                            echo "### $name: registered, but its directory is missing; left alone." >&2
+                            echo "### Run 'git worktree prune' to drop the registration (it drops every stale one)." >&2
+                        elif driver_round "$wt"; then
                             printf '%s\t%s\n' "$wt" "${br:--}"
                         else
                             echo "### $name: not made by run.sh (no .review-round/run.json), left alone" >&2
@@ -104,59 +115,37 @@ review_worktrees() {
     done
 }
 
-# reviewed_head <wt> <pr>: the PR commit the review started from. Older runs
-# recorded none; then the fetched ref stands in only while HEAD still equals
-# it. Fails when the commit cannot be established.
-reviewed_head() {
-    local f="$1/.review-round/reviewed-head" sha="" head
-    if [ -f "$f" ] && [ ! -L "$f" ]; then
-        sha=$(head -c 64 "$f" | tr -dc '0-9a-f')
-        [ -z "$sha" ] || { git -C "$1" rev-parse --verify --quiet "$sha^{commit}" && return; }
-    fi
-    head=$(git -C "$1" rev-parse HEAD)
-    [ "$(git rev-parse --verify --quiet "refs/review-by-harness/pr$2^{commit}" || true)" = "$head" ] || return 1
-    echo "$head"
-}
-
-# has_handback <wt> <pr>: edits, new files or commits since the reviewed
-# commit, or a reviewed commit that cannot be established.
-has_handback() {
-    local rh
-    rh=$(reviewed_head "$1" "$2") || return 0
-    if git -C "$1" diff --quiet "$rh"; then
-        [ -n "$(git -C "$1" ls-files --others --exclude-standard)" ]
-    fi
-}
-
-# archive_round <wt> <pr>: build in a temporary sibling, publish by rename
-# only when every step worked, and never write inside the worktree.
+# archive_round <wt> <pr> <dir> <handback-state>: build in a temporary
+# sibling, publish by rename only when every step worked, and never write
+# inside the worktree.
 archive_round() {
-    local wt="$1" pr="$2" name dest tmp k=2 rh
+    local wt="$1" pr="$2" dir="$3" hb="$4" name dest tmp k=2 rh
     name="${wt##*/}"
-    case "$ARCHIVE/" in "$(cd -P "$wt" && pwd)/"*)
+    mkdir -p "$dir" && dir="$(cd -P "$dir" && pwd)" || return 1
+    case "$dir/" in "$(cd -P "$wt" && pwd)/"*)
         echo "!!! $name: the archive directory is inside the worktree being removed"; return 1 ;;
     esac
-    tmp=$(mktemp -d "$ARCHIVE/.$name.XXXXXX") || return 1
+    tmp=$(mktemp -d "$dir/.$name.XXXXXX") || return 1
     if ! {
         cp -RP "$wt/.review-round" "$tmp/review-round" &&
         if rh=$(reviewed_head "$wt" "$pr"); then echo "$rh" > "$tmp/reviewed-head"
-        else rh=$(git -C "$wt" rev-parse HEAD); echo "unknown; diff is against HEAD $rh" > "$tmp/reviewed-head"; fi &&
-        if has_handback "$wt" "$pr"; then
-            git -C "$wt" --no-pager diff --binary "$rh" > "$tmp/handback.diff" &&
-            git -C "$wt" ls-files -z --others --exclude-standard \
-                | tar -C "$wt" --null -T - -cf "$tmp/handback-untracked.tar"
-        fi
+        else rh=$(git -C "$wt" rev-parse HEAD) && echo "unknown; diff is against HEAD $rh" > "$tmp/reviewed-head"; fi &&
+        if [ "$hb" != none ]; then
+            git -C "$wt" --no-pager diff --binary --no-ext-diff --no-textconv --no-color "$rh" -- . ':(exclude).review-round' > "$tmp/handback.diff" &&
+            handback_files_z "$wt" | tar -C "$wt" --null -T - -cf "$tmp/handback-untracked.tar"
+        fi &&
+        if [ "$hb" = unknown ]; then handback_bundle "$wt" "$tmp/handback.bundle"; fi
     }; then
         rm -rf "$tmp"; return 1
     fi
-    dest="$ARCHIVE/$name"
-    while [ -e "$dest" ] || [ -L "$dest" ]; do dest="$ARCHIVE/$name-$k"; k=$((k + 1)); done
+    dest="$dir/$name"
+    while [ -e "$dest" ] || [ -L "$dest" ]; do dest="$dir/$name-$k"; k=$((k + 1)); done
     mv "$tmp" "$dest" || { rm -rf "$tmp"; return 1; }
     echo "### $name: archived to $dest"
 }
 
 clean_pr() {  # clean_pr <pr> <state>: returns 1 when something was kept or failed
-    local pr="$1" state="$2" wt br name h kept=0
+    local pr="$1" state="$2" wt br name h hb dir kept=0
     while IFS="$TAB" read -r wt br; do
         [ -n "$wt" ] || continue
         name="${wt##*/}"; h="${name#review-pr"$pr"-}"
@@ -164,12 +153,22 @@ clean_pr() {  # clean_pr <pr> <state>: returns 1 when something was kept or fail
             echo "!!! $name: a review is running in it; left alone."
             kept=1; continue
         fi
-        if has_handback "$wt" "$pr" && [ "$DISCARD" -eq 0 ] && [ "$state" != MERGED ] && [ "$state" != CLOSED ]; then
-            echo "!!! $name: the fix pass left changes that are not incorporated, or the reviewed commit is unknown (PR $state)."
-            echo "!!! Apply them to the PR branch, then rerun with --discard."
-            kept=1; unlock; continue
+        hb=$(handback_state "$wt" "$pr")
+        dir="$ARCHIVE"
+        if [ "$hb" != none ] && [ "$DISCARD" -eq 0 ]; then
+            if [ "$state" != MERGED ] && [ "$state" != CLOSED ]; then
+                if [ "$hb" = unknown ]; then
+                    echo "!!! $name: the reviewed commit is unknown, so its changes may not be incorporated (PR $state)."
+                else
+                    echo "!!! $name: the fix pass left changes that are not incorporated (PR $state)."
+                fi
+                echo "!!! Apply them to the PR branch, then rerun with --discard."
+                kept=1; unlock; continue
+            fi
+            # Merged or closed is no proof the fix landed: keep a copy.
+            [ -n "$dir" ] || dir="$LOCK_DIR/archive"
         fi
-        if [ -n "$ARCHIVE" ] && ! archive_round "$wt" "$pr"; then
+        if [ -n "$dir" ] && ! archive_round "$wt" "$pr" "$dir" "$hb"; then
             echo "!!! $name: archiving failed; worktree kept."
             kept=1; unlock; continue
         fi

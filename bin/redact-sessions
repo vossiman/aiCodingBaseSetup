@@ -117,6 +117,8 @@ session_of() {
   esac
 }
 
+# Bump whenever the set of scrubbed columns or stores grows: it makes every store a candidate once.
+SWEEP_VERSION=2
 # Same salt file secrets-check uses, created the same way when absent.
 SALT_FILE="${AICODING_FP_SALT_FILE:-$HOME/.local/state/aicoding/secrets-check.salt}"
 fingerprint_rules() {
@@ -132,7 +134,7 @@ fingerprint_rules() {
   # must make every old file a candidate again, exactly like a rotated key,
   # or the stores under the new root sit behind the stamp forever (found
   # deploying the sqlite roots, AICODINGBASESETUP-23).
-  printf '%s%s%s' "$salt" "$RULES" "${ROOTS[*]}" | sha256sum | cut -c1-16
+  printf '%s%s%s%s' "$salt" "$RULES" "${ROOTS[*]}" "$SWEEP_VERSION" | sha256sum | cut -c1-16
 }
 
 # Builds the sed script once per run. Sets RULES; returns 3 on refusal.

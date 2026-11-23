@@ -97,12 +97,152 @@ gone() {  # gone <pr>: no worktree, branch or ref is left for the PR
   grep -q "edited by stub" "$TMPDIR/a/review-pr1-stub/handback.diff"
 }
 
-@test "a merged PR's fix diff counts as settled" {
+@test "a merged PR's fix diff is archived to the default folder, then removed" {
   review_fix 1
   echo MERGED > "$TMPDIR/state-1"
   run "$SKILL/cleanup.sh" 1 "$REPO"
   [ "$status" -eq 0 ]
   gone 1
+  grep -q "edited by stub" "$REPO/.git/review-by-harness/archive/review-pr1-stub/handback.diff"
+}
+
+@test "--prune archives a merged PR's fix diff to the default folder, then removes it" {
+  review_fix 1
+  echo MERGED > "$TMPDIR/state-1"
+  run "$SKILL/cleanup.sh" --prune "$REPO"
+  [ "$status" -eq 0 ]
+  gone 1
+  grep -q "edited by stub" "$REPO/.git/review-by-harness/archive/review-pr1-stub/handback.diff"
+}
+
+@test "a merged PR's fix diff with --discard is removed without an archive" {
+  review_fix 1
+  echo MERGED > "$TMPDIR/state-1"
+  run "$SKILL/cleanup.sh" 1 "$REPO" --discard
+  [ "$status" -eq 0 ]
+  gone 1
+  [ ! -e "$REPO/.git/review-by-harness/archive" ]
+}
+
+@test "a failed default archive keeps a merged PR's fix diff and exits 1" {
+  review_fix 1
+  echo MERGED > "$TMPDIR/state-1"
+  mkdir -p "$REPO/.git/review-by-harness/archive"; chmod 500 "$REPO/.git/review-by-harness/archive"
+  run "$SKILL/cleanup.sh" 1 "$REPO"
+  chmod 700 "$REPO/.git/review-by-harness/archive"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"archiving failed; worktree kept"* ]]
+  grep -q "edited by stub" "$REPO/.claude/worktrees/review-pr1-stub/src.txt"
+}
+
+@test "an ignored-only fix under out/ blocks cleanup and reruns and is archived" {
+  ( cd "$TMPDIR/seed"; echo out/ > .gitignore; git add .gitignore; git commit -qm ignore
+    git push -q -f origin HEAD:refs/pull/1/head )
+  sed -i 's|echo "edited by stub" >> "$2/src.txt"|mkdir -p "$2/out"; echo report > "$2/out/report.md"|' "$SKILL/harnesses/stub.sh"
+  review_fix 1
+  run "$SKILL/cleanup.sh" 1 "$REPO"
+  [ "$status" -eq 1 ]
+  [ -f "$REPO/.claude/worktrees/review-pr1-stub/out/report.md" ]
+  run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"holds an earlier fix pass's changes"* ]]
+  [ -f "$REPO/.claude/worktrees/review-pr1-stub/out/report.md" ]
+  run "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/a" --discard
+  [ "$status" -eq 0 ]
+  gone 1
+  [ "$(tar -xOf "$TMPDIR/a/review-pr1-stub/handback-untracked.tar" out/report.md)" = report ]
+}
+
+@test "an unknown reviewed commit on a merged PR is bundled to the default archive, then removed" {
+  sed -i 's|echo "stub fix report"|git -C "$2" -c user.name=t -c user.email=t@t commit -qam fix; echo "stub fix report"|' "$SKILL/harnesses/stub.sh"
+  review_fix 1
+  fix=$(git -C "$REPO/.claude/worktrees/review-pr1-stub" rev-parse HEAD)
+  rm "$REPO/.claude/worktrees/review-pr1-stub/.review-round/reviewed-head"
+  echo MERGED > "$TMPDIR/state-1"
+  run "$SKILL/cleanup.sh" 1 "$REPO"
+  [ "$status" -eq 0 ]
+  gone 1
+  bundle="$REPO/.git/review-by-harness/archive/review-pr1-stub/handback.bundle"
+  git -C "$REPO" bundle verify -q "$bundle"
+  git -C "$REPO" bundle list-heads "$bundle" | grep -q "^$fix "
+}
+
+@test "a diff.external driver cannot empty the archived fix diff" {
+  git -C "$REPO" config diff.external /bin/true
+  review_fix 1
+  run "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/a" --discard
+  [ "$status" -eq 0 ]
+  d="$TMPDIR/a/review-pr1-stub/handback.diff"
+  [ -s "$d" ]
+  grep -q "edited by stub" "$d"
+  git -C "$REPO" worktree add -q --detach "$TMPDIR/chk" "$(cat "$TMPDIR/a/review-pr1-stub/reviewed-head")"
+  git -C "$TMPDIR/chk" apply --check "$d"
+}
+
+@test "the archived bundle restores in a clone that lacks the PR head" {
+  sed -i 's|echo "stub fix report"|git -C "$2" -c user.name=t -c user.email=t@t commit -qam fix; echo "stub fix report"|' "$SKILL/harnesses/stub.sh"
+  review_fix 1
+  fix=$(git -C "$REPO/.claude/worktrees/review-pr1-stub" rev-parse HEAD)
+  rm "$REPO/.claude/worktrees/review-pr1-stub/.review-round/reviewed-head"
+  echo MERGED > "$TMPDIR/state-1"
+  run "$SKILL/cleanup.sh" 1 "$REPO"
+  [ "$status" -eq 0 ]
+  bundle="$REPO/.git/review-by-harness/archive/review-pr1-stub/handback.bundle"
+  git clone -q --no-local "$TMPDIR/origin.git" "$TMPDIR/fresh"
+  if git -C "$TMPDIR/fresh" cat-file -e "$fix" 2>/dev/null; then false; fi
+  git -C "$TMPDIR/fresh" bundle verify -q "$bundle"
+  git -C "$TMPDIR/fresh" fetch -q "$bundle" HEAD
+  [ "$(git -C "$TMPDIR/fresh" rev-parse FETCH_HEAD)" = "$fix" ]
+}
+
+@test "an unknown reviewed commit on an open PR is kept and refused by a second run" {
+  sed -i 's|echo "stub fix report"|git -C "$2" -c user.name=t -c user.email=t@t commit -qam fix; echo "stub fix report"|' "$SKILL/harnesses/stub.sh"
+  review_fix 1
+  rm "$REPO/.claude/worktrees/review-pr1-stub/.review-round/reviewed-head"
+  run "$SKILL/cleanup.sh" 1 "$REPO"
+  [ "$status" -eq 1 ]
+  [ -d "$REPO/.claude/worktrees/review-pr1-stub" ]
+  run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"holds an earlier fix pass's changes"* ]]
+  grep -q "edited by stub" "$REPO/.claude/worktrees/review-pr1-stub/src.txt"
+}
+
+@test "an unknown reviewed commit bundles everything the default branch lacks" {
+  review_fix 1
+  rm "$REPO/.claude/worktrees/review-pr1-stub/.review-round/reviewed-head"
+  # The PR head moved on (another harness re-fetched it), so HEAD no longer vouches.
+  ( cd "$TMPDIR/seed"; echo more >> src.txt; git commit -qam more; git push -q -f origin HEAD:refs/pull/1/head )
+  git -C "$REPO" fetch -q origin refs/pull/1/head:refs/review-by-harness/pr1 --force
+  echo MERGED > "$TMPDIR/state-1"
+  run "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/a"
+  [ "$status" -eq 0 ]
+  gone 1
+  [ -f "$TMPDIR/a/review-pr1-stub/handback.diff" ]
+  git -C "$REPO" bundle verify -q "$TMPDIR/a/review-pr1-stub/handback.bundle"
+}
+
+@test "an unknown reviewed commit on the default branch itself archives without a bundle" {
+  review_fix 1
+  wt="$REPO/.claude/worktrees/review-pr1-stub"
+  rm "$wt/.review-round/reviewed-head"
+  git -C "$wt" reset -q --hard origin/main
+  echo "edited by stub" >> "$wt/src.txt"
+  echo MERGED > "$TMPDIR/state-1"
+  run "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/a"
+  [ "$status" -eq 0 ]
+  [ -f "$TMPDIR/a/review-pr1-stub/handback.diff" ]
+  [ ! -e "$TMPDIR/a/review-pr1-stub/handback.bundle" ]
+}
+
+@test "a registered review worktree whose directory is gone is reported as missing" {
+  review 1
+  rm -rf "$REPO/.claude/worktrees/review-pr1-stub"
+  run "$SKILL/cleanup.sh" 1 "$REPO"
+  [[ "$output" == *"directory is missing"* ]]
+  [[ "$output" == *"git worktree prune"* ]]
+  if [[ "$output" == *"not made by run.sh"* ]]; then false; fi
+  git -C "$REPO" worktree list --porcelain | grep -q review-pr1-stub
 }
 
 @test "--prune cleans merged and closed PRs, leaves open ones, and drops orphaned refs" {
@@ -205,6 +345,33 @@ gone() {  # gone <pr>: no worktree, branch or ref is left for the PR
   [ "$status" -eq 1 ]
   "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/a" --discard
   grep -q "edited by stub" "$TMPDIR/a/review-pr1-stub/handback.diff"
+}
+
+@test "a committed-only fix is refused by a second run, also without reviewed-head" {
+  sed -i 's|echo "stub fix report"|git -C "$2" -c user.name=t -c user.email=t@t commit -qam fix; echo "stub fix report"|' "$SKILL/harnesses/stub.sh"
+  review_fix 1
+  out="$REPO/.claude/worktrees/review-pr1-stub/.review-round"
+  git -C "$REPO/.claude/worktrees/review-pr1-stub" diff --quiet HEAD
+  run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"holds an earlier fix pass's changes"* ]]
+  rm "$out/reviewed-head"
+  run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"holds an earlier fix pass's changes"* ]]
+  # A worktree from before the markers existed has neither of them.
+  rm "$out/fix-started"
+  run "$SKILL/run.sh" 1 "$REPO" --harness stub --review-only
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"holds an earlier fix pass's changes"* ]]
+  grep -q "edited by stub" "$REPO/.claude/worktrees/review-pr1-stub/src.txt"
+}
+
+@test "a review-only round with no changes can be run again" {
+  review 1
+  rm "$REPO/.claude/worktrees/review-pr1-stub/.review-round/reviewed-head"
+  review 1
+  review 1
 }
 
 @test "an interrupted fix pass still protects its edits from the next round" {

@@ -199,3 +199,14 @@ STUB
     bash -c ". '$BLUEPRINT_ROOT/configs/bash/env.sh'; printf %s \"\$PATH\""
   [ "$output" = "/usr/bin:/h/.local/bin:/bin" ]
 }
+
+@test "reads an indented or export-prefixed GH_TOKEN line" {
+  printf '\t  GH_TOKEN=ghp_old\nexport   GH_TOKEN="ghp_new"\n' > "$AICODING_SECRETS_FILE"
+  run ensure_gh_stored_auth
+  [ "$status" -eq 0 ]
+  [ "$(cat "$TMPD/stdin-received")" = "ghp_new" ]
+  rm -f "$TMPD/logged-in"
+  printf '   GH_TOKEN=ghp_indented\n' > "$AICODING_SECRETS_FILE"
+  run ensure_gh_stored_auth
+  [ "$(cat "$TMPD/stdin-received")" = "ghp_indented" ]
+}

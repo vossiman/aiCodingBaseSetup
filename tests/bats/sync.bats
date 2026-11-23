@@ -1091,6 +1091,16 @@ EOF
   [[ "$output" == *"password=file-token-456"* ]]
 }
 
+@test "credential helper: reads an indented or export-prefixed GH_TOKEN line" {
+  mkdir -p "$TMP/.aicodingsetup"
+  printf '  GH_TOKEN=indented-tok\n' > "$TMP/.aicodingsetup/.secrets.env"
+  run bash -c 'printf "protocol=https\nhost=github.com\n\n" | bash "$BLUEPRINT_ROOT/configs/git/git-credential-aicoding" get'
+  [[ "$output" == *"password=indented-tok"* ]]
+  printf 'export   GH_TOKEN="exported-tok"\n' > "$TMP/.aicodingsetup/.secrets.env"
+  run bash -c 'printf "protocol=https\nhost=github.com\n\n" | bash "$BLUEPRINT_ROOT/configs/git/git-credential-aicoding" get'
+  [[ "$output" == *"password=exported-tok"* ]]
+}
+
 @test "plumbing symlinks ~/.agents/skills to ~/.claude/skills (idempotent)" {
   printf '#!/bin/sh\nexit 0\n' > "$TMP/stubs/gh"; chmod +x "$TMP/stubs/gh"
   _sync_plumbing
