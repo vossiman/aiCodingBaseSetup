@@ -156,8 +156,8 @@ STUB
   _pkg_stubs
   run bash "$BLUEPRINT_ROOT/root/tasks.d/20-host-packages.sh"
   [ "$status" -eq 0 ]
-  grep -qx 'update -qq' "$TMP/apt.log"
-  grep -qx 'install -y -qq --no-install-recommends ripgrep' "$TMP/apt.log"
+  grep -qx 'update -o DPkg::Lock::Timeout=60 -qq' "$TMP/apt.log"
+  grep -qx 'install -o DPkg::Lock::Timeout=60 -y -qq --no-install-recommends ripgrep' "$TMP/apt.log"
 }
 
 @test "host packages task does nothing when ripgrep is installed or held" {
@@ -171,7 +171,7 @@ STUB
   _pkg_stubs
   APT_UPDATE_STATUS=100 run bash "$BLUEPRINT_ROOT/root/tasks.d/20-host-packages.sh"
   [ "$status" -eq 0 ]
-  grep -qx 'install -y -qq --no-install-recommends ripgrep' "$TMP/apt.log"
+  grep -qx 'install -o DPkg::Lock::Timeout=60 -y -qq --no-install-recommends ripgrep' "$TMP/apt.log"
   [[ "$output" == *"trying the install anyway"* ]]
 }
 
