@@ -246,9 +246,11 @@ devboxes have none (`opencode models` lists only `opencode/*`,
 with `ProviderModelNotFoundError`, shown as "Unexpected server error".
 `openai/gpt-6.1-sol` is the owner's choice (the newest Sol OpenCode lists)
 and works with the OpenAI login these machines already have. At the time the merge deploy put the
-blueprint's `model` over the user's. `model` is now seeded, and a value that
-still equals an earlier blueprint default is reseeded to the current one
-(see the 2026-11-22 entry).
+blueprint's `model` over the user's. `model` is now seeded. Sync reseeds a
+value only when it is listed in `reseeded_keys` (for OpenCode only
+`openai/gpt-6.1-sol`, so `anthropic/claude-opus-5` is not moved), and only
+when the installed CLI meets the version requirement (see the 2026-11-22
+entry).
 Pick another model per session with `-m` or `/models` in the TUI.
 (AICODINGBASESETUP-85)
 
