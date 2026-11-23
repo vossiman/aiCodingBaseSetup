@@ -109,3 +109,60 @@ teardown() { rm -rf "$TEST_DIR"; }
   run install_codex_plugins
   [ "$status" -ne 0 ]
 }
+
+@test "a stamped Codex home skips the plugin list and the removal" {
+  export AICODINGSETUP_SKIP_NETWORK=0 LIST_RESULT='{"installed":[]}'
+  run install_codex_plugins
+  [ "$status" -eq 0 ]
+  [ -f "$HOME/.codex/.aicoding-superpowers-retired" ]
+  : > "$LOG"
+  export LIST_RESULT='not json'
+  run install_codex_plugins
+  [ "$status" -eq 0 ]
+  if grep -qx 'plugin list --json' "$LOG"; then false; fi
+  if grep -q 'plugin remove' "$LOG"; then false; fi
+}
+
+@test "a successful removal writes the stamp" {
+  export AICODINGSETUP_SKIP_NETWORK=0
+  run install_codex_plugins
+  [ "$status" -eq 0 ]
+  [ -f "$HOME/.codex/.aicoding-superpowers-retired" ]
+}
+
+@test "a failed removal writes no stamp" {
+  export AICODINGSETUP_SKIP_NETWORK=0 REMOVE_STATUS=1
+  run install_codex_plugins
+  [ ! -e "$HOME/.codex/.aicoding-superpowers-retired" ]
+}
+
+@test "an unreadable plugin list writes no stamp" {
+  export AICODINGSETUP_SKIP_NETWORK=0 LIST_RESULT='not json'
+  run install_codex_plugins
+  [ ! -e "$HOME/.codex/.aicoding-superpowers-retired" ]
+}
+
+@test "entries without a pluginId write no stamp" {
+  export AICODINGSETUP_SKIP_NETWORK=0 LIST_RESULT='{"installed":[{"id":"x"}]}'
+  run install_codex_plugins
+  [ ! -e "$HOME/.codex/.aicoding-superpowers-retired" ]
+}
+
+@test "the stamp lands in the physical home of a symlinked CODEX_HOME" {
+  export AICODINGSETUP_SKIP_NETWORK=0 LIST_RESULT='{"installed":[]}'
+  mkdir -p "$TEST_DIR/real"
+  ln -s "$TEST_DIR/real" "$TEST_DIR/link"
+  export CODEX_HOME="$TEST_DIR/link"
+  run install_codex_plugins
+  [ "$status" -eq 0 ]
+  [ -f "$TEST_DIR/real/.aicoding-superpowers-retired" ]
+}
+
+@test "a stamped home still removes the managed skills link" {
+  export AICODINGSETUP_SKIP_NETWORK=0 LIST_RESULT='{"installed":[]}'
+  run install_codex_plugins
+  mkdir -p "$HOME/.codex/skills"
+  ln -s "$PACKAGE/skills" "$HOME/.codex/skills/superpowers"
+  run install_codex_plugins
+  [ ! -L "$HOME/.codex/skills/superpowers" ]
+}
