@@ -1124,6 +1124,9 @@ CLOUDFLARE_API_TOKEN=
 CLOUDFLARE_ACCOUNT_ID=
 EOF
   chmod 600 "$HOME/.aicodingsetup/.secrets.env"
+  # Without a codex new enough for it, the first seed keeps the previous model.
+  printf '#!/bin/sh\necho "codex-cli 0.171.0"\n' > "$TMPDIR/stubs/codex"
+  chmod +x "$TMPDIR/stubs/codex"
 
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
 

@@ -232,6 +232,10 @@ blueprint default (`gpt-6.1-sol` and older) moves to `gpt-6.2-sol` on its
 next sync, even if that old value was set by hand; any other model stays.
 The OpenCode reseed requires `opencode` 2.3.1+ and the Codex one
 `codex` 0.171.0+, so a v1 or older v2 OpenCode keeps its working model.
+The same check covers a first seed and a missing `model` key: a tool older
+than the minimum gets the newest earlier default (`gpt-6.1-sol`, or
+`openai/gpt-6.1-sol` for OpenCode), and a later sync moves it on once the
+tool is upgraded.
 
 ### OpenCode default model `openai/gpt-6.1-sol` (2026-09-29, opencode 1.18.33)
 
@@ -242,8 +246,9 @@ devboxes have none (`opencode models` lists only `opencode/*`,
 with `ProviderModelNotFoundError`, shown as "Unexpected server error".
 `openai/gpt-6.1-sol` is the owner's choice (the newest Sol OpenCode lists)
 and works with the OpenAI login these machines already have. At the time the merge deploy put the
-blueprint's `model` over the user's; `model` is seed-only now (see the
-2026-11-22 entry).
+blueprint's `model` over the user's. `model` is now seeded, and a value that
+still equals an earlier blueprint default is reseeded to the current one
+(see the 2026-11-22 entry).
 Pick another model per session with `-m` or `/models` in the TUI.
 (AICODINGBASESETUP-85)
 
