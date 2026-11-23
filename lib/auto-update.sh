@@ -43,16 +43,27 @@ _aicoding_auto_close_shared_lock_fds() {
   done < <(_aicoding_auto_shared_lock_fds "$$")
 }
 
-# A worker keeps the library loaded for its entire lifetime. A new launcher
-# alone cannot upgrade its run reporting, so enrollment replaces old workers.
-# Bind capability evidence to process start time, not a reusable PID alone.
-_aicoding_auto_worker_protocol_current() {
-  local state=$1 pid=$2 protocol recorded_pid ticks actual_ticks
+# Capabilities a worker must have loaded; one without them is replaced.
+_AICODING_AUTO_WORKER_CAPABILITIES=retention
+
+# The receipt binds the worker to its PID and process start time, not a
+# reusable PID alone. Receipts without capabilities still prove ownership.
+_aicoding_auto_worker_receipt_owned() {
+  local state=$1 pid=$2 protocol recorded_pid ticks capabilities actual_ticks
   [ -r "$state/worker.protocol" ] || return 1
-  read -r protocol recorded_pid ticks < "$state/worker.protocol" || return 1
+  read -r protocol recorded_pid ticks capabilities < "$state/worker.protocol" || return 1
   [ "$protocol" = 1 ] && [ "$recorded_pid" = "$pid" ] || return 1
   actual_ticks=$(_aicoding_auto_process_start_ticks "$pid" 2>/dev/null) || return 1
   [ "$ticks" = "$actual_ticks" ]
+}
+
+# A worker keeps the library loaded for its entire lifetime. A new launcher
+# alone cannot upgrade its run reporting, so enrollment replaces old workers.
+_aicoding_auto_worker_protocol_current() {
+  local state=$1 pid=$2 protocol recorded_pid ticks capabilities
+  _aicoding_auto_worker_receipt_owned "$state" "$pid" || return 1
+  read -r protocol recorded_pid ticks capabilities < "$state/worker.protocol" || return 1
+  [ "$capabilities" = "$_AICODING_AUTO_WORKER_CAPABILITIES" ]
 }
 
 # Protocol identity alone does not prove mutual exclusion when a lock file
@@ -231,7 +242,9 @@ aicoding_auto_update_once() {
     _aicoding_auto_atomic_number "$state/last-completed.json" \
       "{\"started_at\":$started,\"completed_at\":$completed,\"outcome\":\"$outcome\",\"exit_code\":$rc,\"source\":\"$source\"}" || rc=1
   fi
-  if [ "$rc" -eq 0 ] && [ "$AICODING_AUTO_UPDATE_PERFORMED" -eq 1 ]; then
+  # Only a pass that finished without deferrals may prune.
+  if [ "$rc" -eq 0 ] && [ "$AICODING_AUTO_UPDATE_PERFORMED" -eq 1 ] \
+      && [ "$AICODING_AUTO_UPDATE_DEFERRED" -eq 0 ]; then
     _aicoding_auto_version_retention
   fi
   rm -f -- "$state/run.json"
@@ -413,7 +426,7 @@ _aicoding_auto_stop_worker() {
     # A deleted path spelling is not ownership proof. The state receipt must
     # bind this exact process, and no replacement lock owner may be hidden by
     # stopping the retired-inode worker before enabling a different backend.
-    _aicoding_auto_worker_protocol_current "$state" "$pid" || {
+    _aicoding_auto_worker_receipt_owned "$state" "$pid" || {
       echo 'aicoding-auto-update: deleted worker lock ownership cannot be verified; transition deferred' >&2
       return 1
     }
@@ -537,6 +550,23 @@ aicoding_auto_update_ensure() {
   return 0
 }
 
+# A launcher lease inherited from the enrolling sync would pin that older
+# release for the worker's whole life; its own script descriptor suffices.
+_aicoding_auto_close_release_leases() {
+  local root path fd target
+  root=$(readlink -f -- "${AICODING_DATA_DIR:-$HOME/.local/share/aicoding}/versions" 2>/dev/null) || return 0
+  for path in /proc/"$BASHPID"/fd/[0-9]*; do
+    fd=${path##*/}
+    [ "$fd" -gt 2 ] 2>/dev/null || continue
+    target=$(readlink "$path" 2>/dev/null) || continue
+    case "$target" in
+      "$root"/*/*/*) ;;
+      "$root"/*/*) [ ! -d "$target" ] || exec {fd}<&- ;;
+    esac
+  done
+  return 0
+}
+
 aicoding_auto_update_worker() {
   _aicoding_auto_positive_integer "$AICODING_AUTO_UPDATE_INTERVAL" || return 2
   _aicoding_auto_positive_integer "$AICODING_AUTO_UPDATE_MIN_BACKOFF" || return 2
@@ -551,12 +581,13 @@ aicoding_auto_update_worker() {
   # ownership so rebuilds and workspace removal are never pinned by its cwd.
   cd "$state" || return 1
   state=$PWD
+  _aicoding_auto_close_release_leases
   exec {lock_fd}>"$state/worker.lock" || return 1
   flock -n "$lock_fd" || { exec {lock_fd}>&-; return 0; }
   pid_file="$state/worker.pid"
   local ticks
   ticks=$(_aicoding_auto_process_start_ticks "$$") || { exec {lock_fd}>&-; return 1; }
-  _aicoding_auto_atomic_number "$state/worker.protocol" "1 $$ $ticks" \
+  _aicoding_auto_atomic_number "$state/worker.protocol" "1 $$ $ticks $_AICODING_AUTO_WORKER_CAPABILITIES" \
     || { exec {lock_fd}>&-; return 1; }
   printf '%s\n' "$$" > "$pid_file" || { exec {lock_fd}>&-; return 1; }
   trap '[ -z "${sleep_pid:-}" ] || kill "$sleep_pid" 2>/dev/null || true; test "$(cat "$pid_file" 2>/dev/null)" != "$$" || rm -f -- "$pid_file"; exit 0' TERM INT HUP
