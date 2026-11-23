@@ -146,20 +146,37 @@ are incorporated, that is, verified fixes are committed on the PR branch:
 ~/.claude/skills/review-by-harness/cleanup.sh --prune [repo-dir] [--archive DIR]
 ```
 
-- `--archive DIR` first writes `DIR/review-pr<N>-<harness>/`: the driver's
-  `.review-round/` as `review-round/`, the `reviewed-head`, and any fix
-  changes as `handback.diff` (binary-safe, against the reviewed commit, so
-  commits count) plus `handback-untracked.tar` for new files. A second
-  archive of the same review gets a `-2` suffix. Nothing is written inside
-  the worktree, and a `.review-round` the PR itself tracks is never copied.
-  If any archive step fails, the worktree is kept and cleanup exits 1.
+- A fix pass's changes (the handback) exist only in the review worktree.
+  They are, against the reviewed commit: a tracked diff (harness commits
+  included), new files that are not ignored, and ignored files under
+  `out/`. Other ignored paths are not collected. When the reviewed commit
+  cannot be established (a review from before `reviewed-head` existed),
+  cleanup and `run.sh` treat the worktree as holding a handback.
+- While the PR is open, or its state is unknown, cleanup keeps a worktree
+  with a handback and exits 1. Apply the changes to the PR branch, then
+  pass `--discard`.
+- Merged or closed is no proof the fix landed, so such a worktree is
+  archived before it is removed: to `--archive DIR` when given, otherwise
+  to `<git-common-dir>/review-by-harness/archive/`. `--discard` removes it
+  without the default archive. Nobody is asked.
+- `--archive DIR` writes `DIR/review-pr<N>-<harness>/`: the driver's
+  `.review-round/` as `review-round/`, the `reviewed-head`, and any
+  handback as `handback.diff` (binary-safe, against the reviewed commit)
+  plus `handback-untracked.tar` for new files and `out/` files. When the
+  reviewed commit is unknown it also holds `handback.bundle`, a git bundle
+  of the commits on the worktree's HEAD that no remote or fetched PR ref
+  has (none when there are no such commits). A second archive of the same
+  review gets a `-2` suffix. Nothing is written inside the worktree, and a
+  `.review-round` the PR itself tracks is never copied. If any archive step
+  fails, the worktree is kept and cleanup exits 1.
 - Pass `--harness` to touch one reviewer's worktree only.
-- A fix pass's diff exists only in the review worktree. While the PR is
-  open, cleanup keeps such a worktree and exits 1; apply the diff to the PR
-  branch, then pass `--discard`. A merged or closed PR needs no flag.
+- A review worktree that git still lists but whose directory is gone is
+  reported, not cleaned. `git worktree prune` drops the registration; it
+  drops every stale one, so cleanup leaves that step to you.
 - `--prune` is maintenance, not a run's closeout step. It cleans every
-  review whose PR is merged or closed, including refs whose worktree is
-  already gone, and never an open PR's. It lists stray `review-pr*` branches
+  review whose PR is merged or closed (archiving a handback as above),
+  including refs whose worktree is already gone, and never an open PR's.
+  It refuses `--discard`. It lists stray `review-pr*` branches
   without a worktree instead of deleting them.
 - Cleanup asks GitHub about the repo behind `origin` (https, scp-style or
   SSH-over-443 URLs), so `GH_REPO` or a `gh repo set-default` pointing
@@ -171,7 +188,10 @@ are incorporated, that is, verified fixes are committed on the PR branch:
 
 A second round re-creates the worktree and deletes the first round's
 `.review-round/`, so archive round 1 before starting round 2. `run.sh`
-refuses to start over a worktree that still holds a fix pass's diff.
+refuses to start over a worktree that still holds a handback, using the
+same check as cleanup, or whose reviewed commit is unknown. A review-only
+round can always be run again: it never starts a fix pass, so anything it
+changed is not a handback.
 
 Both scripts take a per-PR, per-harness lock under the repo's git directory
 (`review-by-harness/pr<N>-<harness>.lock`, via `flock`). A second run of the
