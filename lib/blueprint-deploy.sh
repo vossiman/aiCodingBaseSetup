@@ -533,7 +533,9 @@ _managed_mixed() {
                    reseeded: [(.reseeded_keys // [])[] | select(.dest == $r)]}' \
     "$(_managed_config_data)") || return 1
   # Keep the source's extension: the value helpers pick TOML or JSON by it.
-  rendered=$(mktemp --suffix=".${dest##*.}") || return 1
+  # From the basename: a dot in a parent directory would put a slash in the suffix.
+  local base=${dest##*/}
+  rendered=$(mktemp --suffix=".${base##*.}") || return 1
   _substitute_file_to "$src" "$rendered" || { rm -f "$rendered"; return 1; }
   rules=$(_managed_reseed_filter "$rules" "$dest" "$rendered") || { rm -f "$rendered"; return 1; }
   pins=$(jq -c '.pinned' <<<"$rules")
