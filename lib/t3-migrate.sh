@@ -87,18 +87,22 @@ t3_legacy_stop() {
 }
 
 t3_open_under() {
-  local fd t p own=() self=0
+  local fd t p own=() self=0 ended=0 end=t3-open-scan-end
   T3_OPEN=()
   for p in /proc/[0-9]*; do [ -O "$p" ] && own+=("$p/fd"); done
   # One find pass: a readlink fork per descriptor took ~30 s on a busy desktop.
   while IFS= read -r -d '' fd && IFS= read -r -d '' t; do
+    [ "$fd" = "$end" ] && { ended=1; continue; }
     p=${fd#/proc/}; p=${p%%/*}
     [ "$p" = "$$" ] && self=1
     case "$t" in "$1"/*) ;; *) continue ;; esac
     case " ${T3_OPEN[*]} " in *" $p "*) ;; *) T3_OPEN+=("$p") ;; esac
-  done < <(find "${own[@]}" -mindepth 1 -maxdepth 1 -printf '%p\0%l\0' 2>/dev/null)
-  # Processes exit mid-scan, so find's status is never clean; seeing our own fds proves it ran.
-  [ "$self" = 1 ] || t3_die "cannot list open files under /proc; refusing to treat $1 as unused"
+  done < <(s=0; find "${own[@]}" -mindepth 1 -maxdepth 1 -printf '%p\0%l\0' 2>/dev/null || s=$?
+           [ "$s" -lt 126 ] && printf '%s\0\0' "$end")
+  # Processes exit mid-scan, so find's status is rarely 0: seeing our own fds
+  # proves it started, and the end marker that it finished (not killed, >= 126).
+  [ "$self" = 1 ] && [ "$ended" = 1 ] \
+    || t3_die "cannot list open files under /proc; refusing to treat $1 as unused"
 }
 
 t3_migrate_export() {

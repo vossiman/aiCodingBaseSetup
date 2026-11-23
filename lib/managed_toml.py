@@ -2,6 +2,8 @@
 
 Usage: managed_toml.py DEST RENDERED RAW RULES_JSON OUT
 Exit 0 writes OUT; exit 3 means DEST is not valid TOML and must stay untouched.
+       managed_toml.py get FILE PATH_JSON    prints the value as JSON; exit 1 when missing
+       managed_toml.py pin FILE PINS_JSON    sets each {"path", "value"} in FILE
 """
 
 import copy
@@ -131,5 +133,37 @@ def main(dest, rendered, raw, rules_json, out):
     return 0
 
 
+def read(path):
+    try:
+        return tomlkit.parse(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def get_value(path, key_json):
+    doc = read(path)
+    if doc is None:
+        return 3
+    value = get(doc, json.loads(key_json))
+    if value is MISSING:
+        return 1
+    print(json.dumps(plain(value)))
+    return 0
+
+
+def pin(path, pins_json):
+    doc = read(path)
+    if doc is None:
+        return 3
+    for entry in json.loads(pins_json):
+        put(doc, entry["path"], entry["value"])
+    Path(path).write_text(tomlkit.dumps(doc), encoding="utf-8")
+    return 0
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["get"]:
+        sys.exit(get_value(*sys.argv[2:4]))
+    if sys.argv[1:2] == ["pin"]:
+        sys.exit(pin(*sys.argv[2:4]))
     sys.exit(main(*sys.argv[1:6]))

@@ -460,36 +460,88 @@ _managed_reseed_ready() {
   [[ -n "$v" ]] && [[ "$(printf '%s\n%s\n' "$2" "$v" | sort -V | head -1)" == "$2" ]]
 }
 
-# Only entries whose old value appears in the destination are probed, so a
-# pass with nothing to reseed (and every dry run on a fresh home) starts no tool.
+# Print the value at <path> (a JSON array) in a TOML or JSON file as JSON.
+# Returns 1 when the key is missing and 3 when the file cannot be read.
+_managed_value_at() {
+  local v
+  if [[ "$1" == *.toml ]]; then
+    python3 -B "$_AICODING_MANAGED_TOML" get "$1" "$2"
+    return
+  fi
+  v=$(jq -c --argjson p "$2" 'try getpath($p) catch null' "$1" 2>/dev/null) || return 3
+  [[ "$v" != null ]] || return 1
+  printf '%s\n' "$v"
+}
+
+# Sort each reseed entry into .reseeded (holds an earlier default and the
+# tool is ready: move it) or .pinned (would get the current default but the
+# tool is too old: seed the newest earlier default instead). The tool is
+# probed only for a missing file or key or a shipped value, so a file holding
+# the user's own value starts no tool.
 _managed_reseed_filter() {
-  local rules=$1 dest=$2 entry tool min value hit keep='[]'
+  local rules=$1 dest=$2 rendered=$3 entry path now current state tool min keep='[]' pin='[]'
   while IFS= read -r entry; do
     [[ -n "$entry" ]] || continue
-    hit=0
-    while IFS= read -r value; do
-      [[ -n "$value" ]] && grep -qF -- "\"$value\"" "$dest" 2>/dev/null && { hit=1; break; }
-    done < <(jq -r '.shipped[] | strings' <<<"$entry")
-    [[ "$hit" == 1 ]] || continue
+    path=$(jq -c .path <<<"$entry")
+    now=$(_managed_value_at "$rendered" "$path") || continue
+    state=0
+    if [[ -s "$dest" ]]; then current=$(_managed_value_at "$dest" "$path") || state=$?; else state=1; fi
+    if [[ "$state" == 0 ]]; then
+      jq -e --argjson v "$current" 'any(.shipped[]; . == $v)' <<<"$entry" >/dev/null || continue
+    elif [[ "$state" != 1 ]]; then
+      continue
+    fi
     tool=$(jq -r '.requires.tool // empty' <<<"$entry")
     min=$(jq -r '.requires.min_version // empty' <<<"$entry")
     if [[ -z "$tool" ]] || _managed_reseed_ready "$tool" "$min"; then
-      keep=$(jq -c --argjson e "$entry" '. + [$e]' <<<"$keep")
+      [[ "$state" == 0 ]] || continue
+      keep=$(jq -c --argjson e "$entry" --argjson o "$current" --argjson n "$now" \
+        '. + [$e + {old: $o, new: $n}]' <<<"$keep")
+    else
+      pin=$(jq -c --argjson e "$entry" '. + [{path: $e.path, value: ($e.shipped | last)}]' <<<"$pin")
     fi
   done < <(jq -c '.reseeded[]?' <<<"$rules")
-  jq -c --argjson k "$keep" '.reseeded = $k' <<<"$rules"
+  jq -c --argjson k "$keep" --argjson p "$pin" '.reseeded = $k | .pinned = $p' <<<"$rules"
 }
 
+# Set each pinned {path, value} in the rendered source, in its own format.
+_managed_pin_rendered() {
+  local rendered=$1 pins=$2 tmp
+  if [[ "$rendered" == *.toml ]]; then
+    python3 -B "$_AICODING_MANAGED_TOML" pin "$rendered" "$pins"
+    return
+  fi
+  tmp=$(mktemp) || return 1
+  if ! jq --argjson pins "$pins" 'reduce $pins[] as $x (.; setpath($x.path; $x.value))' \
+      "$rendered" > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  mv -f "$tmp" "$rendered"
+}
+
+# One "reseeded <key> in <dest>: <old> -> <new>" line per reseed the last
+# _managed_mixed call would apply; managed_config_apply prints it after the write.
+_MANAGED_RESEED_LOG=
+
 _managed_mixed() {
-  local dest=$1 src=$2 out=$3 rel rules rendered rc=0
+  local dest=$1 src=$2 out=$3 rel rules rendered pins rc=0
+  _MANAGED_RESEED_LOG=
   rel=${dest#"$HOME"/}
   rules=$(jq -c --arg r "$rel" \
     '.mixed[$r] + {retired: [.retired_keys[] | select(.dest == $r)],
                    reseeded: [(.reseeded_keys // [])[] | select(.dest == $r)]}' \
     "$(_managed_config_data)") || return 1
-  rules=$(_managed_reseed_filter "$rules" "$dest") || return 1
-  rendered=$(mktemp) || return 1
+  # Keep the source's extension: the value helpers pick TOML or JSON by it.
+  rendered=$(mktemp --suffix=".${dest##*.}") || return 1
   _substitute_file_to "$src" "$rendered" || { rm -f "$rendered"; return 1; }
+  rules=$(_managed_reseed_filter "$rules" "$dest" "$rendered") || { rm -f "$rendered"; return 1; }
+  pins=$(jq -c '.pinned' <<<"$rules")
+  if [[ "$pins" != '[]' ]]; then
+    _managed_pin_rendered "$rendered" "$pins" || { rm -f "$rendered"; return 1; }
+  fi
+  _MANAGED_RESEED_LOG=$(jq -r --arg d "$dest" \
+    '.reseeded[] | "reseeded \(.path | join(".")) in \($d): \(.old | tostring) -> \(.new | tostring)"' <<<"$rules")
   if [[ ! -s "$dest" ]]; then
     cat "$rendered" > "$out"
   elif [[ "$dest" == *.toml ]]; then
@@ -675,6 +727,7 @@ managed_config_apply() {
     fi
     out=$(mktemp) || { MANAGED_RESULT[$dest]=failed; rc=1; continue; }
     reason=0
+    _MANAGED_RESEED_LOG=
     _managed_desired "$dest" "$kind" "$src" "$out" || reason=$?
     if [[ "$reason" == 3 ]]; then
       MANAGED_RESULT[$dest]=malformed
@@ -698,6 +751,7 @@ managed_config_apply() {
     elif _managed_write "$dest" "$kind" "$src" "$out"; then
       MANAGED_RESULT[$dest]=updated; changes=$((changes + 1))
       echo "      updated: $dest"
+      [[ -z "$_MANAGED_RESEED_LOG" ]] || sed 's/^/      /' <<<"$_MANAGED_RESEED_LOG"
     else
       MANAGED_RESULT[$dest]=failed; rc=1
       echo "      could not write $dest" >&2
