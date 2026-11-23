@@ -200,11 +200,15 @@ old() { t3_iso '-2 hours'; }
   t3_fake_setup
   "$B/t3-start"
   srv=$(jq -r .pid "$T3_ENVS_ROOT/demo/userdata/server-runtime.json")
-  # Outlive the whole window: under suite load the checks before it can take
-  # longer than a short-lived process, which then exits before any sample.
-  ( sleep 0.5; tok=$(t3_owner token); env T3_AICODING_OWNER="$tok" "$TMP/bin/make" $((T3_IDLE_WINDOW + 3)) ) &
-  run full
-  wait
+  # The helper appears only after the pre-window checks passed (signalled by
+  # "ready"), and lives until the test stops it, so load cannot reorder this.
+  seq_run() { TMP=$TMP bash -c '. "$BLUEPRINT_ROOT/lib/t3.sh"; t3_env 2>/dev/null; t3_idle_db 12 && t3_idle_procs && : > "$TMP/ready" && t3_idle_window; r=$?; [ "$r" -eq 1 ] && echo "$T3_BUSY"; exit "$r"'; }
+  tok=$(t3_owner token)
+  ( t3_wait_for 120 '[ -e "$TMP/ready" ]'; exec env T3_AICODING_OWNER="$tok" "$TMP/bin/make" 120 ) &
+  mk=$!
+  run seq_run
+  kill "$mk" 2>/dev/null
+  wait "$mk" 2>/dev/null || true
   [ "$status" -eq 1 ]
   [[ "$output" == *process_make* ]]
 }

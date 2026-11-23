@@ -136,7 +136,7 @@ running() { bash -c '. "$BLUEPRINT_ROOT/lib/t3.sh"; t3_env 2>/dev/null; t3_runni
   run env T3_AICODING_OWNER="$(t3_owner token)" "$B/t3-update"
   [ "$status" -eq 0 ]
   [[ "$output" == *"continuing in the background"* ]]
-  for i in $(seq 1 100); do [ "$(jq -r .version "$(S)/version.json")" = 0.0.50 ] && break; sleep 0.2; done
+  t3_wait_for 120 '[ "$(jq -r .version "$(S)/version.json")" = 0.0.50 ]'
   [ "$(jq -r .version "$(S)/version.json")" = 0.0.50 ]
 }
 
@@ -145,7 +145,7 @@ running() { bash -c '. "$BLUEPRINT_ROOT/lib/t3.sh"; t3_env 2>/dev/null; t3_runni
   t3_bin_as agentsh bash
   T3_TEST_CHILDREN="agentsh=until mv $TMP/go $TMP/go.taken 2>/dev/null; do sleep 0.1; done; $B/t3-update --yes > $TMP/child.out 2>&1" "$B/t3-start"
   : > "$TMP/go"
-  for i in $(seq 1 150); do [ "$(jq -r .version "$(S)/version.json")" = 0.0.50 ] && break; sleep 0.2; done
+  t3_wait_for 120 '[ "$(jq -r .version "$(S)/version.json")" = 0.0.50 ]'
   [ "$(jq -r .version "$(S)/version.json")" = 0.0.50 ]
   grep -q "continuing in the background" "$TMP/child.out"
   running

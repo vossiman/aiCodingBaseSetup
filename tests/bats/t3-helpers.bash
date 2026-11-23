@@ -230,3 +230,11 @@ t3_fake_setup() {
 }
 
 t3_owner() { jq -r ".$1" "$T3_ENVS_ROOT/$DEVPOD_WORKSPACE_ID/aicoding/owner.json"; }
+
+# Poll a condition every 0.2s up to $1 seconds; the bound is generous so a loaded
+# machine only slows the test down instead of failing it.
+t3_wait_for() {
+  local end=$((SECONDS + $1))
+  while [ "$SECONDS" -lt "$end" ]; do eval "$2" 2>/dev/null && return 0; sleep 0.2; done
+  return 1
+}
