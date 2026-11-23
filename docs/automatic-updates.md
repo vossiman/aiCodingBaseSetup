@@ -30,7 +30,9 @@ old releases are never deleted by age or by the `previous` pointer alone. On a
 host (profile `host` or `minimal-pi`, outside a container), a scheduled pass
 that succeeded without deferrals ends with a retention step. A directory
 `versions/<component>/<version>` is a removal candidate on a run only when all
-of these hold, and is kept whenever any check is unclear:
+of these hold, and is kept whenever any check is unclear (the browser cache
+and source snapshots that follow a release are covered under "Auxiliary
+trees" below):
 
 - it is a real directory, not a symlink, and its name has no leading dot and
   no `.staging.` or `.replaced.` part, so staging and transaction trees and a
@@ -117,10 +119,65 @@ line mentions `current/<component>/` or `versions/<component>/` under the data
 directory, or when its `argv[0]` matches a managed launcher of that
 component: `argv[0]` is compared by its full basename, while the kernel short
 name (`comm`) is compared against the first 15 bytes of the launcher name (from the `current=` line of the
-launchers in `~/.local/bin`). A process that belongs to a component but holds
-no path under that component's `versions/` keeps every version of the
-component on that run, with one log line naming its pid, short name and
-component.
+launchers in `~/.local/bin`). A name match does not count when the process's
+own executable (`/proc/<pid>/exe`) lies outside the data directory and
+outside `~/.local/bin` (given and resolved) and has that same name: its
+basename equals the `argv[0]` basename, or its first 15 bytes equal the short
+name. Such a process is another program that only shares the launcher's name,
+for example `/usr/libexec/geoclue-2.0/demos/agent` next to the Cursor
+launcher `agent`. The name match still counts when the executable has another
+name (an interpreter such as `node` that renamed itself), lies inside the data
+directory or `~/.local/bin`, or cannot be read. A process that belongs to a
+component but holds no path under that component's `versions/` keeps every
+version of the component on that run, with one log line naming its pid, short
+name and component. One exception: when its command line names at least one
+release `versions/<component>/<name>` by a path without `.` or `..` segments
+and names no `current/<component>` path, the release it uses is known. That
+release is kept (as every release named on a command line is), and the process
+does not keep the rest of the component. A `python3
+<data>/versions/aicoding/<sha>/bin/kanban-work` helper therefore keeps only
+release `<sha>`. A process that also names `current/<component>`, or that
+matched the component only by name, keeps the whole component as before.
+
+**Auxiliary trees.** Two trees outside `versions/` belong to a release and
+follow it: the Playwright browser cache
+`browser-cache/mcp-playwright/<version>` belongs to
+`versions/mcp-playwright/<version>`, and the source snapshot
+`sources/<component>/<sha>` belongs to `versions/<component>/<sha>`. Such a
+tree is a removal candidate only when its release directory no longer exists
+(it was pruned, or never existed), its name is not the release that
+`current/<component>` or `previous/<component>` points at, and every rule
+above holds for it as well: a plain directory with a valid name, under plain
+(not symlinked) `browser-cache/`, `browser-cache/mcp-playwright/`, `sources/`
+and `sources/<component>/` directories; no mount point at or below it; no
+link under the data directory or in `~/.local/bin`, and no file in
+`~/.local/bin`, that resolves into it, passes through it or names it (links
+inside the same tree excepted); no process with its executable, working
+directory, an open file or a mapping inside it, and no command line naming it.
+A command line argument that names a path under the data directory with a `.`
+or `..` segment, or that names an auxiliary root rather than one tree, keeps
+every auxiliary tree for the run. A tree is only considered for components
+that have a `versions/` directory, so `sources/<component>` of anything else
+is left alone. A component kept as a whole (by a pointer check, an activation
+lock, the unknown-release rule, a link that cannot be followed or an
+untrustworthy stamp store) keeps its auxiliary trees too. Trees are judged
+after the releases, so a release removed on a run leaves its tree to start
+its own observation window on that run.
+
+A browser cache also carries Playwright's own records. Each file in
+`<cache>/.links/` holds the path of a Playwright package directory (for
+example `versions/mcp-playwright/<version>/node_modules/playwright-core`)
+that installed browsers into that cache; Playwright reads them to decide
+which browsers it may delete. `<cache>/.browser-bin` holds the path of the
+browser binary that provisioning validated inside that cache. Retention keeps
+a cache while any package a `.links` record names still exists, so a cache
+that another release installed into stays with that release. A record that
+is relative or spans several lines keeps its own cache, and a `.links/`
+that is not a plain directory does too. A `.links` or `.browser-bin` record
+that names another cache (`browser-cache/mcp-playwright/<other>`) keeps that
+other cache. Because an unreadable record might name any cache, a `.links`
+entry or `.browser-bin` that is not a regular file or cannot be read keeps
+every cache for the run.
 
 **Processes that cannot be inspected.** A process of the user counts as
 inspected only when its executable link, working directory link, descriptor
@@ -157,7 +214,13 @@ nothing. The default applies only when the variable is unset. A version is due o
 the time since its stamp reaches the window. The first run that sees it as a
 candidate records a stamp,
 `~/.local/state/aicoding/retention/<component>/<version>`, whose mtime is that
-moment. `retention/` and each component directory in it are created private
+moment. An auxiliary tree has its own stamp in a separate namespace,
+`retention/.aux.browser-cache.mcp-playwright/<version>` or
+`retention/.aux.sources.<component>/<sha>`; the leading dot means it can never
+be mistaken for a component's stamp directory, so a release and its tree never
+share a stamp. Every rule below applies to those directories and stamps as
+well, and stamps of trees that no longer exist are deleted too.
+`retention/` and each component directory in it are created private
 (mode 0700) and must be plain directories inside the resolved state
 directory. A symlinked or otherwise odd component directory keeps every
 version of that component with a warning; such a `retention/` itself keeps
@@ -193,11 +256,13 @@ still proves ownership but counts as a worker without retention.
 
 `AICODING_RETENTION=preview` logs, per candidate, whether it would be removed
 now or the date it becomes eligible, and lists leftover tombstones a real run
-would delete; it removes nothing and writes no stamp. `AICODING_RETENTION=off`
+would delete; it removes nothing and writes no stamp. Auxiliary candidates are
+labelled `auxiliary tree browser-cache/mcp-playwright/<version>` or
+`auxiliary tree sources/<component>/<sha>` and get their own total line. `AICODING_RETENTION=off`
 disables the step. `aicoding-auto-update --retention-preview` prints the same
 preview without an update pass. Containers never prune: a rebuild replaces
-their whole tree. Source snapshots under `sources/` and the Playwright browser
-cache under `browser-cache/` are not pruned on any machine.
+their whole tree. Other trees under the data directory, such as `cache/`,
+`runtime/`, `vendor/` and `source-staging/`, are not pruned on any machine.
 
 Source releases carry `.aicoding-version` and a retained-tree digest. Exact npm
 components retain the dependency tree and validate package metadata,
