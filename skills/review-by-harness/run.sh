@@ -351,7 +351,7 @@ echo "### requested model: ${REVIEW_MODEL:-adapter-default}   effort: ${REVIEW_E
 # unchecked, the harness gets an empty patch, answers with nothing, and the
 # run looks like a clean review instead of a no-op. Seen on memory-lanes#44,
 # which merged between two runs.
-if git -C "$WT" diff --quiet "origin/$BASE...HEAD"; then
+if git -C "$WT" diff --no-ext-diff --quiet "origin/$BASE...HEAD"; then
     STATE=$(gh pr view "$PR" --json state -q .state)
     echo "!!! no diff against origin/$BASE — nothing to review (PR state: $STATE)"
     [ "$STATE" = "MERGED" ] && echo "!!! this PR is already merged"
@@ -368,7 +368,7 @@ cat "$OUT/review.md"
 restore_agents
 
 if [ "$REVIEW_ONLY" -eq 1 ]; then
-    if [ "$RESTORE_UNSAFE" -ne 0 ] || ! git -C "$WT" diff --quiet "$START_HEAD" ||
+    if [ "$RESTORE_UNSAFE" -ne 0 ] || ! git -C "$WT" diff --no-ext-diff --quiet "$START_HEAD" ||
        [ -n "$(handback_files "$WT")" ] ||
        [ "$(git -C "$WT" rev-parse HEAD)" != "$START_HEAD" ]; then
         echo "!!! review-only harness changed the worktree; inspect $WT"

@@ -131,7 +131,7 @@ archive_round() {
         if rh=$(reviewed_head "$wt" "$pr"); then echo "$rh" > "$tmp/reviewed-head"
         else rh=$(git -C "$wt" rev-parse HEAD) && echo "unknown; diff is against HEAD $rh" > "$tmp/reviewed-head"; fi &&
         if [ "$hb" != none ]; then
-            git -C "$wt" --no-pager diff --binary "$rh" -- . ':(exclude).review-round' > "$tmp/handback.diff" &&
+            git -C "$wt" --no-pager diff --binary --no-ext-diff --no-textconv --no-color "$rh" -- . ':(exclude).review-round' > "$tmp/handback.diff" &&
             handback_files_z "$wt" | tar -C "$wt" --null -T - -cf "$tmp/handback-untracked.tar"
         fi &&
         if [ "$hb" = unknown ]; then handback_bundle "$wt" "$tmp/handback.bundle"; fi

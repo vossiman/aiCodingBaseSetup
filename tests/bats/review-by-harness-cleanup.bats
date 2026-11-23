@@ -167,6 +167,34 @@ gone() {  # gone <pr>: no worktree, branch or ref is left for the PR
   git -C "$REPO" bundle list-heads "$bundle" | grep -q "^$fix "
 }
 
+@test "a diff.external driver cannot empty the archived fix diff" {
+  git -C "$REPO" config diff.external /bin/true
+  review_fix 1
+  run "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/a" --discard
+  [ "$status" -eq 0 ]
+  d="$TMPDIR/a/review-pr1-stub/handback.diff"
+  [ -s "$d" ]
+  grep -q "edited by stub" "$d"
+  git -C "$REPO" worktree add -q --detach "$TMPDIR/chk" "$(cat "$TMPDIR/a/review-pr1-stub/reviewed-head")"
+  git -C "$TMPDIR/chk" apply --check "$d"
+}
+
+@test "the archived bundle restores in a clone that lacks the PR head" {
+  sed -i 's|echo "stub fix report"|git -C "$2" -c user.name=t -c user.email=t@t commit -qam fix; echo "stub fix report"|' "$SKILL/harnesses/stub.sh"
+  review_fix 1
+  fix=$(git -C "$REPO/.claude/worktrees/review-pr1-stub" rev-parse HEAD)
+  rm "$REPO/.claude/worktrees/review-pr1-stub/.review-round/reviewed-head"
+  echo MERGED > "$TMPDIR/state-1"
+  run "$SKILL/cleanup.sh" 1 "$REPO"
+  [ "$status" -eq 0 ]
+  bundle="$REPO/.git/review-by-harness/archive/review-pr1-stub/handback.bundle"
+  git clone -q --no-local "$TMPDIR/origin.git" "$TMPDIR/fresh"
+  if git -C "$TMPDIR/fresh" cat-file -e "$fix" 2>/dev/null; then false; fi
+  git -C "$TMPDIR/fresh" bundle verify -q "$bundle"
+  git -C "$TMPDIR/fresh" fetch -q "$bundle" HEAD
+  [ "$(git -C "$TMPDIR/fresh" rev-parse FETCH_HEAD)" = "$fix" ]
+}
+
 @test "an unknown reviewed commit on an open PR is kept and refused by a second run" {
   sed -i 's|echo "stub fix report"|git -C "$2" -c user.name=t -c user.email=t@t commit -qam fix; echo "stub fix report"|' "$SKILL/harnesses/stub.sh"
   review_fix 1
@@ -180,7 +208,7 @@ gone() {  # gone <pr>: no worktree, branch or ref is left for the PR
   grep -q "edited by stub" "$REPO/.claude/worktrees/review-pr1-stub/src.txt"
 }
 
-@test "an unknown reviewed commit with no harness commit archives without a bundle" {
+@test "an unknown reviewed commit bundles everything the default branch lacks" {
   review_fix 1
   rm "$REPO/.claude/worktrees/review-pr1-stub/.review-round/reviewed-head"
   # The PR head moved on (another harness re-fetched it), so HEAD no longer vouches.
@@ -190,6 +218,19 @@ gone() {  # gone <pr>: no worktree, branch or ref is left for the PR
   run "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/a"
   [ "$status" -eq 0 ]
   gone 1
+  [ -f "$TMPDIR/a/review-pr1-stub/handback.diff" ]
+  git -C "$REPO" bundle verify -q "$TMPDIR/a/review-pr1-stub/handback.bundle"
+}
+
+@test "an unknown reviewed commit on the default branch itself archives without a bundle" {
+  review_fix 1
+  wt="$REPO/.claude/worktrees/review-pr1-stub"
+  rm "$wt/.review-round/reviewed-head"
+  git -C "$wt" reset -q --hard origin/main
+  echo "edited by stub" >> "$wt/src.txt"
+  echo MERGED > "$TMPDIR/state-1"
+  run "$SKILL/cleanup.sh" 1 "$REPO" --archive "$TMPDIR/a"
+  [ "$status" -eq 0 ]
   [ -f "$TMPDIR/a/review-pr1-stub/handback.diff" ]
   [ ! -e "$TMPDIR/a/review-pr1-stub/handback.bundle" ]
 }

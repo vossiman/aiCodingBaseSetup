@@ -39,7 +39,7 @@ handback_files_z() {
 handback_state() {
     local rh files
     rh=$(reviewed_head "$1" "${2:-}") || { echo unknown; return 0; }
-    if ! git -C "$1" diff --quiet "$rh" -- . ':(exclude).review-round' 2>/dev/null; then
+    if ! git -C "$1" diff --no-ext-diff --quiet "$rh" -- . ':(exclude).review-round' 2>/dev/null; then
         echo present; return 0
     fi
     files=$(handback_files "$1" 2>/dev/null) || { echo unknown; return 0; }
@@ -47,10 +47,13 @@ handback_state() {
 }
 
 # handback_bundle <wt> <file>: bundle the commits on the worktree's HEAD that
-# no remote-tracking or fetched PR ref holds. Writes nothing when there are none.
+# the default branch does not hold, so it restores in any clone of the origin.
+# Falls back to all remote-tracking refs when origin/HEAD is unset. The fetched
+# PR ref is never excluded: cleanup deletes it. Writes nothing when none.
 handback_bundle() {
-    local n
-    n=$(git -C "$1" rev-list --count HEAD --not --remotes --glob='refs/review-by-harness/*') || return 1
+    local n not=(--remotes)
+    git -C "$1" rev-parse --verify -q refs/remotes/origin/HEAD >/dev/null && not=(refs/remotes/origin/HEAD)
+    n=$(git -C "$1" rev-list --count HEAD --not "${not[@]}") || return 1
     [ "$n" -eq 0 ] && return 0
-    git -C "$1" bundle create --quiet "$2" HEAD --not --remotes --glob='refs/review-by-harness/*'
+    git -C "$1" bundle create --quiet "$2" HEAD --not "${not[@]}"
 }
