@@ -78,6 +78,19 @@ start_legacy() {
   [ ! -f "$T3_MIGRATE_DIR/demo.tgz" ]
 }
 
+@test "export: a second scan that dies leaves neither archive nor manifest" {
+  # First scan passes (status 1 is tolerated), the post-archive scan is killed.
+  printf '#!/bin/sh\nn=%s/find-calls\n[ -f "$n" ] && { %s "$@"; exit 137; }\n: > "$n"\n%s "$@"\nexit 1\n' \
+    "$TMP" "$(PATH=/usr/bin:/bin command -v find)" "$(PATH=/usr/bin:/bin command -v find)" > "$TMP/stubs/find"
+  chmod +x "$TMP/stubs/find"
+  run "$B/t3-migrate" --export --version 0.0.40
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"cannot list open files"* ]]
+  [ ! -e "$T3_MIGRATE_DIR/demo.tgz" ]
+  [ ! -e "$T3_MIGRATE_DIR/demo.json" ]
+  if compgen -G "$T3_MIGRATE_DIR/.demo.*" >/dev/null; then false; fi
+}
+
 @test "export: a scan that ends with status 1 (a process exited mid-scan) still counts" {
   printf '#!/bin/sh\n%s "$@"\nexit 1\n' "$(PATH=/usr/bin:/bin command -v find)" > "$TMP/stubs/find"
   chmod +x "$TMP/stubs/find"

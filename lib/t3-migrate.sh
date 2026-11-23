@@ -126,17 +126,18 @@ t3_migrate_export() {
   [ ${#T3_OPEN[@]} -eq 0 ] || t3_die "processes still have files under $src open: ${T3_OPEN[*]}. Stop them by hand, then retry."
   arc="$T3_MIGRATE_DIR/$key.tgz"; man="$T3_MIGRATE_DIR/$key.json"
   tmp=$(umask 077; mktemp "$T3_MIGRATE_DIR/.$key.XXXXXX") || t3_die "cannot create a temp file"
-  (umask 077; tar -C "$src" -czf "$tmp" .) || { rm -f "$tmp"; t3_die "archiving $src failed"; }
+  # The staged file is removed on any exit until archive and manifest are published.
+  trap 'rm -f "$tmp"' EXIT
+  (umask 077; tar -C "$src" -czf "$tmp" .) || t3_die "archiving $src failed"
+  t3_open_under "$src"
+  [ ${#T3_OPEN[@]} -eq 0 ] \
+    || t3_die "a process opened files under $src while archiving (${T3_OPEN[*]}); archive deleted"
+  sha=$(sha256sum "$tmp" | cut -d' ' -f1)
   mv -f "$tmp" "$arc"
-  sha=$(sha256sum "$arc" | cut -d' ' -f1)
+  trap - EXIT
   t3_write_file "$man" "$(jq -cn --arg e "$(cat "$src/userdata/environment-id")" --arg w "$key" \
     --arg v "$ver" --arg s "$sha" '{environment_id: $e, workspace: $w, version: $v, sha256: $s}')"
   chmod 600 "$man"
-  t3_open_under "$src"
-  if [ ${#T3_OPEN[@]} -gt 0 ]; then
-    rm -f "$arc" "$man"
-    t3_die "a process opened files under $src while archiving (${T3_OPEN[*]}); archive deleted"
-  fi
   t3_say "exported $src (environment $(cat "$src/userdata/environment-id"), t3 $ver) to $arc"
   t3_say "next: rebuild this workspace, then run t3-migrate --restore in the new container"
 }
