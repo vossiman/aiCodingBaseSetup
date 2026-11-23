@@ -244,6 +244,35 @@ STUB
   [ "$(cat "$HOME/live/opencode.db")" = live ]
 }
 
+@test "the config probe fails without running debug config when the version is unknown" {
+  cat > "$TMP/stubs/opencode" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$TMP/opencode.calls"
+[ "$1" = --version ] && exit 0
+exit 0
+STUB
+  chmod +x "$TMP/stubs/opencode"
+  run _aicoding_opencode_config_probe
+  [ "$status" -ne 0 ]
+  if grep -q 'debug' "$TMP/opencode.calls"; then false; fi
+}
+
+@test "the config probe passes --standalone on v2 and omits it on v1" {
+  for v in 2.3.2 1.19.6; do
+    rm -f "$TMP/opencode.calls"
+    cat > "$TMP/stubs/opencode" <<STUB
+#!/bin/sh
+printf '%s\\n' "\$*" >> "$TMP/opencode.calls"
+[ "\$1" = --version ] && echo "opencode v$v"
+exit 0
+STUB
+    chmod +x "$TMP/stubs/opencode"
+    _aicoding_opencode_config_probe
+    if [ "$v" = 2.3.2 ]; then grep -qx 'debug config --standalone' "$TMP/opencode.calls"
+    else grep -qx 'debug config' "$TMP/opencode.calls"; fi
+  done
+}
+
 @test "OpenCode extraction allows only a real root directory marker besides the binary" {
   . "$BLUEPRINT_ROOT/lib/update-opencode.sh"
   python3 - "$TMP" <<'EOF'

@@ -43,7 +43,7 @@
     "archive_invalid": {
       "kind": "action",
       "meaning": "The downloaded Cursor or OpenCode archive could not be extracted, or held unexpected files.",
-      "fix": "Retry with `aicoding-auto-update --once`. If it fails again, read `~/.local/state/aicoding/auto-update/worker.log`."
+      "fix": "Retry with `aicoding-auto-update --once`. Extraction writes no log of its own, so a repeat failure means the upstream archive is damaged or laid out differently: wait for a new release. Scheduled runs log to the journal (`journalctl --user -u aicoding-auto-update`)."
     },
     "browser_install_failed": {
       "kind": "action",

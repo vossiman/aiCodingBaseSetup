@@ -17,6 +17,7 @@ _aicoding_opencode_target() (
   local url=$AICODING_OPENCODE_RELEASES_API page=0 tags="" headers body next
   headers=$(mktemp) && body=$(mktemp) || exit 1
   trap 'rm -f "$headers" "$body"' EXIT
+  # No early exit: a lower backport on page 1 must not beat a higher version on a later page.
   while [ -n "$url" ] && [ "$page" -lt "${AICODING_OPENCODE_MAX_PAGES:-5}" ]; do
     page=$((page + 1))
     timeout "$AICODING_VENDOR_TIMEOUT" curl -fsSL --proto '=https' --proto-redir '=https' \
