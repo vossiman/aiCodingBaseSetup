@@ -23,7 +23,7 @@ teardown() { case "${TMPDIR:-}" in */tmp.*) rm -rf "$TMPDIR" ;; esac }
 LITERAL="deadbeefcafebabefeedface12345678"
 
 @test "redacts a literal value from the secrets file and a pattern-shaped token" {
-  printf 'MEMORY_ROUTER_TOKEN=%s\n' "$LITERAL" > "$HOME/.aicodingsetup/.secrets.env"
+  printf 'MEMORY_WRITE_TOKEN=%s\n' "$LITERAL" > "$HOME/.aicodingsetup/.secrets.env"
   run --separate-stderr bash "$RT" <<EOF
 ordinary prose that must survive
 router token $LITERAL inline
@@ -55,7 +55,7 @@ EOF
   if [ "$(id -u)" -eq 0 ]; then
     skip "running as root: chmod 000 does not make a file unreadable"
   fi
-  printf 'MEMORY_ROUTER_TOKEN=%s\n' "$LITERAL" > "$HOME/.aicodingsetup/.secrets.env"
+  printf 'MEMORY_WRITE_TOKEN=%s\n' "$LITERAL" > "$HOME/.aicodingsetup/.secrets.env"
   chmod 000 "$HOME/.aicodingsetup/.secrets.env"
   run --separate-stderr bash "$RT" <<< "router token $LITERAL inline"
   [ "$status" -eq 3 ]

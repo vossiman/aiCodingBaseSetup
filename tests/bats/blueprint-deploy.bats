@@ -139,7 +139,7 @@ retired_clone() {
 }
 
 @test "rule 2: Codex keeps personal model, projects and servers; owned keys follow the blueprint" {
-  export KANBAN_TOKEN=kb MEMORY_ROUTER_TOKEN=mr
+  export KANBAN_TOKEN=kb MEMORY_WRITE_TOKEN=mr
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   mkdir -p "$HOME/.codex"
   cat > "$HOME/.codex/config.toml" <<'TOML'
@@ -546,7 +546,7 @@ _codex_model() { sed -n 's/^model = "\(.*\)"$/\1/p' "$1"; }
 }
 
 @test "_substitute_file_to: strips memory-router from cursor mcp.json when token absent" {
-  unset MEMORY_ROUTER_TOKEN
+  unset MEMORY_WRITE_TOKEN
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   mkdir -p "$TMPDIR/clone/configs/cursor"
   cp "$BLUEPRINT_ROOT/configs/cursor/mcp.json" "$TMPDIR/clone/configs/cursor/mcp.json"
@@ -558,7 +558,7 @@ _codex_model() { sed -n 's/^model = "\(.*\)"$/\1/p' "$1"; }
 }
 
 @test "_substitute_file_to: keeps memory-router with substituted header when token set" {
-  export MEMORY_ROUTER_TOKEN=tok-123
+  export MEMORY_WRITE_TOKEN=tok-123
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   mkdir -p "$TMPDIR/clone/configs/cursor"
   cp "$BLUEPRINT_ROOT/configs/cursor/mcp.json" "$TMPDIR/clone/configs/cursor/mcp.json"
@@ -567,7 +567,7 @@ _codex_model() { sed -n 's/^model = "\(.*\)"$/\1/p' "$1"; }
 }
 
 @test "_substitute_file_to: strips the codex memory-router section when token absent" {
-  unset MEMORY_ROUTER_TOKEN
+  unset MEMORY_WRITE_TOKEN
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   mkdir -p "$TMPDIR/clone/configs/codex"
   cp "$BLUEPRINT_ROOT/configs/codex/config.toml" "$TMPDIR/clone/configs/codex/config.toml"
@@ -608,7 +608,7 @@ _codex_model() { sed -n 's/^model = "\(.*\)"$/\1/p' "$1"; }
 
 @test "_substitute_file_to: strips kanban from all three configs when KANBAN_TOKEN is absent" {
   unset KANBAN_TOKEN
-  export MEMORY_ROUTER_TOKEN=tok-keep
+  export MEMORY_WRITE_TOKEN=tok-keep
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   local name
   for name in cursor/mcp.json opencode/opencode.json codex/config.toml; do
@@ -629,7 +629,7 @@ _codex_model() { sed -n 's/^model = "\(.*\)"$/\1/p' "$1"; }
 }
 
 @test "_substitute_file_to: strips both token-gated servers when neither token is set" {
-  unset KANBAN_TOKEN MEMORY_ROUTER_TOKEN
+  unset KANBAN_TOKEN MEMORY_WRITE_TOKEN
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   mkdir -p "$TMPDIR/clone/configs/codex"
   cp "$BLUEPRINT_ROOT/configs/codex/config.toml" "$TMPDIR/clone/configs/codex/config.toml"
@@ -639,7 +639,7 @@ _codex_model() { sed -n 's/^model = "\(.*\)"$/\1/p' "$1"; }
 }
 
 @test "Codex rendered comments stay generic while configured server and HOME values render" {
-  export MEMORY_ROUTER_TOKEN=synthetic-comment-test
+  export MEMORY_WRITE_TOKEN=synthetic-comment-test
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   _substitute_file_to "$BLUEPRINT_ROOT/configs/codex/config.toml" "$TMPDIR/out.toml"
   grep '^#' "$TMPDIR/out.toml" > "$TMPDIR/comments"
@@ -856,17 +856,7 @@ _codex_model() { sed -n 's/^model = "\(.*\)"$/\1/p' "$1"; }
   [ "$status" -eq 0 ]
 }
 
-@test "_substitute_file_to: memory-router header prefers MEMORY_WRITE_TOKEN" {
-  export MEMORY_ROUTER_TOKEN=read-tok MEMORY_WRITE_TOKEN=write-tok
-  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
-  mkdir -p "$TMPDIR/clone/configs/cursor"
-  cp "$BLUEPRINT_ROOT/configs/cursor/mcp.json" "$TMPDIR/clone/configs/cursor/mcp.json"
-  _substitute_file_to "$TMPDIR/clone/configs/cursor/mcp.json" "$TMPDIR/out.json"
-  jq -e '.mcpServers["memory-router"].headers.Authorization == "Bearer write-tok"' "$TMPDIR/out.json"
-}
-
 @test "_substitute_file_to: a write token alone keeps the memory-router server" {
-  unset MEMORY_ROUTER_TOKEN
   export MEMORY_WRITE_TOKEN=write-only
   source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
   mkdir -p "$TMPDIR/clone/configs/codex"
@@ -874,4 +864,18 @@ _codex_model() { sed -n 's/^model = "\(.*\)"$/\1/p' "$1"; }
   _substitute_file_to "$TMPDIR/clone/configs/codex/config.toml" "$TMPDIR/out.toml"
   grep -q '^\[mcp_servers.memory-router\]' "$TMPDIR/out.toml"
   grep -q 'Bearer write-only' "$TMPDIR/out.toml"
+}
+
+@test "_substitute_file_to: the retired read-token name alone no longer keeps memory-router" {
+  # Built piecewise so a grep for the retired name finds only the design doc.
+  local old_name="MEMORY_ROUTER"; old_name+="_TOKEN"
+  unset MEMORY_WRITE_TOKEN
+  export "$old_name=legacy-read-tok"
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$TMPDIR/clone/configs/cursor"
+  cp "$BLUEPRINT_ROOT/configs/cursor/mcp.json" "$TMPDIR/clone/configs/cursor/mcp.json"
+  _substitute_file_to "$TMPDIR/clone/configs/cursor/mcp.json" "$TMPDIR/out.json"
+  run jq -e '.mcpServers["memory-router"]' "$TMPDIR/out.json"
+  [ "$status" -ne 0 ]
+  if grep -q 'legacy-read-tok' "$TMPDIR/out.json"; then false; fi
 }

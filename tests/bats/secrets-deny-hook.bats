@@ -970,7 +970,7 @@ _seed_codex_config() {
 
 @test "a quoted-marker python heredoc quoting a token expansion is allowed" {
   bash_hook "cd ~/wiki && python3 - <<'EOF'
-s = s.replace('x', 'compare sudo docker exec router sh -c '\"'\"'printf %s \"\$MEMORY_ROUTER_TOKEN\"'\"'\"' with the .secrets.env line')
+s = s.replace('x', 'compare sudo docker exec router sh -c '\"'\"'printf %s \"\$MEMORY_WRITE_TOKEN\"'\"'\"' with the .secrets.env line')
 EOF
 git diff --stat"
   allowed

@@ -131,10 +131,9 @@ answers on stdin.
 - The deny hook and the read-only container mount.
 - The "empty means skipped" rule.
 
-## Decided: `MEMORY_ROUTER_TOKEN` is retired
+## Decided: the read-only memory token is retired
 
 Owner decision 2026-11-22: every machine uses `MEMORY_WRITE_TOKEN`, which
-also authorizes search. `configs/memory/memory-hint` now prefers it and
-falls back to `MEMORY_ROUTER_TOKEN` only for an old store, the example drops
-`MEMORY_ROUTER_TOKEN`, and the "memory-router MCP skipped" warning names
-`MEMORY_WRITE_TOKEN`. The example now matches the owner's 11 keys exactly.
+also authorizes search. The example lists only that key, and the
+"memory-router MCP skipped" warning names `MEMORY_WRITE_TOKEN`. The example
+now matches the owner's 11 keys exactly. The old name `MEMORY_ROUTER_TOKEN` was removed from the blueprint on 2026-11-23 because read tokens no longer exist.

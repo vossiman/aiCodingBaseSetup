@@ -320,9 +320,9 @@ EOF
   [ -z "$(find "$HOME/.codex" -name '*.bak.*')" ]
 }
 
-@test "install-host.sh: absent MEMORY_ROUTER_TOKEN deploys no memory-router, keeps a manual one" {
+@test "install-host.sh: absent MEMORY_WRITE_TOKEN deploys no memory-router, keeps a manual one" {
   export AICODINGSETUP_SKIP_NETWORK=1
-  unset MEMORY_ROUTER_TOKEN
+  unset MEMORY_WRITE_TOKEN
   mkdir -p "$HOME/.cursor"
   cat > "$HOME/.cursor/mcp.json" <<'EOF'
 {

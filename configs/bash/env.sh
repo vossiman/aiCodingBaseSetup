@@ -24,7 +24,7 @@
 #                    (lib/blueprint-deploy.sh) expand {{FIRECRAWL_API_KEY}} &
 #                    co. at DEPLOY time, and load_secrets_env sources the file
 #                    itself for that. It never used the interactive shell.
-#   memory-hint    — reads MEMORY_ROUTER_TOKEN from the file when the env var
+#   memory-hint    — reads MEMORY_WRITE_TOKEN from the file when the env var
 #                    is absent (configs/memory/memory-hint) — the pattern to
 #                    copy for anything new.
 #   memory-lanes   — scripts/stack-env.sh reads the file directly.
@@ -51,7 +51,7 @@
 unset GH_TOKEN GITHUB_TOKEN
 unset FIRECRAWL_API_KEY BRAVE_API_KEY
 unset CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID
-unset MEMORY_ROUTER_TOKEN MEMORY_WRITE_TOKEN OPENROUTER_API_KEY
+unset MEMORY_WRITE_TOKEN OPENROUTER_API_KEY
 unset LOGFIRE_TOKEN DOKPLOY_API_TOKEN KANBAN_TOKEN
 unset BUGSINK_AUTH_TOKEN KUMA_ADMIN_USER KUMA_ADMIN_PASSWORD LOGFIRE_READ_API_TOKEN
 unset LEANIPTV_DIAG_TOKEN_PROD LEANIPTV_DIAG_TOKEN_STAGING

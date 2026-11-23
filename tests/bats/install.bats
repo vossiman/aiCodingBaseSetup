@@ -720,7 +720,7 @@ echo "\$@" >> '$TMPDIR/claude-calls'
 exit 0
 EOF
   chmod +x "$TMPDIR/stubs/claude"
-  export MEMORY_ROUTER_TOKEN=testtoken
+  export MEMORY_WRITE_TOKEN=testtoken
 
   _run_install_fn "$(_isolated_path)" install_claude_mcps
   [ "$status" -eq 0 ]
@@ -730,14 +730,14 @@ EOF
   echo "$line" | grep -q "Authorization: Bearer testtoken"
 }
 
-@test "install_claude_mcps: skips memory-router when MEMORY_ROUTER_TOKEN is unset" {
+@test "install_claude_mcps: skips memory-router when MEMORY_WRITE_TOKEN is unset" {
   cat > "$TMPDIR/stubs/claude" <<EOF
 #!/bin/sh
 echo "\$@" >> '$TMPDIR/claude-calls'
 exit 0
 EOF
   chmod +x "$TMPDIR/stubs/claude"
-  unset MEMORY_ROUTER_TOKEN
+  unset MEMORY_WRITE_TOKEN
 
   _run_install_fn "$(_isolated_path)" install_claude_mcps
   [ "$status" -eq 0 ]
@@ -768,7 +768,7 @@ esac
 exit 0
 EOF
   chmod +x "$TMPDIR/stubs/claude"
-  export MEMORY_ROUTER_TOKEN=testtoken
+  export MEMORY_WRITE_TOKEN=testtoken
 
   _run_install_fn "$(_isolated_path)" install_claude_mcps
   [ "$status" -eq 0 ]
@@ -804,7 +804,7 @@ esac
 exit 0
 EOF
   chmod +x "$TMPDIR/stubs/claude"
-  export MEMORY_ROUTER_TOKEN=testtoken
+  export MEMORY_WRITE_TOKEN=testtoken
   _seed_mr_fingerprint testtoken
 
   _run_install_fn "$(_isolated_path)" install_claude_mcps
@@ -827,7 +827,7 @@ esac
 exit 0
 EOF
   chmod +x "$TMPDIR/stubs/claude"
-  export MEMORY_ROUTER_TOKEN=rotated-token
+  export MEMORY_WRITE_TOKEN=rotated-token
   _seed_mr_fingerprint old-token
 
   _run_install_fn "$(_isolated_path)" install_claude_mcps
@@ -854,7 +854,7 @@ esac
 exit 0
 EOF
   chmod +x "$TMPDIR/stubs/claude"
-  export MEMORY_ROUTER_TOKEN=testtoken
+  export MEMORY_WRITE_TOKEN=testtoken
 
   _run_install_fn "$(_isolated_path)" install_claude_mcps
   [ "$status" -eq 0 ]
@@ -877,7 +877,7 @@ esac
 exit 0
 EOF
   chmod +x "$TMPDIR/stubs/claude"
-  export MEMORY_ROUTER_TOKEN=testtoken
+  export MEMORY_WRITE_TOKEN=testtoken
 
   _run_install_fn "$(_isolated_path)" install_claude_mcps
   [ "$status" -eq 0 ]
@@ -1937,7 +1937,7 @@ CLOUDFLARE_API_TOKEN=FPRINT-CF-TOKEN-2b9d41
 CLOUDFLARE_ACCOUNT_ID=FPRINT-CF-ACCT-2b9d41
 FIRECRAWL_API_KEY=FPRINT-FC-2b9d41
 BRAVE_API_KEY=FPRINT-BR-2b9d41
-MEMORY_ROUTER_TOKEN=FPRINT-MR-2b9d41
+MEMORY_WRITE_TOKEN=FPRINT-MR-2b9d41
 EOF
   chmod 600 "$HOME/.aicodingsetup/.secrets.env"
 
