@@ -21,7 +21,11 @@ _secrets_read_file() {
     n=$((n + 1))
     line="${line%$'\r'}"
     [[ -z "${line//[[:space:]]/}" || "$line" =~ ^[[:space:]]*# ]] && continue
-    [[ "$line" == "export "* ]] && line="${line#export }"
+    # The sourcing shell accepts leading blanks and any blanks after export.
+    line="${line#"${line%%[![:space:]]*}"}"
+    if [[ "$line" =~ ^export[[:space:]]+ ]]; then
+      line="${line#"${BASH_REMATCH[0]}"}"
+    fi
     key="${line%%=*}"
     if [[ "$line" != *=* || ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
       warn "$file line $n is not KEY=value; ignored"
@@ -66,13 +70,24 @@ load_or_prompt_secrets() {
   if [[ ! -f "$SECRETS_FILE" || "$can_prompt" == "true" ]] \
       && command -v flock >/dev/null 2>&1 \
       && { exec {lock_fd}>>"$SECRETS_DIR/.secrets.lock"; } 2>/dev/null; then
-    flock "$lock_fd" || { exec {lock_fd}>&-; lock_fd=""; }
+    flock -w 30 "$lock_fd" || { exec {lock_fd}>&-; lock_fd=""; }
   fi
 
   local rc=0
   _secrets_load_prompt_write || rc=$?
   [[ -n "$lock_fd" ]] && exec {lock_fd}>&-
   return "$rc"
+}
+
+# Host stores are owner-only. chmod in place: containers bind the inode, and
+# go-rwx never adds owner write to a 0400 store.
+_secrets_tighten_mode() {
+  [[ "$ENV_TYPE" == "container" || ! -O "$SECRETS_FILE" ]] && return 0
+  local mode
+  mode=$(stat -c %a "$SECRETS_FILE" 2>/dev/null) || return 0
+  (( 8#$mode & 077 )) || return 0
+  chmod go-rwx "$SECRETS_FILE" 2>/dev/null \
+    || warn "Could not tighten permissions on $SECRETS_FILE"
 }
 
 _secrets_load_prompt_write() {
@@ -82,12 +97,31 @@ _secrets_load_prompt_write() {
     existed=true
     info "Found existing secrets file"
     _secrets_read_file secrets "$SECRETS_FILE" || return 1
+    _secrets_tighten_mode
   else
     info "No secrets file found — will prompt for all keys"
   fi
 
   # Keys with empty values are "skipped", not missing, and are never asked again.
-  local new_keys=() key value
+  local new_keys=() key value missing=()
+  for key in "${required_keys[@]}"; do
+    [[ -v "secrets[$key]" ]] || missing+=("$key")
+  done
+
+  # Fail before the first prompt if the write we are about to ask for cannot happen.
+  if [[ "$existed" != "true" || ( ${#missing[@]} -gt 0 && "$can_prompt" == "true" ) ]]; then
+    if [[ -z "$lock_fd" ]]; then
+      err "Could not lock $SECRETS_DIR/.secrets.lock; not writing $SECRETS_FILE"
+      return 1
+    fi
+    if [[ "$existed" == "true" && ! -w "$SECRETS_FILE" ]]; then
+      err "Could not append ${missing[*]} to $SECRETS_FILE: not writable"
+      return 1
+    elif [[ "$existed" != "true" && ! -w "$SECRETS_DIR" ]]; then
+      err "Could not create $SECRETS_FILE: $SECRETS_DIR is not writable"
+      return 1
+    fi
+  fi
   for key in "${required_keys[@]}"; do
     if [[ -v "secrets[$key]" ]]; then
       if [[ -n "${secrets[$key]}" ]]; then
@@ -113,11 +147,6 @@ _secrets_load_prompt_write() {
       secrets["$key"]=""
     fi
   done
-
-  if [[ ( "$existed" != "true" || ${#new_keys[@]} -gt 0 ) && -z "$lock_fd" ]]; then
-    err "Could not lock $SECRETS_DIR/.secrets.lock; not writing $SECRETS_FILE"
-    return 1
-  fi
 
   if [[ "$existed" != "true" ]]; then
     local buf=$'# AI Coding Base Setup — Secrets\n# Created by install.sh — do not commit\n\n'
