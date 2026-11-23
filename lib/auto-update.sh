@@ -260,9 +260,31 @@ aicoding_auto_update_once() {
 _aicoding_auto_version_retention() {
   # Suite runs of real passes must never prune whatever home they resolve.
   [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ] || return 0
-  local lib="${BASH_SOURCE[0]%/*}/version-retention.sh"
+  local lib
+  # A long-lived worker runs the active release's retention, not its own copy.
+  lib=$(_aicoding_auto_current_retention_lib) || lib="${BASH_SOURCE[0]%/*}/version-retention.sh"
   [ -f "$lib" ] || return 0
   ( . "$lib" && aicoding_version_retention ) || true
+}
+
+# The retention library of the release current/aicoding points at: its own
+# target must be exactly ../versions/aicoding/<name> or the absolute form, a
+# real release directory, and the library a regular file.
+_aicoding_auto_current_retention_lib() {
+  local data=${AICODING_DATA_DIR:-$HOME/.local/share/aicoding} real raw name= lib
+  real=$(readlink -e -- "$data" 2>/dev/null) || return 1
+  [ -L "$data/current/aicoding" ] && raw=$(readlink -- "$data/current/aicoding") || return 1
+  case "$raw" in
+    ../versions/aicoding/*) name=${raw#../versions/aicoding/} ;;
+    "$data"/versions/aicoding/*) name=${raw#"$data"/versions/aicoding/} ;;
+    "$real"/versions/aicoding/*) name=${raw#"$real"/versions/aicoding/} ;;
+  esac
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || return 1
+  case "$name" in *.staging.*|*.replaced.*) return 1 ;; esac
+  [ -d "$real/versions/aicoding/$name" ] && [ ! -L "$real/versions/aicoding/$name" ] || return 1
+  lib="$real/versions/aicoding/$name/lib/version-retention.sh"
+  [ -f "$lib" ] && [ ! -L "$lib" ] || return 1
+  printf '%s\n' "$lib"
 }
 
 _aicoding_auto_update_execute_once() {

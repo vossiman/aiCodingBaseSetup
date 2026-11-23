@@ -1,9 +1,10 @@
 # lib/version-retention.sh: host-only pruning of provably unused releases.
 # A directory versions/<component>/<name> is removed only when every keep rule
 # below has cleared it on every run for a whole observation window; anything
-# unclear keeps it. The auxiliary trees browser-cache/mcp-playwright/<name> and
-# sources/<component>/<name> follow their release: they become candidates only
-# once it is gone. Containers never prune: a rebuild wipes the tree anyway.
+# unclear keeps it. The browser cache browser-cache/mcp-playwright/<name>
+# follows its release: it becomes a candidate only once that is gone. Source
+# snapshots under sources/ are never touched. Containers never prune: a rebuild
+# wipes the tree anyway.
 # Sourced; does not change shell options.
 #
 #   AICODING_RETENTION        unset|on (remove), preview (log only), off
@@ -54,7 +55,7 @@ _aicoding_retention_date() { date -d "@$1" '+%Y-%m-%d %H:%M' 2>/dev/null || prin
 _aicoding_retention_mark_path() {
   local path=$1 pid=${2:-} rest comp name
   case "$path" in
-    "$data/browser-cache"|"$data/browser-cache"/*|"$data/sources"|"$data/sources"/*)
+    "$data/browser-cache"|"$data/browser-cache"/*)
       _aicoding_retention_mark_aux "$path" "$pid"; return 0 ;;
     "$_vroot"/*) ;;
     *) return 0 ;;
@@ -71,8 +72,8 @@ _aicoding_retention_mark_path() {
   used[$comp/$name]=1
 }
 
-# The auxiliary tree browser-cache/<c>/<name> or sources/<c>/<name> a
-# canonical path lies in; a path on an auxiliary root keeps more.
+# The auxiliary tree browser-cache/<c>/<name> a canonical path lies in; a
+# path on an auxiliary root keeps more.
 _aicoding_retention_mark_aux() {
   local path=$1 pid=${2:-} rest kind comp name
   [ -z "$pid" ] || held[$pid]=1
@@ -96,7 +97,7 @@ _aicoding_retention_mark_tokens() {
   done
 }
 
-# Mark every browser-cache/<c>/<name> and sources/<c>/<name> token from stdin.
+# Mark every browser-cache/<c>/<name> token from stdin.
 _aicoding_retention_mark_aux_tokens() {
   local token
   while IFS= read -r token; do aux_used[:$token]=1; done
@@ -121,11 +122,18 @@ _aicoding_retention_glob_quote() {
   printf '%s' "$s"
 }
 
+# Interpreters whose first operand is the program they run.
+_aicoding_retention_interpreter() {
+  case "$1" in python|python3|node|nodejs|bash|sh|dash|perl|ruby|bun) return 0 ;; esac
+  [[ "$1" =~ ^python3\.[0-9]+$ ]]
+}
+
 # Set _belongs to the components a process's comm and argv name, and
-# _belongs_known to those whose release its command line names exactly.
+# _belongs_known to those whose release the program itself names: argv[0], or
+# the first operand of an interpreter, is a canonical path inside that release.
 # EXE is the process's executable link, empty when it could not be read.
 _aicoding_retention_belongs() {
-  local comm=$1 exe=$2 arg d rest c base kind ebase= foreign=0 m canon
+  local comm=$1 exe=$2 arg d rest c base kind ebase= foreign=0 m canon prog=
   local re="^(${_AICODING_RETENTION_SEG})(/(${_AICODING_RETENTION_SEG}))?"
   local -A named_rel=() named_cur=()
   shift 2
@@ -149,12 +157,26 @@ _aicoding_retention_belongs() {
           [ -n "${BASH_REMATCH[3]}" ] || continue
           # A named release is used, whatever the process holds open.
           used[$c/${BASH_REMATCH[3]}]=1
-          [ "$canon" = 0 ] || named_rel[$c]=1
         done
       done
       _aicoding_retention_belongs_aux "$arg" "$d" "$canon"
     done
   done
+  if [ "$#" -gt 0 ]; then
+    prog=$1
+    if _aicoding_retention_interpreter "${1##*/}"; then
+      prog=
+      for arg in "${@:2}"; do
+        [[ "$arg" == -* ]] || { prog=$arg; break; }
+      done
+    fi
+    case "$prog" in */../*|*/./*|*/..|*/.) prog= ;; esac
+    for d in "${data_prefixes[@]}"; do
+      [[ "$prog" == "$d/versions/"* ]] || continue
+      rest=${prog#"$d/versions/"}
+      [[ "$rest" =~ ^(${_AICODING_RETENTION_SEG})/${_AICODING_RETENTION_SEG}/. ]] && named_rel[${BASH_REMATCH[1]}]=1
+    done
+  fi
   for c in "${!named_rel[@]}"; do
     [ -n "${named_cur[$c]:-}" ] || _belongs_known+=" $c"
   done
@@ -186,7 +208,7 @@ _aicoding_retention_belongs_aux() {
   local re="^/(${_AICODING_RETENTION_SEG})/(${_AICODING_RETENTION_SEG})"
   case "$arg" in *"$d/"*) ;; *) return 0 ;; esac
   [ "$canon" = 1 ] || { aux_keep_all=1; return 0; }
-  for kind in browser-cache sources; do
+  for kind in browser-cache; do
     rest=$arg
     while [[ "$rest" == *"$d/$kind"* ]]; do
       rest=${rest#*"$d/$kind"}
@@ -220,13 +242,14 @@ _aicoding_retention_scan_proc() {
   # Bytes throughout: under UTF-8, read joins a line cut mid-character to the next.
   local LC_ALL=C
   local me=$BASHPID end=aicoding-retention-scan-end line rest p kind val uid euid
-  local path target arg m c q comm hit depth st_ended=0 fd_ended=0 map_ended=0 rc=0 _belongs _belongs_known
+  local path target arg m c q i comm hit depth st_ended=0 fd_ended=0 map_ended=0 rc=0 _belongs _belongs_known
   local -a status_files=() mine=() starts=() maps=() args=() managed=()
   local -A ppid=() pstate=() pstart=() pname=() is_mine=() bad=() seen_exe=() seen_cwd=() exe_of=()
   local _stat_state _stat_start
   local -A belongs=() known=() inspected=() warned=()
   for m in "$AICODING_DATA_DIR" "$data" "$HOME/.local/bin" "$(readlink -e -- "$HOME/.local/bin" 2>/dev/null)"; do
     [ -n "$m" ] || continue
+    while [[ "$m" == *//* ]]; do m=${m//\/\//\/}; done
     while [ "${m%/}" != "$m" ]; do m=${m%/}; done
     [ -n "$m" ] && managed+=("$m")
   done
@@ -280,11 +303,11 @@ _aicoding_retention_scan_proc() {
     [ -n "$target" ] || continue
     case "$kind" in exe) seen_exe[$p]=1; exe_of[$p]=$target ;; cwd) seen_cwd[$p]=1 ;; esac
     case "$target" in
-      "$_vroot"/*|"$data/browser-cache"/*|"$data/sources"/*) _aicoding_retention_mark_path "$target" "$p" ;;
+      "$_vroot"/*|"$data/browser-cache"|"$data/browser-cache"/*) _aicoding_retention_mark_path "$target" "$p" ;;
     esac
   done < <(s=0; LC_ALL=C find "${starts[@]}" -maxdepth 1 \
              \( ! -path "$gproc/*/fd/*" -o -lname "$gvroot/*" -o -lname "$gdata/browser-cache/*" \
-                -o -lname "$gdata/sources/*" \) -printf '%p\0%l\0' 2>"$_work/find.err" || s=$?
+                -o -lname "$gdata/browser-cache" \) -printf '%p\0%l\0' 2>"$_work/find.err" || s=$?
            [ "$s" -lt 126 ] && printf '%s\0\0' "$end")
   [ "$fd_ended" = 1 ] || return 1
   _aicoding_retention_attribute_errors "$_work/find.err" || return 1
@@ -296,8 +319,7 @@ _aicoding_retention_scan_proc() {
     [ "$p" != "$me" ] || case "$line" in *'[stack]'*) self_map=1 ;; esac
     case "$line" in *" $_vroot/"*) _aicoding_retention_mark_path "$_vroot/${line#*" $_vroot/"}" "$p" ;; esac
     case "$line" in *" $data/browser-cache/"*) _aicoding_retention_mark_path "$data/browser-cache/${line#*" $data/browser-cache/"}" "$p" ;; esac
-    case "$line" in *" $data/sources/"*) _aicoding_retention_mark_path "$data/sources/${line#*" $data/sources/"}" "$p" ;; esac
-  done < <(s=0; LC_ALL=C grep -H -F -e "$_vroot/" -e "$data/browser-cache/" -e "$data/sources/" -e '[stack]' \
+  done < <(s=0; LC_ALL=C grep -H -F -e "$_vroot/" -e "$data/browser-cache/" -e '[stack]' \
              -- "${maps[@]}" 2>"$_work/maps.err" || s=$?
            [ "$s" -lt 126 ] && printf '%s\n' "$end")
   [ "$map_ended" = 1 ] || return 1
@@ -314,6 +336,10 @@ _aicoding_retention_scan_proc() {
     args=()
     if mapfile -d '' -t args 2>/dev/null < "$proc/$p/cmdline"; then
       cmd_ok[$p]=1
+      # a//b names a/b: collapse repeated separators before any match.
+      for i in "${!args[@]}"; do
+        while [[ "${args[$i]}" == *//* ]]; do args[$i]=${args[$i]//\/\//\/}; done
+      done
       for arg in "${args[@]}"; do
         for m in "${managed[@]}"; do
           case "$arg" in *"$m/"*|*"$m") cmd_managed[$p]=1; break 2 ;; esac
@@ -447,13 +473,13 @@ _aicoding_retention_walk_link() {
         walk_comps[$c]=1; walk_rels[$c/$r]=1
         [ "$c/$r" = "$owner" ] || used[$c/$r]=1 ;;
       "$_vroot"/*) r=${nxt#"$_vroot"/}; walk_comps[$r]=1; walk_rels[$r]=1 ;;
-      "$data/browser-cache"/*/*|"$data/sources"/*/*)
+      "$data/browser-cache"/*/*)
         r=${nxt#"$data"/}; k=${r%%/*}; r=${r#*/}; c=${r%%/*}; r=${r#*/}; r=${r%%/*}
         walk_aux[$c]=1; walk_rels[:$k/$c/$r]=1
         [ ":$k/$c/$r" = "$owner" ] || aux_used[:$k/$c/$r]=1 ;;
-      "$data/browser-cache"/*|"$data/sources"/*)
+      "$data/browser-cache"/*)
         r=${nxt#"$data"/}; k=${r%%/*}; r=${r#*/}; walk_aux[$r]=1; walk_rels[:$k/$r]=1 ;;
-      "$data/browser-cache"|"$data/sources") walk_aux[:all]=1; walk_rels[:${nxt##*/}]=1 ;;
+      "$data/browser-cache") walk_aux[:all]=1; walk_rels[:${nxt##*/}]=1 ;;
     esac
     if [ -L "$nxt" ]; then
       n=$((n + 1))
@@ -475,17 +501,21 @@ _aicoding_retention_walk_link() {
 }
 
 # Walk one link; when it cannot be followed, keep every component it touched.
-# A link whose missing step lies inside its own release, and which touched no
-# other part of versions/, cannot lead anywhere else and keeps nothing.
+# A link whose missing step lies inside its own release or cache, and which
+# touched nothing else there but the directories above it, cannot lead
+# anywhere else and keeps nothing, whether its text is absolute or relative.
 _aicoding_retention_follow_link() {
-  local link=$1 raw=$2 owner=$3 rc=0 c
+  local link=$1 raw=$2 owner=$3 rc=0 c confined
   walk_comps=(); walk_rels=(); walk_aux=()
   _aicoding_retention_walk_link "$link" "$raw" "$owner" || rc=$?
   walk_rc=$rc
   [ "$rc" -ne 0 ] || return 0
-  if [ "$rc" -eq 2 ] && [ -n "$owner" ] && [ "${#walk_rels[@]}" -eq 1 ] \
-      && [ -n "${walk_rels[$owner]:-}" ]; then
-    return 0
+  if [ "$rc" -eq 2 ] && [ -n "$owner" ] && [ -n "${walk_rels[$owner]:-}" ]; then
+    confined=1
+    for c in "${!walk_rels[@]}"; do
+      [ "$c" = "$owner" ] || [ "$c" = "${owner%/*}" ] || [ "$c" = "${owner%%/*}" ] || confined=0
+    done
+    [ "$confined" = 0 ] || return 0
   fi
   for c in "${!walk_comps[@]}"; do keep_comp[$c]=1; done
   for c in "${!walk_aux[@]}"; do
@@ -520,7 +550,7 @@ _aicoding_retention_scan_links() {
       "$_vroot"/*/*/*)
         rest=${links[$i]#"$_vroot"/}; comp=${rest%%/*}; name=${rest#*/}; name=${name%%/*}
         owner="$comp/$name"; odir="$_vroot/$owner" ;;
-      "$data/browser-cache"/*/*/*|"$data/sources"/*/*/*)
+      "$data/browser-cache"/*/*/*)
         rest=${links[$i]#"$data"/}; kind=${rest%%/*}; rest=${rest#*/}
         comp=${rest%%/*}; name=${rest#*/}; name=${name%%/*}
         owner=":$kind/$comp/$name"; odir="$data/$kind/$comp/$name" ;;
@@ -563,7 +593,7 @@ _aicoding_retention_scan_bin() {
   [ "$rc" -le 1 ] || return 1
   _aicoding_retention_mark_tokens < "$_work/bin-tokens"
   rc=0
-  grep -aohE "(browser-cache|sources)/${_AICODING_RETENTION_SEG}/${_AICODING_RETENTION_SEG}" \
+  grep -aohE "browser-cache/${_AICODING_RETENTION_SEG}/${_AICODING_RETENTION_SEG}" \
     -- "${files[@]}" "${link_files[@]}" > "$_work/bin-tokens" 2>/dev/null || rc=$?
   [ "$rc" -le 1 ] || return 1
   _aicoding_retention_mark_aux_tokens < "$_work/bin-tokens"
@@ -611,7 +641,7 @@ _aicoding_retention_scan_links_bin() {
     _aicoding_retention_mark_tokens < <(printf '%s\n' "$raw" \
       | grep -aoE "versions/${_AICODING_RETENTION_SEG}/${_AICODING_RETENTION_SEG}")
     _aicoding_retention_mark_aux_tokens < <(printf '%s\n' "$raw" \
-      | grep -aoE "(browser-cache|sources)/${_AICODING_RETENTION_SEG}/${_AICODING_RETENTION_SEG}")
+      | grep -aoE "browser-cache/${_AICODING_RETENTION_SEG}/${_AICODING_RETENTION_SEG}")
   done < <(find "$bin" -type l -printf '%p\0%l\0' 2>/dev/null \
            && printf '%s\0\0' aicoding-retention-scan-end)
   return 1
@@ -794,20 +824,58 @@ _aicoding_retention_aux_base_ok() {
   done
 }
 
+# Mark the cache PATH lies in, unless it is OWN; with FINAL, a path that ends
+# on a cache root keeps every cache.
+_aicoding_retention_cache_hit() {
+  local path=$1 own=$2 final=${3:-} d rest
+  for d in "${data_prefixes[@]}"; do
+    case "$path" in
+      "$d/browser-cache/mcp-playwright"/*)
+        rest=${path#"$d/browser-cache/mcp-playwright"/}; rest=${rest%%/*}
+        [ "$rest" = "$own" ] || aux_used[:browser-cache/mcp-playwright/$rest]=1 ;;
+      "$d/browser-cache"|"$d/browser-cache/mcp-playwright")
+        [ -z "$final" ] || aux_keep[mcp-playwright]=1 ;;
+    esac
+  done
+}
+
+# Protect every cache one record line resolves into or passes through, read
+# step by step without the file system and then through readlink -m. A
+# relative line could mean any cache and keeps them all.
+_aicoding_retention_cache_record() {
+  local line=$1 own=$2 cur= rest part real
+  [ -n "$line" ] || return 0
+  [[ "$line" == /* ]] || { aux_keep[mcp-playwright]=1; return 0; }
+  rest=$line
+  while [ -n "$rest" ]; do
+    part=${rest%%/*}
+    if [[ "$rest" == */* ]]; then rest=${rest#*/}; else rest=; fi
+    case "$part" in
+      ''|.) continue ;;
+      ..) cur=${cur%/*}; continue ;;
+    esac
+    cur="$cur/$part"
+    _aicoding_retention_cache_hit "$cur" "$own"
+  done
+  _aicoding_retention_cache_hit "${cur:-/}" "$own" final
+  real=$(readlink -m -- "$line" 2>/dev/null) || { aux_keep[mcp-playwright]=1; return 0; }
+  _aicoding_retention_cache_hit "$real" "$own" final
+}
+
 # Playwright records in <cache>/.links/<hash> the package directory of every
 # installation that uses that cache, and in <cache>/.browser-bin the browser
 # it validated. A cache stays while any recorded package still exists, and
-# a cache that another cache's records name stays too. Anything unreadable
+# a cache that another cache's records reach stays too. Anything unreadable
 # keeps the cache, or every cache when it is unclear which one is meant.
 _aicoding_retention_scan_cache_links() {
-  local base=$1 dir name key links entry content
-  local -a entries=() files=() tokens=()
+  local base=$1 dir name key links entry content line
+  local -a entries=() records=() lines=()
   for dir in "$base"/*; do
     [ -d "$dir" ] && [ ! -L "$dir" ] || continue
     name=${dir##*/}
     _aicoding_retention_safe "$name" || continue
     key=":browser-cache/mcp-playwright/$name"
-    entries=(); files=()
+    entries=(); records=()
     links="$dir/.links"
     if [ -L "$links" ] || { [ -e "$links" ] && [ ! -d "$links" ]; }; then
       aux_used[$key]=1
@@ -818,33 +886,38 @@ _aicoding_retention_scan_cache_links() {
     fi
     for entry in "${entries[@]}"; do
       content=
-      if [ ! -f "$entry" ] || [ -L "$entry" ] \
-          || ! { IFS= read -r -d '' content || [ -n "$content" ]; } < "$entry" 2>/dev/null; then
-        aux_keep[mcp-playwright]=1; continue
-      fi
-      files+=("$entry")
+      if [ ! -f "$entry" ] || [ -L "$entry" ]; then aux_keep[mcp-playwright]=1; continue; fi
+      # Not negated: bash's ! does not invert the status of a failed redirection.
+      { IFS= read -r -d '' content || [ -n "$content" ]; } 2>/dev/null < "$entry" \
+        || { aux_keep[mcp-playwright]=1; continue; }
       content=${content%$'\n'}
-      # A relative or multi-line record cannot be checked.
-      if [[ "$content" != /* ]] || [[ "$content" == *$'\n'* ]] || [ -e "$content" ] || [ -L "$content" ]; then
+      records+=("$content")
+      # A multi-line record cannot be checked.
+      if [[ "$content" == *$'\n'* ]] || [ -e "$content" ] || [ -L "$content" ]; then
         aux_used[$key]=1
       fi
     done
     entry="$dir/.browser-bin"
     if [ -f "$entry" ] && [ ! -L "$entry" ]; then
-      files+=("$entry")
+      if { mapfile -t lines < "$entry"; } 2>/dev/null; then
+        records+=("${lines[@]}")
+      else
+        aux_keep[mcp-playwright]=1
+      fi
     elif [ -e "$entry" ] || [ -L "$entry" ]; then
       aux_keep[mcp-playwright]=1
     fi
-    [ "${#files[@]}" -gt 0 ] || continue
-    mapfile -t tokens < <(s=0; grep -aohE "browser-cache/${_AICODING_RETENTION_SEG}/${_AICODING_RETENTION_SEG}" \
-                            -- "${files[@]}" 2>/dev/null || s=$?; printf 'rc=%s\n' "$s")
-    # 1 is "no match"; 2 is a file that could not be read.
-    case "${tokens[-1]}" in rc=0|rc=1) ;; *) aux_keep[mcp-playwright]=1; continue ;; esac
-    unset 'tokens[-1]'
-    for entry in "${tokens[@]}"; do
-      [ "$entry" = "browser-cache/mcp-playwright/$name" ] || aux_used[:$entry]=1
+    for content in "${records[@]}"; do
+      while IFS= read -r line; do
+        _aicoding_retention_cache_record "$line" "$name"
+      done <<< "$content"
     done
   done
+}
+
+# Only a cache provisioning made: a plain .links directory and a regular .browser-bin.
+_aicoding_retention_cache_managed() {
+  [ -d "$1/.links" ] && [ ! -L "$1/.links" ] && [ -f "$1/.browser-bin" ] && [ ! -L "$1/.browser-bin" ]
 }
 
 # Judge one candidate DIR=BASE/NAME of COMPONENT that no keep rule claims:
@@ -888,6 +961,7 @@ _aicoding_retention_candidate() {
           && rm -f -- "$stamp" && (set -C; : > "$stamp"); } 2>/dev/null || {
         _aicoding_retention_warn "cannot record when $label was first seen unused; keeping every $comp version this run"
         keep_comp[$comp]=1
+        return 1
       }
     fi
   fi
@@ -979,8 +1053,8 @@ _aicoding_retention_main() {
   fi
 
   local -A used=() keep_comp=() comp_known=() held=() held_comp=() launcher_comp=() comm_comp=()
-  # Auxiliary trees (browser-cache/<c>/<name>, sources/<c>/<name>) follow their release.
-  local -A aux_used=() aux_keep=() pointed=()
+  # The browser cache (browser-cache/mcp-playwright/<name>) follows its release.
+  local -A aux_used=() aux_keep=() pointed=() rel_present=()
   local aux_keep_all=0
   local -a comps=() mounts=() data_prefixes=()
   local entry comp link lock fd _work m
@@ -988,6 +1062,7 @@ _aicoding_retention_main() {
   # shellcheck disable=SC2064
   trap "rm -rf -- $(printf '%q' "$_work")" EXIT
   for m in "$AICODING_DATA_DIR" "$data"; do
+    while [[ "$m" == *//* ]]; do m=${m//\/\//\/}; done
     while [ "${m%/}" != "$m" ]; do m=${m%/}; done
     [ -n "$m" ] && data_prefixes+=("$m")
   done
@@ -997,6 +1072,7 @@ _aicoding_retention_main() {
     [ -d "$entry" ] && [ ! -L "$entry" ] && _aicoding_retention_safe "$comp" || continue
     comps+=("$comp")
     comp_known[$comp]=1
+    for link in "$entry"/*; do rel_present[$comp/${link##*/}]=1; done
     # Activation locks: a component being activated is left alone.
     for lock in "$AICODING_STATE_DIR/locks/$comp.lock" "$data/.$comp-install.lock"; do
       [ -e "$lock" ] || continue
@@ -1067,42 +1143,42 @@ _aicoding_retention_main() {
     done
   done
 
-  # Auxiliary trees, after the releases: a release removed above is gone now.
-  local rel base asd key aux_count=0 aux_total=0 aux_failed=0 aux_waiting=0
+  # The browser cache, after the releases. Only a cache whose release was
+  # already absent when the run began is a candidate, so preview and removal
+  # agree and a release and its cache never go on the same run.
+  local rel=browser-cache/mcp-playwright base asd key aux_count=0 aux_total=0 aux_failed=0 aux_waiting=0
   local -A aux_ns=() aux_warned=()
-  for comp in "${comps[@]}"; do
-    for rel in browser-cache/mcp-playwright "sources/$comp"; do
-      [ "$rel" != browser-cache/mcp-playwright ] || [ "$comp" = mcp-playwright ] || continue
-      _aicoding_retention_aux_base_ok "$rel" || continue
-      base="$data/$rel"
-      asd="$sroot/.aux.${rel//\//.}"
-      _aicoding_retention_stamp_dir_ok "$asd" "every $rel tree" || continue
-      aux_ns[${asd##*/}]=$base
-      [ "$rel" != browser-cache/mcp-playwright ] || _aicoding_retention_scan_cache_links "$base"
-      [ -n "${keep_comp[$comp]:-}${aux_keep[$comp]:-}" ] || [ "$aux_keep_all" = 1 ] \
-        || _aicoding_retention_leftovers "$base"
-      for dir in "$base"/*; do
-        name=${dir##*/}
-        [ -d "$dir" ] && [ ! -L "$dir" ] || continue
-        _aicoding_retention_safe "$name" || continue
-        key=":$rel/$name"
-        # Kept while its release, or anything else that names it, is there.
-        if [ -n "${keep_comp[$comp]:-}${aux_keep[$comp]:-}${aux_used[$key]:-}${pointed[$comp/$name]:-}" ] \
-            || [ "$aux_keep_all" = 1 ] || ! _aicoding_retention_release_name "$name" \
-            || [ -e "$_vroot/$comp/$name" ] || [ -L "$_vroot/$comp/$name" ]; then
-          [ "$mode" != remove ] || _aicoding_retention_stamp_drop "$asd/$name" "auxiliary tree $rel/$name" "$comp" || true
-          continue
-        fi
-        rc=0
-        _aicoding_retention_candidate "$comp" "$base" "$name" "$asd" "auxiliary tree $rel/$name" || rc=$?
-        case "$rc" in
-          0) aux_count=$((aux_count + 1)); aux_total=$((aux_total + _cand_kib)) ;;
-          2) aux_waiting=$((aux_waiting + 1)) ;;
-          3) aux_failed=$((aux_failed + 1)) ;;
-        esac
-      done
+  comp=mcp-playwright
+  base="$data/$rel"
+  asd="$sroot/.aux.${rel//\//.}"
+  if [ -n "${comp_known[$comp]:-}" ] && _aicoding_retention_aux_base_ok "$rel" \
+      && _aicoding_retention_stamp_dir_ok "$asd" "every $rel tree"; then
+    aux_ns[${asd##*/}]=$base
+    _aicoding_retention_scan_cache_links "$base"
+    [ -n "${keep_comp[$comp]:-}${aux_keep[$comp]:-}" ] || [ "$aux_keep_all" = 1 ] \
+      || _aicoding_retention_leftovers "$base"
+    for dir in "$base"/*; do
+      name=${dir##*/}
+      [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+      _aicoding_retention_safe "$name" || continue
+      key=":$rel/$name"
+      # Kept while its release, or anything else that names it, is there.
+      if [ -n "${keep_comp[$comp]:-}${aux_keep[$comp]:-}${aux_used[$key]:-}${pointed[$comp/$name]:-}" ] \
+          || [ -n "${rel_present[$comp/$name]:-}" ] || [ "$aux_keep_all" = 1 ] \
+          || ! _aicoding_retention_release_name "$name" || ! _aicoding_retention_cache_managed "$dir" \
+          || [ -e "$_vroot/$comp/$name" ] || [ -L "$_vroot/$comp/$name" ]; then
+        [ "$mode" != remove ] || _aicoding_retention_stamp_drop "$asd/$name" "auxiliary tree $rel/$name" "$comp" || true
+        continue
+      fi
+      rc=0
+      _aicoding_retention_candidate "$comp" "$base" "$name" "$asd" "auxiliary tree $rel/$name" || rc=$?
+      case "$rc" in
+        0) aux_count=$((aux_count + 1)); aux_total=$((aux_total + _cand_kib)) ;;
+        2) aux_waiting=$((aux_waiting + 1)) ;;
+        3) aux_failed=$((aux_failed + 1)) ;;
+      esac
     done
-  done
+  fi
 
   # Stamps of versions that no longer exist: never through a symlink, and
   # only regular files named like a version.
