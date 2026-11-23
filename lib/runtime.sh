@@ -248,10 +248,21 @@ aicoding_runtime_refresh_launchers() {
     pairs[$comp]+="$name $relative "
   done
   rm -f -- "$expected"
+  # Refresh only: activation must neither move nor rewrite either pointer.
+  local _aicoding_runtime_launchers_only=1 data_real
+  data_real=$(readlink -e -- "$AICODING_DATA_DIR" 2>/dev/null) || data_real=""
   for comp in "${!pairs[@]}"; do
     target=$(readlink -- "$AICODING_DATA_DIR/current/$comp" 2>/dev/null) || target=""
-    version=${target#"../versions/$comp/"}
-    if [ "$target" != "../versions/$comp/$version" ] || ! _aicoding_runtime_safe_segment "$version"; then
+    case "$target" in
+      "$AICODING_DATA_DIR/versions/$comp/"*) version=${target#"$AICODING_DATA_DIR/versions/$comp/"} ;;
+      "$data_real/versions/$comp/"*) version=${target#"$data_real/versions/$comp/"} ;;
+      *) version=${target#"../versions/$comp/"} ;;
+    esac
+    if ! _aicoding_runtime_safe_segment "$version" || {
+        [ "$target" != "../versions/$comp/$version" ] \
+          && [ "$target" != "$AICODING_DATA_DIR/versions/$comp/$version" ] \
+          && { [ -z "$data_real" ] || [ "$target" != "$data_real/versions/$comp/$version" ]; }
+      }; then
       printf 'aicoding runtime: %s launchers not refreshed: current pointer is not a release\n' "$comp" >&2
       rc=1
       continue
@@ -338,6 +349,16 @@ _aicoding_runtime_release_target() {
   local component=$1 link=$2 target version
   [ -L "$link" ] || return 1
   target=$(readlink -- "$link") || return 1
+  # A launcher refresh also accepts an absolute pointer, reported in relative
+  # form so that activation leaves it exactly as it is.
+  if [ "${_aicoding_runtime_launchers_only:-0}" = 1 ]; then
+    local data_real
+    data_real=$(readlink -e -- "$AICODING_DATA_DIR" 2>/dev/null) || data_real=""
+    case "$target" in
+      "$AICODING_DATA_DIR/versions/$component/"*) target="../${target#"$AICODING_DATA_DIR/"}" ;;
+      "$data_real/versions/$component/"*) [ -z "$data_real" ] || target="../${target#"$data_real/"}" ;;
+    esac
+  fi
   case "$target" in
     "../versions/$component/"*) version=${target#"../versions/$component/"} ;;
     *) return 1 ;;
@@ -470,6 +491,14 @@ aicoding_activate_version() (
       exec {lock_fd}>&-
       return 1
     fi
+  fi
+  # A launcher refresh never moves a pointer: the release must still be current.
+  if [ "${_aicoding_runtime_launchers_only:-0}" = 1 ] \
+      && { [ "$current_valid" -ne 1 ] || [ "$old_target" != "$desired_target" ]; }; then
+    trap - TERM INT HUP
+    rm -rf -- "$transaction" 2>/dev/null || true
+    exec {lock_fd}>&-
+    return 1
   fi
   if [ -e "$previous" ] || [ -L "$previous" ]; then
     [ -L "$previous" ] || {

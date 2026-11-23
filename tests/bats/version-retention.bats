@@ -621,6 +621,25 @@ launcher() {
   [ "$(stat -c %i "$HOME/.local/bin/aicodingtesttool")" = "$before" ]
 }
 
+@test "launcher refresh handles an absolute current pointer without moving any pointer" {
+  mkver tool 0.9.0; mkver tool 1.0.0
+  point current tool "$D/versions/tool/1.0.0"
+  point previous tool "$D/versions/tool/0.9.0"
+  launcher aicodingtesttool tool bin/tool
+  cp "$HOME/.local/bin/aicodingtesttool" "$TEST_ROOT/expected"
+  grep -v -e 'aicoding_lease' -e '^# Lease' "$TEST_ROOT/expected" > "$HOME/.local/bin/aicodingtesttool"
+  local cur prev cur_ino prev_ino
+  cur=$(readlink "$D/current/tool"); prev=$(readlink "$D/previous/tool")
+  cur_ino=$(stat -c %i "$D/current/tool"); prev_ino=$(stat -c %i "$D/previous/tool")
+  run bash -c '. "$1/lib/runtime.sh" && aicoding_runtime_refresh_launchers' _ "$BLUEPRINT_ROOT"
+  [ "$status" -eq 0 ]
+  cmp "$TEST_ROOT/expected" "$HOME/.local/bin/aicodingtesttool"
+  [ "$(readlink "$D/current/tool")" = "$cur" ]
+  [ "$(readlink "$D/previous/tool")" = "$prev" ]
+  [ "$(stat -c %i "$D/current/tool")" = "$cur_ino" ]
+  [ "$(stat -c %i "$D/previous/tool")" = "$prev_ino" ]
+}
+
 @test "sync refreshes managed launchers after updating components" {
   grep -q 'aicoding_runtime_refresh_launchers' "$BLUEPRINT_ROOT/lib/sync.sh"
 }
