@@ -14,7 +14,9 @@ Two store kinds, detected from the schema:
             get a same-length marker, because a length-delimited protobuf
             field carries its byte length in a varint prefix that a longer
             or shorter payload would falsify.
-  OpenCode  text columns rewritten row by row. v1 stores (message + part)
+  OpenCode  text columns rewritten row by row (a migrated store's legacy
+            `session` table keeps title, summary_diffs, metadata, revert and
+            permission, all scrubbed). v1 stores (message + part)
             and v2 stores (session_part + session_v2) are both recognised,
             and a migrated database holding both gets both scrubbed. The v2
             `blob` table is binary and content-addressed (blob_ref points at
@@ -43,6 +45,9 @@ OPENCODE_V1 = [
     ("part", "data", "session_id"),
     ("session", "title", "id"),
     ("session", "summary_diffs", "id"),
+    ("session", "metadata", "id"),
+    ("session", "revert", "id"),
+    ("session", "permission", "id"),
     ("todo", "content", "session_id"),
     ("session_input", "prompt", "session_id"),
     ("session_context_epoch", "baseline", "session_id"),
