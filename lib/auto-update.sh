@@ -231,9 +231,22 @@ aicoding_auto_update_once() {
     _aicoding_auto_atomic_number "$state/last-completed.json" \
       "{\"started_at\":$started,\"completed_at\":$completed,\"outcome\":\"$outcome\",\"exit_code\":$rc,\"source\":\"$source\"}" || rc=1
   fi
+  if [ "$rc" -eq 0 ] && [ "$AICODING_AUTO_UPDATE_PERFORMED" -eq 1 ]; then
+    _aicoding_auto_version_retention
+  fi
   rm -f -- "$state/run.json"
   exec {run_fd}>&-
   return "$rc"
+}
+
+# Host-only pruning of unused releases, still under run.lock; it takes
+# sync.lock itself and never changes the recorded pass result.
+_aicoding_auto_version_retention() {
+  # Suite runs of real passes must never prune whatever home they resolve.
+  [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ] || return 0
+  local lib="${BASH_SOURCE[0]%/*}/version-retention.sh"
+  [ -f "$lib" ] || return 0
+  ( . "$lib" && aicoding_version_retention ) || true
 }
 
 _aicoding_auto_update_execute_once() {

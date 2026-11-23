@@ -25,11 +25,41 @@ command unchanged. If an activation mutation fails, the runtime attempts to
 restore the prior state; an incomplete rollback retains its recovery directory
 and reports the path.
 
-Old release, source, and browser trees intentionally remain available because
-a running process may still hold a physical path after a pointer advances.
-Monitor disk use under `~/.local/share/aicoding`; do not delete retained trees
-solely by age or the `previous` pointer. Liveness-aware retention is tracked in
-`AICODINGBASESETUP-52`.
+A running process may still hold a physical path after a pointer advances, so
+old releases are never deleted by age or by the `previous` pointer alone. On a
+host (profile `host` or `minimal-pi`, outside a container), a successful
+scheduled pass ends with a retention step. It removes a directory
+`versions/<component>/<version>` only when all of these hold, and keeps it
+whenever any check is unclear:
+
+- it is a real directory, not a symlink, and its name has no leading dot and
+  no `.staging.` part, so staging and transaction trees are never touched;
+- `current/<component>` resolves to a release of that component, and any
+  `previous/<component>` resolves too; otherwise the whole component is kept;
+- no symlink anywhere under `~/.local/share/aicoding` (including every
+  `current/` and `previous/` pointer, relative or absolute) resolves into it;
+- no file or symlink in `~/.local/bin` names or resolves into it;
+- no process of the user has its executable, working directory, an open file
+  or a memory-mapped file inside it. If the `/proc` scan cannot be proven
+  complete, the run removes nothing;
+- the newer of its mtime and ctime is at least a day old
+  (`AICODING_RETENTION_GRACE`, in seconds);
+- the update lock (`sync.lock`) and the component's activation lock are free.
+
+The step runs inside the pass's `run.lock` after every component finished and
+only when the pass succeeded. Removal renames the version to a dot-prefixed
+tombstone in the same directory, then deletes it, so an interrupted removal
+never leaves a half-deleted tree under a valid version name; the next run
+finishes such a tombstone. Each removed version is logged with its size,
+followed by one total. A failed removal is a warning and never changes the
+pass result.
+
+`AICODING_RETENTION=preview` logs what would be removed and removes nothing;
+`AICODING_RETENTION=off` disables the step. `aicoding-auto-update
+--retention-preview` prints the same preview without an update pass.
+Containers never prune: a rebuild replaces their whole tree. Source snapshots
+under `sources/` and the Playwright browser cache under `browser-cache/` are
+not pruned on any machine.
 
 Source releases carry `.aicoding-version` and a retained-tree digest. Exact npm
 components retain the dependency tree and validate package metadata,
