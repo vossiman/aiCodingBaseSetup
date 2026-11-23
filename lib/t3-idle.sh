@@ -82,7 +82,7 @@ t3_idle_window() {
   [ -z "${T3_IDLE_WINDOW_HOOK:-}" ] || "$T3_IDLE_WINDOW_HOOK" start || true
   for ((i = 0; i < T3_IDLE_WINDOW; i++)); do
     sleep 1
-    t3_idle_procs; rc=$?
+    rc=0; t3_idle_procs || rc=$?
     [ -z "${T3_IDLE_WINDOW_HOOK:-}" ] || "$T3_IDLE_WINDOW_HOOK" scan "$rc" || true
     [ "$rc" -eq 0 ] || return 1
   done
