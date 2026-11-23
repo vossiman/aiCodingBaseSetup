@@ -43,6 +43,10 @@ esac
 exit 0
 STUB
   chmod +x "$TMPDIR/stubs/claude"
+  # Reseed gates run `<tool> --version`; never reach a real codex or opencode.
+  printf '#!/bin/sh\necho "codex-cli 0.171.0"\n' > "$TMPDIR/stubs/codex"
+  printf '#!/bin/sh\necho "opencode v2.3.1"\n' > "$TMPDIR/stubs/opencode"
+  chmod +x "$TMPDIR/stubs/codex" "$TMPDIR/stubs/opencode"
   # The real test host may have any tmux build. Keep installer tests offline
   # by presenting the exact pinned build through the test-owned marker.
   cat > "$TMPDIR/stubs/tmux" <<'STUB'
@@ -656,6 +660,7 @@ _isolated_path() { printf '%s' "$TMPDIR/stubs:/usr/bin:/bin"; }
 }
 
 @test "ensure_codex: runs the installer and keeps codex when curl works and codex is absent" {
+  rm -f "$TMPDIR/stubs/codex"  # this test is about an absent codex
   cat > "$TMPDIR/stubs/curl" <<EOF
 #!/bin/sh
 echo "(stub) curl-pipe-sh for codex installer ran" > "$TMPDIR/codex-install-attempted"
@@ -675,6 +680,7 @@ EOF
 }
 
 @test "ensure_codex: pipes the installer into a non-interactive sh (CODEX_NON_INTERACTIVE=1)" {
+  rm -f "$TMPDIR/stubs/codex"  # this test is about an absent codex
   # Upstream install.sh grew y/N prompts (reads /dev/tty, so piping alone
   # doesn't suppress them). Stub curl to emit a script that records what the
   # piped sh sees in CODEX_NON_INTERACTIVE.

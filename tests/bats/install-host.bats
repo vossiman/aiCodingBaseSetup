@@ -35,6 +35,10 @@ esac
 exit 0
 STUB
   chmod +x "$TMPDIR/stubs/claude"
+  # Reseed gates run `<tool> --version`; never reach a real codex or opencode.
+  printf '#!/bin/sh\necho "codex-cli 0.171.0"\n' > "$TMPDIR/stubs/codex"
+  printf '#!/bin/sh\necho "opencode v2.3.1"\n' > "$TMPDIR/stubs/opencode"
+  chmod +x "$TMPDIR/stubs/codex" "$TMPDIR/stubs/opencode"
   printf '#!/bin/bash\nexec /usr/bin/python3 "$@"\n' > "$TMPDIR/stubs/python3"
   chmod +x "$TMPDIR/stubs/python3"
   # dirname and jq are real passthroughs, not no-op stubs. install-host.sh's
