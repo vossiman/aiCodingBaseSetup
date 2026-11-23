@@ -16,7 +16,11 @@ The overseer keeps `.claude/dev-process-runs/<session>/overseer.md`, written
 for a reader who did not watch the run. `<session>` is
 `CLAUDE_CODE_SESSION_ID` in Claude and `CODEX_THREAD_ID` in Codex. A Codex
 overseer never uses `CLAUDE_CODE_SESSION_ID`: Codex can inherit a stale one
-from whatever launched it. Add `.claude/dev-process-runs/` to
+from whatever launched it. A Cursor overseer has no such variable, so it
+picks `cursor-<UTC time>-<random>` once at the start
+(`cursor-$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N3 -tx1 /dev/urandom | tr -d ' ')`),
+creates the run directory with `mkdir` (no `-p`, so a clash fails) and
+writes the id in Plan. Add `.claude/dev-process-runs/` to
 `.git/info/exclude` when the repo does not ignore it.
 
 Append an entry at each milestone (task prepared, handed off, accepted,
@@ -24,8 +28,9 @@ blocked or abandoned; review done; PR opened), never per tool call. Hard
 cap: 120 lines. Five sections, in this order:
 
 - **Plan**: plan or spec path and revision, tickets, base revision, the
-  overseer's session id and its current name (the `name` of the
-  `~/.claude/sessions/*.json` entry whose `sessionId` matches), and the
+  overseer's session id and, for a Claude overseer, its current name (the
+  `name` of the `~/.claude/sessions/*.json` entry whose `sessionId`
+  matches), each PR with its base, head and review, and the
   exact model id each route resolved to.
 - **Decisions**: each decision the plan did not settle, with a one-sentence
   reason and the commit, record or file that shows it. The implementer role
@@ -130,3 +135,9 @@ overseer's approval, recorded under Decisions with the reason.
 **Review.** One integrated review per run with `review-by-harness`, passing
 the reviewer route as `--harness` and `--model`, plus `--effort` only when the reviewer harness is claude or codex. Every
 reviewer is from another vendor than the entry harness.
+
+**Integration.** Worker branches never open their own PRs. The overseer
+reads each worker's diff and merges the accepted ones into one integration
+branch it owns, and that branch's PR gets the review. When the plan ships
+tasks as independent PRs instead, each PR gets one review; record that
+choice under Decisions.

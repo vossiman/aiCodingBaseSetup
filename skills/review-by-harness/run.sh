@@ -165,9 +165,42 @@ TITLE=$(gh pr view "$PR" --json title -q .title)
 WT="$REPO_DIR/.claude/worktrees/review-pr$PR-$HARNESS"
 OUT="$WT/.review-round"
 
+# One run per PR and harness at a time: the reset below would delete a
+# concurrent session's worktree mid-review. cleanup.sh takes the same lock.
+# flock is util-linux; without it (macOS) the run proceeds unlocked.
+if command -v flock >/dev/null; then
+    LOCK_DIR="$(cd "$(git rev-parse --git-common-dir)" && pwd)/review-by-harness"
+    mkdir -p "$LOCK_DIR"
+    exec 9>"$LOCK_DIR/pr$PR-$HARNESS.lock"
+    flock -n 9 || { echo "!!! another review of PR #$PR with $HARNESS is running; not touching $WT" >&2; exit 1; }
+fi
+
+# A fix pass's changes (edits, new files or commits) live only in this
+# worktree, and the reset below would drop them with the previous report.
+# fix-started is written before the fix adapter runs, so an interrupted pass
+# counts too; reviewed-head is the PR commit the run started from.
+# Trusted only when the PR does not track .review-round itself.
+if [ -d "$OUT" ] && [ ! -L "$OUT" ] && [ -f "$OUT/fix-started" ] &&
+   [ -z "$(git -C "$WT" ls-tree --name-only HEAD .review-round 2>/dev/null)" ]; then
+    _prev=$(head -c 64 "$OUT/reviewed-head" 2>/dev/null | tr -dc '0-9a-f')
+    _prev=$(git -C "$WT" rev-parse --verify --quiet "${_prev:-HEAD}^{commit}" || echo HEAD)
+    if ! git -C "$WT" diff --quiet "$_prev" 2>/dev/null ||
+       [ -n "$(git -C "$WT" ls-files --others --exclude-standard 2>/dev/null)" ]; then
+        echo "!!! $WT holds an earlier fix pass's changes. Incorporate them, then run" >&2
+        echo "!!! $SKILL_DIR/cleanup.sh $PR --harness $HARNESS --archive DIR --discard" >&2
+        exit 1
+    fi
+fi
+
 # Always re-fetch and reset: a PR head moves, and reviewing a stale commit
 # produces findings about code that is no longer there. (Seen 2026-08-27: two
 # runs minutes apart reviewed different commits and disagreed entirely.)
+# The fetched ref is shared by every harness's review of this PR; the per-PR
+# lock keeps cleanup.sh from deleting it between the fetch and worktree add.
+if command -v flock >/dev/null; then
+    exec 7>"$LOCK_DIR/pr$PR.lock"
+    flock -w 60 7 || { echo "!!! timed out waiting for the PR #$PR ref lock" >&2; exit 1; }
+fi
 git worktree remove --force "$WT" 2>/dev/null || true
 # refs/pull/N/head, not origin/<headRefName>: for a PR from a fork the head ref
 # is only the fork branch's short name, so fetching it from origin either fails
@@ -176,6 +209,7 @@ git worktree remove --force "$WT" 2>/dev/null || true
 git fetch origin "refs/pull/$PR/head:refs/review-by-harness/pr$PR" --force --quiet
 git fetch origin "$BASE" --quiet
 git worktree add --force -B "review-pr$PR-$HARNESS" "$WT" "refs/review-by-harness/pr$PR" >/dev/null
+exec 7>&-
 # The PR controls every checked-out path. Never accept its scratch directory
 # (or a symlink/file in its place): even a real directory can contain report
 # symlinks that redirect our writes. mkdir without -p claims a fresh directory
@@ -184,6 +218,7 @@ if ! mkdir -m 700 "$OUT"; then
     echo "!!! refusing pre-existing review scratch path: $OUT" >&2
     exit 1
 fi
+git -C "$WT" rev-parse HEAD > "$OUT/reviewed-head"
 jq -n --arg harness "$HARNESS" --arg model "${REVIEW_MODEL:-adapter-default}" \
     --arg effort "${REVIEW_EFFORT:-model-defined}" \
     '{harness:$harness, model:$model, effort:$effort}' > "$OUT/run.json"
@@ -345,6 +380,7 @@ fi
 [ "$RESTORE_UNSAFE" -eq 0 ] || { echo '!!! unsafe instruction changes; refusing fix pass'; exit 1; }
 echo "### phase B: fix"
 install_agents fix
+: > "$OUT/fix-started"
 "$ADAPTER" fix "$WT" "$OUT" || {
     echo "!!! fix failed"; tail -20 "$OUT/fix.err" 2>/dev/null
     echo "### (if this is a bubblewrap/uid-map error, see SKILL.md:"
