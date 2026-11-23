@@ -242,6 +242,78 @@ time.sleep(float(sys.argv[2]))' "$D/versions/claude/1.0.0/payload" "$HELPER_SLEE
   [[ "$output" == *"cannot prove"* ]]
 }
 
+# A fake proc entry without an exe link: fakeproc PID UID COMM [ARG...].
+fakeproc() {
+  local dir="$TEST_ROOT/proc/$1" uid=$2 comm=$3
+  shift 3
+  mkdir -p "$dir"
+  printf 'Name:\t%s\nUid:\t%s\t%s\t%s\t%s\n' "$comm" "$uid" "$uid" "$uid" "$uid" > "$dir/status"
+  printf '%s\n' "$comm" > "$dir/comm"
+  : > "$dir/cmdline"
+  [ "$#" -eq 0 ] || printf '%s\0' "$@" > "$dir/cmdline"
+  export _AICODING_RETENTION_PROC="$TEST_ROOT/proc"
+}
+
+@test "an uninspectable process naming the data directory removes nothing" {
+  fakeproc 4101 "$UID" claude node "$D/versions/claude/1.0.0/bin/tool" --token=sekrit-value
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/claude/1.0.0" ]
+  [[ "$output" == *"process 4101 (claude) cannot be inspected and runs from a managed path; nothing removed"* ]]
+  [[ "$output" != *"sekrit"* ]]
+  [[ "$output" != *"bin/tool"* ]]
+  # Through a symlinked data directory: the given and the resolved path both count.
+  ln -s "$D" "$TEST_ROOT/data-link"
+  export AICODING_DATA_DIR="$TEST_ROOT/data-link"
+  fakeproc 4101 "$UID" claude node "$TEST_ROOT/data-link/current/claude/bin/tool"
+  run aicoding_version_retention
+  [ -d "$D/versions/claude/1.0.0" ]
+  [[ "$output" == *"process 4101 (claude)"* ]]
+  fakeproc 4101 "$UID" claude "--root=$D"
+  run aicoding_version_retention
+  [ -d "$D/versions/claude/1.0.0" ]
+  [[ "$output" == *"process 4101 (claude)"* ]]
+}
+
+@test "an uninspectable process naming a launcher in ~/.local/bin removes nothing" {
+  fakeproc 4102 "$UID" codex /bin/sh "$HOME/.local/bin/codex" --api-key=sekrit-value
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/claude/1.0.0" ]
+  [[ "$output" == *"process 4102 (codex) cannot be inspected and runs from a managed path"* ]]
+  [[ "$output" != *"sekrit"* ]]
+}
+
+@test "an uninspectable process with an unreadable command line removes nothing" {
+  [ "$(id -u)" -ne 0 ] || skip "root reads mode 000 files"
+  fakeproc 4103 "$UID" helper /usr/bin/helper
+  chmod 000 "$TEST_ROOT/proc/4103/cmdline"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/claude/1.0.0" ]
+  [[ "$output" == *"process 4103 (helper) cannot be inspected and its command line cannot be read"* ]]
+}
+
+@test "uninspectable processes that name no managed path do not block pruning" {
+  fakeproc 4104 "$UID" ssh-agent /usr/bin/ssh-agent -D
+  fakeproc 4105 "$UID" zombie
+  # Another user's process is out of scope even when it names the data directory.
+  fakeproc 4106 "$((UID + 1))" claude node "$D/versions/claude/1.0.0/bin/tool"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ ! -e "$D/versions/claude/1.0.0" ]
+  [[ "$output" != *"cannot be inspected"* ]]
+}
+
+@test "an inspectable process is not judged by its command line" {
+  fakeproc 4107 "$UID" claude node "$D/versions/claude/1.0.0/bin/tool"
+  ln -s /usr/bin/env "$TEST_ROOT/proc/4107/exe"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ ! -e "$D/versions/claude/1.0.0" ]
+  [[ "$output" != *"cannot be inspected"* ]]
+}
+
 @test "an old unused version is removed and logged with its size" {
   run aicoding_version_retention
   [ "$status" -eq 0 ]

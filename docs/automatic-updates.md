@@ -41,7 +41,10 @@ whenever any check is unclear:
 - no file or symlink in `~/.local/bin` names or resolves into it;
 - no process of the user has its executable, working directory, an open file
   or a memory-mapped file inside it. If the `/proc` scan cannot be proven
-  complete, the run removes nothing;
+  complete, the run removes nothing. A process of the user whose executable
+  link cannot be read (a non-dumpable or setuid helper) also stops the whole
+  run when its command line names the data directory or `~/.local/bin`, or
+  cannot be read; the warning names only its pid and short name;
 - the newer of its mtime and ctime is at least a day old
   (`AICODING_RETENTION_GRACE`, in seconds);
 - the update lock (`sync.lock`) and the component's activation lock are free.

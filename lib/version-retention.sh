@@ -84,7 +84,64 @@ _aicoding_retention_scan_proc() {
     case "$line" in *" $_vroot/"*) _aicoding_retention_mark_path "$_vroot/${line#*" $_vroot/"}" ;; esac
   done < <(s=0; grep -H -F -e "$_vroot/" -e '[stack]' -- "${maps[@]}" 2>/dev/null || s=$?
            [ "$s" -lt 126 ] && printf '%s\n' "$end")
-  [ "$self_fd" = 1 ] && [ "$fd_ended" = 1 ] && [ "$self_map" = 1 ] && [ "$map_ended" = 1 ]
+  [ "$self_fd" = 1 ] && [ "$fd_ended" = 1 ] && [ "$self_map" = 1 ] && [ "$map_ended" = 1 ] || return 1
+  _aicoding_retention_scan_hidden
+}
+
+# The scans above cannot see a same-user process whose exe link is unreadable
+# (non-dumpable, or /proc/<pid> owned by root). Such a process fails the run
+# when its command line names a managed path or cannot be read. Needs data.
+_aicoding_retention_scan_hidden() {
+  # Test-only override of the proc root; the scans above always use /proc.
+  local proc=${_AICODING_RETENTION_PROC:-/proc}
+  local end=aicoding-retention-scan-end line p uid path target arg m comm hit rc=0
+  local st_ended=0
+  local -a status_files=() mine=() args=() managed=()
+  local -A readable=()
+  for m in "$AICODING_DATA_DIR" "$data" "$HOME/.local/bin" "$(readlink -e -- "$HOME/.local/bin" 2>/dev/null)"; do
+    [ -n "$m" ] || continue
+    while [ "${m%/}" != "$m" ]; do m=${m%/}; done
+    managed+=("$m")
+  done
+  status_files=("$proc"/[0-9]*/status)
+  [ "${#status_files[@]}" -gt 0 ] && [ -e "${status_files[0]}" ] || return 1
+  # status is world-readable even when the rest of /proc/<pid> is not.
+  while IFS= read -r line; do
+    [ "$line" = "$end" ] && { st_ended=1; continue; }
+    p=${line%/status:Uid:*}
+    [[ "${p##*/}" =~ ^[0-9]+$ ]] || continue
+    read -r uid _ <<< "${line#*/status:Uid:}"
+    [ "$uid" = "$UID" ] && mine+=("$p")
+  done < <(s=0; grep -H -m1 '^Uid:' -- "${status_files[@]}" 2>/dev/null || s=$?
+           [ "$s" -lt 126 ] && printf '%s\n' "$end")
+  [ "$st_ended" = 1 ] || return 1
+  [ "${#mine[@]}" -gt 0 ] || return 0
+  # An entry missing from this listing counts as unreadable, which fails closed.
+  while IFS= read -r -d '' path && IFS= read -r -d '' target; do
+    [ -n "$target" ] && readable[${path%/exe}]=1
+  done < <(find "${mine[@]/%//exe}" -maxdepth 0 -printf '%p\0%l\0' 2>/dev/null)
+  for p in "${mine[@]}"; do
+    [ -z "${readable[$p]:-}" ] || continue
+    hit=
+    if ! mapfile -d '' -t args 2>/dev/null < "$p/cmdline"; then
+      # A process that exited meanwhile uses nothing.
+      [ -e "$p" ] || continue
+      hit="its command line cannot be read"
+    else
+      for arg in "${args[@]}"; do
+        for m in "${managed[@]}"; do
+          case "$arg" in *"$m/"*|*"$m") hit="runs from a managed path"; break 2 ;; esac
+        done
+      done
+    fi
+    [ -n "$hit" ] || continue
+    comm=
+    IFS= read -r comm 2>/dev/null < "$p/comm" || true
+    comm=${comm//[![:print:]]/?}
+    _aicoding_retention_warn "process ${p##*/} (${comm:-?}) cannot be inspected and $hit; nothing removed"
+    rc=1
+  done
+  return "$rc"
 }
 
 # Every symlink under DIR: its resolved target keeps a version, unless the link
