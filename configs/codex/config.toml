@@ -3,9 +3,11 @@
 #
 # Home directory and API key placeholders are substituted at deploy time.
 
-# This is a seed default, not an enforced fleet selection. An existing model
-# or model_reasoning_effort remains user-owned, including local Astra choices.
-# Missing values may receive blueprint defaults.
+# This is a seed default, not an enforced fleet selection. A missing model gets
+# this value. An existing one stays, including local Astra choices, unless it
+# still equals an earlier blueprint default: reseeded_keys in managed-config.json
+# then moves it here once codex is new enough. An older codex gets the previous
+# default instead.
 
 model = "gpt-6.2-sol"
 

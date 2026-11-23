@@ -437,17 +437,22 @@ ensure_stdio_env_mcp() {
   # Unscoped `mcp get` also finds local/project entries; only a user-scope
   # entry with our command and no extra env vars is ours to replace. Only
   # variable names are parsed, never values.
-  local details scope cmd env_names
+  local details scope cmd env_names args
   details="$(_provision_run claude mcp get "$name" 2>/dev/null)" || details=""
   scope="$(printf '%s\n' "$details" | sed -n 's/^[[:space:]]*Scope:[[:space:]]*//p' | head -n1)"
   cmd="$(printf '%s\n' "$details" | sed -n 's/^[[:space:]]*Command:[[:space:]]*//p' | head -n1)"
-  env_names="$(printf '%s\n' "$details" | sed -n 's/^[[:space:]]\{4,\}\([A-Z_][A-Z0-9_]*\)=.*/\1/p' | sort -u | tr '\n' ' ')"
+  args="$(printf '%s\n' "$details" | sed -n 's/^[[:space:]]*Args:[[:space:]]*//p' | head -n1)"
+  env_names="$(printf '%s\n' "$details" | sed -n 's/^[[:space:]]\{4,\}\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | sort -u | tr '\n' ' ')"
   if [[ "$scope" == "User config"* ]]; then
     case "$cmd" in
       "$command"|"$HOME/.local/bin/$command") ;;
       *) warn "$name MCP: a user registration ($cmd) holds the name; left unchanged"
          return 0 ;;
     esac
+    if [[ -n "$args" ]]; then
+      warn "$name MCP: the user registration has custom args; left unchanged"
+      return 0
+    fi
     if [[ -n "$env_names" && "$env_names" != "$var " ]]; then
       warn "$name MCP: the user registration sets extra variables (${env_names% }); left unchanged"
       return 0
@@ -463,11 +468,16 @@ ensure_stdio_env_mcp() {
     fi
   fi
   # The add's exit status is the check: a read-back would see a shadowing
-  # local entry instead of the user one.
-  if _provision_run claude mcp add "$name" -s user -e "$var=$value" -- "$command" >/dev/null 2>&1; then
+  # local entry instead of the user one. Its stderr can echo the key, so it is
+  # only matched, never printed.
+  local add_err
+  if add_err="$(_provision_run claude mcp add "$name" -s user -e "$var=$value" -- "$command" 2>&1 >/dev/null)"; then
     mkdir -p "$AICODING_MCP_STATE" 2>/dev/null || true
     printf '%s\n' "$fp" > "$fp_file" 2>/dev/null || true
     ok "$name MCP configured"
+  elif [[ "${add_err,,}" == *"already exists"* && -n "$scope" && "$scope" != "User config"* ]]; then
+    # Only a seen local/project entry explains the duplicate; an unreadable get proves nothing.
+    warn "$name MCP: a user entry exists behind a shadowing entry and cannot be inspected; left unchanged"
   else
     warn "$name MCP may need manual setup"
     return 1
@@ -707,8 +717,9 @@ install_claude_plugins() {
     _claude_plugin_version "$plugin" >/dev/null || [ ! -f "$HOME/.claude/plugins/installed_plugins.json" ] || continue
     if _provision_task "${plugin%@*}" removing claude plugin uninstall "$plugin"; then
       _provision_task_done ok "removed (retired)"
-    elif aicoding_ui_active; then
-      aicoding_ui_clear
+    else
+      warn "Could not remove retired plugin ${plugin%@*}; retry with: claude plugin uninstall $plugin"
+      if aicoding_ui_active; then aicoding_ui_clear; fi
     fi
   done
   [ "$rc" -eq 0 ] || { _provision_soft_failure; return $?; }
@@ -741,8 +752,8 @@ remove_deprecated_shims() {
 }
 
 # --- Codex marketplace plugins ---
-# Use the native catalog, not Claude's versioned plugin cache. Repeated add
-# refreshes the installed version and enables it (verified on codex 0.148+).
+# Superpowers is retired, so this only removes it (and its skills link). A
+# stamp in the physical Codex home makes the removal check run once per home.
 install_codex_plugins() {
   local inherited_receipt=${AICODING_REQUIRE_UPDATE_RECEIPT:-0}
   local AICODING_REQUIRE_UPDATE_RECEIPT=$inherited_receipt
@@ -759,7 +770,8 @@ install_codex_plugins() {
   header "Codex Plugins"
   # Superpowers is retired: remove the plugin and the skills link sync made for it.
   local plugin="superpowers@openai-curated-remote" installed link old
-  local codex_home="${CODEX_HOME:-$HOME/.codex}"
+  local codex_home="${CODEX_HOME:-$HOME/.codex}" stamp
+  stamp="$(readlink -f -- "$codex_home" 2>/dev/null || printf '%s' "$codex_home")/.aicoding-superpowers-retired"
   link="$codex_home/skills/superpowers"
   if [[ -L "$link" ]]; then
     old=$(readlink "$link" 2>/dev/null) || old=""
@@ -773,16 +785,18 @@ install_codex_plugins() {
         fi ;;
     esac
   fi
+  [[ -e "$stamp" ]] && return 0
   if ! installed=$(_provision_run codex plugin list --json 2>/dev/null) \
-      || ! printf '%s' "$installed" | jq -e '.installed | type == "array"' >/dev/null 2>&1; then
+      || ! printf '%s' "$installed" | jq -e '.installed | type == "array" and all(.[]; (.pluginId | type) == "string")' >/dev/null 2>&1; then
     warn "Could not read the Codex plugin list; Superpowers removal not verified"
     _provision_soft_failure; return $?
   fi
   printf '%s' "$installed" | jq -e --arg id "$plugin" \
-    '.installed[] | select(.pluginId == $id)' >/dev/null 2>&1 || return 0
+    '.installed[] | select(.pluginId == $id)' >/dev/null 2>&1 || { : > "$stamp" 2>/dev/null || true; return 0; }
   if AICODING_UI_LABEL=superpowers aicoding_progress_run "codex: removing $plugin" \
       _aicoding_progress_quiet_stderr _provision_run codex plugin remove "$plugin" >/dev/null; then
     ok "$plugin removed (retired)"
+    : > "$stamp" 2>/dev/null || true
   else
     warn "Could not remove $plugin; retry with: codex plugin remove $plugin"
     _provision_soft_failure; return $?

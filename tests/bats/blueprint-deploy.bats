@@ -8,6 +8,8 @@ setup() {
   # umask 0002 is the container default and the condition under which the
   # 664 modes were observed live.
   umask 0002
+  # Reseed gates probe codex and opencode; never reach the host's real ones.
+  _reseed_tool_stubs 0.171.0 2.3.2
 }
 
 teardown() {
@@ -270,10 +272,73 @@ TOML
 
 _reseed_tool_stubs() {
   mkdir -p "$TMPDIR/bin"
-  printf '#!/bin/sh\necho "codex-cli %s"\n' "$1" > "$TMPDIR/bin/codex"
-  printf '#!/bin/sh\necho "opencode v%s"\n' "$2" > "$TMPDIR/bin/opencode"
+  printf '#!/bin/sh\necho codex >> "%s/tool-calls"\necho "codex-cli %s"\n' "$TMPDIR" "$1" > "$TMPDIR/bin/codex"
+  printf '#!/bin/sh\necho opencode >> "%s/tool-calls"\necho "opencode v%s"\n' "$TMPDIR" "$2" > "$TMPDIR/bin/opencode"
   chmod +x "$TMPDIR/bin/codex" "$TMPDIR/bin/opencode"
-  export PATH="$TMPDIR/bin:$PATH"
+  case ":$PATH:" in *":$TMPDIR/bin:"*) ;; *) export PATH="$TMPDIR/bin:$PATH" ;; esac
+}
+
+# The newest earlier default of a reseeded key, the value an old tool keeps.
+_previous_default() {
+  jq -r --arg d "$1" '.reseeded_keys[] | select(.dest == $d) | .shipped | last' \
+    "$BLUEPRINT_ROOT/configs/managed-config.json"
+}
+
+_codex_model() { sed -n 's/^model = "\(.*\)"$/\1/p' "$1"; }
+
+@test "rule 2: a first seed with a tool too old for the current default gets the previous one" {
+  unset KANBAN_TOKEN
+  _reseed_tool_stubs 0.170.0 1.19.6
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  managed_config_apply >/dev/null
+  [ "$(_codex_model "$HOME/.codex/config.toml")" = "$(_previous_default .codex/config.toml)" ]
+  grep -qx 'model_context_window = 872000' "$HOME/.codex/config.toml"
+  jq -e --arg m "$(_previous_default .config/opencode/opencode.json)" '.model == $m' \
+    "$HOME/.config/opencode/opencode.json"
+}
+
+@test "rule 2: a missing seeded key with a tool too old for the current default gets the previous one" {
+  unset KANBAN_TOKEN
+  _reseed_tool_stubs 0.170.0 1.19.6
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$HOME/.codex" "$HOME/.config/opencode"
+  printf 'model_reasoning_effort = "high"\n' > "$HOME/.codex/config.toml"
+  echo '{"personal":1}' > "$HOME/.config/opencode/opencode.json"
+  managed_config_apply >/dev/null
+  [ "$(_codex_model "$HOME/.codex/config.toml")" = "$(_previous_default .codex/config.toml)" ]
+  grep -qx 'model_reasoning_effort = "high"' "$HOME/.codex/config.toml"
+  jq -e --arg m "$(_previous_default .config/opencode/opencode.json)" '.model == $m and .personal == 1' \
+    "$HOME/.config/opencode/opencode.json"
+}
+
+@test "rule 2: a current tool seeds the current default on a first seed and a missing key" {
+  unset KANBAN_TOKEN
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  local codex_now opencode_now
+  codex_now=$(_codex_model "$BLUEPRINT_ROOT/configs/codex/config.toml")
+  opencode_now=$(jq -r .model "$BLUEPRINT_ROOT/configs/opencode/opencode.json")
+  managed_config_apply >/dev/null
+  [ "$(_codex_model "$HOME/.codex/config.toml")" = "$codex_now" ]
+  jq -e --arg m "$opencode_now" '.model == $m' "$HOME/.config/opencode/opencode.json"
+  printf 'model_reasoning_effort = "high"\n' > "$HOME/.codex/config.toml"
+  echo '{"personal":1}' > "$HOME/.config/opencode/opencode.json"
+  managed_config_apply >/dev/null
+  [ "$(_codex_model "$HOME/.codex/config.toml")" = "$codex_now" ]
+  jq -e --arg m "$opencode_now" '.model == $m' "$HOME/.config/opencode/opencode.json"
+}
+
+@test "rule 2: a user's own model is left alone and starts no tool" {
+  unset KANBAN_TOKEN
+  source "$BLUEPRINT_ROOT/lib/blueprint-deploy.sh"
+  mkdir -p "$HOME/.codex" "$HOME/.config/opencode"
+  printf 'model = "gpt-6.2-astra"\n' > "$HOME/.codex/config.toml"
+  echo '{"model":"openai/gpt-6-luna"}' > "$HOME/.config/opencode/opencode.json"
+  managed_config_apply --dry-run >/dev/null
+  [ ! -e "$TMPDIR/tool-calls" ]
+  managed_config_apply >/dev/null
+  [ ! -e "$TMPDIR/tool-calls" ]
+  grep -qx 'model = "gpt-6.2-astra"' "$HOME/.codex/config.toml"
+  jq -e '.model == "openai/gpt-6-luna"' "$HOME/.config/opencode/opencode.json"
 }
 
 @test "rule 2: a seed still at an earlier shipped value moves to the current seed" {
@@ -286,7 +351,10 @@ _reseed_tool_stubs() {
   mkdir -p "$HOME/.codex" "$HOME/.config/opencode"
   printf 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "high"\n' > "$HOME/.codex/config.toml"
   echo '{"model":"openai/gpt-6.1-sol","personal":1}' > "$HOME/.config/opencode/opencode.json"
-  managed_config_apply >/dev/null
+  run managed_config_apply
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"reseeded model in $HOME/.codex/config.toml: gpt-6.1-sol -> $codex_now"* ]]
+  [[ "$output" == *"reseeded model in $HOME/.config/opencode/opencode.json: openai/gpt-6.1-sol -> $opencode_now"* ]]
   grep -qx "model = \"$codex_now\"" "$HOME/.codex/config.toml"
   grep -qx 'model_reasoning_effort = "high"' "$HOME/.codex/config.toml"
   jq -e --arg m "$opencode_now" '.model == $m and .personal == 1' "$HOME/.config/opencode/opencode.json"

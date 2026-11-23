@@ -143,7 +143,15 @@ STUB
 #!/bin/sh
 echo "\$*" >> "$TMP/apt.log"
 case "\$1" in
-  update) exit "\${APT_UPDATE_STATUS:-0}" ;;
+  update)
+    n=\$(cat "$TMP/lock-left" 2>/dev/null || echo 0)
+    if [ "\$n" -gt 0 ]; then
+      echo \$((n - 1)) > "$TMP/lock-left"
+      echo "E: Could not get lock /var/lib/apt/lists/lock" >&2
+      exit 100
+    fi
+    [ -z "\${APT_UPDATE_ERR:-}" ] || echo "\$APT_UPDATE_ERR" >&2
+    exit "\${APT_UPDATE_STATUS:-0}" ;;
   install) exit "\${APT_INSTALL_STATUS:-0}" ;;
 esac
 STUB
@@ -157,7 +165,7 @@ STUB
   run bash "$BLUEPRINT_ROOT/root/tasks.d/20-host-packages.sh"
   [ "$status" -eq 0 ]
   grep -qx 'update -qq' "$TMP/apt.log"
-  grep -qx 'install -y -qq --no-install-recommends ripgrep' "$TMP/apt.log"
+  grep -qx 'install -o DPkg::Lock::Timeout=60 -y -qq --no-install-recommends ripgrep' "$TMP/apt.log"
 }
 
 @test "host packages task does nothing when ripgrep is installed or held" {
@@ -171,7 +179,27 @@ STUB
   _pkg_stubs
   APT_UPDATE_STATUS=100 run bash "$BLUEPRINT_ROOT/root/tasks.d/20-host-packages.sh"
   [ "$status" -eq 0 ]
-  grep -qx 'install -y -qq --no-install-recommends ripgrep' "$TMP/apt.log"
+  grep -qx 'install -o DPkg::Lock::Timeout=60 -y -qq --no-install-recommends ripgrep' "$TMP/apt.log"
+  [[ "$output" == *"trying the install anyway"* ]]
+}
+
+@test "host packages task retries apt-get update while the lists lock is held" {
+  _pkg_stubs
+  echo 2 > "$TMP/lock-left"
+  AICODING_APT_LOCK_SLEEP=0 run bash "$BLUEPRINT_ROOT/root/tasks.d/20-host-packages.sh"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^update ' "$TMP/apt.log")" -eq 3 ]
+  [ "$(grep -c '^install ' "$TMP/apt.log")" -eq 1 ]
+  if [[ "$output" == *"trying the install anyway"* ]]; then false; fi
+}
+
+@test "host packages task does not retry apt-get update for another failure" {
+  _pkg_stubs
+  APT_UPDATE_STATUS=100 APT_UPDATE_ERR='E: Failed to fetch' AICODING_APT_LOCK_SLEEP=0 \
+    run bash "$BLUEPRINT_ROOT/root/tasks.d/20-host-packages.sh"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^update ' "$TMP/apt.log")" -eq 1 ]
+  [ "$(grep -c '^install ' "$TMP/apt.log")" -eq 1 ]
   [[ "$output" == *"trying the install anyway"* ]]
 }
 

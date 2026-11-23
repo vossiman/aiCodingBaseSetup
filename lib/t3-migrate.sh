@@ -87,18 +87,22 @@ t3_legacy_stop() {
 }
 
 t3_open_under() {
-  local fd t p own=() self=0
+  local fd t p own=() self=0 ended=0 end=t3-open-scan-end
   T3_OPEN=()
   for p in /proc/[0-9]*; do [ -O "$p" ] && own+=("$p/fd"); done
   # One find pass: a readlink fork per descriptor took ~30 s on a busy desktop.
   while IFS= read -r -d '' fd && IFS= read -r -d '' t; do
+    [ "$fd" = "$end" ] && { ended=1; continue; }
     p=${fd#/proc/}; p=${p%%/*}
     [ "$p" = "$$" ] && self=1
     case "$t" in "$1"/*) ;; *) continue ;; esac
     case " ${T3_OPEN[*]} " in *" $p "*) ;; *) T3_OPEN+=("$p") ;; esac
-  done < <(find "${own[@]}" -mindepth 1 -maxdepth 1 -printf '%p\0%l\0' 2>/dev/null)
-  # Processes exit mid-scan, so find's status is never clean; seeing our own fds proves it ran.
-  [ "$self" = 1 ] || t3_die "cannot list open files under /proc; refusing to treat $1 as unused"
+  done < <(s=0; find "${own[@]}" -mindepth 1 -maxdepth 1 -printf '%p\0%l\0' 2>/dev/null || s=$?
+           [ "$s" -lt 126 ] && printf '%s\0\0' "$end")
+  # Processes exit mid-scan, so find's status is rarely 0: seeing our own fds
+  # proves it started, and the end marker that it finished (not killed, >= 126).
+  [ "$self" = 1 ] && [ "$ended" = 1 ] \
+    || t3_die "cannot list open files under /proc; refusing to treat $1 as unused"
 }
 
 t3_migrate_export() {
@@ -122,17 +126,18 @@ t3_migrate_export() {
   [ ${#T3_OPEN[@]} -eq 0 ] || t3_die "processes still have files under $src open: ${T3_OPEN[*]}. Stop them by hand, then retry."
   arc="$T3_MIGRATE_DIR/$key.tgz"; man="$T3_MIGRATE_DIR/$key.json"
   tmp=$(umask 077; mktemp "$T3_MIGRATE_DIR/.$key.XXXXXX") || t3_die "cannot create a temp file"
-  (umask 077; tar -C "$src" -czf "$tmp" .) || { rm -f "$tmp"; t3_die "archiving $src failed"; }
+  # The staged file is removed on any exit until archive and manifest are published.
+  trap 'rm -f "$tmp"' EXIT
+  (umask 077; tar -C "$src" -czf "$tmp" .) || t3_die "archiving $src failed"
+  t3_open_under "$src"
+  [ ${#T3_OPEN[@]} -eq 0 ] \
+    || t3_die "a process opened files under $src while archiving (${T3_OPEN[*]}); archive deleted"
+  sha=$(sha256sum "$tmp" | cut -d' ' -f1)
   mv -f "$tmp" "$arc"
-  sha=$(sha256sum "$arc" | cut -d' ' -f1)
+  trap - EXIT
   t3_write_file "$man" "$(jq -cn --arg e "$(cat "$src/userdata/environment-id")" --arg w "$key" \
     --arg v "$ver" --arg s "$sha" '{environment_id: $e, workspace: $w, version: $v, sha256: $s}')"
   chmod 600 "$man"
-  t3_open_under "$src"
-  if [ ${#T3_OPEN[@]} -gt 0 ]; then
-    rm -f "$arc" "$man"
-    t3_die "a process opened files under $src while archiving (${T3_OPEN[*]}); archive deleted"
-  fi
   t3_say "exported $src (environment $(cat "$src/userdata/environment-id"), t3 $ver) to $arc"
   t3_say "next: rebuild this workspace, then run t3-migrate --restore in the new container"
 }

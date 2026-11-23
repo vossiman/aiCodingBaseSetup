@@ -43,6 +43,10 @@ esac
 exit 0
 STUB
   chmod +x "$TMPDIR/stubs/claude"
+  # Reseed gates run `<tool> --version`; never reach a real codex or opencode.
+  printf '#!/bin/sh\necho "codex-cli 0.171.0"\n' > "$TMPDIR/stubs/codex"
+  printf '#!/bin/sh\necho "opencode v2.3.1"\n' > "$TMPDIR/stubs/opencode"
+  chmod +x "$TMPDIR/stubs/codex" "$TMPDIR/stubs/opencode"
   # The real test host may have any tmux build. Keep installer tests offline
   # by presenting the exact pinned build through the test-owned marker.
   cat > "$TMPDIR/stubs/tmux" <<'STUB'
@@ -656,6 +660,7 @@ _isolated_path() { printf '%s' "$TMPDIR/stubs:/usr/bin:/bin"; }
 }
 
 @test "ensure_codex: runs the installer and keeps codex when curl works and codex is absent" {
+  rm -f "$TMPDIR/stubs/codex"  # this test is about an absent codex
   cat > "$TMPDIR/stubs/curl" <<EOF
 #!/bin/sh
 echo "(stub) curl-pipe-sh for codex installer ran" > "$TMPDIR/codex-install-attempted"
@@ -675,6 +680,7 @@ EOF
 }
 
 @test "ensure_codex: pipes the installer into a non-interactive sh (CODEX_NON_INTERACTIVE=1)" {
+  rm -f "$TMPDIR/stubs/codex"  # this test is about an absent codex
   # Upstream install.sh grew y/N prompts (reads /dev/tty, so piping alone
   # doesn't suppress them). Stub curl to emit a script that records what the
   # piped sh sees in CODEX_NON_INTERACTIVE.
@@ -976,6 +982,106 @@ EOF
   echo "$output" | grep -q "brave-search MCP configured"
 }
 
+@test "ensure_stdio_env_mcp: leaves a user registration with custom args alone" {
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+case "\$*" in
+  "mcp get brave-search")
+    printf 'brave-search:\n  Scope: User config (available in all your projects)\n  Command: brave-search-mcp-server\n  Args: --port 9\n  Environment:\n    BRAVE_API_KEY=old\n'
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+  export BRAVE_API_KEY=new-key
+  _seed_brave_fingerprint old
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "brave-search MCP: the user registration has custom args; left unchanged"
+  if grep -q "mcp remove -s user brave-search" "$TMPDIR/claude-calls"; then false; fi
+  if grep -q "mcp add brave-search" "$TMPDIR/claude-calls"; then false; fi
+}
+
+@test "ensure_stdio_env_mcp: leaves a user registration with a lowercase env var alone" {
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+case "\$*" in
+  "mcp get brave-search")
+    printf 'brave-search:\n  Scope: User config (available in all your projects)\n  Command: brave-search-mcp-server\n  Environment:\n    BRAVE_API_KEY=old\n    http_proxy=http://self\n'
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+  export BRAVE_API_KEY=new-key
+  _seed_brave_fingerprint old
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "extra variables"
+  if echo "$output" | grep -q "http://self"; then false; fi
+  if grep -q "mcp remove -s user brave-search" "$TMPDIR/claude-calls"; then false; fi
+}
+
+# A shadowing local entry hides the user entry from `mcp get`, so the add is
+# the only probe: a duplicate refusal is not a failure. $1: the add's stderr.
+_shadowed_add_stub() {
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+echo "\$@" >> '$TMPDIR/claude-calls'
+case "\$*" in
+  "mcp get brave-search")
+    printf 'brave-search:\n  Scope: Local config (private to you in this project)\n  Command: other\n'
+    ;;
+  "mcp add brave-search"*)
+    echo '$1' >&2
+    exit 1
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+}
+
+@test "ensure_stdio_env_mcp: a shadowed existing user entry is a warning, not a failure" {
+  _shadowed_add_stub "MCP server brave-search already exists in user config (key=new-key)"
+  export BRAVE_API_KEY=new-key
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "brave-search MCP: a user entry exists behind a shadowing entry"
+  if echo "$output" | grep -q "key=new-key"; then false; fi
+}
+
+@test "ensure_stdio_env_mcp: a duplicate refusal with an unreadable mcp get still fails" {
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+case "\$*" in
+  "mcp get brave-search") exit 1 ;;
+  "mcp add brave-search"*) echo 'MCP server brave-search already exists in user config' >&2; exit 1 ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+  export BRAVE_API_KEY=new-key
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  echo "$output" | grep -q "brave-search MCP may need manual setup"
+  if echo "$output" | grep -q "shadowing"; then false; fi
+}
+
+@test "ensure_stdio_env_mcp: an add that fails for another reason still fails" {
+  _shadowed_add_stub "permission denied"
+  export BRAVE_API_KEY=new-key
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  echo "$output" | grep -q "brave-search MCP may need manual setup"
+  if echo "$output" | grep -q "shadowing"; then false; fi
+}
+
 @test "ensure_stdio_env_mcp: leaves brave-search alone when the key is unchanged" {
   _brave_registered_stub
   export BRAVE_API_KEY=same-key
@@ -1124,6 +1230,9 @@ CLOUDFLARE_API_TOKEN=
 CLOUDFLARE_ACCOUNT_ID=
 EOF
   chmod 600 "$HOME/.aicodingsetup/.secrets.env"
+  # Without a codex new enough for it, the first seed keeps the previous model.
+  printf '#!/bin/sh\necho "codex-cli 0.171.0"\n' > "$TMPDIR/stubs/codex"
+  chmod +x "$TMPDIR/stubs/codex"
 
   bash "$BLUEPRINT_ROOT/install.sh" </dev/null
 
