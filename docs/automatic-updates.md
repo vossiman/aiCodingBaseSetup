@@ -34,18 +34,24 @@ of these hold, and is kept whenever any check is unclear:
 
 - it is a real directory, not a symlink, and its name has no leading dot and
   no `.staging.` part, so staging and transaction trees are never touched;
-- `current/<component>` resolves to exactly `versions/<component>/<name>`, a
-  plain release of that same component; a staging directory, a deeper path or
-  another component's release keeps the whole component. Any
-  `previous/<component>` must pass the same check;
+- `current/<component>` is a symlink whose own target (read once, not fully
+  resolved) is exactly `../versions/<component>/<name>` or the absolute form
+  of that path, and that release is a real directory, not a symlink. A
+  staging directory, a deeper path, a chain through another link or another
+  component's release keeps the whole component. Any `previous/<component>`
+  must pass the same check;
 - no symlink anywhere under `~/.local/share/aicoding` (including every
-  `current/` and `previous/` pointer, relative or absolute) resolves into it.
-  A link inside a release that resolves back into the same release does not
-  protect that release;
+  `current/` and `previous/` pointer, relative or absolute) resolves into it
+  or through it: every release that a link's resolution steps through is
+  kept, not only the final target. A chain that cannot be followed to its end
+  keeps every component it touched. A link inside a release that resolves
+  back into the same release does not protect that release;
 - no file or symlink in `~/.local/bin` names or resolves into it, and
   `~/.local/bin` itself does not resolve into it;
 - no process of the user has its executable, working directory, an open file
-  or directory, or a memory-mapped file inside it;
+  or directory, or a memory-mapped file inside it, and no command line of the
+  user's processes names `versions/<component>/<name>` under the data
+  directory, whatever that process holds open;
 - no process of the user belongs to the component without holding any of its
   releases (the unknown-release rule, below);
 - no mount point lies at or below it (read from `/proc/self/mountinfo`, which
@@ -53,19 +59,22 @@ of these hold, and is kept whenever any check is unclear:
   a warning, and so is a leftover tombstone that contains a mount point;
 - the update lock (`sync.lock`) and the component's activation lock are free.
 
-**The launcher lease.** Interpreter-run tools (for example a node tool such as
-`pi`) run as the system `node`, with the project as working directory, and may
-rewrite their own command line. To keep them visible, every managed launcher
+**The launcher lease.** An interpreter-run tool (for example a node tool such
+as `pi`) can have an executable and a working directory outside its release,
+and may rewrite its own command line. To keep them visible, every managed launcher
 in `~/.local/bin` opens a read-only descriptor on the physical release
 directory just before its `exec`, and the tool inherits it; the descriptor scan
 then finds the release. A failed open never stops the launcher. Launchers
 written by an older release are rewritten by the next sync, even for a
-component that is already current.
+component that is already current. That refresh accepts a relative or an
+absolute `current/<component>` pointer and never moves or rewrites `current`
+or `previous`.
 
 **The unknown-release rule.** A process belongs to a component when its command
 line mentions `current/<component>/` or `versions/<component>/` under the data
-directory, or when the basename of its `argv[0]` or its short name (`comm`)
-equals a managed launcher of that component (from the `current=` line of the
+directory, or when its `argv[0]` matches a managed launcher of that
+component: `argv[0]` is compared by its full basename, while the kernel short
+name (`comm`) is compared against the first 15 bytes of the launcher name (from the `current=` line of the
 launchers in `~/.local/bin`). A process that belongs to a component but holds
 no path under that component's `versions/` keeps every version of the
 component on that run, with one log line naming its pid, short name and
@@ -78,17 +87,28 @@ uses nothing. If the scan itself cannot be proven complete, the run removes
 nothing. A live process that cannot be inspected (for example a non-dumpable
 or setuid helper) stops the whole run when it is relevant: its command line
 cannot be read, mentions the data directory or `~/.local/bin`, its `argv[0]`
-basename or short name equals a managed launcher, or a process in its parent
-chain belongs to a component or holds a path under `versions/`. The warning
-names only its pid and short name. An uninspectable process that is not
+basename or short name matches a managed launcher, or a process in its parent
+chain belongs to a component or holds a path under `versions/`. The parent
+chain check walks at most 64 ancestors and stops at PID 1; a chain that loops
+back on itself also stops the run. The warning names only its pid and short
+name. An uninspectable process that is not
 relevant is ignored, so a release used only by an unrelated, uninspectable
 process outside any managed process tree could still be removed.
 
 **The observation window.** A candidate is removed only after it stayed a
 candidate on every run for `AICODING_RETENTION_GRACE` seconds (default seven
-days). The first run that sees it as a candidate records a stamp,
+days). The value is read as a decimal number of seconds, so a leading zero
+never makes it octal; anything other than plain digits, or more than ten
+years (315360000 seconds), warns and removes nothing. A version is due once
+the time since its stamp reaches the window. The first run that sees it as a
+candidate records a stamp,
 `~/.local/state/aicoding/retention/<component>/<version>`, whose mtime is that
-moment. A run that sees the version referenced, in use, or kept by any rule
+moment. `retention/` and each component directory in it are created private
+(mode 0700) and must be plain directories inside the resolved state
+directory. A symlinked or otherwise odd component directory keeps every
+version of that component with a warning; such a `retention/` itself keeps
+everything. Stamp cleanup never follows a symlink and deletes only regular
+files named like a version. A run that sees the version referenced, in use, or kept by any rule
 deletes its stamp, so the window starts again. Stamps of versions that no
 longer exist are deleted. A run that removes nothing because a scan was
 incomplete, the mount table could not be read, an uninspectable process was
@@ -104,7 +124,10 @@ name; the next run finishes such a tombstone. Each removed version is logged
 with its size, followed by one total. A failed removal is a warning and never
 changes the pass result. Fallback workers loaded before retention existed are
 replaced by the idle upgrade path, because their receipt lacks the `retention`
-capability.
+capability. The receipt keeps its first line in the original three fields
+(protocol, pid, start time), which older releases parse to verify ownership,
+and records `capabilities retention` on a second line. A one-line receipt
+still proves ownership but counts as a worker without retention.
 
 `AICODING_RETENTION=preview` logs, per candidate, whether it would be removed
 now or the date it becomes eligible, and lists leftover tombstones a real run
