@@ -303,3 +303,55 @@ EOF
     [ ! -e "$TMP/x-$bad/node_modules/.bin/opencode" ]
   done
 }
+
+# A lookup that fails (rate limit, outage) reuses the last successful target.
+fail_lookup() {
+  mv "$TMP/stubs/curl" "$TMP/stubs/curl.real"
+  printf '#!/bin/bash\ncase "$*" in *api.github.com*) exit 22 ;; esac\nexec "$TMP/stubs/curl.real" "$@"\n' > "$TMP/stubs/curl"
+  chmod +x "$TMP/stubs/curl"
+}
+target_cache() { printf '%s' "$AICODING_STATE_DIR/opencode-target-version"; }
+
+@test "OpenCode reuses the last successful target when the lookup fails" {
+  aicoding_update_component opencode
+  fail_lookup
+  run aicoding_update_component opencode
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"cached target"* ]]
+  jq -e '.components.opencode.state == "current" and .components.opencode.target_version == "2.3.2"' "$AICODING_RESULTS_FILE"
+}
+
+@test "OpenCode ignores a target cache older than 24 hours" {
+  aicoding_update_component opencode
+  touch -d '25 hours ago' "$(target_cache)"
+  fail_lookup
+  run aicoding_update_component opencode
+  [ "$status" -ne 0 ]
+  jq -e '.components.opencode.reason == "target_version_unavailable"' "$AICODING_RESULTS_FILE"
+}
+
+@test "OpenCode with a failing lookup and no cache fails as before" {
+  fail_lookup
+  run aicoding_update_component opencode
+  [ "$status" -ne 0 ]
+  jq -e '.components.opencode.reason == "target_version_unavailable"' "$AICODING_RESULTS_FILE"
+}
+
+@test "OpenCode ignores a target cache with garbage content" {
+  mkdir -p "$AICODING_STATE_DIR"
+  printf 'not-a-version\n' > "$(target_cache)"
+  fail_lookup
+  run aicoding_update_component opencode
+  [ "$status" -ne 0 ]
+  jq -e '.components.opencode.reason == "target_version_unavailable"' "$AICODING_RESULTS_FILE"
+}
+
+@test "OpenCode ignores a target cache that is a symlink" {
+  mkdir -p "$AICODING_STATE_DIR"
+  printf '2.3.2\n' > "$TMP/real-target"
+  ln -s "$TMP/real-target" "$(target_cache)"
+  fail_lookup
+  run aicoding_update_component opencode
+  [ "$status" -ne 0 ]
+  jq -e '.components.opencode.reason == "target_version_unavailable"' "$AICODING_RESULTS_FILE"
+}
