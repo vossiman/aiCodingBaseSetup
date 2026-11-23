@@ -1,21 +1,30 @@
 # lib/version-retention.sh: host-only pruning of provably unused releases.
 # A directory versions/<component>/<name> is removed only when every keep rule
-# below clears it; anything unclear keeps it. Containers never prune: a
-# rebuild wipes the tree anyway. Sourced; does not change shell options.
+# below has cleared it on every run for a whole observation window; anything
+# unclear keeps it. Containers never prune: a rebuild wipes the tree anyway.
+# Sourced; does not change shell options.
 #
 #   AICODING_RETENTION        unset|on (remove), preview (log only), off
-#   AICODING_RETENTION_GRACE  seconds a version must be untouched (default 1 day)
+#   AICODING_RETENTION_GRACE  seconds a version must stay unreferenced and
+#                             unused before removal (default 7 days)
 
 : "${AICODING_DATA_DIR:=$HOME/.local/share/aicoding}"
 : "${AICODING_STATE_DIR:=$HOME/.local/state/aicoding}"
 
 _AICODING_RETENTION_LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 _AICODING_RETENTION_SEG='[A-Za-z0-9][A-Za-z0-9._+-]*'
+_AICODING_RETENTION_MARKER='# Managed by aicoding immutable runtime.'
 
 _aicoding_retention_say() { printf 'aicoding retention: %s\n' "$*"; }
 _aicoding_retention_warn() { printf 'aicoding retention: WARN: %s\n' "$*" >&2; }
 
 _aicoding_retention_safe() { [[ "$1" =~ ^${_AICODING_RETENTION_SEG}$ ]]; }
+
+# A release name: a safe segment that is not a staging directory.
+_aicoding_retention_release_name() {
+  _aicoding_retention_safe "$1" || return 1
+  case "$1" in *.staging.*) return 1 ;; esac
+}
 
 # The same host test as sync: an explicit host profile and no container runtime.
 _aicoding_retention_is_host() (
@@ -35,13 +44,17 @@ _aicoding_retention_human() {
   }'
 }
 
-# Mark the version that a canonical path lies inside (needs _vroot, used, keep_comp).
+_aicoding_retention_date() { date -d "@$1" '+%Y-%m-%d %H:%M' 2>/dev/null || printf '@%s' "$1"; }
+
+# Mark the version a canonical path lies inside; with a PID, record it as held.
 _aicoding_retention_mark_path() {
-  local path=$1 rest comp name
+  local path=$1 pid=${2:-} rest comp name
   case "$path" in "$_vroot"/*) ;; *) return 0 ;; esac
   rest=${path#"$_vroot"/}
   comp=${rest%%/*}
   name=${rest#*/}
+  comp=${comp%% (deleted)}
+  if [ -n "$pid" ]; then held[$pid]=1; held_comp[$pid/$comp]=1; fi
   # Directly inside versions/<component> (e.g. a cwd there): keep the component.
   if [ "$name" = "$rest" ] || [ -z "$name" ]; then keep_comp[$comp]=1; return 0; fi
   name=${name%%/*}
@@ -58,90 +71,200 @@ _aicoding_retention_mark_tokens() {
   done
 }
 
-# One find pass over /proc for cwd, exe and descriptors, one grep pass over
-# maps. Like t3_open_under: our own entries prove each scan started, an end
-# marker that it finished. Returns 1 when completeness cannot be proven.
-_aicoding_retention_scan_proc() {
-  local me=$BASHPID p path target line end=aicoding-retention-scan-end
-  local self_fd=0 fd_ended=0 self_map=0 map_ended=0
-  local -a starts=() maps=()
-  for p in /proc/[0-9]*; do
-    [ -O "$p" ] || continue
-    starts+=("$p/fd" "$p/cwd" "$p/exe")
-    maps+=("$p/maps")
-  done
-  [ "${#starts[@]}" -gt 0 ] || return 1
-  while IFS= read -r -d '' path && IFS= read -r -d '' target; do
-    [ "$path" = "$end" ] && { fd_ended=1; continue; }
-    p=${path#/proc/}; p=${p%%/*}
-    [ "$p" = "$me" ] && self_fd=1
-    [ -n "$target" ] && _aicoding_retention_mark_path "$target"
-  done < <(s=0; find "${starts[@]}" -maxdepth 1 -printf '%p\0%l\0' 2>/dev/null || s=$?
-           [ "$s" -lt 126 ] && printf '%s\0\0' "$end")
+# Record in bad[] the PID each error line in FILE names; 1 if a line names none.
+_aicoding_retention_attribute_errors() {
+  local file=$1 line rest p
+  [ -s "$file" ] || return 0
   while IFS= read -r line; do
-    [ "$line" = "$end" ] && { map_ended=1; continue; }
-    case "$line" in "/proc/$me/maps:"*'[stack]'*) self_map=1 ;; esac
-    case "$line" in *" $_vroot/"*) _aicoding_retention_mark_path "$_vroot/${line#*" $_vroot/"}" ;; esac
-  done < <(s=0; grep -H -F -e "$_vroot/" -e '[stack]' -- "${maps[@]}" 2>/dev/null || s=$?
-           [ "$s" -lt 126 ] && printf '%s\n' "$end")
-  [ "$self_fd" = 1 ] && [ "$fd_ended" = 1 ] && [ "$self_map" = 1 ] && [ "$map_ended" = 1 ] || return 1
-  _aicoding_retention_scan_hidden
+    case "$line" in *"$proc/"[0-9]*) ;; *) return 1 ;; esac
+    rest=${line#*"$proc/"}
+    p=${rest%%[!0-9]*}
+    [ -n "$p" ] || return 1
+    bad[$p]=1
+  done < "$file"
 }
 
-# The scans above cannot see a same-user process whose exe link is unreadable
-# (non-dumpable, or /proc/<pid> owned by root). Such a process fails the run
-# when its command line names a managed path or cannot be read. Needs data.
-_aicoding_retention_scan_hidden() {
-  # Test-only override of the proc root; the scans above always use /proc.
+_aicoding_retention_glob_quote() {
+  local s=${1//\\/\\\\}
+  s=${s//\*/\\*}; s=${s//\?/\\?}; s=${s//\[/\\[}
+  printf '%s' "$s"
+}
+
+# Set _belongs to the components a process's comm and argv name.
+_aicoding_retention_belongs() {
+  local comm=$1 arg d rest c base
+  shift
+  _belongs=""
+  for arg in "$@"; do
+    for d in "${data_prefixes[@]}"; do
+      rest=$arg
+      while [[ "$rest" == *"$d/current/"* || "$rest" == *"$d/versions/"* ]]; do
+        if [[ "$rest" == *"$d/current/"* ]]; then
+          c=${rest#*"$d/current/"}
+          rest=$c
+        else
+          c=${rest#*"$d/versions/"}
+          rest=$c
+          # Only versions/<component>/... names a release of that component.
+          [[ "$c" == */* ]] || continue
+        fi
+        c=${c%%/*}
+        _aicoding_retention_safe "$c" && _belongs+=" $c"
+      done
+    done
+  done
+  if [ "$#" -gt 0 ]; then
+    base=${1##*/}
+    [ -z "${launcher_comp[$base]:-}" ] || _belongs+="${launcher_comp[$base]}"
+  fi
+  [ -z "$comm" ] || [ -z "${comm_comp[$comm]:-}" ] || _belongs+="${comm_comp[$comm]}"
+  return 0
+}
+
+# Batched status, find (exe, cwd, fd) and maps passes over the user's processes.
+# Returns 1 when the scan is incomplete or an uninspectable process is relevant.
+_aicoding_retention_scan_proc() {
+  # Test-only override of the proc root for the whole process scan.
   local proc=${_AICODING_RETENTION_PROC:-/proc}
-  local end=aicoding-retention-scan-end line p uid path target arg m comm hit rc=0
-  local st_ended=0
-  local -a status_files=() mine=() args=() managed=()
-  local -A readable=()
+  local me=$BASHPID end=aicoding-retention-scan-end line rest p kind val uid euid
+  local path target arg m c q comm hit depth st_ended=0 fd_ended=0 map_ended=0 rc=0 _belongs
+  local -a status_files=() mine=() starts=() maps=() args=() managed=()
+  local -A ppid=() pstate=() pname=() is_mine=() bad=() seen_exe=() seen_cwd=()
+  local -A belongs=() inspected=() warned=()
   for m in "$AICODING_DATA_DIR" "$data" "$HOME/.local/bin" "$(readlink -e -- "$HOME/.local/bin" 2>/dev/null)"; do
     [ -n "$m" ] || continue
     while [ "${m%/}" != "$m" ]; do m=${m%/}; done
-    managed+=("$m")
+    [ -n "$m" ] && managed+=("$m")
   done
   status_files=("$proc"/[0-9]*/status)
   [ "${#status_files[@]}" -gt 0 ] && [ -e "${status_files[0]}" ] || return 1
   # status is world-readable even when the rest of /proc/<pid> is not.
+  : > "$_work/status.err"
   while IFS= read -r line; do
     [ "$line" = "$end" ] && { st_ended=1; continue; }
-    p=${line%/status:Uid:*}
-    [[ "${p##*/}" =~ ^[0-9]+$ ]] || continue
-    read -r uid _ <<< "${line#*/status:Uid:}"
-    [ "$uid" = "$UID" ] && mine+=("$p")
-  done < <(s=0; grep -H -m1 '^Uid:' -- "${status_files[@]}" 2>/dev/null || s=$?
+    rest=${line#"$proc"/}
+    p=${rest%%/*}
+    [[ "$p" =~ ^[0-9]+$ ]] || continue
+    val=${rest#*/status:}
+    case "$val" in
+      Uid:*)
+        read -r uid euid _ <<< "${val#Uid:}"
+        if [ "$uid" = "$UID" ] || [ "$euid" = "$UID" ]; then is_mine[$p]=1; fi ;;
+      PPid:*) read -r "ppid[$p]" <<< "${val#PPid:}" ;;
+      State:*) read -r "pstate[$p]" _ <<< "${val#State:}" ;;
+      Name:*) val=${val#Name:}; pname[$p]=${val#$'\t'} ;;
+    esac
+  done < <(s=0; LC_ALL=C grep -H -E '^(Name|State|PPid|Uid):' -- "${status_files[@]}" 2>"$_work/status.err" || s=$?
            [ "$s" -lt 126 ] && printf '%s\n' "$end")
   [ "$st_ended" = 1 ] || return 1
+  _aicoding_retention_attribute_errors "$_work/status.err" || return 1
+  # A status file that failed to read belongs to a process that must be gone.
+  for p in "${!bad[@]}"; do
+    [ ! -e "$proc/$p" ] || return 1
+  done
+  bad=()
+  for p in "${!is_mine[@]}"; do
+    case "${pstate[$p]:-}" in Z|X) continue ;; esac
+    mine+=("$p")
+    starts+=("$proc/$p/fd" "$proc/$p/cwd" "$proc/$p/exe")
+    maps+=("$proc/$p/maps")
+  done
+  if [ "$proc" = /proc ]; then [ -n "${is_mine[$me]:-}" ] || return 1; fi
   [ "${#mine[@]}" -gt 0 ] || return 0
-  # An entry missing from this listing counts as unreadable, which fails closed.
+
+  # Only descriptors that point into versions/ are printed; there are many.
+  local gproc gvroot
+  gproc=$(_aicoding_retention_glob_quote "$proc")
+  gvroot=$(_aicoding_retention_glob_quote "$_vroot")
   while IFS= read -r -d '' path && IFS= read -r -d '' target; do
-    [ -n "$target" ] && readable[${path%/exe}]=1
-  done < <(find "${mine[@]/%//exe}" -maxdepth 0 -printf '%p\0%l\0' 2>/dev/null)
+    [ "$path" = "$end" ] && { fd_ended=1; continue; }
+    rest=${path#"$proc"/}
+    p=${rest%%/*}
+    kind=${rest#*/}
+    [ -n "$target" ] || continue
+    case "$kind" in exe) seen_exe[$p]=1 ;; cwd) seen_cwd[$p]=1 ;; esac
+    case "$target" in "$_vroot"/*) _aicoding_retention_mark_path "$target" "$p" ;; esac
+  done < <(s=0; LC_ALL=C find "${starts[@]}" -maxdepth 1 \
+             \( ! -path "$gproc/*/fd/*" -o -lname "$gvroot/*" \) -printf '%p\0%l\0' 2>"$_work/find.err" || s=$?
+           [ "$s" -lt 126 ] && printf '%s\0\0' "$end")
+  [ "$fd_ended" = 1 ] || return 1
+  _aicoding_retention_attribute_errors "$_work/find.err" || return 1
+  local self_map=0
+  while IFS= read -r line; do
+    [ "$line" = "$end" ] && { map_ended=1; continue; }
+    rest=${line#"$proc"/}
+    p=${rest%%/*}
+    [ "$p" != "$me" ] || case "$line" in *'[stack]'*) self_map=1 ;; esac
+    case "$line" in *" $_vroot/"*) _aicoding_retention_mark_path "$_vroot/${line#*" $_vroot/"}" "$p" ;; esac
+  done < <(s=0; LC_ALL=C grep -H -F -e "$_vroot/" -e '[stack]' -- "${maps[@]}" 2>"$_work/maps.err" || s=$?
+           [ "$s" -lt 126 ] && printf '%s\n' "$end")
+  [ "$map_ended" = 1 ] || return 1
+  _aicoding_retention_attribute_errors "$_work/maps.err" || return 1
+  # Our own entries prove each scan really ran over the live proc tree.
+  if [ "$proc" = /proc ]; then
+    [ -n "${seen_exe[$me]:-}" ] && [ -z "${bad[$me]:-}" ] && [ "$self_map" = 1 ] || return 1
+  fi
+
+  # Command lines: membership for every process, relevance for unreadable ones.
+  local -A cmd_ok=() cmd_managed=()
   for p in "${mine[@]}"; do
-    [ -z "${readable[$p]:-}" ] || continue
-    hit=
-    if ! mapfile -d '' -t args 2>/dev/null < "$p/cmdline"; then
-      # A process that exited meanwhile uses nothing.
-      [ -e "$p" ] || continue
-      hit="its command line cannot be read"
-    else
+    [ -z "${bad[$p]:-}" ] && [ -n "${seen_exe[$p]:-}" ] && [ -n "${seen_cwd[$p]:-}" ] && inspected[$p]=1
+    args=()
+    if mapfile -d '' -t args 2>/dev/null < "$proc/$p/cmdline"; then
+      cmd_ok[$p]=1
       for arg in "${args[@]}"; do
         for m in "${managed[@]}"; do
-          case "$arg" in *"$m/"*|*"$m") hit="runs from a managed path"; break 2 ;; esac
+          case "$arg" in *"$m/"*|*"$m") cmd_managed[$p]=1; break 2 ;; esac
         done
       done
     fi
+    comm=${pname[$p]:-}
+    _aicoding_retention_belongs "$comm" "${args[@]}"
+    belongs[$p]=$_belongs
+  done
+
+  for p in "${mine[@]}"; do
+    [ -z "${inspected[$p]:-}" ] || continue
+    # A process that exited meanwhile uses nothing.
+    [ -e "$proc/$p" ] || continue
+    hit=
+    if [ -z "${cmd_ok[$p]:-}" ]; then
+      hit="its command line cannot be read"
+    elif [ -n "${cmd_managed[$p]:-}" ]; then
+      hit="runs from a managed path"
+    elif [ -n "${belongs[$p]}" ]; then
+      hit="runs a managed launcher"
+    else
+      q=${ppid[$p]:-0}
+      for ((depth = 0; depth < 64; depth++)); do
+        [[ "$q" =~ ^[1-9][0-9]*$ ]] && [ "$q" != 1 ] || break
+        if [ -n "${held[$q]:-}" ] || [ -n "${belongs[$q]:-}" ]; then
+          hit="descends from a process that uses a managed release"
+          break
+        fi
+        q=${ppid[$q]:-0}
+      done
+    fi
     [ -n "$hit" ] || continue
-    comm=
-    IFS= read -r comm 2>/dev/null < "$p/comm" || true
-    comm=${comm//[![:print:]]/?}
-    _aicoding_retention_warn "process ${p##*/} (${comm:-?}) cannot be inspected and $hit; nothing removed"
+    comm=${pname[$p]:-?}
+    _aicoding_retention_warn "process $p (${comm//[![:print:]]/?}) cannot be inspected and $hit; nothing removed"
     rc=1
   done
-  return "$rc"
+  [ "$rc" -eq 0 ] || return 1
+
+  # Unknown-release rule: a process of component C that holds nothing of C.
+  for p in "${mine[@]}"; do
+    [ -n "${inspected[$p]:-}" ] && [ -n "${belongs[$p]}" ] || continue
+    for c in ${belongs[$p]}; do
+      [ -z "${held_comp[$p/$c]:-}" ] || continue
+      keep_comp[$c]=1
+      [ -n "${comp_known[$c]:-}" ] && [ -z "${warned[$p/$c]:-}" ] || continue
+      warned[$p/$c]=1
+      comm=${pname[$p]:-?}
+      _aicoding_retention_say "process $p (${comm//[![:print:]]/?}) runs $c from a release it does not hold open; keeping every $c version"
+    done
+  done
+  return 0
 }
 
 # Every symlink under DIR: its resolved target keeps a version, unless the link
@@ -173,13 +296,16 @@ _aicoding_retention_scan_links() {
   done
 }
 
-# Managed launchers and legacy links in ~/.local/bin. Returns 1 on a read error.
+# Managed launchers and legacy links in ~/.local/bin; maps launcher names to
+# components. Returns 1 on a read error.
 _aicoding_retention_scan_bin() {
-  local bin=$1 rc
-  local -a files=()
+  local bin=$1 rc file line comp name
+  local -a files=() managed_files=()
   [ -e "$bin" ] || [ -L "$bin" ] || return 0
   # find does not descend into a symlinked start directory.
   bin=$(readlink -e -- "$bin") || return 1
+  # The launcher directory itself may live inside a release.
+  _aicoding_retention_mark_path "$bin"
   [ -d "$bin" ] || return 0
   _aicoding_retention_scan_links_bin "$bin" || return 1
   mapfile -d '' files < <(find "$bin" -type f -print0 2>/dev/null; printf 'rc=%s\0' "$?")
@@ -192,13 +318,40 @@ _aicoding_retention_scan_bin() {
   # 1 is "no match"; 2 is a file that could not be read.
   [ "$rc" -le 1 ] || return 1
   _aicoding_retention_mark_tokens < "$_work/bin-tokens"
+  rc=0
+  mapfile -d '' managed_files < <(grep -lZxF -e "$_AICODING_RETENTION_MARKER" -- "${files[@]}" 2>/dev/null || rc=$?
+                                  printf 'rc=%s\0' "$rc")
+  [ "${managed_files[-1]:-}" = rc=0 ] || [ "${managed_files[-1]:-}" = rc=1 ] || return 1
+  unset 'managed_files[-1]'
+  [ "${#managed_files[@]}" -gt 0 ] || return 0
+  while IFS= read -r -d '' file && IFS= read -r line; do
+    [[ "$line" == current=*/current/* ]] || continue
+    comp=${line##*/current/}
+    comp=${comp%\'}; comp=${comp%\"}
+    _aicoding_retention_safe "$comp" || continue
+    _aicoding_retention_add_launcher "${file##*/}" "$comp"
+  done < <(grep -HZ -m1 '^current=' -- "${managed_files[@]}" 2>/dev/null)
+  return 0
+}
+
+# comm is the first 15 bytes of the executable name.
+_aicoding_retention_add_launcher() {
+  local name=$1 comp=$2
+  launcher_comp[$name]+=" $comp"
+  comm_comp[${name:0:15}]+=" $comp"
 }
 
 _aicoding_retention_scan_links_bin() {
-  local bin=$1 path raw
+  local bin=$1 path raw real rest
   while IFS= read -r -d '' path && IFS= read -r -d '' raw; do
     [ "$path" = aicoding-retention-scan-end ] && return 0
-    _aicoding_retention_mark_path "$(readlink -m -- "$path" 2>/dev/null)"
+    real=$(readlink -m -- "$path" 2>/dev/null)
+    _aicoding_retention_mark_path "$real"
+    case "$real" in
+      "$_vroot"/*/*)
+        rest=${real#"$_vroot"/}
+        _aicoding_retention_safe "${rest%%/*}" && _aicoding_retention_add_launcher "${path##*/}" "${rest%%/*}" ;;
+    esac
     _aicoding_retention_mark_tokens < <(printf '%s\n' "$raw" \
       | grep -aoE "versions/${_AICODING_RETENTION_SEG}/${_AICODING_RETENTION_SEG}")
   done < <(find "$bin" -type l -printf '%p\0%l\0' 2>/dev/null \
@@ -206,8 +359,41 @@ _aicoding_retention_scan_links_bin() {
   return 1
 }
 
+# Mount points, still octal-escaped; same-filesystem bind mounts appear too.
+_aicoding_retention_read_mounts() {
+  local file=${_AICODING_RETENTION_PROC:-/proc}/self/mountinfo line mp
+  mounts=()
+  [ -r "$file" ] || return 1
+  while IFS= read -r line; do
+    read -r _ _ _ _ mp _ <<< "$line"
+    [ -n "$mp" ] && mounts+=("$mp")
+  done < "$file" || return 1
+  [ "${#mounts[@]}" -gt 0 ]
+}
+
+# Is a mount point at or below DIR?
+_aicoding_retention_has_mount() {
+  local e=$1 mp
+  e=${e//\\/\\134}; e=${e// /\\040}; e=${e//$'\t'/\\011}; e=${e//$'\n'/\\012}
+  for mp in "${mounts[@]}"; do
+    [ "$mp" = "$e" ] && return 0
+    case "$mp" in "$e"/*) return 0 ;; esac
+  done
+  return 1
+}
+
+# A pointer is valid only when it resolves to exactly versions/<comp>/<name>.
+_aicoding_retention_pointer_ok() {
+  local comp=$1 link=$2 target name
+  [ -L "$link" ] && target=$(readlink -e -- "$link") && [ -d "$target" ] || return 1
+  case "$target" in "$_vroot/$comp"/*) ;; *) return 1 ;; esac
+  name=${target#"$_vroot/$comp/"}
+  _aicoding_retention_release_name "$name"
+}
+
 # Remove one version: re-verify, rename into a dot-prefixed tombstone, delete.
-# Returns 1 when nothing changed, 3 when the tombstone could not be deleted.
+# Returns 1 when nothing changed, 3 when the tombstone could not be deleted,
+# 4 when a mount point lies inside.
 _aicoding_retention_remove() {
   local comp=$1 name=$2 dir tomb real
   dir="$_vroot/$comp/$name"
@@ -216,6 +402,8 @@ _aicoding_retention_remove() {
   [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
   real=$(readlink -e -- "$dir") || return 1
   [ "$real" = "$dir" ] || return 1
+  _aicoding_retention_read_mounts || return 1
+  if _aicoding_retention_has_mount "$dir"; then return 4; fi
   tomb=$(mktemp -d "$_vroot/$comp/.aicoding-retired.$name.XXXXXX" 2>/dev/null) || return 1
   if ! mv -T -- "$dir" "$tomb/item" 2>/dev/null; then
     rmdir -- "$tomb" 2>/dev/null || true
@@ -226,13 +414,13 @@ _aicoding_retention_remove() {
 
 # Build caches can leave read-only directories; restore write access first.
 _aicoding_retention_delete_tree() {
-  rm -rf -- "$1" 2>/dev/null && return 0
+  rm -rf --one-file-system -- "$1" 2>/dev/null && return 0
   chmod -R u+w -- "$1" 2>/dev/null || true
-  rm -rf -- "$1" 2>/dev/null
+  rm -rf --one-file-system -- "$1" 2>/dev/null
 }
 
 _aicoding_retention_main() {
-  local mode=${AICODING_RETENTION:-on} grace=${AICODING_RETENTION_GRACE:-86400}
+  local mode=${AICODING_RETENTION:-on} grace=${AICODING_RETENTION_GRACE:-604800}
   case "$mode" in
     off) return 0 ;;
     on|remove) mode=remove ;;
@@ -277,17 +465,22 @@ _aicoding_retention_main() {
     return 0
   fi
 
-  local -A used=() keep_comp=()
-  local -a comps=()
-  local entry comp target link lock fd _work
+  local -A used=() keep_comp=() comp_known=() held=() held_comp=() launcher_comp=() comm_comp=()
+  local -a comps=() mounts=() data_prefixes=()
+  local entry comp link lock fd _work m
   _work=$(mktemp -d) || return 0
   # shellcheck disable=SC2064
   trap "rm -rf -- $(printf '%q' "$_work")" EXIT
+  for m in "$AICODING_DATA_DIR" "$data"; do
+    while [ "${m%/}" != "$m" ]; do m=${m%/}; done
+    [ -n "$m" ] && data_prefixes+=("$m")
+  done
 
   for entry in "$_vroot"/*; do
     comp=${entry##*/}
     [ -d "$entry" ] && [ ! -L "$entry" ] && _aicoding_retention_safe "$comp" || continue
     comps+=("$comp")
+    comp_known[$comp]=1
     # Activation locks: a component being activated is left alone.
     for lock in "$AICODING_STATE_DIR/locks/$comp.lock" "$data/.$comp-install.lock"; do
       [ -e "$lock" ] || continue
@@ -295,18 +488,11 @@ _aicoding_retention_main() {
         keep_comp[$comp]=1
       fi
     done
-    # current/<component> must resolve to a release of that component.
-    link="$cur_root/$comp"
-    if [ -L "$link" ] && target=$(readlink -e -- "$link") && [ -d "$target" ]; then
-      case "$target" in "$_vroot/$comp"/*) ;; *) keep_comp[$comp]=1 ;; esac
-    else
-      keep_comp[$comp]=1
-    fi
+    # current/<component> must resolve to exactly one release of that component.
+    _aicoding_retention_pointer_ok "$comp" "$cur_root/$comp" || keep_comp[$comp]=1
     link="$prev_root/$comp"
     if [ -e "$link" ] || [ -L "$link" ]; then
-      if ! { [ -L "$link" ] && target=$(readlink -e -- "$link") && [ -d "$target" ]; }; then
-        keep_comp[$comp]=1
-      fi
+      _aicoding_retention_pointer_ok "$comp" "$link" || keep_comp[$comp]=1
     fi
   done
   [ "${#comps[@]}" -gt 0 ] || return 0
@@ -320,44 +506,84 @@ _aicoding_retention_main() {
     _aicoding_retention_warn "cannot read every launcher in ~/.local/bin; nothing removed"
     return 0
   fi
+  if ! _aicoding_retention_read_mounts; then
+    _aicoding_retention_warn "cannot read the mount table; nothing removed"
+    return 0
+  fi
   if ! _aicoding_retention_scan_proc; then
-    _aicoding_retention_warn "cannot prove the /proc scan of running processes is complete; nothing removed"
+    _aicoding_retention_warn "cannot prove that no running process uses a release; nothing removed"
     return 0
   fi
 
-  local now name dir stamps newest kib count=0 total=0 failed=0 _retired_left rc
+  # A stamp's mtime is the first run that saw the version as a candidate.
+  local sroot="$AICODING_STATE_DIR/retention" stamp first due
+  local now name dir kib count=0 total=0 failed=0 waiting=0 _retired_left rc
   now=$(date +%s) || return 0
   for comp in "${comps[@]}"; do
-    [ -z "${keep_comp[$comp]:-}" ] || continue
-    if [ "$mode" = remove ]; then
+    for dir in "$_vroot/$comp"/.aicoding-retired.*; do
+      [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+      if [ -n "${keep_comp[$comp]:-}" ]; then continue; fi
+      if _aicoding_retention_has_mount "$dir"; then
+        _aicoding_retention_warn "leftover $dir contains a mount point; kept"
+        continue
+      fi
       # Tombstones of an earlier interrupted removal are never valid releases.
-      for dir in "$_vroot/$comp"/.aicoding-retired.*; do
-        [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+      if [ "$mode" = preview ]; then
+        _aicoding_retention_say "would delete leftover $dir"
+      else
         _aicoding_retention_delete_tree "$dir" \
           || _aicoding_retention_warn "could not delete leftover $dir"
-      done
-    fi
+      fi
+    done
     for dir in "$_vroot/$comp"/*; do
       name=${dir##*/}
       [ -d "$dir" ] && [ ! -L "$dir" ] || continue
       _aicoding_retention_safe "$name" || continue
-      case "$name" in *.staging.*) continue ;; esac
-      [ -z "${used[$comp/$name]:-}" ] || continue
-      stamps=$(stat -c '%Y %Z' -- "$dir" 2>/dev/null) || continue
-      newest=${stamps% *}
-      [ "${stamps#* }" -le "$newest" ] || newest=${stamps#* }
-      [ $((now - newest)) -ge "$grace" ] || continue
+      stamp="$sroot/$comp/$name"
+      if [ -n "${keep_comp[$comp]:-}" ] || ! _aicoding_retention_release_name "$name" \
+          || [ -n "${used[$comp/$name]:-}" ]; then
+        [ "$mode" != remove ] || rm -f -- "$stamp" 2>/dev/null || true
+        continue
+      fi
+      if _aicoding_retention_has_mount "$dir"; then
+        _aicoding_retention_warn "$comp/$name contains a mount point; kept"
+        [ "$mode" != remove ] || rm -f -- "$stamp" 2>/dev/null || true
+        continue
+      fi
+      first=
+      if [ -f "$stamp" ] && [ ! -L "$stamp" ]; then
+        first=$(stat -c %Y -- "$stamp" 2>/dev/null) || first=
+      fi
+      # No stamp, or one from the future: the window starts now.
+      if ! [[ "$first" =~ ^[0-9]+$ ]] || [ "$first" -gt "$now" ]; then
+        first=$now
+        if [ "$mode" = remove ]; then
+          { mkdir -p -- "$sroot/$comp" && rm -f -- "$stamp" && : > "$stamp"; } 2>/dev/null \
+            || _aicoding_retention_warn "cannot record when $comp/$name was first seen unused"
+        fi
+      fi
+      due=$((first + grace))
       kib=$(du -sk -- "$dir" 2>/dev/null | cut -f1)
       [[ "$kib" =~ ^[0-9]+$ ]] || kib=0
+      if [ "$now" -lt "$due" ]; then
+        waiting=$((waiting + 1))
+        _aicoding_retention_say "$comp/$name unused since $(_aicoding_retention_date "$first"); eligible for removal from $(_aicoding_retention_date "$due") ($(_aicoding_retention_human "$kib"))"
+        continue
+      fi
       if [ "$mode" = preview ]; then
-        _aicoding_retention_say "would remove $comp/$name ($(_aicoding_retention_human "$kib"))"
+        _aicoding_retention_say "would remove $comp/$name now ($(_aicoding_retention_human "$kib"))"
       else
         rc=0; _retired_left=
         _aicoding_retention_remove "$comp" "$name" || rc=$?
         case "$rc" in
-          0) _aicoding_retention_say "removed $comp/$name ($(_aicoding_retention_human "$kib"))" ;;
+          0) _aicoding_retention_say "removed $comp/$name ($(_aicoding_retention_human "$kib"))"
+             rm -f -- "$stamp" 2>/dev/null || true ;;
           3) _aicoding_retention_warn "removed $comp/$name from use, but could not delete all of $_retired_left"
+             rm -f -- "$stamp" 2>/dev/null || true
              failed=$((failed + 1)); continue ;;
+          4) _aicoding_retention_warn "$comp/$name contains a mount point; kept"
+             rm -f -- "$stamp" 2>/dev/null || true
+             continue ;;
           *) _aicoding_retention_warn "could not remove $comp/$name; kept"
              failed=$((failed + 1)); continue ;;
         esac
@@ -366,12 +592,21 @@ _aicoding_retention_main() {
     done
   done
 
+  # Stamps of versions that no longer exist.
+  if [ "$mode" = remove ] && [ -d "$sroot" ] && [ ! -L "$sroot" ]; then
+    for stamp in "$sroot"/*/*; do
+      comp=${stamp%/*}; comp=${comp##*/}; name=${stamp##*/}
+      [ -d "$_vroot/$comp/$name" ] && [ ! -L "$_vroot/$comp/$name" ] || rm -f -- "$stamp" 2>/dev/null || true
+    done
+    for dir in "$sroot"/*; do rmdir -- "$dir" 2>/dev/null || true; done
+  fi
+
   local noun=versions
   [ "$count" -ne 1 ] || noun=version
   if [ "$mode" = preview ]; then
-    _aicoding_retention_say "would remove $count unused $noun, freeing $(_aicoding_retention_human "$total")"
+    _aicoding_retention_say "would remove $count unused $noun now, freeing $(_aicoding_retention_human "$total"); $waiting more still in their observation window"
   else
-    _aicoding_retention_say "removed $count unused $noun, freed $(_aicoding_retention_human "$total")"
+    _aicoding_retention_say "removed $count unused $noun, freed $(_aicoding_retention_human "$total"); $waiting more still in their observation window"
   fi
   [ "$failed" -eq 0 ] || _aicoding_retention_warn "$failed version(s) could not be removed"
   return 0
