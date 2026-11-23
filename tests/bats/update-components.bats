@@ -1046,7 +1046,7 @@ ADAPTER
   _aicoding_stage_git_source() {
     mkdir -p "$3/cmd/bw-docker-guard"
     for s in claude-bw opencode-bw pi-bw; do printf '#!/bin/sh\nexit 0\n' > "$3/$s.sh"; chmod +x "$3/$s.sh"; done
-    : > "$3/go.mod"; printf '%s\n' "$2" > "$3/.aicoding-version"
+    : > "$3/bw-common.sh"; : > "$3/go.mod"; printf '%s\n' "$2" > "$3/.aicoding-version"
   }
   cat > "$TMP/stubs/go" <<'EOF'
 #!/bin/sh
@@ -1063,6 +1063,7 @@ EOF
   [ "$(readlink "$AICODING_DATA_DIR/current/bw-AICode")" = "../versions/bw-AICode/$sha" ]
   [ -x "$HOME/.local/bin/claude-bw" ]
   [ -x "$HOME/.local/bin/bw-docker-guard" ]
+  [ -f "$AICODING_DATA_DIR/versions/bw-AICode/$sha/bw-common.sh" ]
   : > "$TMP/go-calls"
   run aicoding_update_bw
   [ "$status" -eq 0 ]
@@ -1078,7 +1079,7 @@ EOF
   _aicoding_stage_git_source() {
     mkdir -p "$3/cmd/bw-docker-guard"
     for s in claude-bw opencode-bw pi-bw; do printf '#!/bin/sh\nexit 0\n' > "$3/$s.sh"; chmod +x "$3/$s.sh"; done
-    : > "$3/go.mod"; printf '%s\n' "$2" > "$3/.aicoding-version"
+    : > "$3/bw-common.sh"; : > "$3/go.mod"; printf '%s\n' "$2" > "$3/.aicoding-version"
   }
   _sync_profile() { echo container; }
   command() { [ "$1 ${2:-}" != '-v go' ] || return 1; builtin command "$@"; }
