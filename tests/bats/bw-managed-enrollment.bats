@@ -79,12 +79,53 @@ teardown() { rm -rf "$TMP"; }
   [ ! -e "$AICODING_DATA_DIR/current/bw-AICode" ]
 }
 
-@test "existing bw release missing a sourced file is reported invalid" {
+@test "existing bw release packaged without its sourced file is rebuilt in place" {
+  local rel="$AICODING_DATA_DIR/versions/bw-AICode/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   aicoding_update_bw
-  rm "$AICODING_DATA_DIR/versions/bw-AICode/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/bw-common.sh"
+  rm "$rel/bw-common.sh"
+  run aicoding_update_bw
+  [ "$status" -eq 0 ]
+  [ -f "$rel/bw-common.sh" ]
+  run "$HOME/.local/bin/pi-bw"
+  [ "$output" = managed-common ]
+  [ -z "$(find "$(dirname "$rel")" -maxdepth 1 -name '*.replaced.*')" ]
+}
+
+@test "existing bw release whose sourced file is a symlink is rebuilt" {
+  local rel="$AICODING_DATA_DIR/versions/bw-AICode/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  aicoding_update_bw
+  mv "$rel/bw-common.sh" "$TMP/outside-common.sh"
+  ln -s "$TMP/outside-common.sh" "$rel/bw-common.sh"
+  run aicoding_update_bw
+  [ "$status" -eq 0 ]
+  [ -f "$rel/bw-common.sh" ]
+  [ ! -L "$rel/bw-common.sh" ]
+}
+
+@test "existing bw release with a broken wrapper is still reported invalid" {
+  local rel="$AICODING_DATA_DIR/versions/bw-AICode/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  aicoding_update_bw
+  chmod -x "$rel/pi-bw.sh"
   run aicoding_update_bw
   [ "$status" -ne 0 ]
   jq -e '.components["bw-AICode"].reason == "existing_release_invalid"' "$AICODING_RESULTS_FILE"
+}
+
+@test "bw validator reads braced SCRIPT_DIR and rejects directives it cannot parse" {
+  local d="$TMP/rel" name
+  mkdir -p "$d"
+  : > "$d/bw-common.sh"
+  for name in claude-bw opencode-bw pi-bw; do
+    printf '#!/bin/bash\nsource "${SCRIPT_DIR}/bw-common.sh"\n' > "$d/$name.sh"
+    chmod +x "$d/$name.sh"
+  done
+  _aicoding_bw_release_valid "$d"
+  printf '#!/bin/bash\nsource "${SCRIPT_DIR}/extra.sh"\n' > "$d/pi-bw.sh"
+  run _aicoding_bw_release_valid "$d"
+  [ "$status" -eq 2 ]
+  printf '#!/bin/bash\nsource "$SCRIPT_DIR"/bw-common.sh\n' > "$d/pi-bw.sh"
+  run _aicoding_bw_release_valid "$d"
+  [ "$status" -eq 2 ]
 }
 
 @test "persistent provisioning propagates managed build failure without reporting installed" {
