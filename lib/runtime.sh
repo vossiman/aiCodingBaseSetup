@@ -210,6 +210,8 @@ _aicoding_runtime_write_wrapper() {
       '[ -x "$release/$relative" ] || exit 1' \
       '# Lease: this open descriptor marks the release as in use for retention.' \
       '{ command exec {aicoding_lease}<"$release"; } 2>/dev/null || :' \
+      '# A shared lock on it lasts while any process still inherits the descriptor.' \
+      '[ -z "${aicoding_lease:-}" ] || { command flock -s -n "$aicoding_lease"; } >/dev/null 2>&1 || :' \
       'exec "$release/$relative" "$@"'
   } > "$output" || return 1
   chmod 0755 "$output"

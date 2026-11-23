@@ -44,15 +44,26 @@ of these hold, and is kept whenever any check is unclear:
 - no symlink anywhere under `~/.local/share/aicoding` (including every
   `current/` and `previous/` pointer, relative or absolute) resolves into it
   or through it: every release that a link's resolution steps through is
-  kept, not only the final target. A chain that cannot be followed to its end
-  keeps every component it touched. A link inside a release that resolves
-  back into the same release does not protect that release;
-- no file or symlink in `~/.local/bin` names or resolves into it, and
+  kept, not only the final target. A chain that cannot be followed to its end,
+  including one that reaches a missing path, keeps every component it
+  touched. One exception keeps pruning possible: a link inside a release whose
+  missing step lies in that same release, and which touched no other part of
+  `versions/`, keeps nothing (dangling links inside `node_modules` are
+  common). A dangling link that never touches `versions/` keeps nothing
+  either. A link inside a release that resolves back into the same release
+  does not protect that release;
+- no file in `~/.local/bin` names it, no symlink there resolves into it or
+  through it (resolved step by step like the links above, so a chain through
+  an alias outside the data directory keeps every release it passes, and one
+  that cannot be followed keeps the components it touched), and
   `~/.local/bin` itself does not resolve into it;
 - no process of the user has its executable, working directory, an open file
   or directory, or a memory-mapped file inside it, and no command line of the
   user's processes names `versions/<component>/<name>` under the data
-  directory, whatever that process holds open;
+  directory, whatever that process holds open. Every occurrence in an
+  argument counts on its own, so `--paths=<data>/versions/pi/1.0/bin:<data>/current/pi/bin`
+  names release `pi/1.0` and component `pi`;
+- no process holds a launcher lease on it (below);
 - no process of the user belongs to the component without holding any of its
   releases (the unknown-release rule, below);
 - no mount point lies at or below it (read from `/proc/self/mountinfo`, which
@@ -65,7 +76,18 @@ as `pi`) can have an executable and a working directory outside its release,
 and may rewrite its own command line. To keep them visible, every managed launcher
 in `~/.local/bin` opens a read-only descriptor on the physical release
 directory just before its `exec`, and the tool inherits it; the descriptor scan
-then finds the release. A failed open never stops the launcher. Launchers
+then finds the release. The launcher also takes a shared `flock` on that
+descriptor. The lock belongs to the open file, so it lasts while any process
+still holds an inherited copy, including a detached child whose parent has
+exited. Retention does not need `/proc` to see it: immediately before it
+renames a release into its tombstone, it opens the release directory and
+tries an exclusive, non-blocking lock, which it holds until the rename is
+done. If the lock cannot be taken, the release is kept, its stamp is deleted
+so the window starts again, and one line says it is held by a running
+process. Every run, preview included, makes the same test for each candidate
+and drops the test lock at once. A failed open or a missing or failing
+`flock` never stops or delays the launcher. Retention itself needs `flock`:
+without it, the run removes nothing and says so once. Launchers
 written by an older release are rewritten by the next sync, even for a
 component that is already current. That refresh accepts a relative or an
 absolute `current/<component>` pointer and never moves or rewrites `current`
@@ -96,6 +118,15 @@ name. An uninspectable process that is not
 relevant is ignored, so a release used only by an unrelated, uninspectable
 process outside any managed process tree could still be removed.
 
+The process scan is a snapshot. After it, retention lists the user's
+processes once more. If a process that held a managed release or belonged to
+a component has exited meanwhile, or a new process appeared whose parent is
+such a process, the scan counts as incomplete: the run removes nothing and
+leaves every stamp untouched. Retention's own helper processes are ignored.
+This catches only what the snapshot could attribute; the launcher lock above
+covers everything started through a launcher, and the `/proc` rules remain
+for processes started before launchers took the lock or without a launcher.
+
 **The observation window.** A candidate is removed only after it stayed a
 candidate on every run for `AICODING_RETENTION_GRACE` seconds (default seven
 days). The value is read as a decimal number of seconds, so a leading zero
@@ -109,7 +140,10 @@ moment. `retention/` and each component directory in it are created private
 directory. A symlinked or otherwise odd component directory keeps every
 version of that component with a warning; such a `retention/` itself keeps
 everything. Stamp cleanup never follows a symlink and deletes only regular
-files named like a version. A run that sees the version referenced, in use, or kept by any rule
+files named like a version. Before a stamp is deleted or created, an existing
+entry must be a regular file; a symlink, FIFO, directory or other entry is
+left in place, its version is kept, and one warning names it. A new stamp is
+created exclusively, never through a link. A run that sees the version referenced, in use, or kept by any rule
 deletes its stamp, so the window starts again. Stamps of versions that no
 longer exist are deleted. A run that removes nothing because a scan was
 incomplete, the mount table could not be read, an uninspectable process was

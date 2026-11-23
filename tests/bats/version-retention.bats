@@ -988,3 +988,253 @@ launcher() {
   [ -d "$D/versions/claude/1.0.0" ]
   [[ "$output" == *"process 4901 (helper) cannot be inspected"* ]]
 }
+
+# Wait until FILE exists; 1 after 5 s. A lock probe could collide with the
+# launcher's own non-blocking attempt, so tools announce themselves instead.
+_wait_file() {
+  local i
+  for ((i = 0; i < 50; i++)); do
+    [ ! -e "$1" ] || return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+@test "a launcher's shared lock keeps its release even when the /proc scan cannot see the process" {
+  export AICODING_RETENTION_GRACE=3600
+  mkver tool 1.0.0; mkver tool 1.1.0
+  mkfifo "$TEST_ROOT/gate"
+  printf '#!/bin/sh\n: > "$1.ready"\nread -r line < "$1"\n' > "$D/versions/tool/1.0.0/bin/run"
+  chmod +x "$D/versions/tool/1.0.0/bin/run"
+  point current tool ../versions/tool/1.0.0
+  launcher aicodingtesttool tool bin/run
+  "$HOME/.local/bin/aicodingtesttool" "$TEST_ROOT/gate" "$HELPER_SLEEP" &
+  HELPERS+=("$!")
+  local pid=$!
+  _wait_file "$TEST_ROOT/gate.ready"
+  if flock -x -n "$D/versions/tool/1.0.0" true; then false; fi
+  point current tool ../versions/tool/1.1.0
+  mkdir -p "$AICODING_STATE_DIR/retention/tool"
+  touch -d @"$(( $(date +%s) - 3700 ))" "$AICODING_STATE_DIR/retention/tool/1.0.0"
+  # A fake proc root with one idle process: the scan sees nothing of the tool.
+  fakeproc 4991 "$UID" idle /usr/bin/idle
+  inspectable 4991
+  export AICODING_RETENTION=preview
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"tool/1.0.0 is held by a running process; kept"* ]]
+  [[ "$output" != *"would remove tool/1.0.0"* ]]
+  unset AICODING_RETENTION
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/tool/1.0.0" ]
+  [ ! -e "$AICODING_STATE_DIR/retention/tool/1.0.0" ]
+  [[ "$output" == *"tool/1.0.0 is held by a running process; kept"* ]]
+  # Once the tool ends, the lease is gone and the release can go.
+  printf 'go\n' > "$TEST_ROOT/gate"
+  wait "$pid"
+  export AICODING_RETENTION_GRACE=0 AICODING_RETENTION=preview
+  run aicoding_version_retention
+  [[ "$output" == *"would remove tool/1.0.0 now"* ]]
+  # Preview leaves no lock behind.
+  flock -x -n "$D/versions/tool/1.0.0" true
+  unset AICODING_RETENTION
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ ! -e "$D/versions/tool/1.0.0" ]
+  [ -d "$D/versions/tool/1.1.0" ]
+}
+
+@test "a launcher takes the lease lock and still runs when flock is missing or fails" {
+  mkver tool 1.0.0
+  printf '#!/bin/sh\necho ran "$@"\n' > "$D/versions/tool/1.0.0/bin/run"
+  chmod +x "$D/versions/tool/1.0.0/bin/run"
+  point current tool ../versions/tool/1.0.0
+  launcher aicodingtesttool tool bin/run
+  grep -qF 'flock -s -n "$aicoding_lease"' "$HOME/.local/bin/aicodingtesttool"
+  [ "$(tail -n 1 "$HOME/.local/bin/aicodingtesttool")" = 'exec "$release/$relative" "$@"' ]
+  mkdir "$TEST_ROOT/noflock"
+  ln -s "$(command -v bash)" "$TEST_ROOT/noflock/bash"
+  ln -s "$(command -v readlink)" "$TEST_ROOT/noflock/readlink"
+  run env PATH="$TEST_ROOT/noflock" "$HOME/.local/bin/aicodingtesttool" a b
+  [ "$status" -eq 0 ]
+  [ "$output" = "ran a b" ]
+  printf '#!/bin/sh\necho flock-failed >&2\nexit 1\n' > "$TEST_ROOT/noflock/flock"
+  chmod +x "$TEST_ROOT/noflock/flock"
+  run env PATH="$TEST_ROOT/noflock" "$HOME/.local/bin/aicodingtesttool" c
+  [ "$status" -eq 0 ]
+  [ "$output" = "ran c" ]
+}
+
+@test "retention removes nothing when flock is not installed" {
+  local f
+  mkdir "$TEST_ROOT/farm"
+  for f in /usr/bin/* /bin/*; do
+    [ "${f##*/}" != flock ] || continue
+    [ -e "$TEST_ROOT/farm/${f##*/}" ] || [ -L "$TEST_ROOT/farm/${f##*/}" ] || ln -s "$f" "$TEST_ROOT/farm/${f##*/}"
+  done
+  if PATH="$TEST_ROOT/stubs:$TEST_ROOT/farm" command -v flock >/dev/null; then false; fi
+  PATH="$TEST_ROOT/stubs:$TEST_ROOT/farm" run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/claude/1.0.0" ]
+  [ "$(grep -c 'flock is not installed' <<< "$output")" -eq 1 ]
+  [ ! -e "$AICODING_STATE_DIR/retention" ]
+}
+
+# Run HOOK once, in the middle of the process scan, after the first command line is read.
+_hook_scan() {
+  declare -F _test_orig_belongs >/dev/null \
+    || eval "$(declare -f _aicoding_retention_belongs | sed '1s/_aicoding_retention_belongs/_test_orig_belongs/')"
+  _TEST_SCAN_HOOK=$1
+  _aicoding_retention_belongs() {
+    _test_orig_belongs "$@"
+    [ -e "$TEST_ROOT/hook-ran" ] && return 0
+    : > "$TEST_ROOT/hook-ran"
+    eval "$_TEST_SCAN_HOOK"
+  }
+}
+
+@test "a managed process that exits or forks during the scan makes the run remove nothing" {
+  export AICODING_RETENTION_GRACE=3600
+  mkver claude 0.9.0
+  mkdir -p "$AICODING_STATE_DIR/retention/claude"
+  touch -d @1000000000 "$AICODING_STATE_DIR/retention/claude/1.0.0"
+  fakeproc 4701 "$UID" claude /opt/claude
+  inspectable 4701 "$D/versions/claude/1.0.2/bin/tool"
+  _hook_scan 'rm -rf "$TEST_ROOT/proc/4701"'
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/claude/1.0.0" ]
+  [[ "$output" == *"cannot prove"* ]]
+  [ "$(stat -c %Y "$AICODING_STATE_DIR/retention/claude/1.0.0")" = 1000000000 ]
+  [ ! -e "$AICODING_STATE_DIR/retention/claude/0.9.0" ]
+  # A new child of a managed process appearing during the scan.
+  rm -f "$TEST_ROOT/hook-ran"
+  fakeproc 4701 "$UID" claude /opt/claude
+  inspectable 4701 "$D/versions/claude/1.0.2/bin/tool"
+  _hook_scan 'FAKE_PPID=4701 fakeproc 4702 "$UID" helper /usr/bin/helper; inspectable 4702'
+  run aicoding_version_retention
+  [ -d "$D/versions/claude/1.0.0" ]
+  [[ "$output" == *"cannot prove"* ]]
+  [ "$(stat -c %Y "$AICODING_STATE_DIR/retention/claude/1.0.0")" = 1000000000 ]
+  [ ! -e "$AICODING_STATE_DIR/retention/claude/0.9.0" ]
+  # Without changes during the scan, the same tree prunes.
+  . "$BLUEPRINT_ROOT/lib/version-retention.sh"
+  run aicoding_version_retention
+  [ ! -e "$D/versions/claude/1.0.0" ]
+}
+
+@test "launcher refresh adds the lease lock to a launcher that has only the lease" {
+  mkver tool 1.0.0
+  point current tool ../versions/tool/1.0.0
+  launcher aicodingtesttool tool bin/tool
+  cp "$HOME/.local/bin/aicodingtesttool" "$TEST_ROOT/expected"
+  grep -v -e 'flock' -e '^# A shared lock' "$TEST_ROOT/expected" > "$HOME/.local/bin/aicodingtesttool"
+  grep -q 'aicoding_lease' "$HOME/.local/bin/aicodingtesttool"
+  if cmp -s "$TEST_ROOT/expected" "$HOME/.local/bin/aicodingtesttool"; then false; fi
+  run bash -c '. "$1/lib/runtime.sh" && aicoding_runtime_refresh_launchers' _ "$BLUEPRINT_ROOT"
+  [ "$status" -eq 0 ]
+  cmp "$TEST_ROOT/expected" "$HOME/.local/bin/aicodingtesttool"
+}
+
+@test "a ~/.local/bin link that walks through a release keeps every release on the way" {
+  mkver tool 0.9; mkver tool 1.0; mkver tool 2.0; mkver tool 3.0
+  point current tool ../versions/tool/3.0
+  ln -s ../2.0 "$D/versions/tool/1.0/forward"
+  ln -s "$D/versions/tool/1.0" "$HOME/old-alias"
+  ln -s "$HOME/old-alias/forward/bin/tool" "$HOME/.local/bin/tool"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/tool/1.0" ]
+  [ -d "$D/versions/tool/2.0" ]
+  [ ! -e "$D/versions/tool/0.9" ]
+  # A chain from ~/.local/bin that ends in a missing path keeps the component.
+  mkver tool 0.8
+  ln -s "$HOME/old-alias/forward/bin/missing" "$HOME/.local/bin/broken"
+  run aicoding_version_retention
+  [ -d "$D/versions/tool/0.8" ]
+}
+
+@test "every release and component named in one argument counts, in any order" {
+  mkver pi 0.6.0; mkver pi 0.7.0; mkver pi 0.8.0; mkver pi 1.0.0; mkver pi 1.1.0
+  point current pi ../versions/pi/1.1.0
+  fakeproc 4811 "$UID" node node "--paths=$D/versions/pi/1.0.0/bin:$D/current/pi/bin"
+  inspectable 4811 "$D/versions/pi/1.1.0"
+  fakeproc 4812 "$UID" node node "--list=$D/versions/pi/0.8.0,$D/versions/pi/0.7.0 x"
+  inspectable 4812 "$D/versions/pi/1.1.0"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/pi/1.0.0" ]
+  [ -d "$D/versions/pi/0.8.0" ]
+  [ -d "$D/versions/pi/0.7.0" ]
+  [ ! -e "$D/versions/pi/0.6.0" ]
+  # A component named only after another path still belongs: holding none of it keeps it.
+  mkver codex 1.0.0; mkver codex 2.0.0
+  point current codex ../versions/codex/2.0.0
+  fakeproc 4813 "$UID" node node "--paths=$D/versions/pi/1.1.0/bin:$D/current/codex/bin"
+  inspectable 4813 "$D/versions/pi/1.1.0"
+  run aicoding_version_retention
+  [ -d "$D/versions/codex/1.0.0" ]
+  [[ "$output" == *"process 4813 (node) runs codex from a release it does not hold open"* ]]
+}
+
+@test "an unexpected stamp entry is left in place and keeps its release" {
+  mkver claude 0.9.0; mkver claude 0.8.0; mkver claude 0.7.0
+  local s="$AICODING_STATE_DIR/retention/claude"
+  mkdir -p "$s" "$TEST_ROOT/outside"
+  printf 'keep\n' > "$TEST_ROOT/outside/target"
+  ln -s "$TEST_ROOT/outside/target" "$s/1.0.0"
+  mkfifo "$s/0.9.0"
+  mkdir "$s/0.8.0"
+  # A kept version (previous) with a symlinked stamp.
+  ln -s "$TEST_ROOT/outside/target" "$s/1.0.1"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/claude/1.0.0" ]
+  [ -d "$D/versions/claude/0.9.0" ]
+  [ -d "$D/versions/claude/0.8.0" ]
+  [ -L "$s/1.0.0" ]
+  [ -p "$s/0.9.0" ]
+  [ -d "$s/0.8.0" ]
+  [ -L "$s/1.0.1" ]
+  [ "$(cat "$TEST_ROOT/outside/target")" = keep ]
+  [ "$(grep -c "WARN: $s/1.0.0 is not a regular file" <<< "$output")" -eq 1 ]
+  [ "$(grep -c "WARN: $s/1.0.1 is not a regular file" <<< "$output")" -eq 1 ]
+  # The happy path still removes an old unused version.
+  [ ! -e "$D/versions/claude/0.7.0" ]
+}
+
+@test "a dangling chain into a release keeps its component; harmless dangling links do not" {
+  mkver tool 0.9; mkver tool 1.0; mkver tool 2.0
+  point current tool ../versions/tool/2.0
+  mkdir -p "$D/sources/x" "$D/versions/tool/1.0/node_modules/.bin"
+  # Dangling links that never touch versions/.
+  ln -s "$D/nowhere/at/all" "$D/sources/x/gone"
+  ln -s "$TEST_ROOT/nowhere" "$HOME/.local/bin/gone"
+  # A link inside a release to a missing file of that same release.
+  ln -s ../missing/cli.js "$D/versions/tool/1.0/node_modules/.bin/cli"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ ! -e "$D/versions/tool/0.9" ]
+  [ ! -e "$D/versions/tool/1.0" ]
+  [ -d "$D/versions/tool/2.0" ]
+  # A link elsewhere to a missing path inside a release keeps the component.
+  mkver tool 0.8; mkver tool 0.7
+  ln -s "$D/versions/tool/0.8/bin/missing" "$D/sources/x/into"
+  run aicoding_version_retention
+  [ -d "$D/versions/tool/0.8" ]
+  [ -d "$D/versions/tool/0.7" ]
+}
+
+@test "the short-name key is the first 15 bytes of a launcher name, as the kernel cuts it" {
+  locale -a 2>/dev/null | grep -qix 'c.utf-\?8' || skip "no C.UTF-8 locale"
+  export LC_ALL=C.UTF-8
+  local name='ääääääääääää-tool' comm
+  launcher "$name" claude bin/tool
+  comm=$(printf '%s' "$name" | head -c 15)
+  fakeproc 4302 "$UID" "$comm" /usr/bin/whatever
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/claude/1.0.0" ]
+  [[ "$output" == *"process 4302 ("*") cannot be inspected and runs a managed launcher"* ]]
+}
