@@ -1,5 +1,9 @@
 # Fix plan: findings from the review of PRs #282 to #292
 
+> This document records the plan as written on 2026-11-23. Where it differs
+> from what shipped, the merged PRs (#293, #294, #295 and memory-lanes #86)
+> are authoritative.
+
 Date: 2026-11-23. Repo: aiCodingBaseSetup, `main` at `611735c`.
 Status: implemented on 2026-11-23 in PRs #293, #294 and #295 (plus memory-lanes #86); the delivery later changed from six PRs to two.
 
@@ -10,8 +14,8 @@ Owner answers in revision 3:
   on; read them as parts.
 - The owner is not consulted on review handback. The commissioning agent
   incorporates the fixes and cleans up. See A1 and A3.
-- Memory-router read tokens no longer exist. Every environment has
-  `MEMORY_WRITE_TOKEN`. See D4.
+- Every environment has `MEMORY_WRITE_TOKEN`. See D4 for what changed
+  about `MEMORY_ROUTER_TOKEN`.
 
 ## Context
 
@@ -30,12 +34,13 @@ Each point was checked against the code before it was accepted.
   enough. The next run resets that branch (`run.sh:204,211`). The rerun guard
   in `run.sh` has the same blind spots as cleanup, so both now share one
   check. An existing test asserts the behaviour A1 removes.
-- **C2:** adding columns is not enough. The sweep skips stores already
+- **R2:** adding columns is not enough. The sweep skips stores already
   inspected under the same rule fingerprint (`bin/redact-sessions:122-136`),
-  so idle stores would keep the plaintext. C2 is now its own PR.
+  so idle stores would keep the plaintext. R2 became its own item and
+  shipped inside #293.
 - **C1:** the early exit was wrong. A higher version on page 2 would lose to
   a lower backport on page 1. Downgraded and redesigned.
-- **E2:** the existing compatibility gate does not cover the case. Codex
+- **E1:** the existing compatibility gate does not cover the case. Codex
   config needs 0.148 (`lib/update-components.sh:149`), the new default needs
   0.171 (`configs/managed-config.json:40`). The fix is now required.
 - **D4:** the `MEMORY_ROUTER_TOKEN` fallback is not dead. Sync supplies it
@@ -138,8 +143,10 @@ and writes a 0-byte `handback.diff`, then the branch is deleted. Keeping the
 branch alone would not help: the next run force-removes the worktree and
 resets the branch (`run.sh:204,211`).
 
-Fix: when the answer is "unknown", every archive also gets a `git bundle` of
-the branch without upstream history, so harness commits survive. For a
+Fix: when the answer is "unknown", the archive also gets a `git bundle` of
+the branch without upstream history, so harness commits survive. As shipped,
+no bundle is written when no commits remain beyond the default branch
+(`skills/review-by-harness/handback.sh`). For a
 merged or closed PR the A1 rule then applies: archive (default folder when
 none is given), then remove. For an open PR the worktree is kept until
 `--discard`, as for any handback.
@@ -202,7 +209,9 @@ the values. Guard: a plain v1 fixture without the columns still exits 0.
 Problem: `--sweep` only looks at stores newer than its stamp, unless the
 rule fingerprint changed. The fingerprint covers the salt, the rules and the
 roots (`bin/redact-sessions:122-136`), not the column list. An idle store
-inspected before this fix would keep its plaintext for good.
+inspected before this fix would keep its plaintext until it changed. (A
+store is also swept when its `-wal` file is newer than the stamp or it is on
+the deferred list, so "idle" here means neither of those.)
 
 Fix: add a sweep version constant to the fingerprint and bump it in this PR.
 Every store becomes a candidate once, as it does after a key rotation.
@@ -228,7 +237,8 @@ key line with leading whitespace, and one with more than one space after
 Fix: strip spaces and tabs before the assignment and after `export`.
 
 Test. Regression: stores with an indented key, a tab-indented key and
-`export   KEY=` report "already set" and are not appended to.
+`export   KEY=value` report "already set" and are not appended to. (An
+empty value reports "skipped (empty)".)
 
 ### D2. Fail before asking, only when a write will happen
 
@@ -261,11 +271,11 @@ Test. Regression: a `0644` store becomes `0600`, and a `0400` store stays
 Item 8 of the design doc says the renderer is install's only consumer.
 `install_claude_mcps` reads the environment too. Correct the doc.
 
-No code change for the read token. Read tokens no longer exist and every
-environment has `MEMORY_WRITE_TOKEN`, which is in the example and therefore
-exported. The `MEMORY_ROUTER_TOKEN` fallbacks and the `{{MEMORY_ROUTER_TOKEN}}`
-placeholder name are now dead weight. Removing them touches about 15 files
-and is not part of this plan.
+No code change for the read token in this plan. Every environment has
+`MEMORY_WRITE_TOKEN`, which is in the example and therefore exported. What
+shipped later: the blueprint's clients stopped reading `MEMORY_ROUTER_TOKEN`
+(#295). The router still accepts and requires it as a server setting, and
+memory-lanes #86 made `/hint` accept write tokens.
 
 ## PR B: provisioning stops repeating and stops overwriting
 
@@ -365,7 +375,7 @@ reseed gate can reuse it. If not, document the limit.
 ### E4. Small
 
 - Reuse `_aicoding_version_at_least` for the comparison in
-  `_managed_reseed_ready`. The version probe stays.
+  `_managed_reseed_ready`. The version probe stays. (Not shipped.)
 - `lib/t3-migrate.sh:101`: also require a sentinel printed after `find` ends
   normally, so a `find` killed mid-scan cannot pass as "nothing open".
 - `root/tasks.d/20-host-packages.sh:30`: add `-o DPkg::Lock::Timeout=60`.
@@ -380,8 +390,10 @@ Files: `lib/update-opencode.sh`, `lib/update-components.sh`,
 ### C1. Release lookup: measure first
 
 Problem: `_aicoding_opencode_target` (`lib/update-opencode.sh:20-28`) follows
-the `Link` header for up to 5 pages, unauthenticated. GitHub allows 60 calls
-per hour per IP. The limit has not been hit in practice.
+the `Link` header for at most `AICODING_OPENCODE_MAX_PAGES` pages (default
+5), unauthenticated, and chooses the highest version over the pages it
+fetched. GitHub allows 60 calls per hour per IP. The limit has not been hit
+in practice.
 
 An early exit on page 1 is wrong: the maximum must be taken over all pages,
 or a lower backport can win. So paging stays as it is.
@@ -414,9 +426,12 @@ activation cannot prove that a binary came from the image.
 
 ## Delivery
 
-- One branch and worktree per PR under `.claude/worktrees/`. The six PRs
-  touch disjoint source files and can run in parallel. Merge in the priority
-  order above.
+- Superseded: the plan below asked for six PRs. What shipped: #293 carried
+  parts A, R and D, #294 carried B, E and C, #295 the client token cleanup,
+  and memory-lanes #86 the router change.
+- As planned: one branch and worktree per PR under `.claude/worktrees/`. The
+  six PRs touch disjoint source files and can run in parallel. Merge in the
+  priority order above.
 - Every PR: the regression test first, `bash tests/bats/run.sh` before each
   push, external binaries stubbed in the same commit, temporary repositories
   and `blueprint_copy` instead of the real checkout, explicit status
