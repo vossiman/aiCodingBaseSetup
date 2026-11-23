@@ -518,6 +518,19 @@ EOF
 # --- SQLite stores (spec 2026-09-07-redact-sessions-sqlite-design.md) -------
 
 # source_candidates: run the script's candidates() in this shell.
+@test "sweep: a bumped sweep version rescans stores older than the stamp" {
+  local f="$HOME/.claude/projects/-p/s1.jsonl"
+  printf '{"text":"clean"}\n' > "$f"; old "$f"
+  "$RS" --sweep
+  printf '{"text":"%s"}\n' "$V1" > "$f"; old "$f"
+  # fingerprint as the previous release computed it, same rules and salt
+  local fpfile; fpfile="$(ls "$STATE"/rules.fp.* | head -1)"
+  ( REDACT_SESSIONS_SOURCE_ONLY=1 . "$RS"; SWEEP_VERSION=1; load_rules; fingerprint_rules ) > "$fpfile"
+  "$RS" --sweep
+  [[ "$(cat "$f")" != *"$V1"* ]]
+  grep -q 'full rescan' "$STATE/log"
+}
+
 source_candidates() { ( REDACT_SESSIONS_SOURCE_ONLY=1 . "$RS"; candidates | sort -u ); }
 
 sqlite_opencode() {

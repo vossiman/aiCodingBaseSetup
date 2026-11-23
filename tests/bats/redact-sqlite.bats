@@ -425,3 +425,30 @@ rec = json.loads(recovery); assert v1 not in rec["command"] and rec["cwd"] == "/
 st = json.loads(state); assert v1 not in st["last"]["prompt"] and st["n"] == 1
 EOF
 }
+
+@test "opencode v1: a migrated store's legacy session metadata, revert and permission are scrubbed" {
+  local V3="legacypermissionsecretvalue0042"
+  RULES="$RULES
+$(hex "$V3") [REDACTED:LEGACY_KEY]"
+  make_opencode "$HOME/opencode.db"
+  python3 - "$HOME/opencode.db" "$V1" "$V2" "$V3" <<'PYEND'
+import sqlite3, sys
+db, v1, v2, v3 = sys.argv[1:]
+c = sqlite3.connect(db)
+for col in ("metadata", "revert", "permission"):
+    c.execute("alter table session add column %s text" % col)
+c.execute("update session set metadata=?, revert=?, permission=? where id='ses_1'",
+          ("m " + v1, "r " + v2, "p " + v3))
+c.commit()
+PYEND
+  run --separate-stderr run_helper "$HOME/opencode.db"
+  [ "$status" -eq 0 ]
+  for col in metadata revert permission; do
+    for v in "$V1" "$V2" "$V3"; do
+      [ "$(col "$HOME/opencode.db" "select count(*) from session where instr($col,'$v')>0")" -eq 0 ]
+    done
+  done
+  [[ "$output" == *"hit LEGACY_KEY 1 session=ses_1"* ]]
+  [[ "$(col "$HOME/opencode.db" "select metadata from session")" == "m [REDACTED:OPENROUTER_API_KEY]" ]]
+  [[ "$(col "$HOME/opencode.db" "select revert from session")" == "r [REDACTED:POSTGRES_PASSWORD]" ]]
+}
