@@ -33,7 +33,8 @@ that succeeded without deferrals ends with a retention step. A directory
 of these hold, and is kept whenever any check is unclear:
 
 - it is a real directory, not a symlink, and its name has no leading dot and
-  no `.staging.` part, so staging and transaction trees are never touched;
+  no `.staging.` or `.replaced.` part, so staging and transaction trees and a
+  release set aside by an in-place rebuild are never touched;
 - `current/<component>` is a symlink whose own target (read once, not fully
   resolved) is exactly `../versions/<component>/<name>` or the absolute form
   of that path, and that release is a real directory, not a symlink. A

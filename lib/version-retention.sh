@@ -20,10 +20,11 @@ _aicoding_retention_warn() { printf 'aicoding retention: WARN: %s\n' "$*" >&2; }
 
 _aicoding_retention_safe() { [[ "$1" =~ ^${_AICODING_RETENTION_SEG}$ ]]; }
 
-# A release name: a safe segment that is not a staging directory.
+# A release name: a safe segment that is not a staging directory and not a
+# release set aside by an in-place rebuild (aicoding_update_bw: <sha>.replaced.<pid>).
 _aicoding_retention_release_name() {
   _aicoding_retention_safe "$1" || return 1
-  case "$1" in *.staging.*) return 1 ;; esac
+  case "$1" in *.staging.*|*.replaced.*) return 1 ;; esac
 }
 
 # The same host test as sync: an explicit host profile and no container runtime.

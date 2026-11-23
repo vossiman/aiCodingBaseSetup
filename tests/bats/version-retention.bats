@@ -133,6 +133,15 @@ point() {
   [ ! -e "$D/versions/claude/1.0.0" ]
 }
 
+@test "a release set aside by an in-place rebuild survives and gets no stamp" {
+  mkdir -p "$D/versions/claude/1.0.0.replaced.4242/bin"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/claude/1.0.0.replaced.4242/bin" ]
+  [ ! -e "$AICODING_STATE_DIR/retention/claude/1.0.0.replaced.4242" ]
+  [ ! -e "$D/versions/claude/1.0.0" ]
+}
+
 @test "a version first seen unused starts its observation window and survives" {
   export AICODING_RETENTION_GRACE=3600
   run aicoding_version_retention
