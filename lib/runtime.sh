@@ -204,12 +204,65 @@ _aicoding_runtime_write_wrapper() {
         'esac' \
         'export OPENCODE_DISABLE_AUTOUPDATE=1'
     fi
+    # `command` keeps a failed open from ending the launcher, even in POSIX mode.
     printf '%s\n' \
       'release=$(readlink -f -- "$current") || exit 1' \
       '[ -x "$release/$relative" ] || exit 1' \
+      '# Lease: this open descriptor marks the release as in use for retention.' \
+      '{ command exec {aicoding_lease}<"$release"; } 2>/dev/null || :' \
       'exec "$release/$relative" "$@"'
   } > "$output" || return 1
   chmod 0755 "$output"
+}
+
+# Rewrite outdated managed launchers by re-activating the release they select:
+# an "already current" component never reaches activation. 1 if any failed.
+aicoding_runtime_refresh_launchers() {
+  local bin="$HOME/.local/bin" file name line value comp relative quoted target version expected rc=0
+  local -A pairs=()
+  [ -d "$bin" ] || return 0
+  expected=$(mktemp) || return 1
+  for file in "$bin"/*; do
+    name=${file##*/}
+    [ -f "$file" ] && [ ! -L "$file" ] && _aicoding_runtime_safe_segment "$name" || continue
+    { IFS= read -r line && IFS= read -r line; } < "$file" 2>/dev/null || continue
+    [ "$line" = '# Managed by aicoding immutable runtime.' ] || continue
+    value=""; relative=""
+    while IFS= read -r line; do
+      case "$line" in
+        current=*) [ -n "$value" ] || value=${line#current=} ;;
+        relative=*) [ -n "$relative" ] || relative=${line#relative=} ;;
+      esac
+    done < "$file"
+    comp=${value##*/current/}
+    _aicoding_runtime_safe_segment "$comp" || continue
+    printf -v quoted '%q' "$AICODING_DATA_DIR/current/$comp"
+    [ "$quoted" = "$value" ] || continue
+    # Only plain relative paths, whose quoted form is the path itself.
+    [[ "$relative" =~ ^[A-Za-z0-9._@+-][A-Za-z0-9._/@+-]*$ ]] || continue
+    case "$relative" in *..*) continue ;; esac
+    printf -v quoted '%q' "$relative"
+    [ "$quoted" = "$relative" ] || continue
+    _aicoding_runtime_write_wrapper "$expected" "$AICODING_DATA_DIR/current/$comp" "$relative" || { rc=1; continue; }
+    cmp -s -- "$expected" "$file" && continue
+    pairs[$comp]+="$name $relative "
+  done
+  rm -f -- "$expected"
+  for comp in "${!pairs[@]}"; do
+    target=$(readlink -- "$AICODING_DATA_DIR/current/$comp" 2>/dev/null) || target=""
+    version=${target#"../versions/$comp/"}
+    if [ "$target" != "../versions/$comp/$version" ] || ! _aicoding_runtime_safe_segment "$version"; then
+      printf 'aicoding runtime: %s launchers not refreshed: current pointer is not a release\n' "$comp" >&2
+      rc=1
+      continue
+    fi
+    # shellcheck disable=SC2086
+    if ! aicoding_activate_version "$comp" "$version" ${pairs[$comp]}; then
+      printf 'aicoding runtime: could not refresh %s launchers\n' "$comp" >&2
+      rc=1
+    fi
+  done
+  return "$rc"
 }
 
 _aicoding_runtime_restore_path() {
