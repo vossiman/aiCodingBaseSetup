@@ -199,16 +199,37 @@ old() { t3_iso '-2 hours'; }
   t3_bin_as make sleep
   t3_fake_setup
   "$B/t3-start"
-  srv=$(jq -r .pid "$T3_ENVS_ROOT/demo/userdata/server-runtime.json")
-  # The helper appears only after the pre-window checks passed (signalled by
-  # "ready"), and lives until the test stops it, so load cannot reorder this.
-  seq_run() { TMP=$TMP bash -c '. "$BLUEPRINT_ROOT/lib/t3.sh"; t3_env 2>/dev/null; t3_idle_db 12 && t3_idle_procs && : > "$TMP/ready" && t3_idle_window; r=$?; [ "$r" -eq 1 ] && echo "$T3_BUSY"; exit "$r"'; }
+  # "start" runs the helper and returns once it is observably running; the first
+  # "scan" call records the scan result and stops the helper, so it exists only
+  # across that one scan and the final checks of t3_idle_full cannot see it.
   tok=$(t3_owner token)
-  ( t3_wait_for 120 '[ -e "$TMP/ready" ]'; exec env T3_AICODING_OWNER="$tok" "$TMP/bin/make" 120 ) &
-  mk=$!
-  run seq_run
-  kill "$mk" 2>/dev/null
-  wait "$mk" 2>/dev/null || true
+  cat > "$TMP/hook.sh" <<HOOK
+#!/bin/bash
+if [ "\$1" = start ]; then
+  env T3_AICODING_OWNER="$tok" "$TMP/bin/make" 120 >/dev/null 2>&1 3>&- &
+  pid=\$!
+  echo \$pid > "$TMP/make.pid"
+  for _ in \$(seq 600); do
+    [ "\$(cat /proc/\$pid/comm 2>/dev/null)" = make ] && exit 0
+    sleep 0.2
+  done
+  exit 1
+fi
+if [ ! -e "$TMP/scan1" ]; then
+  echo "\$2" > "$TMP/scan1"
+  pid=\$(cat "$TMP/make.pid")
+  kill "\$pid" 2>/dev/null
+  for _ in \$(seq 600); do
+    [ -d /proc/\$pid ] && [ "\$(cut -d' ' -f3 /proc/\$pid/stat 2>/dev/null)" != Z ] || exit 0
+    sleep 0.1
+  done
+fi
+HOOK
+  chmod +x "$TMP/hook.sh"
+  export T3_IDLE_WINDOW_HOOK="$TMP/hook.sh"
+  run full
+  unset T3_IDLE_WINDOW_HOOK
+  [ "$(cat "$TMP/scan1")" = 1 ]
   [ "$status" -eq 1 ]
   [[ "$output" == *process_make* ]]
 }

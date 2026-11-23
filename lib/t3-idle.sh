@@ -75,12 +75,16 @@ t3_cpu_total() {
 # busy, and total CPU (children already reaped included) must stay under the
 # threshold across the window.
 t3_idle_window() {
-  local i start
+  local i rc start
   t3_idle_procs || return 1
   t3_cpu_total; start=$T3_CPU
+  # Test-only seam: "start" before the first sleep, "scan <status>" after each periodic scan.
+  [ -z "${T3_IDLE_WINDOW_HOOK:-}" ] || "$T3_IDLE_WINDOW_HOOK" start || true
   for ((i = 0; i < T3_IDLE_WINDOW; i++)); do
     sleep 1
-    t3_idle_procs || return 1
+    t3_idle_procs; rc=$?
+    [ -z "${T3_IDLE_WINDOW_HOOK:-}" ] || "$T3_IDLE_WINDOW_HOOK" scan "$rc" || true
+    [ "$rc" -eq 0 ] || return 1
   done
   t3_cpu_total
   [ $((T3_CPU - start)) -lt "$T3_IDLE_CPU_TICKS" ] \
