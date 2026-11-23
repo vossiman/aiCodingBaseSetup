@@ -1056,6 +1056,23 @@ EOF
   if echo "$output" | grep -q "key=new-key"; then false; fi
 }
 
+@test "ensure_stdio_env_mcp: a duplicate refusal with an unreadable mcp get still fails" {
+  cat > "$TMPDIR/stubs/claude" <<EOF
+#!/bin/sh
+case "\$*" in
+  "mcp get brave-search") exit 1 ;;
+  "mcp add brave-search"*) echo 'MCP server brave-search already exists in user config' >&2; exit 1 ;;
+esac
+exit 0
+EOF
+  chmod +x "$TMPDIR/stubs/claude"
+  export BRAVE_API_KEY=new-key
+
+  _run_install_fn "$(_isolated_path)" install_claude_mcps
+  echo "$output" | grep -q "brave-search MCP may need manual setup"
+  if echo "$output" | grep -q "shadowing"; then false; fi
+}
+
 @test "ensure_stdio_env_mcp: an add that fails for another reason still fails" {
   _shadowed_add_stub "permission denied"
   export BRAVE_API_KEY=new-key

@@ -475,7 +475,8 @@ ensure_stdio_env_mcp() {
     mkdir -p "$AICODING_MCP_STATE" 2>/dev/null || true
     printf '%s\n' "$fp" > "$fp_file" 2>/dev/null || true
     ok "$name MCP configured"
-  elif [[ "${add_err,,}" == *"already exists"* ]]; then
+  elif [[ "${add_err,,}" == *"already exists"* && -n "$scope" && "$scope" != "User config"* ]]; then
+    # Only a seen local/project entry explains the duplicate; an unreadable get proves nothing.
     warn "$name MCP: a user entry exists behind a shadowing entry and cannot be inspected; left unchanged"
   else
     warn "$name MCP may need manual setup"
