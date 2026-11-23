@@ -801,3 +801,181 @@ launcher() {
   [ -d "$D/versions/claude/1.0.0" ]
   [ "$(jq -r .outcome "$AICODING_STATE_DIR/auto-update/last-completed.json")" = deferred ]
 }
+
+@test "a symlinked component stamp directory is never followed" {
+  mkdir -p "$TEST_ROOT/docs" "$AICODING_STATE_DIR/retention"
+  printf 'keep\n' > "$TEST_ROOT/docs/sentinel"
+  printf 'keep\n' > "$TEST_ROOT/docs/0.0.9"
+  ln -s "$TEST_ROOT/docs" "$AICODING_STATE_DIR/retention/claude"
+  mkver codex 1.0.0; mkver codex 2.0.0
+  point current codex ../versions/codex/2.0.0
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/claude/1.0.0" ]
+  [ "$(cat "$TEST_ROOT/docs/sentinel")" = keep ]
+  [ "$(cat "$TEST_ROOT/docs/0.0.9")" = keep ]
+  [ "$(find "$TEST_ROOT/docs" -mindepth 1 | wc -l)" -eq 2 ]
+  [[ "$output" == *"WARN"*"claude"* ]]
+  # Other components still prune.
+  [ ! -e "$D/versions/codex/1.0.0" ]
+  # A stamp write must not land there either.
+  export AICODING_RETENTION_GRACE=3600
+  run aicoding_version_retention
+  [ "$(find "$TEST_ROOT/docs" -mindepth 1 | wc -l)" -eq 2 ]
+  [ -d "$D/versions/claude/1.0.0" ]
+}
+
+@test "a symlinked retention root keeps every component" {
+  mkdir -p "$TEST_ROOT/docs/claude" "$AICODING_STATE_DIR"
+  printf 'keep\n' > "$TEST_ROOT/docs/sentinel"
+  printf 'keep\n' > "$TEST_ROOT/docs/claude/0.0.9"
+  ln -s "$TEST_ROOT/docs" "$AICODING_STATE_DIR/retention"
+  mkver codex 1.0.0; mkver codex 2.0.0
+  point current codex ../versions/codex/2.0.0
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/claude/1.0.0" ]
+  [ -d "$D/versions/codex/1.0.0" ]
+  [ "$(cat "$TEST_ROOT/docs/sentinel")" = keep ]
+  [ "$(cat "$TEST_ROOT/docs/claude/0.0.9")" = keep ]
+  [ "$(find "$TEST_ROOT/docs" -mindepth 1 | wc -l)" -eq 3 ]
+  [[ "$output" == *"WARN"* ]]
+}
+
+@test "stamp cleanup deletes only regular files named like a version" {
+  mkdir -p "$AICODING_STATE_DIR/retention/claude/sub" "$TEST_ROOT/outside"
+  : > "$TEST_ROOT/outside/0.0.8"
+  ln -s "$TEST_ROOT/outside/0.0.8" "$AICODING_STATE_DIR/retention/claude/0.0.8"
+  : > "$AICODING_STATE_DIR/retention/claude/.hidden"
+  : > "$AICODING_STATE_DIR/retention/claude/0.0.9"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ ! -e "$AICODING_STATE_DIR/retention/claude/0.0.9" ]
+  [ -L "$AICODING_STATE_DIR/retention/claude/0.0.8" ]
+  [ -f "$TEST_ROOT/outside/0.0.8" ]
+  [ -d "$AICODING_STATE_DIR/retention/claude/sub" ]
+  [ -f "$AICODING_STATE_DIR/retention/claude/.hidden" ]
+}
+
+@test "the stamp directories are private" {
+  export AICODING_RETENTION_GRACE=3600
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -f "$AICODING_STATE_DIR/retention/claude/1.0.0" ]
+  [ "$(stat -c %a "$AICODING_STATE_DIR/retention")" = 700 ]
+  [ "$(stat -c %a "$AICODING_STATE_DIR/retention/claude")" = 700 ]
+}
+
+@test "a pointer that resolves through another release keeps the component" {
+  mkver tool 1; mkver tool 2; mkver tool 3
+  ln -s ../2 "$D/versions/tool/1/forward"
+  point current tool ../versions/tool/1/forward
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/tool/1" ]
+  [ -d "$D/versions/tool/2" ]
+  [ -d "$D/versions/tool/3" ]
+  # The same shape under previous/.
+  point current tool ../versions/tool/3
+  point previous tool "$D/versions/tool/1/forward"
+  run aicoding_version_retention
+  [ -d "$D/versions/tool/1" ]
+  [ -d "$D/versions/tool/2" ]
+  # A plain pointer still allows pruning.
+  point previous tool ../versions/tool/2
+  rm "$D/versions/tool/1/forward"
+  run aicoding_version_retention
+  [ ! -e "$D/versions/tool/1" ]
+  [ -d "$D/versions/tool/2" ]
+}
+
+@test "a link elsewhere that resolves through a release keeps every release on the way" {
+  mkver tool 0; mkver tool 1; mkver tool 2; mkver tool 3
+  point current tool ../versions/tool/3
+  ln -s ../2 "$D/versions/tool/1/forward"
+  mkdir -p "$D/sources/x"
+  ln -s "$D/versions/tool/1/forward/bin" "$D/sources/x/abs"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/tool/1" ]
+  [ -d "$D/versions/tool/2" ]
+  [ ! -e "$D/versions/tool/0" ]
+  # A relative chain: from release 3 through 1 into 2.
+  mkver tool 4; mkver tool 5
+  rm "$D/sources/x/abs"
+  ln -s ../2 "$D/versions/tool/4/forward"
+  ln -s ../4/forward/bin "$D/versions/tool/3/chain"
+  run aicoding_version_retention
+  [ -d "$D/versions/tool/4" ]
+  [ -d "$D/versions/tool/2" ]
+  [ ! -e "$D/versions/tool/5" ]
+}
+
+@test "a release named on any command line is kept even when the process holds another" {
+  mkver pi 0.9.0; mkver pi 1.0.0; mkver pi 1.1.0; mkver pi 1.2.0
+  point current pi ../versions/pi/1.2.0
+  fakeproc 4801 "$UID" node node "$D/versions/pi/1.0.0/dist/cli.js"
+  inspectable 4801 "$D/versions/pi/1.1.0"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/pi/1.0.0" ]
+  [ -d "$D/versions/pi/1.1.0" ]
+  [ ! -e "$D/versions/pi/0.9.0" ]
+}
+
+@test "deleting a retired tree never changes a hard-linked file outside it" {
+  : > "$TEST_ROOT/outside-file"
+  chmod 0444 "$TEST_ROOT/outside-file"
+  mkdir -p "$D/versions/claude/1.0.0/ro"
+  ln "$TEST_ROOT/outside-file" "$D/versions/claude/1.0.0/ro/link"
+  chmod 0555 "$D/versions/claude/1.0.0/ro"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ ! -e "$D/versions/claude/1.0.0" ]
+  [ "$(stat -c %a "$TEST_ROOT/outside-file")" = 444 ]
+}
+
+@test "the grace period is read as decimal" {
+  mkdir -p "$AICODING_STATE_DIR/retention/claude"
+  # 0100 is a hundred seconds, not octal 64.
+  export AICODING_RETENTION_GRACE=0100
+  touch -d @"$(( $(date +%s) - 80 ))" "$AICODING_STATE_DIR/retention/claude/1.0.0"
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/claude/1.0.0" ]
+  touch -d @"$(( $(date +%s) - 130 ))" "$AICODING_STATE_DIR/retention/claude/1.0.0"
+  run aicoding_version_retention
+  [ ! -e "$D/versions/claude/1.0.0" ]
+  # 080 is eighty seconds, not an octal error.
+  mkver claude 0.9.0
+  export AICODING_RETENTION_GRACE=080
+  mkdir -p "$AICODING_STATE_DIR/retention/claude"
+  touch -d @"$(( $(date +%s) - 60 ))" "$AICODING_STATE_DIR/retention/claude/0.9.0"
+  run aicoding_version_retention
+  [ -d "$D/versions/claude/0.9.0" ]
+  touch -d @"$(( $(date +%s) - 110 ))" "$AICODING_STATE_DIR/retention/claude/0.9.0"
+  run aicoding_version_retention
+  [ ! -e "$D/versions/claude/0.9.0" ]
+}
+
+@test "a grace period that is too large or not a number removes nothing" {
+  local g
+  for g in 9223372036854775807 315360001 -5 '10 ' 1e3; do
+    export AICODING_RETENTION_GRACE=$g
+    run aicoding_version_retention
+    [ "$status" -eq 0 ]
+    [ -d "$D/versions/claude/1.0.0" ]
+    [[ "$output" == *"WARN"*"AICODING_RETENTION_GRACE"* ]]
+    [ ! -e "$AICODING_STATE_DIR/retention/claude/1.0.0" ]
+  done
+}
+
+@test "an uninspectable process with a looping parent chain removes nothing" {
+  FAKE_PPID=4902 fakeproc 4901 "$UID" helper /usr/bin/helper
+  FAKE_PPID=4901 fakeproc 4902 "$UID" other /usr/bin/other
+  inspectable 4902
+  run aicoding_version_retention
+  [ "$status" -eq 0 ]
+  [ -d "$D/versions/claude/1.0.0" ]
+  [[ "$output" == *"process 4901 (helper) cannot be inspected"* ]]
+}

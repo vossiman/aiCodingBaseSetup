@@ -92,7 +92,7 @@ _aicoding_retention_glob_quote() {
 
 # Set _belongs to the components a process's comm and argv name.
 _aicoding_retention_belongs() {
-  local comm=$1 arg d rest c base
+  local comm=$1 arg d rest c base name
   shift
   _belongs=""
   for arg in "$@"; do
@@ -107,6 +107,9 @@ _aicoding_retention_belongs() {
           rest=$c
           # Only versions/<component>/... names a release of that component.
           [[ "$c" == */* ]] || continue
+          # A named release is used, whatever the process holds open.
+          name=${c#*/}; name=${name%%/*}
+          _aicoding_retention_safe "${c%%/*}" && _aicoding_retention_safe "$name" && used[${c%%/*}/$name]=1
         fi
         c=${c%%/*}
         _aicoding_retention_safe "$c" && _belongs+=" $c"
@@ -236,14 +239,21 @@ _aicoding_retention_scan_proc() {
       hit="runs a managed launcher"
     else
       q=${ppid[$p]:-0}
+      local -A walked=([$p]=1)
       for ((depth = 0; depth < 64; depth++)); do
         [[ "$q" =~ ^[1-9][0-9]*$ ]] && [ "$q" != 1 ] || break
+        if [ -n "${walked[$q]:-}" ]; then
+          hit="has a parent chain that loops"
+          break
+        fi
+        walked[$q]=1
         if [ -n "${held[$q]:-}" ] || [ -n "${belongs[$q]:-}" ]; then
           hit="descends from a process that uses a managed release"
           break
         fi
         q=${ppid[$q]:-0}
       done
+      unset walked
     fi
     [ -n "$hit" ] || continue
     comm=${pname[$p]:-?}
@@ -267,15 +277,63 @@ _aicoding_retention_scan_proc() {
   return 0
 }
 
-# Every symlink under DIR: its resolved target keeps a version, unless the link
-# itself lives inside that same version. Returns 1 if the listing failed.
+# Mark every release a link's resolution steps through, except the link's own
+# release. Returns 1 when the resolution cannot be followed to its end.
+_aicoding_retention_walk_link() {
+  local link=$1 raw=$2 owner=$3 cur rest part nxt t r c n=0
+  cur=${link%/*}
+  rest=$raw
+  [[ "$rest" != /* ]] || cur=
+  while [ -n "$rest" ]; do
+    part=${rest%%/*}
+    if [[ "$rest" == */* ]]; then rest=${rest#*/}; else rest=; fi
+    case "$part" in
+      ''|.) continue ;;
+      ..) cur=${cur%/*}; continue ;;
+    esac
+    nxt="$cur/$part"
+    case "$nxt" in
+      "$_vroot"/*/*)
+        r=${nxt#"$_vroot"/}; c=${r%%/*}; r=${r#*/}; r=${r%%/*}
+        walk_comps[$c]=1
+        [ "$c/$r" = "$owner" ] || used[$c/$r]=1 ;;
+      "$_vroot"/*) r=${nxt#"$_vroot"/}; walk_comps[$r]=1 ;;
+    esac
+    if [ -L "$nxt" ]; then
+      n=$((n + 1))
+      [ "$n" -le 40 ] || return 1
+      if [ -n "${link_raw[$nxt]+x}" ]; then
+        t=${link_raw[$nxt]}
+      else
+        t=$(readlink -- "$nxt" 2>/dev/null) || return 1
+      fi
+      [ -n "$t" ] || return 1
+      [[ "$t" != /* ]] || cur=
+      rest="$t${rest:+/$rest}"
+      continue
+    fi
+    # A missing step ends the resolution there.
+    [ -e "$nxt" ] || return 0
+    cur=$nxt
+  done
+  return 0
+}
+
+# Every symlink under DIR: each release its resolution steps through keeps that
+# version, unless the link itself lives inside that same version. When a chain
+# cannot be followed, every component it touched is kept. Returns 1 if the
+# listing failed.
 _aicoding_retention_scan_links() {
-  local dir=$1 i owner rest comp name
-  local -a links=() targets=()
-  mapfile -d '' links < <(find "$dir" -type l -print0 2>/dev/null; printf 'rc=%s\0' "$?")
-  [ "${#links[@]}" -gt 0 ] || return 1
-  [ "${links[-1]}" = rc=0 ] || return 1
-  unset 'links[-1]'
+  local dir=$1 i owner rest comp name c
+  local -a links=() raws=() pairs=() targets=()
+  local -A link_raw=() walk_comps=()
+  mapfile -d '' pairs < <(find "$dir" -type l -printf '%p\0%l\0' 2>/dev/null; printf 'rc=%s\0\0' "$?")
+  [ "${#pairs[@]}" -ge 2 ] || return 1
+  [ "${pairs[-2]}" = rc=0 ] || return 1
+  for ((i = 0; i + 2 < ${#pairs[@]}; i += 2)); do
+    links+=("${pairs[$i]}"); raws+=("${pairs[$((i + 1))]}")
+    link_raw[${pairs[$i]}]=${pairs[$((i + 1))]}
+  done
   [ "${#links[@]}" -gt 0 ] || return 0
   mapfile -t targets < <(printf '%s\0' "${links[@]}" | xargs -0 readlink -m -- 2>/dev/null; printf 'rc=%s\n' "$?")
   [ "${targets[-1]}" = rc=0 ] || return 1
@@ -289,6 +347,10 @@ _aicoding_retention_scan_links() {
         rest=${links[$i]#"$_vroot"/}; comp=${rest%%/*}; name=${rest#*/}; name=${name%%/*}
         owner="$comp/$name" ;;
     esac
+    walk_comps=()
+    if ! _aicoding_retention_walk_link "${links[$i]}" "${raws[$i]}" "$owner"; then
+      for c in "${!walk_comps[@]}"; do keep_comp[$c]=1; done
+    fi
     if [ -n "$owner" ]; then
       case "${targets[$i]}" in "$_vroot/$owner"|"$_vroot/$owner"/*) continue ;; esac
     fi
@@ -382,13 +444,17 @@ _aicoding_retention_has_mount() {
   return 1
 }
 
-# A pointer is valid only when it resolves to exactly versions/<comp>/<name>.
+# A pointer is valid only when its own target (one readlink, not the resolved
+# path) is exactly versions/<comp>/<name>, a real release directory.
 _aicoding_retention_pointer_ok() {
-  local comp=$1 link=$2 target name
-  [ -L "$link" ] && target=$(readlink -e -- "$link") && [ -d "$target" ] || return 1
-  case "$target" in "$_vroot/$comp"/*) ;; *) return 1 ;; esac
-  name=${target#"$_vroot/$comp/"}
-  _aicoding_retention_release_name "$name"
+  local comp=$1 link=$2 raw name= m
+  [ -L "$link" ] && raw=$(readlink -- "$link") || return 1
+  case "$raw" in "../versions/$comp/"*) name=${raw#"../versions/$comp/"} ;; esac
+  for m in "${data_prefixes[@]}"; do
+    case "$raw" in "$m/versions/$comp/"*) name=${raw#"$m/versions/$comp/"} ;; esac
+  done
+  _aicoding_retention_release_name "$name" || return 1
+  [ -d "$_vroot/$comp/$name" ] && [ ! -L "$_vroot/$comp/$name" ]
 }
 
 # Remove one version: re-verify, rename into a dot-prefixed tombstone, delete.
@@ -412,10 +478,11 @@ _aicoding_retention_remove() {
   _aicoding_retention_delete_tree "$tomb" || { _retired_left=$tomb; return 3; }
 }
 
-# Build caches can leave read-only directories; restore write access first.
+# Build caches can leave read-only directories; restore access to directories
+# only, since a file may be hard-linked from outside the tree.
 _aicoding_retention_delete_tree() {
   rm -rf --one-file-system -- "$1" 2>/dev/null && return 0
-  chmod -R u+w -- "$1" 2>/dev/null || true
+  find "$1" -xdev -type d ! -perm -u=rwx -exec chmod u+rwx -- {} \; 2>/dev/null || true
   rm -rf --one-file-system -- "$1" 2>/dev/null
 }
 
@@ -431,10 +498,13 @@ _aicoding_retention_main() {
     [ "$mode" != preview ] || _aicoding_retention_say "not a host; containers keep every staged version"
     return 0
   fi
-  [[ "$grace" =~ ^[0-9]+$ ]] || {
-    _aicoding_retention_warn "AICODING_RETENTION_GRACE must be whole seconds; nothing removed"
+  # Decimal only (a leading zero is not octal), at most ten years.
+  [[ "$grace" =~ ^[0-9]+$ ]] && grace=${grace#"${grace%%[!0]*}"} && grace=${grace:-0} \
+    && [ "${#grace}" -le 9 ] && [ "$((10#$grace))" -le 315360000 ] || {
+    _aicoding_retention_warn "AICODING_RETENTION_GRACE must be whole seconds, at most 315360000; nothing removed"
     return 0
   }
+  grace=$((10#$grace))
   [ -d "$AICODING_DATA_DIR/versions" ] || return 0
   shopt -u dotglob
   shopt -s nullglob
@@ -516,10 +586,22 @@ _aicoding_retention_main() {
   fi
 
   # A stamp's mtime is the first run that saw the version as a candidate.
-  local sroot="$AICODING_STATE_DIR/retention" stamp first due
+  # Stamp directories must be plain directories inside the resolved state dir.
+  local state sroot sdir stamp first due
   local now name dir kib count=0 total=0 failed=0 waiting=0 _retired_left rc
+  state=$(readlink -e -- "$AICODING_STATE_DIR") || { _aicoding_retention_warn "cannot resolve the state directory; nothing removed"; return 0; }
+  sroot="$state/retention"
+  if { [ -e "$sroot" ] || [ -L "$sroot" ]; } && { [ -L "$sroot" ] || [ ! -d "$sroot" ]; }; then
+    _aicoding_retention_warn "$sroot is not a plain directory; nothing removed"
+    return 0
+  fi
   now=$(date +%s) || return 0
   for comp in "${comps[@]}"; do
+    sdir="$sroot/$comp"
+    if { [ -e "$sdir" ] || [ -L "$sdir" ]; } && { [ -L "$sdir" ] || [ ! -d "$sdir" ]; }; then
+      _aicoding_retention_warn "$sdir is not a plain directory; keeping every $comp version"
+      continue
+    fi
     for dir in "$_vroot/$comp"/.aicoding-retired.*; do
       [ -d "$dir" ] && [ ! -L "$dir" ] || continue
       if [ -n "${keep_comp[$comp]:-}" ]; then continue; fi
@@ -539,7 +621,7 @@ _aicoding_retention_main() {
       name=${dir##*/}
       [ -d "$dir" ] && [ ! -L "$dir" ] || continue
       _aicoding_retention_safe "$name" || continue
-      stamp="$sroot/$comp/$name"
+      stamp="$sdir/$name"
       if [ -n "${keep_comp[$comp]:-}" ] || ! _aicoding_retention_release_name "$name" \
           || [ -n "${used[$comp/$name]:-}" ]; then
         [ "$mode" != remove ] || rm -f -- "$stamp" 2>/dev/null || true
@@ -558,14 +640,16 @@ _aicoding_retention_main() {
       if ! [[ "$first" =~ ^[0-9]+$ ]] || [ "$first" -gt "$now" ]; then
         first=$now
         if [ "$mode" = remove ]; then
-          { mkdir -p -- "$sroot/$comp" && rm -f -- "$stamp" && : > "$stamp"; } 2>/dev/null \
+          { { [ -d "$sroot" ] || mkdir -m 0700 -- "$sroot"; } && [ ! -L "$sroot" ] \
+              && { [ -d "$sdir" ] || mkdir -m 0700 -- "$sdir"; } && [ ! -L "$sdir" ] \
+              && rm -f -- "$stamp" && : > "$stamp"; } 2>/dev/null \
             || _aicoding_retention_warn "cannot record when $comp/$name was first seen unused"
         fi
       fi
       due=$((first + grace))
       kib=$(du -sk -- "$dir" 2>/dev/null | cut -f1)
       [[ "$kib" =~ ^[0-9]+$ ]] || kib=0
-      if [ "$now" -lt "$due" ]; then
+      if [ "$((now - first))" -lt "$grace" ]; then
         waiting=$((waiting + 1))
         _aicoding_retention_say "$comp/$name unused since $(_aicoding_retention_date "$first"); eligible for removal from $(_aicoding_retention_date "$due") ($(_aicoding_retention_human "$kib"))"
         continue
@@ -592,13 +676,19 @@ _aicoding_retention_main() {
     done
   done
 
-  # Stamps of versions that no longer exist.
+  # Stamps of versions that no longer exist: never through a symlink, and
+  # only regular files named like a version.
   if [ "$mode" = remove ] && [ -d "$sroot" ] && [ ! -L "$sroot" ]; then
-    for stamp in "$sroot"/*/*; do
-      comp=${stamp%/*}; comp=${comp##*/}; name=${stamp##*/}
-      [ -d "$_vroot/$comp/$name" ] && [ ! -L "$_vroot/$comp/$name" ] || rm -f -- "$stamp" 2>/dev/null || true
+    for sdir in "$sroot"/*; do
+      comp=${sdir##*/}
+      [ -d "$sdir" ] && [ ! -L "$sdir" ] && _aicoding_retention_safe "$comp" || continue
+      for stamp in "$sdir"/*; do
+        name=${stamp##*/}
+        [ -f "$stamp" ] && [ ! -L "$stamp" ] && _aicoding_retention_safe "$name" || continue
+        [ -d "$_vroot/$comp/$name" ] && [ ! -L "$_vroot/$comp/$name" ] || rm -f -- "$stamp" 2>/dev/null || true
+      done
+      rmdir -- "$sdir" 2>/dev/null || true
     done
-    for dir in "$sroot"/*; do rmdir -- "$dir" 2>/dev/null || true; done
   fi
 
   local noun=versions
