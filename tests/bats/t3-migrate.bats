@@ -68,6 +68,24 @@ start_legacy() {
   [ ! -f "$T3_MIGRATE_DIR/demo.tgz" ]
 }
 
+@test "export: refuses when the open-file scan is killed after it started" {
+  # Real output first, so the scan sees the shell's own fds, then a SIGKILL status.
+  printf '#!/bin/sh\n%s "$@"\nexit 137\n' "$(PATH=/usr/bin:/bin command -v find)" > "$TMP/stubs/find"
+  chmod +x "$TMP/stubs/find"
+  run "$B/t3-migrate" --export --version 0.0.40
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"cannot list open files"* ]]
+  [ ! -f "$T3_MIGRATE_DIR/demo.tgz" ]
+}
+
+@test "export: a scan that ends with status 1 (a process exited mid-scan) still counts" {
+  printf '#!/bin/sh\n%s "$@"\nexit 1\n' "$(PATH=/usr/bin:/bin command -v find)" > "$TMP/stubs/find"
+  chmod +x "$TMP/stubs/find"
+  run "$B/t3-migrate" --export --version 0.0.40
+  [ "$status" -eq 0 ]
+  [ -f "$T3_MIGRATE_DIR/demo.tgz" ]
+}
+
 @test "export: without a running server or --version it refuses" {
   run "$B/t3-migrate" --export
   [ "$status" -eq 1 ]
