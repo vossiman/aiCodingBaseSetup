@@ -44,8 +44,13 @@ _aicoding_auto_close_shared_lock_fds() {
 }
 
 # Capabilities a worker must have loaded; one without them is replaced.
-# retention2: each pass loads the active release's verified retention library.
-_AICODING_AUTO_WORKER_CAPABILITIES=retention2
+# retention3: each pass loads the active release's verified retention library,
+# falling back to its own copy when that library cannot be entered.
+# Rule: to force a replacement, bump this value and keep writing every earlier one.
+_AICODING_AUTO_WORKER_CAPABILITIES=retention3
+# Also written: release 1e98290 requires retention and fe09450 retention2 on
+# some line after the first; without them each would replace this worker.
+_AICODING_AUTO_WORKER_LEGACY_CAPABILITIES="retention2 retention"
 
 # The receipt binds the worker to its PID and process start time, not a
 # reusable PID alone. Line 1 keeps the three fields older releases parse;
@@ -261,31 +266,58 @@ aicoding_auto_update_once() {
 _aicoding_auto_version_retention() {
   # Suite runs of real passes must never prune whatever home they resolve.
   [ -z "${AICODINGSETUP_SKIP_NETWORK:-}" ] || return 0
-  local lib
+  local lib own="${BASH_SOURCE[0]%/*}/version-retention.sh" entered=
   # A long-lived worker runs the active release's retention, not its own copy.
-  lib=$(_aicoding_auto_current_retention_lib) || lib="${BASH_SOURCE[0]%/*}/version-retention.sh"
-  [ -f "$lib" ] || return 0
-  ( . "$lib" && aicoding_version_retention ) || true
+  if lib=$(_aicoding_auto_current_retention_lib); then
+    # fd 3 reports whether the entry point was reached; its output goes to fd 4.
+    { entered=$( (
+        exec 3>&1 1>&4 4>&-
+        # Only the active library may define the entry point it checks for.
+        unset -f aicoding_version_retention
+        . "$lib" 3>&- || exit 0
+        declare -F aicoding_version_retention >/dev/null || exit 0
+        printf 1 >&3
+        exec 3>&-
+        aicoding_version_retention
+      ) ) || true; } 4>&1
+    # At most one retention run per pass, whatever the active one returned.
+    [ -z "$entered" ] || return 0
+  fi
+  [ -f "$own" ] || return 0
+  ( . "$own" && aicoding_version_retention ) || true
 }
 
 # The retention library of the release current/aicoding points at: its own
-# target must be exactly ../versions/aicoding/<name> or that path under the
-# resolved data directory, and the library must resolve to exactly the file
-# inside that real release directory, so no symlink on the way is trusted.
+# target must be exactly ../versions/aicoding/<name>, or that path under the
+# configured or the resolved data directory, and must resolve to exactly that
+# real release directory. The library must resolve to exactly the file inside
+# it, so no symlink on the way is trusted.
 _aicoding_auto_current_retention_lib() {
-  local data=${AICODING_DATA_DIR:-$HOME/.local/share/aicoding} real raw name= rel lib
+  local data=${AICODING_DATA_DIR:-$HOME/.local/share/aicoding} real raw name= rel lib m resolved
   real=$(readlink -e -- "$data" 2>/dev/null) || return 1
   [ -d "$real/current" ] && [ ! -L "$real/current" ] || return 1
-  [ -L "$real/current/aicoding" ] && raw=$(readlink -- "$real/current/aicoding") || return 1
+  # The x keeps a trailing newline of the target from being stripped.
+  [ -L "$real/current/aicoding" ] && raw=$(readlink -- "$real/current/aicoding" && printf x) || return 1
+  raw=${raw%x}; raw=${raw%$'\n'}
+  m=$data
+  while [[ "$m" == *//* ]]; do m=${m//\/\//\/}; done
+  while [ "${m%/}" != "$m" ]; do m=${m%/}; done
   case "$raw" in
     ../versions/aicoding/*) name=${raw#../versions/aicoding/} ;;
     "$real"/versions/aicoding/*) name=${raw#"$real"/versions/aicoding/} ;;
+    # The literal configured spelling, as launcher refresh accepts it.
+    "$data"/versions/aicoding/*) name=${raw#"$data"/versions/aicoding/} ;;
+    "$m"/versions/aicoding/*) [ -z "$m" ] || name=${raw#"$m"/versions/aicoding/} ;;
   esac
   [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || return 1
   case "$name" in *.staging.*|*.replaced.*) return 1 ;; esac
   rel="$real/versions/aicoding/$name"
   [ -d "$rel" ] && [ ! -L "$rel" ] || return 1
-  lib=$(readlink -e -- "$rel/lib/version-retention.sh" 2>/dev/null) || return 1
+  resolved=$(readlink -e -- "$real/current/aicoding" 2>/dev/null && printf x) || return 1
+  resolved=${resolved%x}; resolved=${resolved%$'\n'}
+  [ "$resolved" = "$rel" ] || return 1
+  lib=$(readlink -e -- "$rel/lib/version-retention.sh" 2>/dev/null && printf x) || return 1
+  lib=${lib%x}; lib=${lib%$'\n'}
   [ "$lib" = "$rel/lib/version-retention.sh" ] && [ -f "$lib" ] || return 1
   printf '%s\n' "$lib"
 }
@@ -613,9 +645,13 @@ aicoding_auto_update_worker() {
   exec {lock_fd}>"$state/worker.lock" || return 1
   flock -n "$lock_fd" || { exec {lock_fd}>&-; return 0; }
   pid_file="$state/worker.pid"
-  local ticks
+  local ticks receipt cap
   ticks=$(_aicoding_auto_process_start_ticks "$$") || { exec {lock_fd}>&-; return 1; }
-  _aicoding_auto_atomic_number "$state/worker.protocol" "1 $$ $ticks"$'\n'"capabilities $_AICODING_AUTO_WORKER_CAPABILITIES" \
+  receipt="1 $$ $ticks"
+  for cap in $_AICODING_AUTO_WORKER_CAPABILITIES $_AICODING_AUTO_WORKER_LEGACY_CAPABILITIES; do
+    receipt+=$'\n'"capabilities $cap"
+  done
+  _aicoding_auto_atomic_number "$state/worker.protocol" "$receipt" \
     || { exec {lock_fd}>&-; return 1; }
   printf '%s\n' "$$" > "$pid_file" || { exec {lock_fd}>&-; return 1; }
   trap '[ -z "${sleep_pid:-}" ] || kill "$sleep_pid" 2>/dev/null || true; test "$(cat "$pid_file" 2>/dev/null)" != "$$" || rm -f -- "$pid_file"; exit 0' TERM INT HUP

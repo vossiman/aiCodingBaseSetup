@@ -385,9 +385,9 @@ _aicoding_retention_scan_settled() {
 }
 
 # Mark every release a link's resolution steps through, except the link's own
-# release; walk_comps records what it touched. Returns 2 when a step is
-# missing, with its path in walk_miss, 1 when the resolution cannot be
-# followed for another reason.
+# release; walk_comps and walk_rels record the components and releases it
+# touched. Returns 2 when a step is missing, with its path in walk_miss, 1
+# when the resolution cannot be followed for another reason.
 _aicoding_retention_walk_link() {
   local link=$1 raw=$2 owner=$3 cur rest part nxt t r c n=0
   cur=${link%/*}
@@ -404,7 +404,7 @@ _aicoding_retention_walk_link() {
     case "$nxt" in
       "$_vroot"/*/*)
         r=${nxt#"$_vroot"/}; c=${r%%/*}; r=${r#*/}; r=${r%%/*}
-        walk_comps[$c]=1
+        walk_comps[$c]=1; walk_rels[$c/$r]=1
         [ "$c/$r" = "$owner" ] || used[$c/$r]=1 ;;
       "$_vroot"/*) r=${nxt#"$_vroot"/}; walk_comps[$r]=1 ;;
     esac
@@ -429,14 +429,16 @@ _aicoding_retention_walk_link() {
 
 # Walk one link; when it cannot be followed, keep every component it touched.
 # A link whose missing step lies inside its own release, whether its text is
-# relative or absolute, cannot lead anywhere else and keeps nothing.
+# relative or absolute, and whose walk entered no other release, cannot lead
+# anywhere else and keeps nothing.
 _aicoding_retention_follow_link() {
   local link=$1 raw=$2 owner=$3 rc=0 c walk_miss=
-  walk_comps=()
+  walk_comps=(); walk_rels=()
   _aicoding_retention_walk_link "$link" "$raw" "$owner" || rc=$?
   walk_rc=$rc
   [ "$rc" -ne 0 ] || return 0
-  if [ "$rc" -eq 2 ] && [ -n "$owner" ]; then
+  if [ "$rc" -eq 2 ] && [ -n "$owner" ] && [ "${#walk_rels[@]}" -eq 1 ] \
+      && [ -n "${walk_rels[$owner]:-}" ]; then
     case "$walk_miss" in "$_vroot/$owner"/*) return 0 ;; esac
   fi
   for c in "${!walk_comps[@]}"; do keep_comp[$c]=1; done
@@ -449,7 +451,7 @@ _aicoding_retention_follow_link() {
 _aicoding_retention_scan_links() {
   local dir=$1 i owner rest comp name walk_rc
   local -a links=() raws=() pairs=() targets=()
-  local -A link_raw=() walk_comps=()
+  local -A link_raw=() walk_comps=() walk_rels=()
   mapfile -d '' pairs < <(find "$dir" -type l -printf '%p\0%l\0' 2>/dev/null; printf 'rc=%s\0\0' "$?")
   [ "${#pairs[@]}" -ge 2 ] || return 1
   [ "${pairs[-2]}" = rc=0 ] || return 1
@@ -485,7 +487,7 @@ _aicoding_retention_scan_links() {
 _aicoding_retention_scan_bin() {
   local bin=$1 rc file line comp name walk_rc
   local -a files=() managed_files=() link_files=()
-  local -A link_raw=() walk_comps=()
+  local -A link_raw=() walk_comps=() walk_rels=()
   [ -e "$bin" ] || [ -L "$bin" ] || return 0
   [[ "$bin" == /* ]] || return 1
   # Every release on the way to it keeps, not only the final directory.
@@ -535,7 +537,7 @@ _aicoding_retention_add_launcher() {
 
 _aicoding_retention_scan_links_bin() {
   local bin=$1 path raw real rest
-  local -A link_raw=() walk_comps=()
+  local -A link_raw=() walk_comps=() walk_rels=()
   while IFS= read -r -d '' path && IFS= read -r -d '' raw; do
     [ "$path" = aicoding-retention-scan-end ] && return 0
     # Every release on the way keeps, not only the final target.
